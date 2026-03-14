@@ -117,6 +117,8 @@ test('authenticates and manages a shell session from the browser UI', async ({
     timeout: 20000,
   });
   await expectSessionCard(page, title);
+  await expect(page.locator('#sessionSearchInput')).toBeVisible();
+  await expect(page.locator('#favoriteSessionsOnlyButton')).toBeVisible();
   await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
   await expect(page.locator('#selectedSessionSummary')).toContainText(
     workingDirectory

@@ -340,6 +340,18 @@
         gap: 10px;
       }
 
+      .session-toolbar {
+        display: grid;
+        gap: 10px;
+      }
+
+      .session-toolbar-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+
       .session-card {
         padding: 16px;
         border: 1px solid rgba(183, 214, 196, 0.12);
@@ -367,6 +379,27 @@
         margin: 0;
         font-size: 17px;
         font-weight: 700;
+      }
+
+      .session-head-row {
+        display: flex;
+        gap: 12px;
+        align-items: start;
+        justify-content: space-between;
+      }
+
+      .favorite-button {
+        min-width: 44px;
+        padding: 9px 12px;
+        color: var(--accent-strong);
+        background: rgba(18, 58, 43, 0.9);
+        border: 1px solid var(--border);
+        box-shadow: none;
+      }
+
+      .favorite-button.active {
+        color: #092016;
+        background: linear-gradient(135deg, #f8f2b7, #d8f28d);
       }
 
       .session-meta,
@@ -680,6 +713,28 @@
 
             <div class="field">
               <label>続きから開く session</label>
+              <div class="session-toolbar">
+                <div class="field">
+                  <label for="sessionSearchInput">探したい言葉</label>
+                  <input
+                    id="sessionSearchInput"
+                    type="search"
+                    placeholder="例: タイトル / フォルダ / Codex / preview"
+                  />
+                </div>
+                <div class="session-toolbar-row">
+                  <button
+                    id="favoriteSessionsOnlyButton"
+                    class="secondary"
+                    type="button"
+                  >
+                    お気に入りだけ表示
+                  </button>
+                  <span id="sessionsListHint" class="install-note"
+                    >最近動いた session が上に出ます。</span
+                  >
+                </div>
+              </div>
               <div id="sessionsList" class="sessions"></div>
             </div>
           </div>

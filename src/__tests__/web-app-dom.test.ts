@@ -13,6 +13,9 @@ const baseHtml = `
     <datalist id="workingDirectorySuggestions"></datalist>
     <button id="startSessionButton">start</button>
     <button id="showArchivedButton">toggle</button>
+    <input id="sessionSearchInput" />
+    <button id="favoriteSessionsOnlyButton">favorites</button>
+    <span id="sessionsListHint"></span>
     <span id="selectedSessionState"></span>
     <div id="selectedSessionSummary"></div>
     <div id="selectedSessionControls" style="display:none"></div>
@@ -246,6 +249,179 @@ describe('web-app DOM', () => {
     expect(
       document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
     ).toContain('echo demo');
+  });
+
+  it('filters sessions by search text and keeps favorite sessions first', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(
+          JSON.stringify([
+            {
+              Name: 'shell-alpha',
+              Type: 'shell',
+              DisplayName: 'alpha',
+              Distro: 'Ubuntu',
+              CreatedUnix: 1,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 20,
+              LastActivityLocal: '2026-03-14 00:00:20',
+              Title: 'Alpha Session',
+              WorkingDirectoryWindows: 'D:\\ghws\\alpha',
+              PreviewText: 'preview alpha',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 20,
+              DisplayTitle: 'Alpha Session',
+            },
+            {
+              Name: 'codex-beta',
+              Type: 'codex',
+              DisplayName: 'beta',
+              Distro: 'Ubuntu',
+              CreatedUnix: 2,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 30,
+              LastActivityLocal: '2026-03-14 00:00:30',
+              Title: 'Beta Bugfix',
+              WorkingDirectoryWindows: 'D:\\ghws\\workspace-agent-hub',
+              PreviewText: 'bugfix follow-up',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 30,
+              DisplayTitle: 'Beta Bugfix',
+            },
+          ]),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.favorite-sessions',
+          JSON.stringify(['shell-alpha'])
+        );
+      },
+    });
+
+    const titlesBefore = [
+      ...document.querySelectorAll('.session-card .session-title'),
+    ].map((element) => element.textContent);
+    expect(titlesBefore).toEqual(['Alpha Session', 'Beta Bugfix']);
+
+    const searchInput = document.querySelector<HTMLInputElement>(
+      '#sessionSearchInput'
+    )!;
+    searchInput.value = 'bugfix';
+    searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await waitForTick();
+
+    const titlesAfterSearch = [
+      ...document.querySelectorAll('.session-card .session-title'),
+    ].map((element) => element.textContent);
+    expect(titlesAfterSearch).toEqual(['Beta Bugfix']);
+    expect(
+      document.querySelector<HTMLSpanElement>('#sessionsListHint')!.textContent
+    ).toContain('絞り込んでいます');
+  });
+
+  it('stores favorite toggles locally and can show only favorites', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(
+          JSON.stringify([
+            {
+              Name: 'shell-alpha',
+              Type: 'shell',
+              DisplayName: 'alpha',
+              Distro: 'Ubuntu',
+              CreatedUnix: 1,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 10,
+              LastActivityLocal: '2026-03-14 00:00:10',
+              Title: 'Alpha Session',
+              WorkingDirectoryWindows: 'D:\\ghws\\alpha',
+              PreviewText: 'preview alpha',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 10,
+              DisplayTitle: 'Alpha Session',
+            },
+            {
+              Name: 'shell-beta',
+              Type: 'shell',
+              DisplayName: 'beta',
+              Distro: 'Ubuntu',
+              CreatedUnix: 2,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 9,
+              LastActivityLocal: '2026-03-14 00:00:09',
+              Title: 'Beta Session',
+              WorkingDirectoryWindows: 'D:\\ghws\\beta',
+              PreviewText: 'preview beta',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 9,
+              DisplayTitle: 'Beta Session',
+            },
+          ]),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+    const favoriteButtons = [
+      ...document.querySelectorAll<HTMLButtonElement>('.favorite-button'),
+    ];
+    favoriteButtons[1]!.click();
+    await waitForTick();
+
+    expect(
+      window.localStorage.getItem(
+        'workspace-agent-hub.test-token.favorite-sessions'
+      )
+    ).toContain('shell-beta');
+
+    document
+      .querySelector<HTMLButtonElement>('#favoriteSessionsOnlyButton')!
+      .click();
+    await waitForTick();
+
+    const titlesAfterFavoriteFilter = [
+      ...document.querySelectorAll('.session-card .session-title'),
+    ].map((element) => element.textContent);
+    expect(titlesAfterFavoriteFilter).toEqual(['Beta Session']);
+    expect(
+      document.querySelector<HTMLSpanElement>('#sessionsListHint')!.textContent
+    ).toContain('固定');
   });
 
   it('shows the auth overlay when auth is required and no token is saved', async () => {

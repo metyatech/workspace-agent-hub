@@ -25,6 +25,7 @@ const config = window.WORKSPACE_AGENT_HUB_CONFIG;
 const authStorageKey = config.authStorageKey;
 const sessionsCacheKey = `${authStorageKey}.sessions`;
 const notificationsPreferenceKey = `${authStorageKey}.notifications-enabled`;
+const favoriteSessionsKey = `${authStorageKey}.favorite-sessions`;
 
 const sessionsList = document.querySelector<HTMLDivElement>('#sessionsList')!;
 const refreshSessionsButton = document.querySelector<HTMLButtonElement>(
@@ -46,6 +47,14 @@ const startSessionButton = document.querySelector<HTMLButtonElement>(
 const showArchivedButton = document.querySelector<HTMLButtonElement>(
   '#showArchivedButton'
 )!;
+const sessionSearchInput = document.querySelector<HTMLInputElement>(
+  '#sessionSearchInput'
+)!;
+const favoriteSessionsOnlyButton = document.querySelector<HTMLButtonElement>(
+  '#favoriteSessionsOnlyButton'
+)!;
+const sessionsListHint =
+  document.querySelector<HTMLSpanElement>('#sessionsListHint')!;
 const selectedSessionState = document.querySelector<HTMLSpanElement>(
   '#selectedSessionState'
 )!;
@@ -134,9 +143,13 @@ const sessionRows = new Map<string, HTMLDivElement>();
 let sessions: SessionRecord[] = [];
 let selectedSessionName = '';
 let includeArchived = false;
+let showFavoriteSessionsOnly = false;
 let transcriptPollTimer: number | null = null;
 let sessionPollTimer: number | null = null;
 let lastTranscript = '';
+let favoriteSessionNames = new Set(
+  readStoredJson<string[]>(favoriteSessionsKey) ?? []
+);
 let authToken = readStoredAuthToken();
 let notificationsEnabled =
   readStoredJson<boolean>(notificationsPreferenceKey) ?? false;
@@ -190,6 +203,25 @@ function writeStoredJson(key: string, value: unknown): void {
 
 function getTranscriptCacheKey(sessionName: string): string {
   return `${authStorageKey}.transcript.${sessionName}`;
+}
+
+function isFavoriteSession(sessionName: string): boolean {
+  return favoriteSessionNames.has(sessionName);
+}
+
+function persistFavoriteSessions(): void {
+  writeStoredJson(favoriteSessionsKey, [...favoriteSessionNames]);
+}
+
+function toggleFavoriteSession(sessionName: string): void {
+  if (favoriteSessionNames.has(sessionName)) {
+    favoriteSessionNames.delete(sessionName);
+  } else {
+    favoriteSessionNames.add(sessionName);
+  }
+  persistFavoriteSessions();
+  renderSessions(sessions);
+  renderSelectedSession();
 }
 
 function getCurrentPageUrl(): string {
@@ -667,6 +699,25 @@ function sessionIsVisible(session: SessionRecord): boolean {
   return includeArchived ? true : session.IsLive && !session.Archived;
 }
 
+function sessionMatchesSearch(session: SessionRecord): boolean {
+  const query = sessionSearchInput.value.trim().toLocaleLowerCase('ja-JP');
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [
+    session.DisplayTitle,
+    session.PreviewText,
+    session.WorkingDirectoryWindows,
+    session.Type,
+    session.LastActivityLocal,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLocaleLowerCase('ja-JP');
+  return haystack.includes(query);
+}
+
 function getSelectedSession(): SessionRecord | undefined {
   return sessions.find((session) => session.Name === selectedSessionName);
 }
@@ -709,9 +760,28 @@ function patchSessionCard(card: HTMLDivElement, session: SessionRecord): void {
   card.classList.toggle('selected', session.Name === selectedSessionName);
   card.innerHTML = '';
 
+  const headRow = document.createElement('div');
+  headRow.className = 'session-head-row';
+
   const title = document.createElement('h3');
   title.className = 'session-title';
   title.textContent = session.DisplayTitle;
+
+  const favoriteButton = document.createElement('button');
+  favoriteButton.className = isFavoriteSession(session.Name)
+    ? 'favorite-button active'
+    : 'favorite-button';
+  favoriteButton.type = 'button';
+  favoriteButton.textContent = isFavoriteSession(session.Name) ? '★' : '☆';
+  favoriteButton.setAttribute(
+    'aria-label',
+    isFavoriteSession(session.Name) ? 'お気に入りを外す' : 'お気に入りに固定'
+  );
+  favoriteButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleFavoriteSession(session.Name);
+  });
+  headRow.append(title, favoriteButton);
 
   const statusRow = document.createElement('div');
   statusRow.className = 'status-row';
@@ -721,6 +791,9 @@ function patchSessionCard(card: HTMLDivElement, session: SessionRecord): void {
       session.IsLive ? 'Running' : 'Closed'
     )
   );
+  if (isFavoriteSession(session.Name)) {
+    statusRow.appendChild(makeBadge('live', 'お気に入り'));
+  }
   if (session.Archived) {
     statusRow.appendChild(makeBadge('archived', 'Hidden'));
   }
@@ -737,18 +810,50 @@ function patchSessionCard(card: HTMLDivElement, session: SessionRecord): void {
   meta.className = 'session-meta';
   meta.textContent = `${session.Type.toUpperCase()} / 最終更新 ${session.LastActivityLocal}`;
 
-  card.append(title, statusRow, preview, folder, meta);
+  card.append(headRow, statusRow, preview, folder, meta);
 }
 
 function renderSessions(nextSessions: SessionRecord[]): void {
   const visibleSessions = nextSessions
     .filter(sessionIsVisible)
-    .sort((left, right) => right.SortUnix - left.SortUnix);
+    .filter((session) =>
+      showFavoriteSessionsOnly ? isFavoriteSession(session.Name) : true
+    )
+    .filter(sessionMatchesSearch)
+    .sort((left, right) => {
+      const leftFavorite = isFavoriteSession(left.Name) ? 1 : 0;
+      const rightFavorite = isFavoriteSession(right.Name) ? 1 : 0;
+      if (leftFavorite !== rightFavorite) {
+        return rightFavorite - leftFavorite;
+      }
+      return right.SortUnix - left.SortUnix;
+    });
   sessionsList.innerHTML = '';
+  favoriteSessionsOnlyButton.textContent = showFavoriteSessionsOnly
+    ? 'すべて表示'
+    : 'お気に入りだけ表示';
+
+  const query = sessionSearchInput.value.trim();
+  if (showFavoriteSessionsOnly && query) {
+    sessionsListHint.textContent =
+      'お気に入りの中から検索しています。最近動いたものが上です。';
+  } else if (showFavoriteSessionsOnly) {
+    sessionsListHint.textContent =
+      'この端末で固定した session だけを表示しています。';
+  } else if (query) {
+    sessionsListHint.textContent =
+      'タイトル・プレビュー・フォルダ・種類から絞り込んでいます。';
+  } else {
+    sessionsListHint.textContent = '最近動いた session が上に出ます。';
+  }
 
   if (visibleSessions.length === 0) {
-    sessionsList.innerHTML =
-      '<div class="empty-state">まだ session がありません。左上から新しい session を始めてください。</div>';
+    const emptyState = showFavoriteSessionsOnly
+      ? 'お気に入りにした session がありません。カード右上の星で固定できます。'
+      : query
+        ? '一致する session がありません。言葉を変えるか、お気に入り絞り込みを外してください。'
+        : 'まだ session がありません。左上から新しい session を始めてください。';
+    sessionsList.innerHTML = `<div class="empty-state">${emptyState}</div>`;
     if (selectedSessionName) {
       selectedSessionName = '';
       renderSelectedSession();
@@ -881,6 +986,9 @@ function renderSelectedSession(): void {
       session.IsLive ? '動作中' : '停止済み'
     )
   );
+  if (isFavoriteSession(session.Name)) {
+    selectedSessionSummary.appendChild(makeBadge('live', 'お気に入り'));
+  }
   if (session.Archived) {
     selectedSessionSummary.appendChild(makeBadge('archived', '一覧では非表示'));
   }
@@ -1275,6 +1383,15 @@ showArchivedButton.addEventListener('click', () => {
   showArchivedButton.textContent = includeArchived
     ? '動作中だけ表示'
     : '閉じた session も表示';
+  renderSessions(sessions);
+  renderSelectedSession();
+});
+sessionSearchInput.addEventListener('input', () => {
+  renderSessions(sessions);
+  renderSelectedSession();
+});
+favoriteSessionsOnlyButton.addEventListener('click', () => {
+  showFavoriteSessionsOnly = !showFavoriteSessionsOnly;
   renderSessions(sessions);
   renderSelectedSession();
 });

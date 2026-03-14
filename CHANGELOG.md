@@ -26,6 +26,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `public-url` aware onboarding for the browser UI
 - Added `--json` launch metadata output for `workspace-agent-hub web-ui`
   automation/integration flows
+- Added browser-local session search and favorites to keep the mobile session
+  list easier to reopen
 
 ### Changed
 
