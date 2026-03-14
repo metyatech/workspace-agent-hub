@@ -136,6 +136,12 @@ try {
     Pop-Location
 }
 
+$cliJsonOutput = & (Join-Path $PSScriptRoot 'test-cli-json-output.ps1')
+if (($cliJsonOutput | Out-String).Trim() -notmatch 'OK') {
+    Write-Error 'Expected the built CLI to emit machine-readable web-ui launch metadata through --json.'
+    exit 1
+}
+
 $tls12 = [Net.SecurityProtocolType]::Tls12
 if (-not ([Net.ServicePointManager]::SecurityProtocol.HasFlag($tls12))) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12

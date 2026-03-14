@@ -24,6 +24,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   browser session
 - Added QR-based smartphone pairing, share/copy reconnect actions, and
   `public-url` aware onboarding for the browser UI
+- Added `--json` launch metadata output for `workspace-agent-hub web-ui`
+  automation/integration flows
 
 ### Changed
 

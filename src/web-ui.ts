@@ -189,8 +189,38 @@ export interface StartWebUiOptions {
   port?: number;
   authToken?: string;
   publicUrl?: string;
+  jsonOutput?: boolean;
   openBrowser?: boolean;
   bridge?: SessionBridge;
+}
+
+export interface WebUiLaunchInfo {
+  listenUrl: string;
+  preferredConnectUrl: string;
+  authRequired: boolean;
+  accessCode: string | null;
+  oneTapPairingLink: string;
+}
+
+export function buildWebUiLaunchInfo(input: {
+  host: string;
+  port: number;
+  authConfig: WebUiAuthConfig;
+  publicUrl?: string;
+}): WebUiLaunchInfo {
+  const listenUrl = `http://${input.host}:${input.port}`;
+  const preferredConnectUrl = normalizePublicUrl(input.publicUrl) ?? listenUrl;
+  const oneTapPairingLink =
+    input.authConfig.required && input.authConfig.token
+      ? `${preferredConnectUrl}#accessCode=${encodeURIComponent(input.authConfig.token)}`
+      : preferredConnectUrl;
+  return {
+    listenUrl,
+    preferredConnectUrl,
+    authRequired: input.authConfig.required,
+    accessCode: input.authConfig.token,
+    oneTapPairingLink,
+  };
 }
 
 export async function createWebUiServer(
@@ -475,22 +505,28 @@ export async function startWebUi(
   options: StartWebUiOptions = {}
 ): Promise<void> {
   const { server, port, host, authConfig } = await createWebUiServer(options);
-  const url = `http://${host}:${port}`;
-  const connectUrl = normalizePublicUrl(options.publicUrl) ?? url;
-  const connectLink =
-    authConfig.required && authConfig.token
-      ? `${connectUrl}#accessCode=${encodeURIComponent(authConfig.token)}`
-      : connectUrl;
+  const launchInfo = buildWebUiLaunchInfo({
+    host,
+    port,
+    authConfig,
+    publicUrl: options.publicUrl,
+  });
 
-  console.log(`Workspace Agent Hub web UI listening on ${url}`);
-  console.log(`Preferred connect URL: ${connectUrl}`);
-  if (authConfig.required && authConfig.token) {
-    console.log(`Access code: ${authConfig.token}`);
-    console.log(`One-tap pairing link: ${connectLink}`);
+  if (options.jsonOutput) {
+    console.log(JSON.stringify(launchInfo));
+  } else {
+    console.log(
+      `Workspace Agent Hub web UI listening on ${launchInfo.listenUrl}`
+    );
+    console.log(`Preferred connect URL: ${launchInfo.preferredConnectUrl}`);
+    if (launchInfo.authRequired && launchInfo.accessCode) {
+      console.log(`Access code: ${launchInfo.accessCode}`);
+      console.log(`One-tap pairing link: ${launchInfo.oneTapPairingLink}`);
+    }
   }
 
   if (options.openBrowser !== false) {
-    openBrowser(url);
+    openBrowser(launchInfo.listenUrl);
   }
 
   await new Promise<void>((resolvePromise) => {

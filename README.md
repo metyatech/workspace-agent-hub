@@ -150,6 +150,19 @@ Start it through the CLI directly:
 workspace-agent-hub web-ui --host 127.0.0.1 --port 3360 --auth-token auto
 ```
 
+Print one JSON object with the listening URL, preferred connect URL, access code,
+and one-tap pairing link for automation or launcher integration:
+
+```powershell
+workspace-agent-hub web-ui --host 127.0.0.1 --port 3360 --auth-token auto --json --no-open-browser
+```
+
+The PowerShell wrapper exposes the same behavior with `-JsonOutput`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser
+```
+
 #### CLI parameters
 
 `workspace-agent-hub web-ui` supports these parameters:
@@ -160,6 +173,7 @@ workspace-agent-hub web-ui --host 127.0.0.1 --port 3360 --auth-token auto
 | `--port <port>`        | Preferred port. If already taken, the server walks upward to the next free port.                                                                                | `workspace-agent-hub web-ui --port 3360`                                   |
 | `--public-url <url>`   | Phone-facing URL used for reconnect links and QR pairing. Point this at Tailscale Serve or another trusted HTTPS reverse proxy when using the PWA from a phone. | `workspace-agent-hub web-ui --public-url https://agent-hub.example.ts.net` |
 | `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` only on a trusted local machine.                                                        | `workspace-agent-hub web-ui --auth-token auto`                             |
+| `--json`               | Print a single JSON object describing the live web UI endpoint, connect URL, access code, and pairing link.                                                     | `workspace-agent-hub web-ui --json --no-open-browser`                      |
 | `--no-open-browser`    | Start the server without opening the default desktop browser.                                                                                                   | `workspace-agent-hub web-ui --no-open-browser`                             |
 
 End-to-end example:

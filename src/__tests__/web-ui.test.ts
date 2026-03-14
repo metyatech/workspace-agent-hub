@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { createWebUiServer } from '../web-ui.js';
+import { buildWebUiLaunchInfo, createWebUiServer } from '../web-ui.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
   DirectorySuggestion,
@@ -178,6 +178,28 @@ afterEach(async () => {
 });
 
 describe('web UI server', () => {
+  it('builds machine-readable launch metadata for automation clients', () => {
+    expect(
+      buildWebUiLaunchInfo({
+        host: '127.0.0.1',
+        port: 3360,
+        authConfig: {
+          required: true,
+          token: 'secret-token',
+          storageKey: 'workspace-agent-hub.token:D:\\ghws',
+        },
+        publicUrl: 'https://hub.example.test/connect',
+      })
+    ).toEqual({
+      listenUrl: 'http://127.0.0.1:3360',
+      preferredConnectUrl: 'https://hub.example.test/connect',
+      authRequired: true,
+      accessCode: 'secret-token',
+      oneTapPairingLink:
+        'https://hub.example.test/connect#accessCode=secret-token',
+    });
+  });
+
   it('requires an access code for API requests when auth is enabled', async () => {
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(),
