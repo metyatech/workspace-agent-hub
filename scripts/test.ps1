@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$packageJsonPath = Join-Path $repoRoot 'package.json'
+$nodeModulesPath = Join-Path $repoRoot 'node_modules'
 
 function Convert-WindowsPathToWslPath {
     param(
@@ -15,6 +17,18 @@ function Convert-WindowsPathToWslPath {
     }
 
     return (($output | Out-String).Trim())
+}
+
+Push-Location $repoRoot
+try {
+    if ((Test-Path -Path $packageJsonPath) -and (-not (Test-Path -Path $nodeModulesPath))) {
+        npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw 'npm ci failed.'
+        }
+    }
+} finally {
+    Pop-Location
 }
 
 $bootstrapScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'wsl-mobile-login-bootstrap.sh')
@@ -102,6 +116,24 @@ $sessionManagementOutput = & (Join-Path $PSScriptRoot 'test-session-management.p
 if (($sessionManagementOutput | Out-String).Trim() -notmatch 'PASS') {
     Write-Error 'Expected the launcher session management commands to rename, archive, close, and delete sessions.'
     exit 1
+}
+
+$webSessionBridgeOutput = & (Join-Path $PSScriptRoot 'test-web-session-bridge.ps1')
+if (($webSessionBridgeOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected the web-session bridge to start, send to, capture, interrupt, close, and delete a shell session.'
+    exit 1
+}
+
+Push-Location $repoRoot
+try {
+    if (Test-Path -Path $packageJsonPath) {
+        npm run test
+        if ($LASTEXITCODE -ne 0) {
+            throw 'npm run test failed.'
+        }
+    }
+} finally {
+    Pop-Location
 }
 
 $tls12 = [Net.SecurityProtocolType]::Tls12

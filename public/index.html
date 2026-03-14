@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0d2a1f" />
+    <meta
+      name="description"
+      content="AI agent sessions for PC and smartphone, backed by WSL tmux and controlled from a mobile-friendly browser app."
+    />
+    <link rel="manifest" href="/app.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <title>Workspace Agent Hub</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #081611;
+        --panel: rgba(12, 36, 27, 0.88);
+        --panel-strong: rgba(16, 48, 36, 0.94);
+        --panel-soft: rgba(18, 58, 43, 0.65);
+        --border: rgba(165, 211, 187, 0.18);
+        --accent: #9ae6b4;
+        --accent-strong: #dcfce7;
+        --text: #eefcf3;
+        --muted: #b7d6c4;
+        --danger: #ffb4a9;
+        --warning: #f7d98f;
+        --shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+        --radius: 24px;
+        --font-display: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+        --font-body: 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+        --font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: var(--font-body);
+        color: var(--text);
+        background:
+          radial-gradient(
+            circle at top left,
+            rgba(84, 190, 136, 0.2),
+            transparent 28%
+          ),
+          radial-gradient(
+            circle at top right,
+            rgba(144, 230, 180, 0.14),
+            transparent 24%
+          ),
+          linear-gradient(180deg, #0a1f17 0%, #081611 46%, #07110d 100%);
+      }
+
+      .shell {
+        width: min(1200px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 20px 0 72px;
+      }
+
+      .hero {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        margin: 0 12px 16px;
+        padding: 20px;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) + 6px);
+        background: rgba(8, 22, 17, 0.84);
+        backdrop-filter: blur(18px);
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(154, 230, 180, 0.12);
+        color: var(--accent);
+        font-size: 13px;
+      }
+
+      h1 {
+        margin: 14px 0 10px;
+        font: 700 clamp(30px, 5vw, 48px) / 1.05 var(--font-display);
+        letter-spacing: -0.03em;
+      }
+
+      .hero p {
+        margin: 0;
+        max-width: 760px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.65;
+      }
+
+      .hint-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        margin-top: 16px;
+      }
+
+      .hint {
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(15, 40, 30, 0.7);
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .layout {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.35fr);
+        margin: 0 12px;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        gap: 12px;
+        padding: 22px 22px 0;
+      }
+
+      .panel-title {
+        margin: 0;
+        font: 650 22px/1.1 var(--font-display);
+        letter-spacing: -0.02em;
+      }
+
+      .panel-copy {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .panel-body {
+        padding: 20px 22px 22px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent-strong);
+      }
+
+      input,
+      select,
+      textarea,
+      button {
+        font: inherit;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        padding: 14px 16px;
+        border: 1px solid rgba(203, 255, 224, 0.14);
+        border-radius: 16px;
+        background: rgba(7, 19, 14, 0.88);
+        color: var(--text);
+      }
+
+      textarea {
+        min-height: 124px;
+        resize: vertical;
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .button,
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 16px;
+        padding: 13px 16px;
+        cursor: pointer;
+        color: #04110c;
+        background: linear-gradient(135deg, #bdf3d1, #83d9aa);
+        font-weight: 700;
+        box-shadow: 0 12px 22px rgba(84, 190, 136, 0.18);
+      }
+
+      .button.secondary,
+      button.secondary {
+        color: var(--text);
+        background: rgba(18, 58, 43, 0.9);
+        box-shadow: none;
+        border: 1px solid var(--border);
+      }
+
+      .button.subtle,
+      button.subtle {
+        color: var(--muted);
+        background: transparent;
+        border: 1px dashed rgba(183, 214, 196, 0.18);
+        box-shadow: none;
+      }
+
+      button.danger {
+        color: #200605;
+        background: linear-gradient(135deg, #ffd7d0, #ffb4a9);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+        box-shadow: none;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .pill {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(183, 214, 196, 0.08);
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .sessions {
+        display: grid;
+        gap: 10px;
+      }
+
+      .session-card {
+        padding: 16px;
+        border: 1px solid rgba(183, 214, 196, 0.12);
+        border-radius: 20px;
+        background: rgba(8, 22, 17, 0.72);
+        cursor: pointer;
+        transition:
+          transform 160ms ease,
+          border-color 160ms ease,
+          background 160ms ease;
+      }
+
+      .session-card:hover {
+        transform: translateY(-1px);
+        border-color: rgba(154, 230, 180, 0.26);
+      }
+
+      .session-card.selected {
+        background: rgba(20, 63, 45, 0.95);
+        border-color: rgba(154, 230, 180, 0.45);
+        box-shadow: 0 18px 32px rgba(44, 95, 66, 0.18);
+      }
+
+      .session-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .session-meta,
+      .session-preview,
+      .session-folder {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .session-folder {
+        font-family: var(--font-mono);
+        word-break: break-word;
+      }
+
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .badge.live {
+        background: rgba(134, 239, 172, 0.14);
+        color: #d7ffe5;
+      }
+
+      .badge.closed {
+        background: rgba(247, 217, 143, 0.14);
+        color: var(--warning);
+      }
+
+      .badge.archived {
+        background: rgba(183, 214, 196, 0.08);
+        color: var(--muted);
+      }
+
+      .terminal {
+        margin-top: 16px;
+        min-height: 320px;
+        max-height: 52vh;
+        overflow: auto;
+        padding: 18px;
+        border-radius: 20px;
+        background:
+          linear-gradient(180deg, rgba(7, 19, 14, 0.98), rgba(9, 23, 17, 0.94)),
+          linear-gradient(90deg, rgba(154, 230, 180, 0.04), transparent 45%);
+        border: 1px solid rgba(154, 230, 180, 0.14);
+        color: #eafcf1;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .empty-state {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px dashed rgba(183, 214, 196, 0.18);
+        color: var(--muted);
+        background: rgba(9, 23, 17, 0.36);
+      }
+
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        transform: translateX(-50%);
+        max-width: min(92vw, 520px);
+        padding: 12px 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(183, 214, 196, 0.18);
+        background: rgba(8, 22, 17, 0.94);
+        color: var(--text);
+        box-shadow: var(--shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 150ms ease;
+      }
+
+      .toast.visible {
+        opacity: 1;
+      }
+
+      .auth-overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(3, 8, 6, 0.72);
+        backdrop-filter: blur(10px);
+      }
+
+      .auth-overlay.visible {
+        display: flex;
+      }
+
+      .auth-card {
+        width: min(460px, 100%);
+        padding: 22px;
+        border-radius: 26px;
+        border: 1px solid var(--border);
+        background: var(--panel-strong);
+        box-shadow: var(--shadow);
+      }
+
+      .secure-tip {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: rgba(247, 217, 143, 0.08);
+        color: var(--warning);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 920px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div class="eyebrow">Workspace Agent Hub</div>
+        <h1>スマホでも、同じ AI セッションをそのまま続ける</h1>
+        <p>
+          ここでは最初に新しい作業を始めるか、いま動いている session
+          を選びます。選んだ session の出力は下に見え続け、
+          追加の指示や停止もその場でできます。
+        </p>
+        <div class="hint-grid">
+          <div class="hint">1. 上で session を始めるか一覧から選ぶ</div>
+          <div class="hint">2. 右側で出力を見ながら一言ずつ追加指示する</div>
+          <div class="hint">
+            3. PC でもスマホでも同じ session を続きから開ける
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">最初にやること</h2>
+              <p class="panel-copy">
+                新しい session を始めるか、既存の session
+                から続けてください。タイトルは空でも大丈夫です。
+              </p>
+            </div>
+            <button id="refreshSessionsButton" class="secondary" type="button">
+              更新
+            </button>
+          </div>
+          <div class="panel-body stack">
+            <div class="field">
+              <label for="sessionTypeSelect">使うエージェント</label>
+              <select id="sessionTypeSelect">
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
+                <option value="shell">Shell</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="sessionTitleInput">何についての作業か</label>
+              <input
+                id="sessionTitleInput"
+                type="text"
+                placeholder="例: API 調査 / バグ修正 / 仕様メモ"
+              />
+            </div>
+            <div class="field">
+              <label for="workingDirectoryInput">どのフォルダで始めるか</label>
+              <input
+                id="workingDirectoryInput"
+                list="workingDirectorySuggestions"
+                type="text"
+              />
+              <datalist id="workingDirectorySuggestions"></datalist>
+            </div>
+            <div class="button-row">
+              <button id="startSessionButton" type="button">
+                新しい session を始める
+              </button>
+              <button id="showArchivedButton" class="secondary" type="button">
+                閉じた session も表示
+              </button>
+            </div>
+
+            <div class="field">
+              <label>続きから開く session</label>
+              <div id="sessionsList" class="sessions"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">いま見ている session</h2>
+              <p class="panel-copy">
+                選んだ session の出力と操作をここにまとめています。
+              </p>
+            </div>
+            <div class="pill-row">
+              <span id="selectedSessionState" class="pill">未選択</span>
+              <span id="connectionHint" class="pill">ブラウザ接続</span>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="selectedSessionSummary" class="empty-state">
+              左側の一覧から session を選ぶと、ここに出力と操作が出ます。
+            </div>
+
+            <div id="selectedSessionControls" style="display: none">
+              <div class="button-row" style="margin-top: 16px">
+                <button
+                  id="renameSessionButton"
+                  class="secondary"
+                  type="button"
+                >
+                  タイトル変更
+                </button>
+                <button
+                  id="archiveSessionButton"
+                  class="secondary"
+                  type="button"
+                >
+                  一覧から隠す
+                </button>
+                <button
+                  id="interruptSessionButton"
+                  class="secondary"
+                  type="button"
+                >
+                  Ctrl+C
+                </button>
+                <button id="closeSessionButton" class="secondary" type="button">
+                  閉じる
+                </button>
+                <button id="deleteSessionButton" class="danger" type="button">
+                  削除
+                </button>
+              </div>
+
+              <pre
+                id="sessionTranscript"
+                class="terminal"
+                aria-live="polite"
+              ></pre>
+
+              <div class="field" style="margin-top: 16px">
+                <label for="sessionPromptInput"
+                  >いまの session に送る指示</label
+                >
+                <textarea
+                  id="sessionPromptInput"
+                  placeholder="例: いまの状況を 3 行で要約して / このテストだけ回して / 続けて"
+                ></textarea>
+              </div>
+              <div class="button-row">
+                <button id="sendPromptButton" type="button">
+                  送信して続ける
+                </button>
+                <button id="sendRawButton" class="secondary" type="button">
+                  Enter なしで貼る
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div id="authOverlay" class="auth-overlay" aria-hidden="true">
+      <div class="auth-card">
+        <div class="eyebrow">Access Code</div>
+        <h2 class="panel-title" style="margin-top: 14px">
+          この画面を開くコードを入力
+        </h2>
+        <p class="panel-copy" style="margin-top: 8px">
+          スマホから使うときは、このコードを一度入れれば同じ端末に保存されます。
+        </p>
+        <div class="field" style="margin-top: 16px">
+          <label for="authTokenInput">アクセスコード</label>
+          <input
+            id="authTokenInput"
+            type="password"
+            autocomplete="current-password"
+          />
+        </div>
+        <div class="button-row" style="margin-top: 16px">
+          <button id="authSubmitButton" type="button">開く</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.WORKSPACE_AGENT_HUB_CONFIG = {
+        authRequired: __WORKSPACE_AGENT_HUB_AUTH_REQUIRED__,
+        authStorageKey: __WORKSPACE_AGENT_HUB_AUTH_STORAGE_KEY__,
+        workspaceRoot: __WORKSPACE_AGENT_HUB_WORKSPACE_ROOT__,
+      };
+    </script>
+    <script type="module" src="/web-app.js"></script>
+  </body>
+</html>

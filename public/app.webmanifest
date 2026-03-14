@@ -1,0 +1,17 @@
+{
+  "name": "Workspace Agent Hub",
+  "short_name": "Agent Hub",
+  "description": "Mobile-friendly AI session control for WSL tmux-backed agent sessions.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#081611",
+  "theme_color": "#0d2a1f",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
