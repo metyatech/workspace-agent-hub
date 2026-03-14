@@ -118,6 +118,57 @@
         font-size: 14px;
       }
 
+      .status-strip {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        margin-top: 16px;
+      }
+
+      .status-card {
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        background: rgba(15, 40, 30, 0.82);
+      }
+
+      .status-card strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .status-card p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .status-card.ok {
+        border-color: rgba(134, 239, 172, 0.18);
+      }
+
+      .status-card.warn {
+        border-color: rgba(247, 217, 143, 0.22);
+      }
+
+      .status-card.offline {
+        border-color: rgba(255, 180, 169, 0.22);
+      }
+
+      .install-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 10px;
+      }
+
+      .install-note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
       .layout {
         display: grid;
         gap: 16px;
@@ -448,6 +499,33 @@
           <div class="hint">2. 右側で出力を見ながら一言ずつ追加指示する</div>
           <div class="hint">
             3. PC でもスマホでも同じ session を続きから開ける
+          </div>
+        </div>
+        <div class="status-strip">
+          <div id="connectivityBanner" class="status-card warn">
+            <strong>接続状態を確認中</strong>
+            <p>
+              最初の同期が終わると、ここにオンライン状態と再接続の目安が出ます。
+            </p>
+          </div>
+          <div id="installCard" class="status-card">
+            <strong>スマホに追加</strong>
+            <p id="installHint">
+              HTTPS で開いているときは、ホーム画面アプリとして追加できます。
+            </p>
+            <div class="install-row">
+              <button
+                id="installAppButton"
+                class="secondary"
+                type="button"
+                hidden
+              >
+                ホーム画面に追加
+              </button>
+              <span id="installStatus" class="install-note"
+                >まだインストール待ちです。</span
+              >
+            </div>
           </div>
         </div>
       </header>

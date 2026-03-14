@@ -11,10 +11,19 @@ declare global {
   interface Window {
     WORKSPACE_AGENT_HUB_CONFIG: WebUiConfigBootstrap;
   }
+
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{
+      outcome: 'accepted' | 'dismissed';
+      platform: string;
+    }>;
+  }
 }
 
 const config = window.WORKSPACE_AGENT_HUB_CONFIG;
 const authStorageKey = config.authStorageKey;
+const sessionsCacheKey = `${authStorageKey}.sessions`;
 
 const sessionsList = document.querySelector<HTMLDivElement>('#sessionsList')!;
 const refreshSessionsButton = document.querySelector<HTMLButtonElement>(
@@ -71,6 +80,15 @@ const deleteSessionButton = document.querySelector<HTMLButtonElement>(
 )!;
 const connectionHint =
   document.querySelector<HTMLSpanElement>('#connectionHint')!;
+const connectivityBanner = document.querySelector<HTMLDivElement>(
+  '#connectivityBanner'
+)!;
+const installHint =
+  document.querySelector<HTMLParagraphElement>('#installHint')!;
+const installAppButton =
+  document.querySelector<HTMLButtonElement>('#installAppButton')!;
+const installStatus =
+  document.querySelector<HTMLSpanElement>('#installStatus')!;
 const toast = document.querySelector<HTMLDivElement>('#toast')!;
 const authOverlay = document.querySelector<HTMLDivElement>('#authOverlay')!;
 const authTokenInput =
@@ -88,6 +106,9 @@ let sessionPollTimer: number | null = null;
 let lastTranscript = '';
 let authToken = readStoredAuthToken();
 let refreshPauseDepth = 0;
+let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
+let connectionState: 'connecting' | 'online' | 'offline' | 'auth' =
+  'connecting';
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -113,6 +134,119 @@ function writeStoredAuthToken(token: string): void {
   }
 }
 
+function readStoredJson<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredJson(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignore */
+  }
+}
+
+function getTranscriptCacheKey(sessionName: string): string {
+  return `${authStorageKey}.transcript.${sessionName}`;
+}
+
+function isInstalledPwa(): boolean {
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.matchMedia('(display-mode: minimal-ui)').matches ||
+    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true
+  );
+}
+
+function setConnectionState(
+  state: 'connecting' | 'online' | 'offline' | 'auth',
+  detail: string
+): void {
+  connectionState = state;
+  connectivityBanner.classList.remove('ok', 'warn', 'offline');
+
+  if (state === 'online') {
+    connectionHint.textContent = '接続中';
+    connectivityBanner.classList.add('ok');
+    connectivityBanner.innerHTML = `<strong>接続中</strong><p>${detail}</p>`;
+    return;
+  }
+
+  if (state === 'offline') {
+    connectionHint.textContent = 'オフライン';
+    connectivityBanner.classList.add('offline');
+    connectivityBanner.innerHTML = `<strong>オフラインでも継続表示</strong><p>${detail}</p>`;
+    return;
+  }
+
+  if (state === 'auth') {
+    connectionHint.textContent = 'コード待ち';
+    connectivityBanner.classList.add('warn');
+    connectivityBanner.innerHTML = `<strong>アクセスコード待ち</strong><p>${detail}</p>`;
+    return;
+  }
+
+  connectionHint.textContent = '接続確認中';
+  connectivityBanner.classList.add('warn');
+  connectivityBanner.innerHTML = `<strong>接続状態を確認中</strong><p>${detail}</p>`;
+}
+
+function setInstallUiState(): void {
+  if (isInstalledPwa()) {
+    installAppButton.hidden = true;
+    installAppButton.disabled = true;
+    installHint.textContent =
+      'この端末では、すでにホーム画面アプリとして開いています。';
+    installStatus.textContent = 'インストール済みです。';
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    installAppButton.hidden = true;
+    installAppButton.disabled = true;
+    installHint.textContent =
+      'HTTPS で開くとホーム画面アプリとして追加できます。Tailscale Serve などの secure context を使ってください。';
+    installStatus.textContent = '現在は通常のブラウザ表示です。';
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    installAppButton.hidden = false;
+    installAppButton.disabled = false;
+    installHint.textContent =
+      'この端末に追加できます。追加するとスマホから 1 タップで開けます。';
+    installStatus.textContent = 'インストール可能です。';
+    return;
+  }
+
+  installAppButton.hidden = true;
+  installAppButton.disabled = true;
+  installHint.textContent =
+    'このブラウザでは追加ボタンがまだ利用できません。共有メニューの「ホーム画面に追加」でも構いません。';
+  installStatus.textContent = 'ブラウザ側の準備待ちです。';
+}
+
+function primeCachedSessions(): void {
+  const cachedSessions = readStoredJson<SessionRecord[]>(sessionsCacheKey);
+  if (!cachedSessions || cachedSessions.length === 0) {
+    return;
+  }
+
+  sessions = cachedSessions;
+  renderSessions(sessions);
+  renderSelectedSession();
+  setConnectionState(
+    'offline',
+    '最後に保存した session 一覧を表示しています。通信が戻ると自動で同期します。'
+  );
+}
+
 function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add('visible');
@@ -134,6 +268,17 @@ function setBusy(
 function setAuthOverlayVisible(visible: boolean): void {
   authOverlay.classList.toggle('visible', visible);
   authOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  if (visible) {
+    setConnectionState(
+      'auth',
+      'アクセスコードを入力すると、session 一覧と transcript を同期できます。'
+    );
+  } else if (connectionState === 'auth') {
+    setConnectionState(
+      'connecting',
+      'アクセスコードを受け付けました。session 一覧を同期しています。'
+    );
+  }
   if (visible) {
     authTokenInput.focus();
   }
@@ -186,6 +331,19 @@ async function withRefreshPause<T>(work: () => Promise<T>): Promise<T> {
   } finally {
     refreshPauseDepth = Math.max(0, refreshPauseDepth - 1);
   }
+}
+
+function handleOfflineError(
+  error: unknown,
+  detail: string,
+  toastMessage: string
+): boolean {
+  if (!window.navigator.onLine || error instanceof TypeError) {
+    setConnectionState('offline', detail);
+    showToast(toastMessage);
+    return true;
+  }
+  return false;
 }
 
 function makeBadge(className: string, label: string): HTMLSpanElement {
@@ -254,6 +412,8 @@ function renderSessions(nextSessions: SessionRecord[]): void {
       card.className = 'session-card';
       card.addEventListener('click', () => {
         selectedSessionName = session.Name;
+        lastTranscript = '';
+        sessionTranscript.textContent = '';
         renderSessions(sessions);
         renderSelectedSession();
       });
@@ -268,6 +428,8 @@ function renderSessions(nextSessions: SessionRecord[]): void {
     !visibleSessions.some((session) => session.Name === selectedSessionName)
   ) {
     selectedSessionName = '';
+    lastTranscript = '';
+    sessionTranscript.textContent = '';
     renderSelectedSession();
   }
 }
@@ -307,13 +469,28 @@ async function refreshTranscript(): Promise<void> {
       sessionTranscript.textContent =
         transcript.Transcript || 'まだ出力はありません。';
       lastTranscript = transcript.Transcript;
+      writeStoredJson(
+        getTranscriptCacheKey(session.Name),
+        transcript.Transcript
+      );
       if (nearBottom) {
         sessionTranscript.scrollTop = sessionTranscript.scrollHeight;
       }
     }
+    setConnectionState(
+      'online',
+      `session 出力を同期しました。最終取得 ${new Date().toLocaleTimeString('ja-JP')}`
+    );
   } catch (error) {
     if (error instanceof AuthRequiredError) {
       setAuthOverlayVisible(true);
+      return;
+    }
+    if (!window.navigator.onLine) {
+      setConnectionState(
+        'offline',
+        'ネットワークが戻るまで、最後に取得した transcript を表示しています。'
+      );
       return;
     }
     showToast(error instanceof Error ? error.message : String(error));
@@ -372,6 +549,13 @@ function renderSelectedSession(): void {
   sendPromptButton.disabled = !session.IsLive;
   sendRawButton.disabled = !session.IsLive;
   interruptSessionButton.disabled = !session.IsLive;
+  const cachedTranscript = readStoredJson<string>(
+    getTranscriptCacheKey(session.Name)
+  );
+  if (cachedTranscript && !lastTranscript) {
+    sessionTranscript.textContent = cachedTranscript;
+    lastTranscript = cachedTranscript;
+  }
   startTranscriptPolling();
 }
 
@@ -383,11 +567,20 @@ async function refreshSessions(): Promise<void> {
     sessions = await apiJson<SessionRecord[]>(
       '/api/sessions?includeArchived=true'
     );
+    writeStoredJson(sessionsCacheKey, sessions);
     renderSessions(sessions);
     renderSelectedSession();
+    setConnectionState(
+      'online',
+      `session 一覧を同期しました。最終取得 ${new Date().toLocaleTimeString('ja-JP')}`
+    );
   } catch (error) {
     if (error instanceof AuthRequiredError) {
       setAuthOverlayVisible(true);
+      return;
+    }
+    if (!window.navigator.onLine || error instanceof TypeError) {
+      primeCachedSessions();
       return;
     }
     showToast(error instanceof Error ? error.message : String(error));
@@ -405,9 +598,22 @@ async function loadDirectorySuggestions(): Promise<void> {
       option.label = suggestion.label;
       workingDirectorySuggestions.appendChild(option);
     }
+    if (connectionState !== 'online') {
+      setConnectionState(
+        'online',
+        `接続できました。最終確認 ${new Date().toLocaleTimeString('ja-JP')}`
+      );
+    }
   } catch (error) {
     if (error instanceof AuthRequiredError) {
       setAuthOverlayVisible(true);
+      return;
+    }
+    if (!window.navigator.onLine || error instanceof TypeError) {
+      setConnectionState(
+        'offline',
+        'フォルダ候補は更新できませんが、前回値のまま操作できます。'
+      );
       return;
     }
     showToast(error instanceof Error ? error.message : String(error));
@@ -430,6 +636,8 @@ async function startSession(): Promise<void> {
     );
     upsertSession(session);
     selectedSessionName = session.Name;
+    lastTranscript = '';
+    sessionTranscript.textContent = '';
     sessionPromptInput.value = '';
     renderSessions(sessions);
     renderSelectedSession();
@@ -438,6 +646,15 @@ async function startSession(): Promise<void> {
   } catch (error) {
     if (error instanceof AuthRequiredError) {
       setAuthOverlayVisible(true);
+      return;
+    }
+    if (
+      handleOfflineError(
+        error,
+        'ネットワークが戻るまで、前回の session 一覧を表示します。',
+        'いまはオフラインです。接続後に新しい session を開始してください。'
+      )
+    ) {
       return;
     }
     showToast(error instanceof Error ? error.message : String(error));
@@ -476,6 +693,15 @@ async function sendPrompt(submit: boolean): Promise<void> {
       setAuthOverlayVisible(true);
       return;
     }
+    if (
+      handleOfflineError(
+        error,
+        'ネットワークが戻るまで transcript は更新されません。',
+        'いまはオフラインです。送信は接続復帰後に再試行してください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   } finally {
     setBusy(targetButton, false, '');
@@ -510,6 +736,15 @@ async function renameSelectedSession(): Promise<void> {
     renderSelectedSession();
     void refreshSessions();
   } catch (error) {
+    if (
+      handleOfflineError(
+        error,
+        'オフライン中はタイトル変更を反映できません。',
+        'いまはオフラインです。タイトル変更は接続後に行ってください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   }
 }
@@ -532,6 +767,15 @@ async function archiveSelectedSession(): Promise<void> {
     renderSelectedSession();
     void refreshSessions();
   } catch (error) {
+    if (
+      handleOfflineError(
+        error,
+        'オフライン中は一覧状態を変更できません。',
+        'いまはオフラインです。アーカイブ操作は接続後に行ってください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   }
 }
@@ -550,6 +794,15 @@ async function interruptSelectedSession(): Promise<void> {
     showToast('Ctrl+C を送信しました。');
     await refreshTranscript();
   } catch (error) {
+    if (
+      handleOfflineError(
+        error,
+        'オフライン中は割り込みを送れません。',
+        'いまはオフラインです。Ctrl+C は接続後に再試行してください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   }
 }
@@ -573,6 +826,15 @@ async function closeSelectedSession(): Promise<void> {
     renderSelectedSession();
     void refreshSessions();
   } catch (error) {
+    if (
+      handleOfflineError(
+        error,
+        'オフライン中は session を閉じられません。',
+        'いまはオフラインです。close は接続後に再試行してください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   }
 }
@@ -593,17 +855,32 @@ async function deleteSelectedSession(): Promise<void> {
     );
     sessions = sessions.filter((item) => item.Name !== session.Name);
     selectedSessionName = '';
+    lastTranscript = '';
+    sessionTranscript.textContent = '';
     renderSessions(sessions);
     renderSelectedSession();
     void refreshSessions();
   } catch (error) {
+    if (
+      handleOfflineError(
+        error,
+        'オフライン中は削除を反映できません。',
+        'いまはオフラインです。削除は接続後に再試行してください。'
+      )
+    ) {
+      return;
+    }
     showToast(error instanceof Error ? error.message : String(error));
   }
 }
 
-connectionHint.textContent = window.isSecureContext
-  ? 'Secure context'
-  : 'Use Tailscale Serve for installable mode';
+setConnectionState(
+  window.navigator.onLine ? 'connecting' : 'offline',
+  window.navigator.onLine
+    ? 'session 一覧へ接続しています。'
+    : 'ネットワークが戻ると自動で同期します。'
+);
+setInstallUiState();
 workingDirectoryInput.value = config.workspaceRoot;
 
 refreshSessionsButton.addEventListener('click', () => void refreshSessions());
@@ -635,6 +912,22 @@ deleteSessionButton.addEventListener(
   'click',
   () => void deleteSelectedSession()
 );
+installAppButton.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) {
+    setInstallUiState();
+    return;
+  }
+  const promptEvent = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  await promptEvent.prompt();
+  const choice = await promptEvent.userChoice;
+  showToast(
+    choice.outcome === 'accepted'
+      ? 'ホーム画面への追加を受け付けました。'
+      : 'ホーム画面への追加は見送りました。'
+  );
+  setInstallUiState();
+});
 
 authSubmitButton.addEventListener('click', async () => {
   const nextToken = authTokenInput.value.trim();
@@ -656,6 +949,32 @@ window.addEventListener('visibilitychange', () => {
     }
   }
 });
+window.addEventListener('online', () => {
+  setConnectionState(
+    'connecting',
+    '接続が戻りました。session 一覧を同期しています。'
+  );
+  void refreshSessions();
+  if (selectedSessionName) {
+    void refreshTranscript();
+  }
+});
+window.addEventListener('offline', () => {
+  setConnectionState(
+    'offline',
+    '最後に保存した内容を表示しています。オンラインに戻ると自動で同期します。'
+  );
+});
+window.addEventListener('beforeinstallprompt', (event: Event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event as BeforeInstallPromptEvent;
+  setInstallUiState();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  setInstallUiState();
+  showToast('ホーム画面アプリとして追加されました。');
+});
 
 window.addEventListener('beforeunload', () => {
   stopTranscriptPolling();
@@ -675,6 +994,7 @@ if (config.authRequired && !authToken) {
   setAuthOverlayVisible(false);
 }
 
+primeCachedSessions();
 void loadDirectorySuggestions();
 void refreshSessions();
 sessionPollTimer = window.setInterval(() => void refreshSessions(), 2500);

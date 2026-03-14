@@ -80,6 +80,8 @@ test('authenticates and manages a shell session from the browser UI', async ({
     page.getByRole('heading', { name: '最初にやること' })
   ).toBeVisible();
   await expect(page.locator('#workingDirectoryInput')).toHaveValue('D:\\ghws');
+  await expect(page.locator('#connectionHint')).toContainText('接続');
+  await expect(page.locator('#installHint')).toContainText('ホーム画面');
 
   await expect
     .poll(async () =>

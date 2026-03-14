@@ -1,4 +1,4 @@
-const CACHE_NAME = 'workspace-agent-hub-v1';
+const CACHE_NAME = 'workspace-agent-hub-v2';
 const ASSETS = [
   '/',
   '/index.html',

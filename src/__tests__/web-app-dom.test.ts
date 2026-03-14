@@ -26,6 +26,10 @@ const baseHtml = `
     <button id="closeSessionButton">close</button>
     <button id="deleteSessionButton">delete</button>
     <span id="connectionHint"></span>
+    <div id="connectivityBanner"></div>
+    <p id="installHint"></p>
+    <button id="installAppButton">install</button>
+    <span id="installStatus"></span>
     <div id="toast"></div>
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
@@ -40,7 +44,11 @@ function waitForTick(): Promise<void> {
 
 async function loadApp(
   fetchMock: typeof fetch,
-  authRequired = false
+  authRequired = false,
+  options?: {
+    beforeImport?: (window: Window) => void;
+    secureContext?: boolean;
+  }
 ): Promise<Document> {
   const dom = new JSDOM(baseHtml, {
     url: 'http://127.0.0.1:3360/',
@@ -62,12 +70,38 @@ async function loadApp(
     configurable: true,
   });
 
+  Object.defineProperty(dom.window.navigator, 'onLine', {
+    value: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(dom.window, 'isSecureContext', {
+    value: options?.secureContext ?? false,
+    configurable: true,
+  });
+
+  Object.defineProperty(dom.window, 'matchMedia', {
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+    configurable: true,
+  });
+
   Object.defineProperty(dom.window.navigator, 'serviceWorker', {
     value: {
       register: vi.fn().mockResolvedValue(undefined),
     },
     configurable: true,
   });
+
+  options?.beforeImport?.(dom.window as unknown as Window);
 
   vi.resetModules();
   await import('../web-app.js');
@@ -167,5 +201,101 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(true);
+  });
+
+  it('renders cached sessions and offline state when refresh fails', async () => {
+    const cachedSessions = [
+      {
+        Name: 'shell-offline',
+        Type: 'shell',
+        DisplayName: 'offline',
+        Distro: 'Ubuntu',
+        CreatedUnix: 1,
+        CreatedLocal: '2026-03-14 00:00:00',
+        AttachedClients: 0,
+        WindowCount: 1,
+        LastActivityUnix: 2,
+        LastActivityLocal: '2026-03-14 00:00:02',
+        Title: 'Offline Session',
+        WorkingDirectoryWindows: 'D:\\ghws\\workspace-agent-hub',
+        PreviewText: 'cached preview',
+        Archived: false,
+        ClosedUtc: '',
+        IsLive: true,
+        State: 'Running',
+        SortUnix: 2,
+        DisplayTitle: 'Offline Session',
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        throw new TypeError('Network down');
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        throw new TypeError('Network down');
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.sessions',
+          JSON.stringify(cachedSessions)
+        );
+      },
+    });
+
+    expect(document.querySelectorAll('.session-card')).toHaveLength(1);
+    expect(
+      document.querySelector<HTMLSpanElement>('#connectionHint')!.textContent
+    ).toContain('オフライン');
+    expect(
+      document.querySelector<HTMLDivElement>('#connectivityBanner')!.textContent
+    ).toContain('最後に保存した');
+  });
+
+  it('enables the install button after beforeinstallprompt', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, { secureContext: true });
+    const installButton =
+      document.querySelector<HTMLButtonElement>('#installAppButton')!;
+    expect(installButton.hidden).toBe(true);
+
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    const installEvent = new window.Event('beforeinstallprompt') as Event & {
+      prompt(): Promise<void>;
+      userChoice: Promise<{
+        outcome: 'accepted' | 'dismissed';
+        platform: string;
+      }>;
+    };
+    Object.defineProperty(installEvent, 'prompt', {
+      value: prompt,
+      configurable: true,
+    });
+    Object.defineProperty(installEvent, 'userChoice', {
+      value: Promise.resolve({ outcome: 'accepted', platform: 'web' }),
+      configurable: true,
+    });
+
+    window.dispatchEvent(installEvent);
+    await waitForTick();
+
+    expect(installButton.hidden).toBe(false);
+    installButton.click();
+    await waitForTick();
+    expect(prompt).toHaveBeenCalledTimes(1);
   });
 });

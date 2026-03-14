@@ -18,6 +18,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   session bridge path
 - Added real-browser Playwright coverage for the browser UI primary path,
   including auth, start, transcript send, archive, close, and delete flows
+- Added browser-side install guidance, offline state messaging, and cached
+  session/transcript fallback for the PWA flow
 
 ### Changed
 
@@ -25,6 +27,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   dedicated `workspace-agent-hub` GitHub target
 - Expanded repository docs and verification scripts to treat the browser UI as a
   primary path alongside the existing PC/mobile terminal flows
+- Improved the browser UI first-use flow so connection state, installability,
+  and offline behavior are visible without leaving the page
 
 ## [0.1.0] - 2026-01-26
 
