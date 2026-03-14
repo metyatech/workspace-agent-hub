@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if command -v pwsh >/dev/null 2>&1; then
+  PSH=pwsh
+else
+  PSH=powershell
+fi
+
+"$PSH" -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/../scripts/lint.ps1"
+"$PSH" -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/../scripts/test.ps1"
+"$PSH" -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/../scripts/build.ps1"

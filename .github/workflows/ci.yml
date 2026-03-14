@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install compose-agentsmd
+        run: npm install -g compose-agentsmd
+      - name: Prepare WSL Ubuntu with tmux
+        shell: pwsh
+        run: |
+          $rootfsUrl = 'https://cloud-images.ubuntu.com/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz'
+          $rootfsPath = Join-Path $env:RUNNER_TEMP 'ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz'
+          $installPath = Join-Path $env:RUNNER_TEMP 'workspace-agent-hub-ubuntu'
+          Invoke-WebRequest -Uri $rootfsUrl -OutFile $rootfsPath
+          try {
+              wsl.exe --unregister Ubuntu
+          } catch {
+          }
+          New-Item -ItemType Directory -Path $installPath -Force | Out-Null
+          wsl.exe --import Ubuntu $installPath $rootfsPath --version 2
+          wsl.exe -d Ubuntu -- bash -lc 'apt-get update'
+          wsl.exe -d Ubuntu -- bash -lc 'DEBIAN_FRONTEND=noninteractive apt-get install -y tmux'
+      - name: Lint
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lint.ps1
+      - name: Test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
+      - name: Build
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
+      - name: Launcher smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent-session-launcher.ps1 -SmokeTest
