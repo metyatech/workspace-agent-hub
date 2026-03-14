@@ -46,4 +46,5 @@ export interface WebUiConfigBootstrap {
   authRequired: boolean;
   authStorageKey: string;
   workspaceRoot: string;
+  preferredConnectUrl: string | null;
 }

@@ -2,6 +2,7 @@ param(
     [string]$Host = '127.0.0.1',
     [int]$Port = 3360,
     [string]$AuthToken,
+    [string]$PublicUrl,
     [switch]$NoOpenBrowser
 )
 
@@ -40,6 +41,14 @@ try {
         'auto'
     }
 
+    $resolvedPublicUrl = if ($PSBoundParameters.ContainsKey('PublicUrl')) {
+        $PublicUrl
+    } elseif ($env:WORKSPACE_AGENT_HUB_WEB_UI_PUBLIC_URL) {
+        $env:WORKSPACE_AGENT_HUB_WEB_UI_PUBLIC_URL
+    } else {
+        ''
+    }
+
     $arguments = @(
         $distCliPath,
         'web-ui',
@@ -48,6 +57,9 @@ try {
     )
     if ($null -ne $resolvedAuthToken -and $resolvedAuthToken -ne '') {
         $arguments += @('--auth-token', $resolvedAuthToken)
+    }
+    if ($null -ne $resolvedPublicUrl -and $resolvedPublicUrl -ne '') {
+        $arguments += @('--public-url', $resolvedPublicUrl)
     }
     if ($NoOpenBrowser) {
         $arguments += '--no-open-browser'

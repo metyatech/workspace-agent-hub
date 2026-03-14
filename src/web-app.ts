@@ -100,6 +100,28 @@ const notificationStatus = document.querySelector<HTMLSpanElement>(
 )!;
 const lockDeviceButton =
   document.querySelector<HTMLButtonElement>('#lockDeviceButton')!;
+const pairingHint =
+  document.querySelector<HTMLParagraphElement>('#pairingHint')!;
+const pairingUrlInput =
+  document.querySelector<HTMLInputElement>('#pairingUrlInput')!;
+const sharePairingButton = document.querySelector<HTMLButtonElement>(
+  '#sharePairingButton'
+)!;
+const copyPairingLinkButton = document.querySelector<HTMLButtonElement>(
+  '#copyPairingLinkButton'
+)!;
+const copyManualUrlButton = document.querySelector<HTMLButtonElement>(
+  '#copyManualUrlButton'
+)!;
+const pairingCodeInput =
+  document.querySelector<HTMLInputElement>('#pairingCodeInput')!;
+const copyPairingCodeButton = document.querySelector<HTMLButtonElement>(
+  '#copyPairingCodeButton'
+)!;
+const pairingQrImage =
+  document.querySelector<HTMLImageElement>('#pairingQrImage')!;
+const pairingQrStatus =
+  document.querySelector<HTMLSpanElement>('#pairingQrStatus')!;
 const toast = document.querySelector<HTMLDivElement>('#toast')!;
 const authOverlay = document.querySelector<HTMLDivElement>('#authOverlay')!;
 const authTokenInput =
@@ -123,6 +145,7 @@ let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
 let connectionState: 'connecting' | 'online' | 'offline' | 'auth' =
   'connecting';
 const lastNotifiedTranscriptBySession = new Map<string, string>();
+let pairingQrLink = '';
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -169,6 +192,36 @@ function getTranscriptCacheKey(sessionName: string): string {
   return `${authStorageKey}.transcript.${sessionName}`;
 }
 
+function getCurrentPageUrl(): string {
+  const currentUrl = new URL(window.location.href);
+  currentUrl.hash = '';
+  return currentUrl.toString();
+}
+
+function getPairingBaseUrl(): string {
+  return config.preferredConnectUrl || getCurrentPageUrl();
+}
+
+function getPairingCode(): string {
+  return config.authRequired ? (authToken ?? '') : '';
+}
+
+function getOneTapPairingLink(): string {
+  const baseUrl = getPairingBaseUrl();
+  const accessCode = getPairingCode();
+  if (!config.authRequired) {
+    return baseUrl;
+  }
+  if (!accessCode) {
+    return '';
+  }
+  return `${baseUrl}#accessCode=${encodeURIComponent(accessCode)}`;
+}
+
+function canSharePairingDetails(): boolean {
+  return typeof navigator.share === 'function';
+}
+
 function hasAccessToken(): boolean {
   return !config.authRequired || Boolean(authToken);
 }
@@ -188,6 +241,20 @@ function getLatestTranscriptSnippet(transcript: string): string {
     .map((line) => line.trim())
     .filter(Boolean);
   return lines.at(-1) ?? '新しい出力があります。';
+}
+
+function applyAccessCodeFromLocationHash(): void {
+  const currentUrl = new URL(window.location.href);
+  const accessCode = new URLSearchParams(currentUrl.hash.replace(/^#/, '')).get(
+    'accessCode'
+  );
+  if (!accessCode || authToken) {
+    return;
+  }
+  authToken = accessCode;
+  writeStoredAuthToken(accessCode);
+  currentUrl.hash = '';
+  window.history.replaceState({}, document.title, currentUrl.toString());
 }
 
 function isInstalledPwa(): boolean {
@@ -311,6 +378,115 @@ function setNotificationUiState(): void {
   notificationStatus.textContent = '通知は未設定です。';
 }
 
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function updatePairingQr(link: string): Promise<void> {
+  pairingQrLink = link;
+  if (!hasAccessToken() && config.authRequired) {
+    pairingQrImage.hidden = true;
+    pairingQrImage.removeAttribute('src');
+    pairingQrStatus.textContent =
+      'アクセスコードを受け付けると QR を表示します。';
+    return;
+  }
+
+  try {
+    const pairingQr = await apiJson<{ connectUrl: string; dataUrl: string }>(
+      '/api/pairing-qr'
+    );
+    if (pairingQrLink !== link) {
+      return;
+    }
+    pairingQrImage.src = pairingQr.dataUrl;
+    pairingQrImage.hidden = false;
+    pairingQrStatus.textContent =
+      'スマホで読み取ると、同じ接続先をそのまま開けます。';
+  } catch {
+    pairingQrImage.hidden = true;
+    pairingQrImage.removeAttribute('src');
+    pairingQrStatus.textContent =
+      'QR の生成に失敗しました。リンクをコピーしてください。';
+  }
+}
+
+function setPairingUiState(): void {
+  const baseUrl = getPairingBaseUrl();
+  const oneTapLink = getOneTapPairingLink();
+  const accessCode = getPairingCode();
+
+  pairingUrlInput.value = oneTapLink;
+  pairingCodeInput.value = accessCode || '不要';
+
+  if (config.preferredConnectUrl) {
+    pairingHint.textContent =
+      'この URL はスマホ向けに固定されています。リンクか QR をそのまま渡せます。';
+  } else if (
+    /^(127\.0\.0\.1|localhost|0\.0\.0\.0)$/i.test(new URL(baseUrl).hostname)
+  ) {
+    pairingHint.textContent =
+      'いま見えている URL はこの PC 向けです。スマホ向けには --public-url を付けると、共有しやすい固定 URL にできます。';
+  } else {
+    pairingHint.textContent =
+      '現在のブラウザ URL をそのまま共有できます。アクセスコード付きリンクも同時に使えます。';
+  }
+
+  sharePairingButton.textContent = canSharePairingDetails()
+    ? '共有する'
+    : '共有文をコピー';
+  sharePairingButton.disabled = !oneTapLink && !baseUrl;
+  copyPairingLinkButton.disabled = !oneTapLink;
+  copyManualUrlButton.disabled = !baseUrl;
+  copyPairingCodeButton.disabled = !config.authRequired || !accessCode;
+  void updatePairingQr(oneTapLink);
+}
+
+function buildPairingShareText(): {
+  title: string;
+  text: string;
+  url?: string;
+} {
+  const baseUrl = getPairingBaseUrl();
+  const oneTapLink = getOneTapPairingLink();
+  const accessCode = getPairingCode();
+  const lines = ['Workspace Agent Hub'];
+  lines.push(`接続先: ${oneTapLink || baseUrl}`);
+  if (config.authRequired && accessCode) {
+    lines.push(`アクセスコード: ${accessCode}`);
+  }
+  return {
+    title: 'Workspace Agent Hub',
+    text: lines.join('\n'),
+    url: oneTapLink || baseUrl,
+  };
+}
+
+async function sharePairingDetails(): Promise<void> {
+  const sharePayload = buildPairingShareText();
+  if (canSharePairingDetails()) {
+    try {
+      await navigator.share(sharePayload);
+      showToast('接続情報を共有しました。');
+      return;
+    } catch {
+      /* fall back to clipboard below */
+    }
+  }
+
+  const copied = await copyText(sharePayload.text);
+  showToast(
+    copied
+      ? '接続情報をまとめてコピーしました。'
+      : '接続情報をコピーできませんでした。'
+  );
+}
+
 function maybeNotifyTranscript(
   session: SessionRecord,
   transcript: string
@@ -373,6 +549,7 @@ function lockCurrentDevice(): void {
   renderSelectedSession();
   setNotificationUiState();
   setAuthOverlayVisible(true);
+  setPairingUiState();
   showToast('この端末に保存していたコードとキャッシュを消しました。');
 }
 
@@ -455,6 +632,7 @@ function setAuthOverlayVisible(visible: boolean): void {
   if (visible) {
     authTokenInput.focus();
   }
+  setPairingUiState();
 }
 
 async function apiFetch(
@@ -1087,6 +1265,7 @@ setConnectionState(
 );
 setInstallUiState();
 setNotificationUiState();
+setPairingUiState();
 workingDirectoryInput.value = config.workspaceRoot;
 
 refreshSessionsButton.addEventListener('click', () => void refreshSessions());
@@ -1148,6 +1327,37 @@ lockDeviceButton.addEventListener('click', () => {
   }
   lockCurrentDevice();
 });
+sharePairingButton.addEventListener('click', async () => {
+  await sharePairingDetails();
+});
+copyPairingLinkButton.addEventListener('click', async () => {
+  const value = getOneTapPairingLink();
+  const copied = await copyText(value);
+  showToast(
+    copied
+      ? 'ワンタップ再接続リンクをコピーしました。'
+      : 'リンクをコピーできませんでした。'
+  );
+});
+copyManualUrlButton.addEventListener('click', async () => {
+  const value = getPairingBaseUrl();
+  const copied = await copyText(value);
+  showToast(
+    copied ? '接続 URL をコピーしました。' : 'URL をコピーできませんでした。'
+  );
+});
+copyPairingCodeButton.addEventListener('click', async () => {
+  const value = getPairingCode();
+  if (!value) {
+    return;
+  }
+  const copied = await copyText(value);
+  showToast(
+    copied
+      ? 'アクセスコードをコピーしました。'
+      : 'コードをコピーできませんでした。'
+  );
+});
 
 authSubmitButton.addEventListener('click', async () => {
   const nextToken = authTokenInput.value.trim();
@@ -1158,6 +1368,7 @@ authSubmitButton.addEventListener('click', async () => {
   writeStoredAuthToken(nextToken);
   setAuthOverlayVisible(false);
   setNotificationUiState();
+  setPairingUiState();
   await refreshSessions();
   await loadDirectorySuggestions();
 });
@@ -1209,6 +1420,7 @@ if ('serviceWorker' in navigator) {
   void navigator.serviceWorker.register('/sw.js');
 }
 
+applyAccessCodeFromLocationHash();
 if (config.authRequired && !authToken) {
   setAuthOverlayVisible(true);
 } else {

@@ -138,6 +138,12 @@ Start it with a fixed access code so a phone can reconnect later:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Host 0.0.0.0 -Port 3360 -AuthToken "replace-with-your-code"
 ```
 
+Start it with a phone-facing HTTPS/Tailscale URL so the browser app can render a reconnect QR and copyable one-tap link:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Host 0.0.0.0 -Port 3360 -PublicUrl "https://agent-hub.example.ts.net"
+```
+
 Start it through the CLI directly:
 
 ```powershell
@@ -148,12 +154,13 @@ workspace-agent-hub web-ui --host 127.0.0.1 --port 3360 --auth-token auto
 
 `workspace-agent-hub web-ui` supports these parameters:
 
-| Parameter              | Description                                                                                                                                               | Example                                        |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `--host <host>`        | Host/IP to bind. Use `127.0.0.1` for local-only access or `0.0.0.0` when another device reaches the PC through Tailscale or another trusted network path. | `workspace-agent-hub web-ui --host 0.0.0.0`    |
-| `--port <port>`        | Preferred port. If already taken, the server walks upward to the next free port.                                                                          | `workspace-agent-hub web-ui --port 3360`       |
-| `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` only on a trusted local machine.                                                  | `workspace-agent-hub web-ui --auth-token auto` |
-| `--no-open-browser`    | Start the server without opening the default desktop browser.                                                                                             | `workspace-agent-hub web-ui --no-open-browser` |
+| Parameter              | Description                                                                                                                                                     | Example                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `--host <host>`        | Host/IP to bind. Use `127.0.0.1` for local-only access or `0.0.0.0` when another device reaches the PC through Tailscale or another trusted network path.       | `workspace-agent-hub web-ui --host 0.0.0.0`                                |
+| `--port <port>`        | Preferred port. If already taken, the server walks upward to the next free port.                                                                                | `workspace-agent-hub web-ui --port 3360`                                   |
+| `--public-url <url>`   | Phone-facing URL used for reconnect links and QR pairing. Point this at Tailscale Serve or another trusted HTTPS reverse proxy when using the PWA from a phone. | `workspace-agent-hub web-ui --public-url https://agent-hub.example.ts.net` |
+| `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` only on a trusted local machine.                                                        | `workspace-agent-hub web-ui --auth-token auto`                             |
+| `--no-open-browser`    | Start the server without opening the default desktop browser.                                                                                                   | `workspace-agent-hub web-ui --no-open-browser`                             |
 
 End-to-end example:
 
@@ -167,9 +174,10 @@ First-use flow:
 2. Read the printed URL and access code from the terminal.
 3. Open the URL from the phone over Tailscale or another trusted route.
 4. Paste the access code once.
-5. If the page is served over HTTPS, use the install card to add it to the home screen.
-6. Start or reopen a session, then use the transcript and prompt box from the same page.
-7. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
+5. Use the pairing card to share or copy a one-tap reconnect link, or scan its QR on the phone.
+6. If the page is served over HTTPS, use the install card to add it to the home screen.
+7. Start or reopen a session, then use the transcript and prompt box from the same page.
+8. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
 
 Installable/PWA note:
 
@@ -182,6 +190,9 @@ Installable/PWA note:
 - The browser UI can optionally notify on selected-session output while the page
   is hidden, and it can clear the saved browser-side access code/cache with the
   device-lock control.
+- When `--public-url` is provided, the browser app shows a QR, a share action,
+  and a copyable one-tap reconnect link that includes the access code in the
+  URL fragment.
 
 ### Pairing with Manager
 
@@ -237,13 +248,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 
 This repository claims the following primary handoff paths.
 
-| Path | Claimed behavior                                                                                                                                                                                                    | Automated evidence                                                                                                               |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `P1` | PC-side launcher flow can create a session, surface it in the inventory, and resolve it again for reopening.                                                                                                        | `scripts/test-primary-path-matrix.ps1`                                                                                           |
-| `P2` | A session started from the PC side can be reopened from the mobile SSH menu.                                                                                                                                        | `scripts/test-mobile-ssh.py`                                                                                                     |
-| `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                                                                           | `scripts/test-mobile-ssh.py`                                                                                                     |
-| `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                                                                 | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
-| `P5` | The browser UI can authenticate, list sessions, start a session, display transcript output, surface install/offline/notification guidance, locally lock the current browser, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
+| Path | Claimed behavior                                                                                                                                                                                                                                                 | Automated evidence                                                                                                               |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `P1` | PC-side launcher flow can create a session, surface it in the inventory, and resolve it again for reopening.                                                                                                                                                     | `scripts/test-primary-path-matrix.ps1`                                                                                           |
+| `P2` | A session started from the PC side can be reopened from the mobile SSH menu.                                                                                                                                                                                     | `scripts/test-mobile-ssh.py`                                                                                                     |
+| `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                                                                                                                        | `scripts/test-mobile-ssh.py`                                                                                                     |
+| `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                                                                                                              | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
+| `P5` | The browser UI can authenticate, list sessions, start a session, display transcript output, surface install/offline/notification guidance, render QR/copyable smartphone pairing links, locally lock the current browser, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
 
 ## Environment variables
 
@@ -254,6 +265,8 @@ This repository claims the following primary handoff paths.
 - `WORKSPACE_AGENT_HUB_WEB_UI_AUTH_TOKEN`
   Optional environment override for the browser UI access code when a wrapper or
   service manager wants to inject one.
+- `WORKSPACE_AGENT_HUB_WEB_UI_PUBLIC_URL`
+  Optional phone-facing URL used for the reconnect QR and one-tap pairing link.
 - `AI_AGENT_SESSION_NO_ATTACH=1`
   Keeps the mobile menu tests from attaching the current shell to the created
   session.

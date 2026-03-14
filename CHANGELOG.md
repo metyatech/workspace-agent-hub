@@ -22,6 +22,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   session/transcript fallback for the PWA flow
 - Added browser notification opt-in and a local device-lock control for the PWA
   browser session
+- Added QR-based smartphone pairing, share/copy reconnect actions, and
+  `public-url` aware onboarding for the browser UI
 
 ### Changed
 

@@ -17,6 +17,10 @@ program
   .option('--host <host>', 'Host to bind', '127.0.0.1')
   .option('--port <port>', 'Port to bind', '3360')
   .option(
+    '--public-url <url>',
+    'Phone-facing HTTPS URL or Tailscale Serve URL used for reconnect links and QR pairing'
+  )
+  .option(
     '--auth-token <token>',
     'Access code required by the browser UI. Use auto to generate one, or none to disable auth.'
   )
@@ -28,12 +32,14 @@ program
     async (options: {
       host: string;
       port: string;
+      publicUrl?: string;
       authToken: string;
       openBrowser?: boolean;
     }) => {
       await startWebUi({
         host: options.host,
         port: Number(options.port),
+        publicUrl: options.publicUrl,
         authToken: options.authToken,
         openBrowser: options.openBrowser,
       });

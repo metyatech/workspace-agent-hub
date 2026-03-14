@@ -169,6 +169,30 @@
         font-size: 12px;
       }
 
+      .pairing-card {
+        display: grid;
+        gap: 12px;
+      }
+
+      .pairing-url {
+        font-family: var(--font-mono);
+      }
+
+      .qr-shell {
+        display: grid;
+        justify-items: start;
+        gap: 10px;
+      }
+
+      .qr-shell img {
+        width: min(240px, 100%);
+        aspect-ratio: 1;
+        padding: 10px;
+        border-radius: 20px;
+        background: #f6fff9;
+        border: 1px solid rgba(183, 214, 196, 0.22);
+      }
+
       .layout {
         display: grid;
         gap: 16px;
@@ -551,6 +575,56 @@
               </button>
             </div>
           </div>
+          <div id="pairingCard" class="status-card pairing-card">
+            <strong>スマホへ渡す</strong>
+            <p id="pairingHint">
+              接続先 URL とアクセスコードを、スマホへそのまま渡せます。
+            </p>
+            <div class="field">
+              <label for="pairingUrlInput">ワンタップ再接続リンク</label>
+              <input
+                id="pairingUrlInput"
+                class="pairing-url"
+                type="text"
+                readonly
+              />
+            </div>
+            <div class="button-row">
+              <button id="sharePairingButton" class="secondary" type="button">
+                共有文をコピー
+              </button>
+              <button
+                id="copyPairingLinkButton"
+                class="secondary"
+                type="button"
+              >
+                リンクをコピー
+              </button>
+              <button id="copyManualUrlButton" class="subtle" type="button">
+                URL だけコピー
+              </button>
+            </div>
+            <div class="field">
+              <label for="pairingCodeInput">アクセスコード</label>
+              <input
+                id="pairingCodeInput"
+                class="pairing-url"
+                type="text"
+                readonly
+              />
+            </div>
+            <div class="button-row">
+              <button id="copyPairingCodeButton" class="subtle" type="button">
+                コードをコピー
+              </button>
+            </div>
+            <div class="qr-shell">
+              <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
+              <span id="pairingQrStatus" class="install-note"
+                >アクセスコードを受け付けると QR を表示します。</span
+              >
+            </div>
+          </div>
         </div>
       </header>
 
@@ -701,7 +775,7 @@
           スマホから使うときは、このコードを一度入れれば同じ端末に保存されます。
         </p>
         <div class="field" style="margin-top: 16px">
-          <label for="authTokenInput">アクセスコード</label>
+          <label for="authTokenInput">この画面を開くアクセスコード</label>
           <input
             id="authTokenInput"
             type="password"
@@ -719,6 +793,7 @@
         authRequired: __WORKSPACE_AGENT_HUB_AUTH_REQUIRED__,
         authStorageKey: __WORKSPACE_AGENT_HUB_AUTH_STORAGE_KEY__,
         workspaceRoot: __WORKSPACE_AGENT_HUB_WORKSPACE_ROOT__,
+        preferredConnectUrl: __WORKSPACE_AGENT_HUB_PREFERRED_CONNECT_URL__,
       };
     </script>
     <script type="module" src="/web-app.js"></script>

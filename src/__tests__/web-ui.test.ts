@@ -231,4 +231,47 @@ describe('web UI server', () => {
     const transcript = (await transcriptResponse.json()) as SessionTranscript;
     expect(transcript.Transcript).toContain('hello from transcript');
   });
+
+  it('injects the preferred connect URL into the browser bootstrap config', async () => {
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      publicUrl: 'https://hub.example.test/connect',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(`http://127.0.0.1:${port}/`);
+    const html = await response.text();
+    expect(html).toContain(
+      'preferredConnectUrl: "https://hub.example.test/connect"'
+    );
+  });
+
+  it('returns an authenticated pairing QR payload for the preferred connect URL', async () => {
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      publicUrl: 'https://hub.example.test/connect',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/pairing-qr`, {
+      headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      connectUrl: string;
+      dataUrl: string;
+    };
+    expect(payload.connectUrl).toBe(
+      'https://hub.example.test/connect#accessCode=secret-token'
+    );
+    expect(payload.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
 });

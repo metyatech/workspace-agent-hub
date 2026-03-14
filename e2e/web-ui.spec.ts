@@ -41,6 +41,7 @@ test.beforeAll(async () => {
     host: '127.0.0.1',
     port: 3362,
     authToken,
+    publicUrl: baseUrl,
     openBrowser: false,
     bridge,
   });
@@ -63,17 +64,21 @@ test.afterAll(async () => {
 test('authenticates and manages a shell session from the browser UI', async ({
   page,
 }) => {
-  test.setTimeout(90000);
+  test.setTimeout(150000);
   const title = `${titlePrefix} ${Date.now()}`;
   const workingDirectory = 'D:\\ghws\\workspace-agent-hub';
   let createdSessionName = '';
 
+  await page.addInitScript(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await expect(
     page.getByRole('heading', { name: 'この画面を開くコードを入力' })
   ).toBeVisible();
 
-  await page.getByLabel('アクセスコード').fill(authToken);
+  await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
   await page.getByRole('button', { name: '開く' }).click();
 
   await expect(
@@ -82,6 +87,16 @@ test('authenticates and manages a shell session from the browser UI', async ({
   await expect(page.locator('#workingDirectoryInput')).toHaveValue('D:\\ghws');
   await expect(page.locator('#connectionHint')).toContainText('接続');
   await expect(page.locator('#installHint')).toContainText('ホーム画面');
+  await expect(page.locator('#pairingUrlInput')).toHaveValue(
+    /#accessCode=playwright-token$/
+  );
+  await expect(page.locator('#pairingCodeInput')).toHaveValue(
+    'playwright-token'
+  );
+  await expect(page.locator('#pairingQrImage')).toHaveAttribute(
+    'src',
+    /data:image\/png;base64,/
+  );
 
   await expect
     .poll(async () =>

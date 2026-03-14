@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exec } from 'node:child_process';
+import { toDataURL as toQrDataUrl } from 'qrcode';
 import {
   PowerShellSessionBridge,
   type SessionBridge,
@@ -134,7 +135,8 @@ function openBrowser(url: string): void {
 function injectIndexHtml(
   html: string,
   authConfig: Pick<WebUiAuthConfig, 'required' | 'storageKey'>,
-  workspaceRoot: string
+  workspaceRoot: string,
+  preferredConnectUrl: string | null
 ): string {
   return html
     .replace(
@@ -148,13 +150,45 @@ function injectIndexHtml(
     .replace(
       '__WORKSPACE_AGENT_HUB_WORKSPACE_ROOT__',
       JSON.stringify(workspaceRoot)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_PREFERRED_CONNECT_URL__',
+      JSON.stringify(preferredConnectUrl)
     );
+}
+
+function normalizePublicUrl(publicUrl?: string): string | null {
+  if (!publicUrl || !publicUrl.trim()) {
+    return null;
+  }
+  const normalized = new URL(publicUrl.trim());
+  normalized.hash = '';
+  return normalized.toString().replace(/\/$/, '');
+}
+
+function getRequestOrigin(
+  req: IncomingMessage,
+  fallbackOrigin: string
+): string {
+  const forwardedProtoHeader = req.headers['x-forwarded-proto'];
+  const forwardedProto = Array.isArray(forwardedProtoHeader)
+    ? forwardedProtoHeader[0]
+    : forwardedProtoHeader;
+  const protocol =
+    forwardedProto && forwardedProto.trim()
+      ? forwardedProto.split(',')[0]!.trim()
+      : 'http';
+  const hostHeader = req.headers.host;
+  return hostHeader && hostHeader.trim()
+    ? `${protocol}://${hostHeader.trim()}`
+    : fallbackOrigin;
 }
 
 export interface StartWebUiOptions {
   host?: string;
   port?: number;
   authToken?: string;
+  publicUrl?: string;
   openBrowser?: boolean;
   bridge?: SessionBridge;
 }
@@ -171,10 +205,12 @@ export async function createWebUiServer(
   const bridge = options.bridge ?? new PowerShellSessionBridge();
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 3360;
+  const fallbackOrigin = `http://${host}:${port}`;
   const authConfig = resolveWebUiAuthConfig(
     bridge.getWorkspaceRoot(),
     options.authToken
   );
+  const preferredConnectUrl = normalizePublicUrl(options.publicUrl);
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -187,7 +223,12 @@ export async function createWebUiServer(
           const html = readFileSync(getAssetPath('index.html'), 'utf-8');
           sendText(
             res,
-            injectIndexHtml(html, authConfig, bridge.getWorkspaceRoot()),
+            injectIndexHtml(
+              html,
+              authConfig,
+              bridge.getWorkspaceRoot(),
+              preferredConnectUrl
+            ),
             200,
             'text/html; charset=utf-8'
           );
@@ -239,6 +280,22 @@ export async function createWebUiServer(
           !isWebUiAuthorized(req, authConfig)
         ) {
           sendUnauthorized(res);
+          return;
+        }
+
+        if (method === 'GET' && pathname === '/api/pairing-qr') {
+          const connectBaseUrl =
+            preferredConnectUrl ?? getRequestOrigin(req, fallbackOrigin);
+          const connectUrl =
+            authConfig.required && authConfig.token
+              ? `${connectBaseUrl}#accessCode=${encodeURIComponent(authConfig.token)}`
+              : connectBaseUrl;
+          const dataUrl = await toQrDataUrl(connectUrl, {
+            errorCorrectionLevel: 'M',
+            margin: 1,
+            width: 240,
+          });
+          sendJson(res, { connectUrl, dataUrl });
           return;
         }
 
@@ -419,10 +476,17 @@ export async function startWebUi(
 ): Promise<void> {
   const { server, port, host, authConfig } = await createWebUiServer(options);
   const url = `http://${host}:${port}`;
+  const connectUrl = normalizePublicUrl(options.publicUrl) ?? url;
+  const connectLink =
+    authConfig.required && authConfig.token
+      ? `${connectUrl}#accessCode=${encodeURIComponent(authConfig.token)}`
+      : connectUrl;
 
   console.log(`Workspace Agent Hub web UI listening on ${url}`);
+  console.log(`Preferred connect URL: ${connectUrl}`);
   if (authConfig.required && authConfig.token) {
     console.log(`Access code: ${authConfig.token}`);
+    console.log(`One-tap pairing link: ${connectLink}`);
   }
 
   if (options.openBrowser !== false) {

@@ -34,6 +34,15 @@ const baseHtml = `
     <button id="enableNotificationsButton">notify</button>
     <span id="notificationStatus"></span>
     <button id="lockDeviceButton">lock</button>
+    <p id="pairingHint"></p>
+    <input id="pairingUrlInput" />
+    <button id="sharePairingButton">share</button>
+    <button id="copyPairingLinkButton">copy link</button>
+    <button id="copyManualUrlButton">copy url</button>
+    <input id="pairingCodeInput" />
+    <button id="copyPairingCodeButton">copy code</button>
+    <img id="pairingQrImage" />
+    <span id="pairingQrStatus"></span>
     <div id="toast"></div>
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
@@ -52,24 +61,43 @@ async function loadApp(
   options?: {
     beforeImport?: (window: Window) => void;
     secureContext?: boolean;
+    url?: string;
+    preferredConnectUrl?: string | null;
   }
 ): Promise<Document> {
   const dom = new JSDOM(baseHtml, {
-    url: 'http://127.0.0.1:3360/',
+    url: options?.url ?? 'http://127.0.0.1:3360/',
     pretendToBeVisual: true,
   });
+  const wrappedFetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/pairing-qr')) {
+        return new Response(
+          JSON.stringify({
+            connectUrl:
+              'https://hub.example.test/connect#accessCode=pairing-token',
+            dataUrl: 'data:image/png;base64,PAIRING',
+          }),
+          { status: 200 }
+        );
+      }
+      return fetchMock(input, init);
+    }
+  ) as unknown as typeof fetch;
 
   vi.stubGlobal('window', dom.window);
   vi.stubGlobal('document', dom.window.document);
   vi.stubGlobal('navigator', dom.window.navigator);
   vi.stubGlobal('localStorage', dom.window.localStorage);
-  vi.stubGlobal('fetch', fetchMock);
+  vi.stubGlobal('fetch', wrappedFetch);
 
   Object.defineProperty(dom.window, 'WORKSPACE_AGENT_HUB_CONFIG', {
     value: {
       authRequired,
       authStorageKey: 'workspace-agent-hub.test-token',
       workspaceRoot: 'D:\\ghws',
+      preferredConnectUrl: options?.preferredConnectUrl ?? null,
     },
     configurable: true,
   });
@@ -395,5 +423,109 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(true);
+  });
+
+  it('builds a one-tap pairing link from the preferred connect URL', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+      },
+      preferredConnectUrl: 'https://hub.example.test/connect',
+      secureContext: true,
+    });
+
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingUrlInput')!.value
+    ).toContain('https://hub.example.test/connect#accessCode=pairing-token');
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingCodeInput')!.value
+    ).toBe('pairing-token');
+    expect(
+      document.querySelector<HTMLButtonElement>('#sharePairingButton')!
+        .textContent
+    ).toContain('共有文をコピー');
+  });
+
+  it('accepts an access code from the pairing link hash on first load', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      secureContext: true,
+      url: 'https://hub.example.test/#accessCode=hash-token',
+    });
+
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(false);
+    expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
+      'hash-token'
+    );
+  });
+
+  it('uses the browser share API for pairing details when available', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const shareMock = vi.fn().mockResolvedValue(undefined);
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+        Object.defineProperty(window.navigator, 'share', {
+          value: shareMock,
+          configurable: true,
+        });
+      },
+      preferredConnectUrl: 'https://hub.example.test/connect',
+      secureContext: true,
+    });
+
+    document.querySelector<HTMLButtonElement>('#sharePairingButton')!.click();
+    await waitForTick();
+
+    expect(shareMock).toHaveBeenCalledWith({
+      title: 'Workspace Agent Hub',
+      text: [
+        'Workspace Agent Hub',
+        '接続先: https://hub.example.test/connect#accessCode=pairing-token',
+        'アクセスコード: pairing-token',
+      ].join('\n'),
+      url: 'https://hub.example.test/connect#accessCode=pairing-token',
+    });
   });
 });
