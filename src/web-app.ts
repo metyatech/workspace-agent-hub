@@ -24,6 +24,7 @@ declare global {
 const config = window.WORKSPACE_AGENT_HUB_CONFIG;
 const authStorageKey = config.authStorageKey;
 const sessionsCacheKey = `${authStorageKey}.sessions`;
+const notificationsPreferenceKey = `${authStorageKey}.notifications-enabled`;
 
 const sessionsList = document.querySelector<HTMLDivElement>('#sessionsList')!;
 const refreshSessionsButton = document.querySelector<HTMLButtonElement>(
@@ -89,6 +90,16 @@ const installAppButton =
   document.querySelector<HTMLButtonElement>('#installAppButton')!;
 const installStatus =
   document.querySelector<HTMLSpanElement>('#installStatus')!;
+const notificationHint =
+  document.querySelector<HTMLParagraphElement>('#notificationHint')!;
+const enableNotificationsButton = document.querySelector<HTMLButtonElement>(
+  '#enableNotificationsButton'
+)!;
+const notificationStatus = document.querySelector<HTMLSpanElement>(
+  '#notificationStatus'
+)!;
+const lockDeviceButton =
+  document.querySelector<HTMLButtonElement>('#lockDeviceButton')!;
 const toast = document.querySelector<HTMLDivElement>('#toast')!;
 const authOverlay = document.querySelector<HTMLDivElement>('#authOverlay')!;
 const authTokenInput =
@@ -105,10 +116,13 @@ let transcriptPollTimer: number | null = null;
 let sessionPollTimer: number | null = null;
 let lastTranscript = '';
 let authToken = readStoredAuthToken();
+let notificationsEnabled =
+  readStoredJson<boolean>(notificationsPreferenceKey) ?? false;
 let refreshPauseDepth = 0;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
 let connectionState: 'connecting' | 'online' | 'offline' | 'auth' =
   'connecting';
+const lastNotifiedTranscriptBySession = new Map<string, string>();
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -153,6 +167,27 @@ function writeStoredJson(key: string, value: unknown): void {
 
 function getTranscriptCacheKey(sessionName: string): string {
   return `${authStorageKey}.transcript.${sessionName}`;
+}
+
+function hasAccessToken(): boolean {
+  return !config.authRequired || Boolean(authToken);
+}
+
+function notificationsAreSupported(): boolean {
+  return typeof window.Notification !== 'undefined';
+}
+
+function setNotificationsEnabled(value: boolean): void {
+  notificationsEnabled = value;
+  writeStoredJson(notificationsPreferenceKey, value);
+}
+
+function getLatestTranscriptSnippet(transcript: string): string {
+  const lines = transcript
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.at(-1) ?? '新しい出力があります。';
 }
 
 function isInstalledPwa(): boolean {
@@ -230,6 +265,144 @@ function setInstallUiState(): void {
   installHint.textContent =
     'このブラウザでは追加ボタンがまだ利用できません。共有メニューの「ホーム画面に追加」でも構いません。';
   installStatus.textContent = 'ブラウザ側の準備待ちです。';
+}
+
+function setNotificationUiState(): void {
+  if (!notificationsAreSupported()) {
+    notificationsEnabled = false;
+    enableNotificationsButton.hidden = true;
+    enableNotificationsButton.disabled = true;
+    notificationHint.textContent =
+      'このブラウザでは通知 API が利用できません。';
+    notificationStatus.textContent = '通知は未対応です。';
+    return;
+  }
+
+  enableNotificationsButton.hidden = false;
+
+  if (window.Notification.permission === 'granted') {
+    enableNotificationsButton.disabled = false;
+    enableNotificationsButton.textContent = notificationsEnabled
+      ? '通知を無効にする'
+      : '通知を有効にする';
+    notificationHint.textContent = notificationsEnabled
+      ? '選択中 session の新しい出力を、画面が非表示のときに通知します。'
+      : '通知権限はあります。必要ならこのページで通知を有効にできます。';
+    notificationStatus.textContent = notificationsEnabled
+      ? '通知は有効です。'
+      : '通知権限あり、現在は停止中です。';
+    return;
+  }
+
+  if (window.Notification.permission === 'denied') {
+    notificationsEnabled = false;
+    enableNotificationsButton.disabled = true;
+    enableNotificationsButton.textContent = '通知を有効にする';
+    notificationHint.textContent =
+      '通知がブラウザ側で拒否されています。ブラウザ設定から許可すると使えます。';
+    notificationStatus.textContent = '通知は拒否されています。';
+    return;
+  }
+
+  enableNotificationsButton.disabled = false;
+  enableNotificationsButton.textContent = '通知を有効にする';
+  notificationHint.textContent =
+    '通知を許可すると、画面を閉じていても選択中 session の更新に気づけます。';
+  notificationStatus.textContent = '通知は未設定です。';
+}
+
+function maybeNotifyTranscript(
+  session: SessionRecord,
+  transcript: string
+): void {
+  if (
+    !notificationsEnabled ||
+    !notificationsAreSupported() ||
+    window.Notification.permission !== 'granted' ||
+    document.visibilityState === 'visible'
+  ) {
+    return;
+  }
+
+  const snippet = getLatestTranscriptSnippet(transcript);
+  if (lastNotifiedTranscriptBySession.get(session.Name) === snippet) {
+    return;
+  }
+  lastNotifiedTranscriptBySession.set(session.Name, snippet);
+
+  const notification = new window.Notification(session.DisplayTitle, {
+    body: snippet,
+    tag: `workspace-agent-hub:${session.Name}`,
+  });
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
+}
+
+function clearStoredSessionArtifacts(): void {
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key) {
+        continue;
+      }
+      if (key === authStorageKey || key.startsWith(`${authStorageKey}.`)) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function lockCurrentDevice(): void {
+  authToken = null;
+  setNotificationsEnabled(false);
+  clearStoredSessionArtifacts();
+  sessions = [];
+  selectedSessionName = '';
+  lastTranscript = '';
+  sessionTranscript.textContent = '';
+  lastNotifiedTranscriptBySession.clear();
+  renderSessions(sessions);
+  renderSelectedSession();
+  setNotificationUiState();
+  setAuthOverlayVisible(true);
+  showToast('この端末に保存していたコードとキャッシュを消しました。');
+}
+
+async function toggleNotifications(): Promise<void> {
+  if (!notificationsAreSupported()) {
+    setNotificationUiState();
+    return;
+  }
+
+  if (window.Notification.permission === 'granted') {
+    setNotificationsEnabled(!notificationsEnabled);
+    setNotificationUiState();
+    showToast(
+      notificationsEnabled ? '通知を有効にしました。' : '通知を無効にしました。'
+    );
+    return;
+  }
+
+  const permission = await window.Notification.requestPermission();
+  if (permission === 'granted') {
+    setNotificationsEnabled(true);
+    showToast('通知を有効にしました。');
+  } else if (permission === 'denied') {
+    setNotificationsEnabled(false);
+    showToast('通知はブラウザで拒否されました。');
+  } else {
+    setNotificationsEnabled(false);
+    showToast('通知は保留のままです。');
+  }
+  setNotificationUiState();
 }
 
 function primeCachedSessions(): void {
@@ -452,7 +625,7 @@ function stopTranscriptPolling(): void {
 
 async function refreshTranscript(): Promise<void> {
   const session = getSelectedSession();
-  if (!session) {
+  if (!session || !hasAccessToken()) {
     return;
   }
 
@@ -466,6 +639,7 @@ async function refreshTranscript(): Promise<void> {
         sessionTranscript.clientHeight <
       40;
     if (transcript.Transcript !== lastTranscript) {
+      maybeNotifyTranscript(session, transcript.Transcript);
       sessionTranscript.textContent =
         transcript.Transcript || 'まだ出力はありません。';
       lastTranscript = transcript.Transcript;
@@ -560,7 +734,7 @@ function renderSelectedSession(): void {
 }
 
 async function refreshSessions(): Promise<void> {
-  if (isRefreshPaused()) {
+  if (isRefreshPaused() || !hasAccessToken()) {
     return;
   }
   try {
@@ -588,6 +762,9 @@ async function refreshSessions(): Promise<void> {
 }
 
 async function loadDirectorySuggestions(): Promise<void> {
+  if (!hasAccessToken()) {
+    return;
+  }
   try {
     const suggestions =
       await apiJson<DirectorySuggestion[]>('/api/directories');
@@ -621,6 +798,10 @@ async function loadDirectorySuggestions(): Promise<void> {
 }
 
 async function startSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   setBusy(startSessionButton, true, '開始中...');
   try {
     const session = await withRefreshPause(() =>
@@ -664,6 +845,10 @@ async function startSession(): Promise<void> {
 }
 
 async function sendPrompt(submit: boolean): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     showToast('先に session を選んでください。');
@@ -709,6 +894,10 @@ async function sendPrompt(submit: boolean): Promise<void> {
 }
 
 async function renameSelectedSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     return;
@@ -750,6 +939,10 @@ async function renameSelectedSession(): Promise<void> {
 }
 
 async function archiveSelectedSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     return;
@@ -781,6 +974,10 @@ async function archiveSelectedSession(): Promise<void> {
 }
 
 async function interruptSelectedSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     return;
@@ -808,6 +1005,10 @@ async function interruptSelectedSession(): Promise<void> {
 }
 
 async function closeSelectedSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     return;
@@ -840,6 +1041,10 @@ async function closeSelectedSession(): Promise<void> {
 }
 
 async function deleteSelectedSession(): Promise<void> {
+  if (!hasAccessToken()) {
+    setAuthOverlayVisible(true);
+    return;
+  }
   const session = getSelectedSession();
   if (!session) {
     return;
@@ -881,6 +1086,7 @@ setConnectionState(
     : 'ネットワークが戻ると自動で同期します。'
 );
 setInstallUiState();
+setNotificationUiState();
 workingDirectoryInput.value = config.workspaceRoot;
 
 refreshSessionsButton.addEventListener('click', () => void refreshSessions());
@@ -928,6 +1134,20 @@ installAppButton.addEventListener('click', async () => {
   );
   setInstallUiState();
 });
+enableNotificationsButton.addEventListener(
+  'click',
+  () => void toggleNotifications()
+);
+lockDeviceButton.addEventListener('click', () => {
+  if (
+    !window.confirm(
+      'この端末に保存したアクセスコードとキャッシュを消して、再入力を必須にします。よろしいですか？'
+    )
+  ) {
+    return;
+  }
+  lockCurrentDevice();
+});
 
 authSubmitButton.addEventListener('click', async () => {
   const nextToken = authTokenInput.value.trim();
@@ -937,6 +1157,7 @@ authSubmitButton.addEventListener('click', async () => {
   authToken = nextToken;
   writeStoredAuthToken(nextToken);
   setAuthOverlayVisible(false);
+  setNotificationUiState();
   await refreshSessions();
   await loadDirectorySuggestions();
 });

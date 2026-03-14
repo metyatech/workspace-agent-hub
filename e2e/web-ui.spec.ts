@@ -157,4 +157,10 @@ test('authenticates and manages a shell session from the browser UI', async ({
   expect(
     afterDelete.some((session) => session.Name === createdSessionName)
   ).toBe(false);
+
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: 'この端末をロック' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'この画面を開くコードを入力' })
+  ).toBeVisible();
 });

@@ -20,6 +20,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   including auth, start, transcript send, archive, close, and delete flows
 - Added browser-side install guidance, offline state messaging, and cached
   session/transcript fallback for the PWA flow
+- Added browser notification opt-in and a local device-lock control for the PWA
+  browser session
 
 ### Changed
 
@@ -29,6 +31,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   primary path alongside the existing PC/mobile terminal flows
 - Improved the browser UI first-use flow so connection state, installability,
   and offline behavior are visible without leaving the page
+- Reduced browser-side auth churn by pausing background API polling until an
+  access code is present
 
 ## [0.1.0] - 2026-01-26
 

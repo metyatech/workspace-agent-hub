@@ -30,6 +30,10 @@ const baseHtml = `
     <p id="installHint"></p>
     <button id="installAppButton">install</button>
     <span id="installStatus"></span>
+    <p id="notificationHint"></p>
+    <button id="enableNotificationsButton">notify</button>
+    <span id="notificationStatus"></span>
+    <button id="lockDeviceButton">lock</button>
     <div id="toast"></div>
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
@@ -98,6 +102,34 @@ async function loadApp(
     value: {
       register: vi.fn().mockResolvedValue(undefined),
     },
+    configurable: true,
+  });
+
+  class MockNotification {
+    static permission: NotificationPermission = 'default';
+    static requestPermission = vi
+      .fn<() => Promise<NotificationPermission>>()
+      .mockImplementation(async () => {
+        MockNotification.permission = 'granted';
+        return 'granted';
+      });
+
+    title: string;
+    options?: NotificationOptions;
+    onclick: (() => void) | null = null;
+
+    constructor(title: string, options?: NotificationOptions) {
+      this.title = title;
+      this.options = options;
+    }
+
+    close(): void {
+      /* noop */
+    }
+  }
+
+  Object.defineProperty(dom.window, 'Notification', {
+    value: MockNotification,
     configurable: true,
   });
 
@@ -297,5 +329,71 @@ describe('web-app DOM', () => {
     installButton.click();
     await waitForTick();
     expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables browser notifications after opt-in', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, { secureContext: true });
+    document
+      .querySelector<HTMLButtonElement>('#enableNotificationsButton')!
+      .click();
+    await waitForTick();
+
+    expect(
+      document.querySelector<HTMLSpanElement>('#notificationStatus')!
+        .textContent
+    ).toContain('有効');
+  });
+
+  it('locks the current device by clearing the stored token and reopening auth', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const confirmMock = vi.fn(() => true);
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'cached-token'
+        );
+      },
+      secureContext: true,
+    });
+
+    Object.defineProperty(window, 'confirm', {
+      value: confirmMock,
+      configurable: true,
+    });
+
+    document.querySelector<HTMLButtonElement>('#lockDeviceButton')!.click();
+    await waitForTick();
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
+      null
+    );
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(true);
   });
 });

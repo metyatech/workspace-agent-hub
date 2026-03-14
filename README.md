@@ -169,6 +169,7 @@ First-use flow:
 4. Paste the access code once.
 5. If the page is served over HTTPS, use the install card to add it to the home screen.
 6. Start or reopen a session, then use the transcript and prompt box from the same page.
+7. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
 
 Installable/PWA note:
 
@@ -178,6 +179,9 @@ Installable/PWA note:
   another HTTPS-capable reverse proxy.
 - When the network drops, the app keeps showing the last cached session list and
   transcript until connectivity returns.
+- The browser UI can optionally notify on selected-session output while the page
+  is hidden, and it can clear the saved browser-side access code/cache with the
+  device-lock control.
 
 ### Pairing with Manager
 
@@ -233,13 +237,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 
 This repository claims the following primary handoff paths.
 
-| Path | Claimed behavior                                                                                                                                                     | Automated evidence                                                                                                               |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `P1` | PC-side launcher flow can create a session, surface it in the inventory, and resolve it again for reopening.                                                         | `scripts/test-primary-path-matrix.ps1`                                                                                           |
-| `P2` | A session started from the PC side can be reopened from the mobile SSH menu.                                                                                         | `scripts/test-mobile-ssh.py`                                                                                                     |
-| `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                            | `scripts/test-mobile-ssh.py`                                                                                                     |
-| `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                  | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
-| `P5` | The browser UI can authenticate, list sessions, start a session, display transcript output, surface install/offline guidance, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
+| Path | Claimed behavior                                                                                                                                                                                                    | Automated evidence                                                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `P1` | PC-side launcher flow can create a session, surface it in the inventory, and resolve it again for reopening.                                                                                                        | `scripts/test-primary-path-matrix.ps1`                                                                                           |
+| `P2` | A session started from the PC side can be reopened from the mobile SSH menu.                                                                                                                                        | `scripts/test-mobile-ssh.py`                                                                                                     |
+| `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                                                                           | `scripts/test-mobile-ssh.py`                                                                                                     |
+| `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                                                                 | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
+| `P5` | The browser UI can authenticate, list sessions, start a session, display transcript output, surface install/offline/notification guidance, locally lock the current browser, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
 
 ## Environment variables
 
