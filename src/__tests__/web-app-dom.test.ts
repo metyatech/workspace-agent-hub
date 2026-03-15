@@ -61,6 +61,8 @@ const baseHtml = `
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
     <button id="authSubmitButton">auth</button>
+    <button id="openManagerButton">open manager</button>
+    <span id="managerStatus"></span>
   </body>
 </html>
 `;

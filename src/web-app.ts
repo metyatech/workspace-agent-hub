@@ -163,6 +163,10 @@ const authTokenInput =
   document.querySelector<HTMLInputElement>('#authTokenInput')!;
 const authSubmitButton =
   document.querySelector<HTMLButtonElement>('#authSubmitButton')!;
+const openManagerButton =
+  document.querySelector<HTMLButtonElement>('#openManagerButton')!;
+const managerStatus =
+  document.querySelector<HTMLSpanElement>('#managerStatus')!;
 
 const sessionRows = new Map<string, HTMLDivElement>();
 
@@ -1816,6 +1820,32 @@ authSubmitButton.addEventListener('click', async () => {
   await refreshSessions();
   await loadDirectorySuggestions();
 });
+
+openManagerButton.addEventListener('click', () => {
+  void openManager();
+});
+
+async function openManager(): Promise<void> {
+  openManagerButton.disabled = true;
+  managerStatus.textContent = '起動中…';
+  try {
+    const data = await apiJson<{ url: string; alreadyRunning: boolean }>(
+      '/api/manager-gui/ensure',
+      { method: 'POST' }
+    );
+    managerStatus.textContent = data.alreadyRunning
+      ? '既に起動済みです。'
+      : '起動しました。';
+    window.open(data.url, '_blank', 'noopener,noreferrer');
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Manager の起動に失敗しました';
+    managerStatus.textContent = message;
+    showToast('Manager の起動に失敗しました');
+  } finally {
+    openManagerButton.disabled = false;
+  }
+}
 
 window.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {

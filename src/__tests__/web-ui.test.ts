@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import {
   buildBrowserOpenCommand,
+  checkManagerGuiRunning,
   CommandExecutionError,
   buildBrowserOpenUrl,
   buildWebUiLaunchInfo,
   createWebUiServer,
+  deriveManagerGuiUrl,
   extractTailscaleServeSetupUrl,
   runCommand,
 } from '../web-ui.js';
@@ -512,5 +515,188 @@ To enable, visit:
       'https://hub.example.test/connect#accessCode=secret-token'
     );
     expect(payload.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+describe('deriveManagerGuiUrl', () => {
+  it('prefers the tailscale direct URL with the manager-gui port', () => {
+    const url = deriveManagerGuiUrl(
+      {
+        preferredConnectUrl: 'https://desktop.tail.ts.net',
+        source: 'tailscale-serve',
+        tailscale: {
+          dnsName: 'desktop.tail.ts.net',
+          directConnectUrl: 'http://desktop.tail.ts.net:3360',
+          secureConnectUrl: 'https://desktop.tail.ts.net',
+          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+          serveEnabled: true,
+          serveFallbackReason: null,
+          serveSetupUrl: null,
+        },
+      },
+      3335
+    );
+    expect(url).toBe('http://desktop.tail.ts.net:3335/');
+  });
+
+  it('uses preferredConnectUrl hostname when there is no tailscale direct URL and source is not tailscale-serve', () => {
+    const url = deriveManagerGuiUrl(
+      {
+        preferredConnectUrl: 'http://100.64.0.5:3360',
+        source: 'tailscale-direct',
+        tailscale: {
+          dnsName: 'desktop.tail.ts.net',
+          directConnectUrl: null,
+          secureConnectUrl: 'https://desktop.tail.ts.net',
+          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+          serveEnabled: false,
+          serveFallbackReason: null,
+          serveSetupUrl: null,
+        },
+      },
+      3335
+    );
+    expect(url).toBe('http://100.64.0.5:3335/');
+  });
+
+  it('falls back to localhost when source is tailscale-serve and there is no direct URL', () => {
+    const url = deriveManagerGuiUrl(
+      {
+        preferredConnectUrl: 'https://desktop.tail.ts.net',
+        source: 'tailscale-serve',
+        tailscale: {
+          dnsName: 'desktop.tail.ts.net',
+          directConnectUrl: null,
+          secureConnectUrl: 'https://desktop.tail.ts.net',
+          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+          serveEnabled: true,
+          serveFallbackReason: null,
+          serveSetupUrl: null,
+        },
+      },
+      3335
+    );
+    expect(url).toBe('http://127.0.0.1:3335');
+  });
+
+  it('uses listen-url hostname with the manager-gui port for local-only setups', () => {
+    const url = deriveManagerGuiUrl(
+      {
+        preferredConnectUrl: 'http://127.0.0.1:3360',
+        source: 'listen-url',
+        tailscale: null,
+      },
+      3335
+    );
+    expect(url).toBe('http://127.0.0.1:3335/');
+  });
+
+  it('uses public-url hostname with the manager-gui port', () => {
+    const url = deriveManagerGuiUrl(
+      {
+        preferredConnectUrl: 'https://hub.example.test/connect',
+        source: 'public-url',
+        tailscale: null,
+      },
+      3335
+    );
+    expect(url).toBe('https://hub.example.test:3335/');
+  });
+});
+
+describe('checkManagerGuiRunning', () => {
+  let mockGuiServer: Server | null = null;
+
+  afterEach(async () => {
+    if (mockGuiServer) {
+      await new Promise<void>((r) => mockGuiServer!.close(() => r()));
+      mockGuiServer = null;
+    }
+  });
+
+  it('returns true when an HTTP server is listening on the given port', async () => {
+    const srv = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    mockGuiServer = srv;
+    const addr = srv.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    expect(await checkManagerGuiRunning('127.0.0.1', port)).toBe(true);
+  });
+
+  it('returns false when no server is listening on the given port', async () => {
+    // Port 1 is not accessible without elevated privileges, so it reliably fails fast
+    expect(await checkManagerGuiRunning('127.0.0.1', 1)).toBe(false);
+  });
+});
+
+describe('Manager GUI ensure endpoint', () => {
+  let mockGuiServer: Server | null = null;
+
+  afterEach(async () => {
+    if (mockGuiServer) {
+      await new Promise<void>((r) => mockGuiServer!.close(() => r()));
+      mockGuiServer = null;
+    }
+  });
+
+  it('returns the manager-gui URL and alreadyRunning=true when the server is already up', async () => {
+    // Start a mock manager-gui server on a random port
+    const guiSrv = createServer((_req, res) => {
+      res.writeHead(200);
+      res.end('manager gui');
+    });
+    await new Promise<void>((resolve) =>
+      guiSrv.listen(0, '127.0.0.1', resolve)
+    );
+    mockGuiServer = guiSrv;
+    const guiAddr = guiSrv.address();
+    const guiPort =
+      typeof guiAddr === 'object' && guiAddr ? guiAddr.port : 3335;
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+      managerGuiPort: guiPort,
+    });
+    activeServer = server;
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+      }
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      url: string;
+      alreadyRunning: boolean;
+    };
+    expect(payload.alreadyRunning).toBe(true);
+    expect(payload.url).toContain(String(guiPort));
+  });
+
+  it('requires auth before attempting to start the Manager GUI', async () => {
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
+      { method: 'POST' }
+    );
+    expect(response.status).toBe(401);
   });
 });

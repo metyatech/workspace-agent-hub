@@ -83,7 +83,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
   ).toBeVisible();
 
   await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
-  await page.getByRole('button', { name: '開く' }).click();
+  await page.getByRole('button', { name: '開く', exact: true }).click();
 
   await expect(
     page.getByRole('heading', { name: '最初にやること' })

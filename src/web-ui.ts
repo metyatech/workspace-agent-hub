@@ -1,9 +1,9 @@
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { toDataURL as toQrDataUrl } from 'qrcode';
 import {
   PowerShellSessionBridge,
@@ -280,6 +280,130 @@ export class CommandExecutionError extends Error {
 
 const TAILSCALE_ADMIN_DNS_URL = 'https://login.tailscale.com/admin/dns';
 
+export const MANAGER_GUI_DEFAULT_PORT = 3335;
+
+/**
+ * Derive the URL clients should open for the Manager GUI, based on how the
+ * hub itself is exposed (tailscale, public-url, or local-only).
+ *
+ * - Prefers the tailscale direct URL (http, non-HTTPS) because port substitution
+ *   works cleanly on that transport.
+ * - Falls back to the hub's preferredConnectUrl hostname when the source is not
+ *   tailscale-serve (which binds the HTTPS-only standard port and cannot be
+ *   overridden by simple port substitution).
+ * - Ultimate fallback: http://127.0.0.1:<port> (local PC access only).
+ */
+export function deriveManagerGuiUrl(
+  connectInfo: ResolvedConnectInfo,
+  port: number
+): string {
+  if (connectInfo.tailscale?.directConnectUrl) {
+    try {
+      const url = new URL(connectInfo.tailscale.directConnectUrl);
+      url.port = String(port);
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    } catch {
+      // fall through
+    }
+  }
+
+  if (
+    connectInfo.source !== 'tailscale-serve' &&
+    connectInfo.preferredConnectUrl
+  ) {
+    try {
+      const url = new URL(connectInfo.preferredConnectUrl);
+      url.port = String(port);
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    } catch {
+      // fall through
+    }
+  }
+
+  return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * Check whether a Manager GUI server is already listening on the given host/port.
+ * Returns true as soon as any HTTP response is received (any status code).
+ * Times out after 2 seconds and returns false.
+ */
+export function checkManagerGuiRunning(
+  host: string,
+  port: number
+): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const settle = (value: boolean): void => {
+      if (!settled) {
+        settled = true;
+        resolvePromise(value);
+      }
+    };
+    try {
+      const req = httpRequest(
+        { host, port, path: '/', method: 'GET', timeout: 2000 },
+        (res) => {
+          res.destroy();
+          settle(true);
+        }
+      );
+      req.on('error', () => settle(false));
+      req.on('timeout', () => {
+        req.destroy();
+        settle(false);
+      });
+      req.end();
+    } catch {
+      settle(false);
+    }
+  });
+}
+
+function startManagerGuiDetached(
+  workspaceRoot: string,
+  host: string,
+  port: number
+): void {
+  const args = [
+    'manager-gui',
+    workspaceRoot,
+    '--port',
+    String(port),
+    '--host',
+    host,
+    '--no-open-browser',
+  ];
+  const child = spawn('thread-inbox', args, {
+    shell: true,
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+}
+
+async function waitForManagerGui(
+  host: string,
+  port: number,
+  maxWaitMs = 6000
+): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    if (await checkManagerGuiRunning(host, port)) {
+      return true;
+    }
+    await new Promise<void>((r) => setTimeout(r, 400));
+  }
+  return false;
+}
+
 export function extractTailscaleServeSetupUrl(text: string): string | null {
   const match = text.match(
     /https:\/\/login\.tailscale\.com\/f\/serve\?node=[^\s]+/i
@@ -501,6 +625,8 @@ export interface StartWebUiOptions {
   openBrowser?: boolean;
   bridge?: SessionBridge;
   commandRunner?: CommandRunner;
+  /** Override the Manager GUI port (used in tests to avoid relying on port 3335). */
+  managerGuiPort?: number;
 }
 
 export interface WebUiLaunchInfo {
@@ -562,6 +688,7 @@ export async function createWebUiServer(
   const bridge = options.bridge ?? new PowerShellSessionBridge();
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 3360;
+  const managerGuiPort = options.managerGuiPort ?? MANAGER_GUI_DEFAULT_PORT;
   const authConfig = resolveWebUiAuthConfig(
     bridge.getWorkspaceRoot(),
     options.authToken
@@ -811,6 +938,36 @@ export async function createWebUiServer(
             res,
             await bridge.deleteSession(decodeURIComponent(deleteMatch[1]))
           );
+          return;
+        }
+
+        if (method === 'POST' && pathname === '/api/manager-gui/ensure') {
+          const managerGuiHost = isWildcardHost(host) ? '0.0.0.0' : '127.0.0.1';
+          const alreadyRunning = await checkManagerGuiRunning(
+            '127.0.0.1',
+            managerGuiPort
+          );
+          if (!alreadyRunning) {
+            startManagerGuiDetached(
+              bridge.getWorkspaceRoot(),
+              managerGuiHost,
+              managerGuiPort
+            );
+            const started = await waitForManagerGui(
+              '127.0.0.1',
+              managerGuiPort
+            );
+            if (!started) {
+              sendError(
+                res,
+                'Manager GUI did not start in time. Make sure thread-inbox is installed globally (npm install -g @metyatech/thread-inbox).',
+                503
+              );
+              return;
+            }
+          }
+          const url = deriveManagerGuiUrl(connectInfo, managerGuiPort);
+          sendJson(res, { url, alreadyRunning });
           return;
         }
 
