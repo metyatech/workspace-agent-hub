@@ -206,7 +206,10 @@ function getRequestOrigin(
 
 export type CommandRunner = (
   command: string,
-  args: string[]
+  args: string[],
+  options?: {
+    timeoutMs?: number;
+  }
 ) => Promise<string>;
 
 export interface ResolvedConnectInfo {
@@ -222,24 +225,64 @@ interface TailscaleStatusPayload {
   };
 }
 
-function runCommand(command: string, args: string[]): Promise<string> {
+function runCommand(
+  command: string,
+  args: string[],
+  options?: {
+    timeoutMs?: number;
+  }
+): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    execFile(command, args, { windowsHide: true }, (error, stdout, stderr) => {
-      if (error) {
-        reject(
-          new Error(
-            stderr.trim() || stdout.trim() || error.message || String(error)
-          )
-        );
-        return;
+    let settled = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const child = execFile(
+      command,
+      args,
+      { windowsHide: true },
+      (error, stdout, stderr) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        if (error) {
+          reject(
+            new Error(
+              stderr.trim() || stdout.trim() || error.message || String(error)
+            )
+          );
+          return;
+        }
+        resolvePromise(stdout.toString());
       }
-      resolvePromise(stdout.toString());
-    });
+    );
+
+    timeoutHandle =
+      options?.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            child.kill();
+            reject(
+              new Error(
+                `Command timed out after ${options.timeoutMs}ms: ${command} ${args.join(' ')}`
+              )
+            );
+          }, options.timeoutMs)
+        : null;
   });
 }
 
 function isLocalOnlyHost(host: string): boolean {
   return /^(127\.0\.0\.1|localhost|::1)$/i.test(host.trim());
+}
+
+function isWildcardHost(host: string): boolean {
+  return /^(0\.0\.0\.0|::)$/i.test(host.trim());
 }
 
 function trimTrailingDot(value: string): string {
@@ -259,7 +302,9 @@ async function detectTailscaleConnectInfo(input: {
   let payload: TailscaleStatusPayload;
   try {
     payload = JSON.parse(
-      await input.commandRunner('tailscale', ['status', '--json'])
+      await input.commandRunner('tailscale', ['status', '--json'], {
+        timeoutMs: 3000,
+      })
     ) as TailscaleStatusPayload;
   } catch {
     return null;
@@ -275,14 +320,21 @@ async function detectTailscaleConnectInfo(input: {
   const directConnectUrl = isLocalOnlyHost(input.host)
     ? null
     : `http://${dnsName}:${input.port}`;
+  let serveEnabled = false;
+  let serveFallbackReason: string | null = null;
 
   if (input.enableServe) {
-    await input.commandRunner('tailscale', [
-      'serve',
-      '--bg',
-      '--yes',
-      `http://127.0.0.1:${input.port}`,
-    ]);
+    try {
+      await input.commandRunner(
+        'tailscale',
+        ['serve', '--bg', '--yes', `http://127.0.0.1:${input.port}`],
+        { timeoutMs: 5000 }
+      );
+      serveEnabled = true;
+    } catch (error) {
+      serveFallbackReason =
+        error instanceof Error ? error.message : String(error);
+    }
   }
 
   return {
@@ -290,7 +342,8 @@ async function detectTailscaleConnectInfo(input: {
     directConnectUrl,
     secureConnectUrl,
     serveCommand,
-    serveEnabled: input.enableServe,
+    serveEnabled,
+    serveFallbackReason,
   };
 }
 
@@ -301,7 +354,10 @@ async function resolveConnectInfo(input: {
   tailscaleServe?: boolean;
   commandRunner?: CommandRunner;
 }): Promise<ResolvedConnectInfo> {
-  const listenUrl = `http://${input.host}:${input.port}`;
+  const listenOriginHost = isWildcardHost(input.host)
+    ? '127.0.0.1'
+    : input.host;
+  const listenUrl = `http://${listenOriginHost}:${input.port}`;
   const explicitPublicUrl = normalizePublicUrl(input.publicUrl);
   const tailscale = await detectTailscaleConnectInfo({
     host: input.host,
@@ -723,10 +779,23 @@ export async function startWebUi(
         `To enable installable HTTPS on the tailnet: ${launchInfo.tailscale.serveCommand}`
       );
     }
+    if (
+      options.tailscaleServe &&
+      !options.publicUrl &&
+      launchInfo.tailscale?.serveCommand &&
+      launchInfo.preferredConnectUrlSource !== 'tailscale-serve'
+    ) {
+      console.log(
+        'Automatic Tailscale Serve setup did not complete. Continuing with the available connect URL instead.'
+      );
+    }
   }
 
   if (options.openBrowser !== false) {
-    openBrowser(launchInfo.listenUrl);
+    const localBrowserUrl = isWildcardHost(host)
+      ? `http://127.0.0.1:${port}`
+      : launchInfo.listenUrl;
+    openBrowser(localBrowserUrl);
   }
 
   await new Promise<void>((resolvePromise) => {

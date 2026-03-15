@@ -127,7 +127,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1
 ```
 
 Start it in the recommended smartphone-ready mode so the script configures
-Tailscale Serve and emits an installable HTTPS tailnet URL:
+Tailscale Serve and emits an installable HTTPS tailnet URL. If automatic HTTPS
+setup does not complete on this machine, it falls back to a Tailscale-direct
+URL instead of hanging:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady

@@ -48,6 +48,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `scripts/start-web-ui.ps1 -PhoneReady` no longer collides with PowerShell's
   read-only `$Host` automatic variable, and added wrapper-start regression
   coverage
+- Made `-PhoneReady` fall back when automatic Tailscale Serve setup stalls, so
+  startup still prints connect details and keeps a tailnet-direct URL available
 
 ## [0.1.0] - 2026-01-26
 

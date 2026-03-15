@@ -283,7 +283,7 @@ describe('web UI server', () => {
     const { server, connectInfo } = await createWebUiServer({
       bridge: new FakeBridge(),
       host: '0.0.0.0',
-      port: 3360,
+      port: 0,
       authToken: 'secret-token',
       openBrowser: false,
       commandRunner: async (command, args) => {
@@ -298,16 +298,16 @@ describe('web UI server', () => {
     });
     activeServer = server;
 
-    expect(connectInfo).toEqual({
-      preferredConnectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
-      source: 'tailscale-direct',
-      tailscale: {
-        dnsName: 'desktop.tail5a2d2d.ts.net',
-        directConnectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
-        secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
-        serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
-        serveEnabled: false,
-      },
+    const preferredUrl = new URL(connectInfo.preferredConnectUrl);
+    expect(connectInfo.source).toBe('tailscale-direct');
+    expect(preferredUrl.hostname).toBe('desktop.tail5a2d2d.ts.net');
+    expect(connectInfo.tailscale).toEqual({
+      dnsName: 'desktop.tail5a2d2d.ts.net',
+      directConnectUrl: connectInfo.preferredConnectUrl,
+      secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
+      serveEnabled: false,
+      serveFallbackReason: null,
     });
   });
 
@@ -316,7 +316,7 @@ describe('web UI server', () => {
     const { server, connectInfo } = await createWebUiServer({
       bridge: new FakeBridge(),
       host: '127.0.0.1',
-      port: 3360,
+      port: 0,
       authToken: 'secret-token',
       tailscaleServe: true,
       openBrowser: false,
@@ -330,7 +330,7 @@ describe('web UI server', () => {
         }
         if (
           command === 'tailscale' &&
-          args.join(' ') === 'serve --bg --yes http://127.0.0.1:3360'
+          args.join(' ').startsWith('serve --bg --yes http://127.0.0.1:')
         ) {
           return '';
         }
@@ -343,10 +343,67 @@ describe('web UI server', () => {
       'https://desktop.tail5a2d2d.ts.net'
     );
     expect(connectInfo.source).toBe('tailscale-serve');
-    expect(invocations).toEqual([
-      'tailscale status --json',
-      'tailscale serve --bg --yes http://127.0.0.1:3360',
-    ]);
+    expect(connectInfo.tailscale).toEqual({
+      dnsName: 'desktop.tail5a2d2d.ts.net',
+      directConnectUrl: null,
+      secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      serveCommand: expect.stringMatching(
+        /^tailscale serve --bg --yes http:\/\/127\.0\.0\.1:\d+$/
+      ),
+      serveEnabled: true,
+      serveFallbackReason: null,
+    });
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0]).toBe('tailscale status --json');
+    expect(invocations[1]).toMatch(
+      /^tailscale serve --bg --yes http:\/\/127\.0\.0\.1:\d+$/
+    );
+  });
+
+  it('falls back to a direct tailnet URL when Tailscale Serve does not complete', async () => {
+    const invocations: string[] = [];
+    const { server, connectInfo } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '0.0.0.0',
+      port: 0,
+      authToken: 'secret-token',
+      tailscaleServe: true,
+      openBrowser: false,
+      commandRunner: async (command, args) => {
+        invocations.push(`${command} ${args.join(' ')}`);
+        if (command === 'tailscale' && args.join(' ') === 'status --json') {
+          return JSON.stringify({
+            BackendState: 'Running',
+            Self: { DNSName: 'desktop.tail5a2d2d.ts.net.' },
+          });
+        }
+        if (
+          command === 'tailscale' &&
+          args.join(' ').startsWith('serve --bg --yes http://127.0.0.1:')
+        ) {
+          throw new Error('Command timed out after 5000ms');
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+      },
+    });
+    activeServer = server;
+
+    const preferredUrl = new URL(connectInfo.preferredConnectUrl);
+    expect(connectInfo.source).toBe('tailscale-direct');
+    expect(preferredUrl.hostname).toBe('desktop.tail5a2d2d.ts.net');
+    expect(connectInfo.tailscale).toEqual({
+      dnsName: 'desktop.tail5a2d2d.ts.net',
+      directConnectUrl: connectInfo.preferredConnectUrl,
+      secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
+      serveEnabled: false,
+      serveFallbackReason: 'Command timed out after 5000ms',
+    });
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0]).toBe('tailscale status --json');
+    expect(invocations[1]).toMatch(
+      /^tailscale serve --bg --yes http:\/\/127\.0\.0\.1:\d+$/
+    );
   });
 
   it('returns an authenticated pairing QR payload for the preferred connect URL', async () => {

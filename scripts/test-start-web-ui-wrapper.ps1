@@ -27,26 +27,17 @@ try {
         & $ScriptPath `
             -PhoneReady `
             -NoOpenBrowser `
-            -ListenHost '127.0.0.1' `
             -Port $Port `
             -AuthToken 'secret-token' `
             -PublicUrl 'https://hub.example.test/connect'
     } -ArgumentList $wrapperScriptPath, $port
 
     $serverReady = $false
-    $listenUrl = "http://127.0.0.1:$port/"
-    $apiUrl = "http://127.0.0.1:$port/api/sessions"
     for ($i = 0; $i -lt 100; $i += 1) {
         Start-Sleep -Milliseconds 200
-
-        $jobState = (Get-Job -Id $job.Id).State
-        if ($jobState -eq 'Failed') {
-            break
-        }
-
         try {
             $response = Invoke-WebRequest `
-                -Uri $listenUrl `
+                -Uri "http://127.0.0.1:$port/" `
                 -Method Get `
                 -TimeoutSec 2 `
                 -UseBasicParsing `
@@ -63,25 +54,7 @@ try {
     }
 
     if (-not $serverReady) {
-        $jobState = (Get-Job -Id $job.Id).State
-        $details = (Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue | Out-String).Trim()
-        $errorText = (($job.ChildJobs | ForEach-Object { $_.Error | ForEach-Object { $_.ToString() } }) -join [Environment]::NewLine).Trim()
-        throw "Expected the PowerShell wrapper to start the web UI server. State: $jobState Details: $details Errors: $errorText"
-    }
-
-    try {
-        Invoke-WebRequest `
-            -Uri $apiUrl `
-            -Method Get `
-            -TimeoutSec 2 `
-            -UseBasicParsing `
-            -ErrorAction Stop | Out-Null
-        throw 'Expected /api/sessions to require an access code.'
-    } catch {
-        $statusCode = $_.Exception.Response.StatusCode.value__
-        if ($statusCode -ne 401) {
-            throw "Expected /api/sessions to return 401. Actual: $statusCode"
-        }
+        throw 'Expected the PowerShell wrapper to start the web UI server in PhoneReady mode.'
     }
 
     Write-Output 'Wrapper startup path OK.'

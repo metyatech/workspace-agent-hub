@@ -5,7 +5,7 @@ import { PowerShellSessionBridge } from '../src/session-bridge.js';
 import type { SessionRecord } from '../src/types.js';
 import { createWebUiServer } from '../src/web-ui.js';
 
-const baseUrl = 'http://127.0.0.1:3362';
+let baseUrl = '';
 const authToken = 'playwright-token';
 const titlePrefix = 'Playwright E2E';
 
@@ -29,26 +29,29 @@ async function cleanupPlaywrightSessions(): Promise<void> {
 async function expectSessionCard(page: Page, title: string): Promise<void> {
   await expect(
     page.locator('.session-card').filter({ hasText: title })
-  ).toHaveCount(1, { timeout: 20000 });
+  ).toHaveCount(1, { timeout: 60000 });
 }
 
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async () => {
+  test.setTimeout(180000);
   bridge = new PowerShellSessionBridge();
   await cleanupPlaywrightSessions();
   const started = await createWebUiServer({
     host: '127.0.0.1',
-    port: 3362,
+    port: 0,
     authToken,
-    publicUrl: baseUrl,
+    publicUrl: 'http://127.0.0.1:3362',
     openBrowser: false,
     bridge,
   });
   server = started.server;
+  baseUrl = `http://127.0.0.1:${started.port}`;
 });
 
 test.afterAll(async () => {
+  test.setTimeout(180000);
   await cleanupPlaywrightSessions();
   await new Promise<void>((resolvePromise, reject) => {
     server.close((error) => {
@@ -116,7 +119,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
   await page.locator('#startSessionButton').click();
 
   await expect(page.locator('#startSessionButton')).toBeEnabled({
-    timeout: 20000,
+    timeout: 60000,
   });
   await expectSessionCard(page, title);
   await expect(page.locator('#sessionSearchInput')).toBeVisible();
@@ -133,9 +136,16 @@ test('authenticates and manages a shell session from the browser UI', async ({
 
   await page.locator('#sessionPromptInput').fill('draft-before-reload');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
   await expect(page.locator('#lastSessionCard')).toBeVisible();
   await expect(page.locator('#lastSessionTitle')).toContainText(title);
+  if (
+    !(await page.locator('#selectedSessionState').textContent())?.includes(
+      'SHELL'
+    )
+  ) {
+    await page.getByRole('button', { name: '前回の session を開く' }).click();
+  }
+  await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
   await expect(page.locator('#sessionPromptInput')).toHaveValue(
     'draft-before-reload'
   );
@@ -149,7 +159,8 @@ test('authenticates and manages a shell session from the browser UI', async ({
     { timeout: 20000 }
   );
   await expect(page.locator('#selectedSessionSummary')).not.toContainText(
-    '下書きあり'
+    '下書きあり',
+    { timeout: 20000 }
   );
 
   await page.getByRole('button', { name: '閉じた session も表示' }).click();

@@ -52,10 +52,19 @@ try {
         ''
     }
 
+    $effectiveListenHost = if (
+        $PhoneReady -and
+        -not $PSBoundParameters.ContainsKey('ListenHost')
+    ) {
+        '0.0.0.0'
+    } else {
+        $ListenHost
+    }
+
     $arguments = @(
         $distCliPath,
         'web-ui',
-        '--host', $ListenHost,
+        '--host', $effectiveListenHost,
         '--port', [string]$Port
     )
     if ($null -ne $resolvedAuthToken -and $resolvedAuthToken -ne '') {

@@ -54,6 +54,7 @@ export interface TailscaleConnectInfo {
   secureConnectUrl: string;
   serveCommand: string;
   serveEnabled: boolean;
+  serveFallbackReason: string | null;
 }
 
 export interface WebUiConfigBootstrap {
