@@ -142,13 +142,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -No
 Start it with a fixed access code so a phone can reconnect later:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Host 0.0.0.0 -Port 3360 -AuthToken "replace-with-your-code"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0 -Port 3360 -AuthToken "replace-with-your-code"
 ```
 
 Start it with a phone-facing HTTPS/Tailscale URL so the browser app can render a reconnect QR and copyable one-tap link:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Host 0.0.0.0 -Port 3360 -PublicUrl "https://agent-hub.example.ts.net"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0 -Port 3360 -PublicUrl "https://agent-hub.example.ts.net"
 ```
 
 Start it with an explicit Tailscale Serve-backed HTTPS URL by using the CLI
@@ -176,6 +176,15 @@ The PowerShell wrapper exposes the same behavior with `-JsonOutput`:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser
 ```
+
+Wrapper-specific parameters that differ from the CLI:
+
+| Parameter            | Description                                                                   | Example                                                                                                   |
+| -------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `-ListenHost <host>` | PowerShell-safe equivalent of the CLI `--host` option.                        | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0`        |
+| `-PhoneReady`        | PowerShell shortcut for `--tailscale-serve` plus the normal wrapper defaults. | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady -NoOpenBrowser` |
+| `-JsonOutput`        | PowerShell wrapper switch for CLI `--json`.                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser` |
+| `-NoOpenBrowser`     | PowerShell wrapper switch for CLI `--no-open-browser`.                        | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -NoOpenBrowser`             |
 
 #### CLI parameters
 

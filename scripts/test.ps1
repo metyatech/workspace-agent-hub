@@ -142,6 +142,12 @@ if (($cliJsonOutput | Out-String).Trim() -notmatch 'OK') {
     exit 1
 }
 
+$wrapperJsonOutput = & (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper.ps1')
+if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
+    Write-Error 'Expected the PowerShell start-web-ui wrapper to launch and emit machine-readable web-ui metadata.'
+    exit 1
+}
+
 $tls12 = [Net.SecurityProtocolType]::Tls12
 if (-not ([Net.ServicePointManager]::SecurityProtocol.HasFlag($tls12))) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12

@@ -1,5 +1,5 @@
 param(
-    [string]$Host = '127.0.0.1',
+    [string]$ListenHost = '127.0.0.1',
     [int]$Port = 3360,
     [string]$AuthToken,
     [string]$PublicUrl,
@@ -55,7 +55,7 @@ try {
     $arguments = @(
         $distCliPath,
         'web-ui',
-        '--host', $Host,
+        '--host', $ListenHost,
         '--port', [string]$Port
     )
     if ($null -ne $resolvedAuthToken -and $resolvedAuthToken -ne '') {

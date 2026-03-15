@@ -44,6 +44,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   and offline behavior are visible without leaving the page
 - Reduced browser-side auth churn by pausing background API polling until an
   access code is present
+- Renamed the PowerShell wrapper bind parameter to `-ListenHost` so
+  `scripts/start-web-ui.ps1 -PhoneReady` no longer collides with PowerShell's
+  read-only `$Host` automatic variable, and added wrapper-start regression
+  coverage
 
 ## [0.1.0] - 2026-01-26
 
