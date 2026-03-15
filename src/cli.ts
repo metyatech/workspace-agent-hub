@@ -26,6 +26,10 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
       'Phone-facing HTTPS URL or Tailscale Serve URL used for reconnect links and QR pairing'
     )
     .option(
+      '--tailscale-serve',
+      'Configure Tailscale Serve for this run and prefer the resulting HTTPS tailnet URL'
+    )
+    .option(
       '--auth-token <token>',
       'Access code required by the browser UI. Use auto to generate one, or none to disable auth.'
     )
@@ -42,6 +46,7 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
         host: string;
         port: string;
         publicUrl?: string;
+        tailscaleServe?: boolean;
         authToken: string;
         json?: boolean;
         openBrowser?: boolean;
@@ -50,6 +55,7 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
           host: options.host,
           port: Number(options.port),
           publicUrl: options.publicUrl,
+          tailscaleServe: Boolean(options.tailscaleServe),
           authToken: options.authToken,
           jsonOutput: Boolean(options.json),
           openBrowser: options.openBrowser,

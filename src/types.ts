@@ -42,9 +42,27 @@ export interface DirectorySuggestion {
   path: string;
 }
 
+export type PreferredConnectUrlSource =
+  | 'listen-url'
+  | 'public-url'
+  | 'tailscale-direct'
+  | 'tailscale-serve';
+
+export interface TailscaleConnectInfo {
+  dnsName: string;
+  directConnectUrl: string | null;
+  secureConnectUrl: string;
+  serveCommand: string;
+  serveEnabled: boolean;
+}
+
 export interface WebUiConfigBootstrap {
   authRequired: boolean;
   authStorageKey: string;
   workspaceRoot: string;
   preferredConnectUrl: string | null;
+  preferredConnectUrlSource: PreferredConnectUrlSource;
+  tailscaleDirectUrl: string | null;
+  tailscaleSecureUrl: string | null;
+  tailscaleServeCommand: string | null;
 }

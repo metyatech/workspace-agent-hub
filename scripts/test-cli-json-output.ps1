@@ -72,6 +72,9 @@ try {
     if ($payload.preferredConnectUrl -ne 'https://hub.example.test/connect') {
         throw "Unexpected preferredConnectUrl: $($payload.preferredConnectUrl)"
     }
+    if ($payload.preferredConnectUrlSource -ne 'public-url') {
+        throw "Unexpected preferredConnectUrlSource: $($payload.preferredConnectUrlSource)"
+    }
     if ($payload.authRequired -ne $true) {
         throw "Expected authRequired=true. Actual: $($payload.authRequired)"
     }
@@ -83,6 +86,14 @@ try {
         'https://hub.example.test/connect#accessCode=secret-token'
     ) {
         throw "Unexpected oneTapPairingLink: $($payload.oneTapPairingLink)"
+    }
+    if ($null -ne $payload.tailscale) {
+        if (-not $payload.tailscale.secureConnectUrl) {
+            throw 'Expected tailscale metadata to include secureConnectUrl when present.'
+        }
+        if (-not $payload.tailscale.serveCommand) {
+            throw 'Expected tailscale metadata to include serveCommand when present.'
+        }
     }
 
     Write-Output 'JSON launch metadata OK.'

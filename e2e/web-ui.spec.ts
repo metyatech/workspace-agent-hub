@@ -98,6 +98,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
     'src',
     /data:image\/png;base64,/
   );
+  await expect(page.locator('#secureLaunchShell')).toBeHidden();
 
   await expect
     .poll(async () =>

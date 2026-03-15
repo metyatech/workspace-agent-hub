@@ -30,6 +30,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   list easier to reopen
 - Added browser-local last-session recall, per-session prompt draft persistence,
   and unseen-output badges for faster smartphone resume flows
+- Added Tailscale-aware launch metadata, browser secure-launch hints, and an
+  explicit `--tailscale-serve` / `-PhoneReady` path for smartphone-ready HTTPS
+  PWA access
 
 ### Changed
 

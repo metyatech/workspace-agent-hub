@@ -3,7 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { toDataURL as toQrDataUrl } from 'qrcode';
 import {
   PowerShellSessionBridge,
@@ -14,7 +14,11 @@ import {
   resolveWebUiAuthConfig,
   type WebUiAuthConfig,
 } from './web-auth.js';
-import type { SessionType } from './types.js';
+import type {
+  PreferredConnectUrlSource,
+  SessionType,
+  TailscaleConnectInfo,
+} from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -136,7 +140,7 @@ function injectIndexHtml(
   html: string,
   authConfig: Pick<WebUiAuthConfig, 'required' | 'storageKey'>,
   workspaceRoot: string,
-  preferredConnectUrl: string | null
+  connectInfo: ResolvedConnectInfo
 ): string {
   return html
     .replace(
@@ -153,7 +157,23 @@ function injectIndexHtml(
     )
     .replace(
       '__WORKSPACE_AGENT_HUB_PREFERRED_CONNECT_URL__',
-      JSON.stringify(preferredConnectUrl)
+      JSON.stringify(connectInfo.preferredConnectUrl)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_PREFERRED_CONNECT_URL_SOURCE__',
+      JSON.stringify(connectInfo.source)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_TAILSCALE_DIRECT_URL__',
+      JSON.stringify(connectInfo.tailscale?.directConnectUrl ?? null)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_TAILSCALE_SECURE_URL__',
+      JSON.stringify(connectInfo.tailscale?.secureConnectUrl ?? null)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_COMMAND__',
+      JSON.stringify(connectInfo.tailscale?.serveCommand ?? null)
     );
 }
 
@@ -184,32 +204,173 @@ function getRequestOrigin(
     : fallbackOrigin;
 }
 
+export type CommandRunner = (
+  command: string,
+  args: string[]
+) => Promise<string>;
+
+export interface ResolvedConnectInfo {
+  preferredConnectUrl: string;
+  source: PreferredConnectUrlSource;
+  tailscale: TailscaleConnectInfo | null;
+}
+
+interface TailscaleStatusPayload {
+  BackendState?: string;
+  Self?: {
+    DNSName?: string;
+  };
+}
+
+function runCommand(command: string, args: string[]): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    execFile(command, args, { windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        reject(
+          new Error(
+            stderr.trim() || stdout.trim() || error.message || String(error)
+          )
+        );
+        return;
+      }
+      resolvePromise(stdout.toString());
+    });
+  });
+}
+
+function isLocalOnlyHost(host: string): boolean {
+  return /^(127\.0\.0\.1|localhost|::1)$/i.test(host.trim());
+}
+
+function trimTrailingDot(value: string): string {
+  return value.replace(/\.+$/, '');
+}
+
+function buildTailscaleServeCommand(port: number): string {
+  return `tailscale serve --bg --yes http://127.0.0.1:${port}`;
+}
+
+async function detectTailscaleConnectInfo(input: {
+  host: string;
+  port: number;
+  enableServe: boolean;
+  commandRunner: CommandRunner;
+}): Promise<TailscaleConnectInfo | null> {
+  let payload: TailscaleStatusPayload;
+  try {
+    payload = JSON.parse(
+      await input.commandRunner('tailscale', ['status', '--json'])
+    ) as TailscaleStatusPayload;
+  } catch {
+    return null;
+  }
+
+  if (payload.BackendState !== 'Running' || !payload.Self?.DNSName) {
+    return null;
+  }
+
+  const dnsName = trimTrailingDot(payload.Self.DNSName);
+  const serveCommand = buildTailscaleServeCommand(input.port);
+  const secureConnectUrl = `https://${dnsName}`;
+  const directConnectUrl = isLocalOnlyHost(input.host)
+    ? null
+    : `http://${dnsName}:${input.port}`;
+
+  if (input.enableServe) {
+    await input.commandRunner('tailscale', [
+      'serve',
+      '--bg',
+      '--yes',
+      `http://127.0.0.1:${input.port}`,
+    ]);
+  }
+
+  return {
+    dnsName,
+    directConnectUrl,
+    secureConnectUrl,
+    serveCommand,
+    serveEnabled: input.enableServe,
+  };
+}
+
+async function resolveConnectInfo(input: {
+  host: string;
+  port: number;
+  publicUrl?: string;
+  tailscaleServe?: boolean;
+  commandRunner?: CommandRunner;
+}): Promise<ResolvedConnectInfo> {
+  const listenUrl = `http://${input.host}:${input.port}`;
+  const explicitPublicUrl = normalizePublicUrl(input.publicUrl);
+  const tailscale = await detectTailscaleConnectInfo({
+    host: input.host,
+    port: input.port,
+    enableServe: Boolean(input.tailscaleServe) && !explicitPublicUrl,
+    commandRunner: input.commandRunner ?? runCommand,
+  });
+
+  if (explicitPublicUrl) {
+    return {
+      preferredConnectUrl: explicitPublicUrl,
+      source: 'public-url',
+      tailscale,
+    };
+  }
+
+  if (tailscale?.serveEnabled) {
+    return {
+      preferredConnectUrl: tailscale.secureConnectUrl,
+      source: 'tailscale-serve',
+      tailscale,
+    };
+  }
+
+  if (tailscale?.directConnectUrl) {
+    return {
+      preferredConnectUrl: tailscale.directConnectUrl,
+      source: 'tailscale-direct',
+      tailscale,
+    };
+  }
+
+  return {
+    preferredConnectUrl: listenUrl,
+    source: 'listen-url',
+    tailscale,
+  };
+}
+
 export interface StartWebUiOptions {
   host?: string;
   port?: number;
   authToken?: string;
   publicUrl?: string;
+  tailscaleServe?: boolean;
   jsonOutput?: boolean;
   openBrowser?: boolean;
   bridge?: SessionBridge;
+  commandRunner?: CommandRunner;
 }
 
 export interface WebUiLaunchInfo {
   listenUrl: string;
   preferredConnectUrl: string;
+  preferredConnectUrlSource: PreferredConnectUrlSource;
   authRequired: boolean;
   accessCode: string | null;
   oneTapPairingLink: string;
+  tailscale: TailscaleConnectInfo | null;
 }
 
 export function buildWebUiLaunchInfo(input: {
   host: string;
   port: number;
   authConfig: WebUiAuthConfig;
-  publicUrl?: string;
+  connectInfo: ResolvedConnectInfo;
 }): WebUiLaunchInfo {
   const listenUrl = `http://${input.host}:${input.port}`;
-  const preferredConnectUrl = normalizePublicUrl(input.publicUrl) ?? listenUrl;
+  const preferredConnectUrl = input.connectInfo.preferredConnectUrl;
   const oneTapPairingLink =
     input.authConfig.required && input.authConfig.token
       ? `${preferredConnectUrl}#accessCode=${encodeURIComponent(input.authConfig.token)}`
@@ -217,9 +378,11 @@ export function buildWebUiLaunchInfo(input: {
   return {
     listenUrl,
     preferredConnectUrl,
+    preferredConnectUrlSource: input.connectInfo.source,
     authRequired: input.authConfig.required,
     accessCode: input.authConfig.token,
     oneTapPairingLink,
+    tailscale: input.connectInfo.tailscale,
   };
 }
 
@@ -231,16 +394,20 @@ export async function createWebUiServer(
   host: string;
   authConfig: WebUiAuthConfig;
   bridge: SessionBridge;
+  connectInfo: ResolvedConnectInfo;
 }> {
   const bridge = options.bridge ?? new PowerShellSessionBridge();
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 3360;
-  const fallbackOrigin = `http://${host}:${port}`;
   const authConfig = resolveWebUiAuthConfig(
     bridge.getWorkspaceRoot(),
     options.authToken
   );
-  const preferredConnectUrl = normalizePublicUrl(options.publicUrl);
+  let connectInfo: ResolvedConnectInfo = {
+    preferredConnectUrl: `http://${host}:${port}`,
+    source: 'listen-url',
+    tailscale: null,
+  };
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -257,7 +424,7 @@ export async function createWebUiServer(
               html,
               authConfig,
               bridge.getWorkspaceRoot(),
-              preferredConnectUrl
+              connectInfo
             ),
             200,
             'text/html; charset=utf-8'
@@ -315,7 +482,8 @@ export async function createWebUiServer(
 
         if (method === 'GET' && pathname === '/api/pairing-qr') {
           const connectBaseUrl =
-            preferredConnectUrl ?? getRequestOrigin(req, fallbackOrigin);
+            connectInfo.preferredConnectUrl ||
+            getRequestOrigin(req, `http://${host}:${port}`);
           const connectUrl =
             authConfig.required && authConfig.token
               ? `${connectBaseUrl}#accessCode=${encodeURIComponent(authConfig.token)}`
@@ -492,24 +660,33 @@ export async function createWebUiServer(
   });
 
   const actualPort = await tryListen(server, port, host);
+  connectInfo = await resolveConnectInfo({
+    host,
+    port: actualPort,
+    publicUrl: options.publicUrl,
+    tailscaleServe: options.tailscaleServe,
+    commandRunner: options.commandRunner,
+  });
   return {
     server,
     port: actualPort,
     host,
     authConfig,
     bridge,
+    connectInfo,
   };
 }
 
 export async function startWebUi(
   options: StartWebUiOptions = {}
 ): Promise<void> {
-  const { server, port, host, authConfig } = await createWebUiServer(options);
+  const { server, port, host, authConfig, connectInfo } =
+    await createWebUiServer(options);
   const launchInfo = buildWebUiLaunchInfo({
     host,
     port,
     authConfig,
-    publicUrl: options.publicUrl,
+    connectInfo,
   });
 
   if (options.jsonOutput) {
@@ -518,10 +695,33 @@ export async function startWebUi(
     console.log(
       `Workspace Agent Hub web UI listening on ${launchInfo.listenUrl}`
     );
-    console.log(`Preferred connect URL: ${launchInfo.preferredConnectUrl}`);
+    console.log(
+      `Preferred connect URL (${launchInfo.preferredConnectUrlSource}): ${launchInfo.preferredConnectUrl}`
+    );
     if (launchInfo.authRequired && launchInfo.accessCode) {
       console.log(`Access code: ${launchInfo.accessCode}`);
       console.log(`One-tap pairing link: ${launchInfo.oneTapPairingLink}`);
+    }
+    if (launchInfo.tailscale?.directConnectUrl) {
+      console.log(
+        `Tailscale direct URL: ${launchInfo.tailscale.directConnectUrl}`
+      );
+    }
+    if (
+      launchInfo.tailscale?.secureConnectUrl &&
+      launchInfo.preferredConnectUrlSource !== 'public-url'
+    ) {
+      console.log(
+        `Tailscale secure URL: ${launchInfo.tailscale.secureConnectUrl}`
+      );
+    }
+    if (
+      launchInfo.tailscale?.serveCommand &&
+      launchInfo.preferredConnectUrlSource !== 'tailscale-serve'
+    ) {
+      console.log(
+        `To enable installable HTTPS on the tailnet: ${launchInfo.tailscale.serveCommand}`
+      );
     }
   }
 

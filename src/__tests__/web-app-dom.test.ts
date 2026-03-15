@@ -51,6 +51,11 @@ const baseHtml = `
     <button id="copyPairingCodeButton">copy code</button>
     <img id="pairingQrImage" />
     <span id="pairingQrStatus"></span>
+    <div id="secureLaunchShell">
+      <input id="secureLaunchCommandInput" />
+      <button id="copySecureLaunchCommandButton">copy secure launch</button>
+      <span id="secureLaunchStatus"></span>
+    </div>
     <div id="toast"></div>
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
@@ -71,6 +76,14 @@ async function loadApp(
     secureContext?: boolean;
     url?: string;
     preferredConnectUrl?: string | null;
+    preferredConnectUrlSource?:
+      | 'listen-url'
+      | 'public-url'
+      | 'tailscale-direct'
+      | 'tailscale-serve';
+    tailscaleDirectUrl?: string | null;
+    tailscaleSecureUrl?: string | null;
+    tailscaleServeCommand?: string | null;
   }
 ): Promise<Document> {
   const dom = new JSDOM(baseHtml, {
@@ -106,6 +119,12 @@ async function loadApp(
       authStorageKey: 'workspace-agent-hub.test-token',
       workspaceRoot: 'D:\\ghws',
       preferredConnectUrl: options?.preferredConnectUrl ?? null,
+      preferredConnectUrlSource:
+        options?.preferredConnectUrlSource ??
+        (options?.preferredConnectUrl ? 'public-url' : 'listen-url'),
+      tailscaleDirectUrl: options?.tailscaleDirectUrl ?? null,
+      tailscaleSecureUrl: options?.tailscaleSecureUrl ?? null,
+      tailscaleServeCommand: options?.tailscaleServeCommand ?? null,
     },
     configurable: true,
   });
@@ -852,6 +871,53 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLButtonElement>('#sharePairingButton')!
         .textContent
     ).toContain('共有文をコピー');
+  });
+
+  it('surfaces a Tailscale direct URL and HTTPS upgrade command when available', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+      },
+      preferredConnectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      preferredConnectUrlSource: 'tailscale-direct',
+      tailscaleDirectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      tailscaleSecureUrl: 'https://desktop.tail5a2d2d.ts.net',
+      tailscaleServeCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+    });
+
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingUrlInput')!.value
+    ).toContain(
+      'http://desktop.tail5a2d2d.ts.net:3360#accessCode=pairing-token'
+    );
+    expect(
+      document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
+    ).toContain('Tailscale 直結');
+    expect(
+      document.querySelector<HTMLDivElement>('#secureLaunchShell')!.hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLInputElement>('#secureLaunchCommandInput')!
+        .value
+    ).toBe('tailscale serve --bg --yes http://127.0.0.1:3360');
+    expect(
+      document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
+        .textContent
+    ).toContain('https://desktop.tail5a2d2d.ts.net');
   });
 
   it('accepts an access code from the pairing link hash on first load', async () => {

@@ -143,6 +143,17 @@ const pairingQrImage =
   document.querySelector<HTMLImageElement>('#pairingQrImage')!;
 const pairingQrStatus =
   document.querySelector<HTMLSpanElement>('#pairingQrStatus')!;
+const secureLaunchShell =
+  document.querySelector<HTMLDivElement>('#secureLaunchShell')!;
+const secureLaunchCommandInput = document.querySelector<HTMLInputElement>(
+  '#secureLaunchCommandInput'
+)!;
+const copySecureLaunchCommandButton = document.querySelector<HTMLButtonElement>(
+  '#copySecureLaunchCommandButton'
+)!;
+const secureLaunchStatus = document.querySelector<HTMLSpanElement>(
+  '#secureLaunchStatus'
+)!;
 const toast = document.querySelector<HTMLDivElement>('#toast')!;
 const authOverlay = document.querySelector<HTMLDivElement>('#authOverlay')!;
 const authTokenInput =
@@ -562,13 +573,20 @@ function setPairingUiState(): void {
   const baseUrl = getPairingBaseUrl();
   const oneTapLink = getOneTapPairingLink();
   const accessCode = getPairingCode();
+  const preferredConnectSource = config.preferredConnectUrlSource;
 
   pairingUrlInput.value = oneTapLink;
   pairingCodeInput.value = accessCode || '不要';
 
-  if (config.preferredConnectUrl) {
+  if (preferredConnectSource === 'tailscale-serve') {
+    pairingHint.textContent =
+      'この URL は Tailscale Serve で HTTPS 化されています。スマホでそのまま開き、ホーム画面にも追加しやすい経路です。';
+  } else if (preferredConnectSource === 'public-url') {
     pairingHint.textContent =
       'この URL はスマホ向けに固定されています。リンクか QR をそのまま渡せます。';
+  } else if (preferredConnectSource === 'tailscale-direct') {
+    pairingHint.textContent =
+      'この URL は Tailscale 直結でそのままスマホから開けます。HTTPS ではないので、ホーム画面追加まで欲しいときは下の HTTPS 化コマンドが有効です。';
   } else if (
     /^(127\.0\.0\.1|localhost|0\.0\.0\.0)$/i.test(new URL(baseUrl).hostname)
   ) {
@@ -586,6 +604,25 @@ function setPairingUiState(): void {
   copyPairingLinkButton.disabled = !oneTapLink;
   copyManualUrlButton.disabled = !baseUrl;
   copyPairingCodeButton.disabled = !config.authRequired || !accessCode;
+  secureLaunchCommandInput.value = config.tailscaleServeCommand ?? '';
+  secureLaunchShell.hidden =
+    !config.tailscaleServeCommand ||
+    preferredConnectSource === 'tailscale-serve' ||
+    preferredConnectSource === 'public-url';
+  copySecureLaunchCommandButton.disabled = !config.tailscaleServeCommand;
+
+  if (preferredConnectSource === 'tailscale-serve') {
+    secureLaunchStatus.textContent =
+      'この起動では Tailscale Serve を使っているため、スマホ向け HTTPS 導線はすでに準備できています。';
+  } else if (config.tailscaleServeCommand && config.tailscaleSecureUrl) {
+    secureLaunchStatus.textContent = `より良い HTTPS 導線が必要なら、このコマンドで ${config.tailscaleSecureUrl} を有効にできます。`;
+  } else if (config.tailscaleServeCommand) {
+    secureLaunchStatus.textContent =
+      '必要なときだけ、このコマンドで Tailscale Serve を有効にできます。';
+  } else {
+    secureLaunchStatus.textContent =
+      '必要なときだけ、このコマンドで Tailscale Serve を有効にできます。';
+  }
   void updatePairingQr(oneTapLink);
 }
 
@@ -1716,6 +1753,18 @@ copyPairingCodeButton.addEventListener('click', async () => {
     copied
       ? 'アクセスコードをコピーしました。'
       : 'コードをコピーできませんでした。'
+  );
+});
+copySecureLaunchCommandButton.addEventListener('click', async () => {
+  const value = secureLaunchCommandInput.value.trim();
+  if (!value) {
+    return;
+  }
+  const copied = await copyText(value);
+  showToast(
+    copied
+      ? 'HTTPS 化コマンドをコピーしました。'
+      : 'コマンドをコピーできませんでした。'
   );
 });
 

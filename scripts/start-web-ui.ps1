@@ -3,6 +3,8 @@ param(
     [int]$Port = 3360,
     [string]$AuthToken,
     [string]$PublicUrl,
+    [switch]$TailscaleServe,
+    [switch]$PhoneReady,
     [switch]$JsonOutput,
     [switch]$NoOpenBrowser
 )
@@ -61,6 +63,9 @@ try {
     }
     if ($null -ne $resolvedPublicUrl -and $resolvedPublicUrl -ne '') {
         $arguments += @('--public-url', $resolvedPublicUrl)
+    }
+    if ($TailscaleServe -or $PhoneReady) {
+        $arguments += '--tailscale-serve'
     }
     if ($JsonOutput) {
         $arguments += '--json'
