@@ -223,6 +223,28 @@ First-use flow:
 7. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
 8. Use the session search box, browser-local favorites, the remembered last-session card, and saved prompt drafts to jump back into the same work quickly on that device.
 
+#### Browser/mobile handoff state matrix
+
+The browser app carries auth state in `localStorage`. The claimed primary paths
+and their token-source precedence rules are:
+
+| State               | localStorage token       | URL hash `#accessCode=`  | Auth source                       | QR / app result                                    |
+| ------------------- | ------------------------ | ------------------------ | --------------------------------- | -------------------------------------------------- |
+| **Fresh**           | absent                   | present                  | URL hash → stored to localStorage | Token stored, QR rendered                          |
+| **Fresh**           | absent                   | absent                   | none                              | Auth overlay shown; user must enter code           |
+| **Resumed**         | present and valid        | absent                   | localStorage                      | QR rendered; no re-auth needed                     |
+| **Stale + hash**    | present (old server run) | present (new server run) | URL hash overrides localStorage   | New token stored, old token discarded, QR rendered |
+| **Stale (no hash)** | present (old server run) | absent                   | localStorage (rejected by server) | API returns 401 → auth overlay shown               |
+
+The server embeds the current access code in the browser-open URL on every
+start, so the URL hash always takes precedence over any cached localStorage
+value. This ensures that a phone opening the browser-open URL after a server
+restart always gets the correct token, even if an older token is still cached in
+that browser.
+
+Automated tests in `src/__tests__/web-app-dom.test.ts` cover all five rows of
+this matrix.
+
 Installable/PWA note:
 
 - The browser app registers a service worker on normal HTTP for local caching,

@@ -1085,6 +1085,41 @@ describe('web-app DOM', () => {
     ).toContain('まずこれを読み取ってください');
   });
 
+  it('shows the auth overlay when a stale localStorage token is rejected by the server (no hash)', async () => {
+    // Stale-state path: token present in localStorage but no new hash in the URL.
+    // The server (restarted) returns 401 for all requests → auth overlay must appear.
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'Access code required' }), {
+          status: 401,
+        })
+    ) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        // A token from a previous server run sits in localStorage; no fresh hash is present.
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'stale-old-token'
+        );
+      },
+      preferredConnectUrl: 'https://hub.example.test/connect',
+      secureContext: true,
+      // No url override → no #accessCode= hash.
+    });
+
+    // The stale token must not be treated as valid; overlay must be visible.
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(true);
+    // The QR must stay hidden because the token could not be validated.
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(true);
+  });
+
   it('uses the browser share API for pairing details when available', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

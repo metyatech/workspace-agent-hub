@@ -552,9 +552,15 @@ async function copyText(value: string): Promise<boolean> {
   }
 }
 
+function shouldHideQrForAuth(): boolean {
+  return (
+    config.authRequired && (!hasAccessToken() || connectionState === 'auth')
+  );
+}
+
 async function updatePairingQr(link: string): Promise<void> {
   pairingQrLink = link;
-  if (!hasAccessToken() && config.authRequired) {
+  if (shouldHideQrForAuth()) {
     pairingQrImage.hidden = true;
     pairingQrImage.removeAttribute('src');
     pairingQrStatus.textContent =
@@ -573,7 +579,7 @@ async function updatePairingQr(link: string): Promise<void> {
     const pairingQr = await apiJson<{ connectUrl: string; dataUrl: string }>(
       '/api/pairing-qr'
     );
-    if (pairingQrLink !== link) {
+    if (pairingQrLink !== link || shouldHideQrForAuth()) {
       return;
     }
     pairingQrImage.src = pairingQr.dataUrl;
