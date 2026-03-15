@@ -956,8 +956,7 @@ describe('web-app DOM', () => {
       tailscaleDirectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
       tailscaleSecureUrl: 'https://desktop.tail5a2d2d.ts.net',
       tailscaleServeCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
-      tailscaleServeSetupUrl:
-        'https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL',
+      tailscaleServeSetupUrl: 'https://login.tailscale.com/admin/dns',
     });
 
     expect(
@@ -968,7 +967,7 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
         .textContent
     ).toContain(
-      'まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください'
+      'DNS 設定ページで HTTPS Certificates を 1 回だけ有効にしてください'
     );
   });
 

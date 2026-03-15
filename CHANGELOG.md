@@ -54,8 +54,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   show the scannable pairing QR immediately, while copy/share links remain
   fallback-only paths
 - When Tailscale Serve is not yet enabled on the tailnet, the launcher now
-  surfaces the one-time approval URL in both the startup output and the browser
-  UI instead of leaving the HTTPS upgrade as an opaque fallback
+  points to the stable Tailscale DNS settings page in both the startup output
+  and the browser UI instead of relying on a node-specific approval URL that
+  may fail after sign-in
 
 ## [0.1.0] - 2026-01-26
 

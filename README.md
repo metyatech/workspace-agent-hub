@@ -131,8 +131,9 @@ Tailscale Serve and emits an installable HTTPS tailnet URL. If automatic HTTPS
 setup does not complete on this machine, it falls back to a Tailscale-direct
 URL instead of hanging. The opened PC page is preloaded so the smartphone QR is
 ready immediately. If Tailscale Serve has not been enabled on the tailnet yet,
-the command now prints the one-time approval URL and keeps the direct tailnet
-URL available until you approve it and rerun the same command:
+the command now points you at the stable Tailscale DNS settings page and keeps
+the direct tailnet URL available until you enable HTTPS Certificates there and
+rerun the same command:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady
@@ -216,7 +217,7 @@ First-use flow:
 1. Start the web UI on the PC.
 2. Let the local PC page open and show the pairing card.
 3. Scan the pairing QR from the phone. Treat the printed link and copy/share controls as fallback only when scanning is not available.
-4. If the terminal or secure-launch card shows a one-time Tailscale Serve approval URL, open it once on the PC and rerun the same `-PhoneReady` command to upgrade the path to HTTPS.
+4. If the terminal or secure-launch card tells you to open the Tailscale DNS settings page, open it once on the PC, enable HTTPS Certificates there, and rerun the same `-PhoneReady` command to upgrade the path to HTTPS.
 5. If the page is served over HTTPS, use the install card to add it to the home screen.
 6. Start or reopen a session, then use the transcript and prompt box from the same page.
 7. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
@@ -246,9 +247,9 @@ Installable/PWA note:
   smartphone entry path, while the share action and one-tap reconnect link stay
   available as fallback.
 - When `--tailscale-serve` or `-PhoneReady` hits a tailnet where Serve is not
-  enabled yet, the launcher prints the one-time approval URL and the browser UI
-  shows the same next step so you can finish approval without guessing why the
-  HTTPS upgrade did not happen.
+  enabled yet, the launcher points you at the stable Tailscale DNS settings
+  page and the browser UI shows the same next step so you can finish HTTPS
+  approval without guessing why the upgrade did not happen.
 
 ### Pairing with Manager
 

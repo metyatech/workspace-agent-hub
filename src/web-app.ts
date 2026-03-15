@@ -634,10 +634,10 @@ function setPairingUiState(): void {
     secureLaunchStatus.textContent =
       'この起動では Tailscale Serve を使っているため、スマホ向け HTTPS 導線はすでに準備できています。';
   } else if (config.tailscaleServeSetupUrl && config.tailscaleSecureUrl) {
-    secureLaunchStatus.textContent = `まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直すと ${config.tailscaleSecureUrl} を使えます。`;
+    secureLaunchStatus.textContent = `まず Tailscale の DNS 設定ページで HTTPS Certificates を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直すと ${config.tailscaleSecureUrl} を使えます。`;
   } else if (config.tailscaleServeSetupUrl) {
     secureLaunchStatus.textContent =
-      'まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直してください。';
+      'まず Tailscale の DNS 設定ページで HTTPS Certificates を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直してください。';
   } else if (config.tailscaleServeCommand && config.tailscaleSecureUrl) {
     secureLaunchStatus.textContent = `より良い HTTPS 導線が必要なら、このコマンドで ${config.tailscaleSecureUrl} を有効にできます。`;
   } else if (config.tailscaleServeCommand) {

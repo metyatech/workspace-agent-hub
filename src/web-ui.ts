@@ -248,6 +248,8 @@ export class CommandExecutionError extends Error {
   }
 }
 
+const TAILSCALE_ADMIN_DNS_URL = 'https://login.tailscale.com/admin/dns';
+
 export function extractTailscaleServeSetupUrl(text: string): string | null {
   const match = text.match(
     /https:\/\/login\.tailscale\.com\/f\/serve\?node=[^\s]+/i
@@ -387,9 +389,11 @@ async function detectTailscaleConnectInfo(input: {
           : error instanceof Error
             ? error.message
             : String(error);
-      serveSetupUrl = extractTailscaleServeSetupUrl(diagnosticText);
+      serveSetupUrl = extractTailscaleServeSetupUrl(diagnosticText)
+        ? TAILSCALE_ADMIN_DNS_URL
+        : null;
       serveFallbackReason = serveSetupUrl
-        ? 'Tailscale Serve needs one-time approval on this tailnet.'
+        ? 'Tailscale Serve needs one-time approval from the tailnet DNS settings.'
         : error instanceof Error
           ? error.message
           : String(error);
@@ -857,10 +861,10 @@ export async function startWebUi(
     }
     if (launchInfo.tailscale?.serveSetupUrl) {
       console.log(
-        `Enable Tailscale Serve once in your browser: ${launchInfo.tailscale.serveSetupUrl}`
+        `Open the Tailscale DNS settings once in your browser: ${launchInfo.tailscale.serveSetupUrl}`
       );
       console.log(
-        'After approval, run the same -PhoneReady command again to get the HTTPS tailnet URL.'
+        'Enable HTTPS Certificates there, then run the same -PhoneReady command again to get the HTTPS tailnet URL.'
       );
     }
     if (
@@ -871,7 +875,7 @@ export async function startWebUi(
     ) {
       console.log(
         launchInfo.tailscale?.serveSetupUrl
-          ? 'Automatic Tailscale Serve setup is waiting for one-time tailnet approval. Continuing with the available connect URL instead.'
+          ? 'Automatic Tailscale Serve setup is waiting for one-time DNS/HTTPS approval in the tailnet. Continuing with the available connect URL instead.'
           : 'Automatic Tailscale Serve setup did not complete. Continuing with the available connect URL instead.'
       );
     }

@@ -256,7 +256,7 @@ To enable, visit:
         process.execPath,
         [
           '-e',
-          "console.log('Serve is not enabled on your tailnet.'); console.log('To enable, visit:'); console.log('https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL'); setInterval(() => {}, 1000);",
+          "process.stdout.write('Serve is not enabled on your tailnet.\\nTo enable, visit:\\nhttps://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL\\n'); setInterval(() => {}, 1000);",
         ],
         { timeoutMs: 200 }
       )
@@ -470,9 +470,8 @@ To enable, visit:
       serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
       serveEnabled: false,
       serveFallbackReason:
-        'Tailscale Serve needs one-time approval on this tailnet.',
-      serveSetupUrl:
-        'https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL',
+        'Tailscale Serve needs one-time approval from the tailnet DNS settings.',
+      serveSetupUrl: 'https://login.tailscale.com/admin/dns',
     });
     expect(invocations).toHaveLength(2);
     expect(invocations[0]).toBe('tailscale status --json');
