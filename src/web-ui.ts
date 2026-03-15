@@ -1,7 +1,7 @@
-import { createServer, request as httpRequest } from 'node:http';
+import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
 import { toDataURL as toQrDataUrl } from 'qrcode';
@@ -282,94 +282,231 @@ const TAILSCALE_ADMIN_DNS_URL = 'https://login.tailscale.com/admin/dns';
 
 export const MANAGER_GUI_DEFAULT_PORT = 3335;
 
-/**
- * Derive the URL clients should open for the Manager GUI, based on how the
- * hub itself is exposed (tailscale, public-url, or local-only).
- *
- * - Prefers the tailscale direct URL (http, non-HTTPS) because port substitution
- *   works cleanly on that transport.
- * - Falls back to the hub's preferredConnectUrl hostname when the source is not
- *   tailscale-serve (which binds the HTTPS-only standard port and cannot be
- *   overridden by simple port substitution).
- * - Ultimate fallback: http://127.0.0.1:<port> (local PC access only).
- */
-export function deriveManagerGuiUrl(
-  connectInfo: ResolvedConnectInfo,
-  port: number
-): string {
-  if (connectInfo.tailscale?.directConnectUrl) {
-    try {
-      const url = new URL(connectInfo.tailscale.directConnectUrl);
-      url.port = String(port);
-      url.pathname = '/';
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    } catch {
-      // fall through
-    }
-  }
-
-  if (
-    connectInfo.source !== 'tailscale-serve' &&
-    connectInfo.preferredConnectUrl
-  ) {
-    try {
-      const url = new URL(connectInfo.preferredConnectUrl);
-      url.port = String(port);
-      url.pathname = '/';
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    } catch {
-      // fall through
-    }
-  }
-
-  return `http://127.0.0.1:${port}`;
+export interface ManagerGuiProbeResult {
+  state: 'absent' | 'ready' | 'conflict';
+  reason: string;
 }
 
-/**
- * Check whether a Manager GUI server is already listening on the given host/port.
- * Returns true as soon as any HTTP response is received (any status code).
- * Times out after 2 seconds and returns false.
- */
-export function checkManagerGuiRunning(
-  host: string,
-  port: number
-): Promise<boolean> {
-  return new Promise((resolvePromise) => {
-    let settled = false;
-    const settle = (value: boolean): void => {
-      if (!settled) {
-        settled = true;
-        resolvePromise(value);
-      }
-    };
-    try {
-      const req = httpRequest(
-        { host, port, path: '/', method: 'GET', timeout: 2000 },
-        (res) => {
-          res.destroy();
-          settle(true);
+function buildManagerProxyBootstrap(
+  authConfig: Pick<WebUiAuthConfig, 'storageKey'>
+): string {
+  return `
+    <script>
+      (function () {
+        const hubAuthStorageKey = ${JSON.stringify(authConfig.storageKey)};
+
+        function readHashToken() {
+          try {
+            return new URLSearchParams(window.location.hash.replace(/^#/, '')).get('accessCode');
+          } catch {
+            return null;
+          }
         }
-      );
-      req.on('error', () => settle(false));
-      req.on('timeout', () => {
-        req.destroy();
-        settle(false);
-      });
-      req.end();
-    } catch {
-      settle(false);
-    }
-  });
+
+        function readStoredToken() {
+          try {
+            const value = window.localStorage.getItem(hubAuthStorageKey);
+            return value && value.trim() ? value : null;
+          } catch {
+            return null;
+          }
+        }
+
+        const hashToken = readHashToken();
+        if (hashToken) {
+          try {
+            window.localStorage.setItem(hubAuthStorageKey, hashToken);
+          } catch {
+            /* ignore storage failures */
+          }
+        }
+
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = function (input, init) {
+          let nextInput = input;
+          if (typeof nextInput === 'string' && nextInput.indexOf('/api/') === 0) {
+            nextInput = '/manager' + nextInput;
+          } else if (
+            typeof URL !== 'undefined' &&
+            nextInput instanceof URL &&
+            nextInput.pathname.indexOf('/api/') === 0
+          ) {
+            nextInput = new URL('/manager' + nextInput.pathname + nextInput.search, window.location.origin);
+          }
+
+          const nextInit = init ? Object.assign({}, init) : {};
+          const headers = new Headers(nextInit.headers || {});
+          const managerToken =
+            headers.get('X-Thread-Inbox-Token') ||
+            (headers.get('Authorization') || '').replace(/^Bearer\\s+/i, '') ||
+            readHashToken() ||
+            readStoredToken();
+          if (managerToken) {
+            headers.set('X-Workspace-Agent-Hub-Token', managerToken);
+          }
+          nextInit.headers = headers;
+          return originalFetch(nextInput, nextInit);
+        };
+      })();
+    </script>
+  `;
+}
+
+export function rewriteManagerGuiHtmlForHub(
+  html: string,
+  authConfig: Pick<WebUiAuthConfig, 'storageKey'>
+): string {
+  const managerScriptTag =
+    '<script type="module" src="/manager-app.js"></script>';
+  const rewrittenManagerScriptTag = `${buildManagerProxyBootstrap(authConfig)}\n    <script type="module" src="/manager/manager-app.js"></script>`;
+  return html
+    .replace(
+      /window\.MANAGER_AUTH_STORAGE_KEY = .*?;/,
+      `window.MANAGER_AUTH_STORAGE_KEY = ${JSON.stringify(authConfig.storageKey)};`
+    )
+    .replace(managerScriptTag, rewrittenManagerScriptTag);
+}
+
+export function buildManagerUiUrl(input: {
+  connectInfo: ResolvedConnectInfo;
+  authConfig: Pick<WebUiAuthConfig, 'required' | 'token'>;
+}): string {
+  const url = new URL(input.connectInfo.preferredConnectUrl);
+  const basePath = url.pathname.replace(/\/+$/, '');
+  url.pathname = basePath ? `${basePath}/manager/` : '/manager/';
+  url.search = '';
+  url.hash = '';
+  if (input.authConfig.required && input.authConfig.token) {
+    url.hash = `accessCode=${encodeURIComponent(input.authConfig.token)}`;
+  }
+  return url.toString();
+}
+
+function parseManagerGuiAuthRequired(html: string): boolean | null {
+  const match = html.match(/window\.MANAGER_AUTH_REQUIRED = (true|false);/);
+  if (!match) {
+    return null;
+  }
+  return match[1] === 'true';
+}
+
+function isExpectedManagerGuiHtml(
+  html: string,
+  workspaceRoot: string
+): boolean {
+  const resolvedWorkspaceRoot = resolvePath(workspaceRoot);
+  return (
+    html.includes('<title>マネージャー</title>') &&
+    html.includes(
+      `window.GUI_DIR = ${JSON.stringify(resolvedWorkspaceRoot)};`
+    ) &&
+    html.includes('src="/manager-app.js"')
+  );
+}
+
+export async function probeManagerGuiInstance(input: {
+  host: string;
+  port: number;
+  workspaceRoot: string;
+  authRequired: boolean;
+  authToken: string | null;
+}): Promise<ManagerGuiProbeResult> {
+  let htmlResponse: Response;
+  try {
+    htmlResponse = await fetch(`http://${input.host}:${input.port}/`, {
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch {
+    return {
+      state: 'absent',
+      reason: 'No HTTP server is listening on the Manager GUI port.',
+    };
+  }
+
+  const html = await htmlResponse.text();
+  if (
+    !htmlResponse.ok ||
+    !isExpectedManagerGuiHtml(html, input.workspaceRoot)
+  ) {
+    return {
+      state: 'conflict',
+      reason:
+        'The configured Manager port is already occupied by a different service or workspace.',
+    };
+  }
+
+  const authRequired = parseManagerGuiAuthRequired(html);
+  if (authRequired !== input.authRequired) {
+    return {
+      state: 'conflict',
+      reason:
+        'An existing Manager GUI is running with a different access-code mode than Workspace Agent Hub.',
+    };
+  }
+
+  const statusHeaders = new Headers();
+  if (input.authToken) {
+    statusHeaders.set('X-Thread-Inbox-Token', input.authToken);
+  }
+
+  let statusResponse: Response;
+  try {
+    statusResponse = await fetch(
+      `http://${input.host}:${input.port}/api/manager/status`,
+      {
+        headers: statusHeaders,
+        signal: AbortSignal.timeout(2000),
+      }
+    );
+  } catch {
+    return {
+      state: 'conflict',
+      reason:
+        'The existing Manager GUI could not be validated through its status API.',
+    };
+  }
+
+  if (!statusResponse.ok) {
+    return {
+      state: 'conflict',
+      reason:
+        'The existing Manager GUI did not accept the current Workspace Agent Hub access code.',
+    };
+  }
+
+  let payload: unknown;
+  try {
+    payload = await statusResponse.json();
+  } catch {
+    return {
+      state: 'conflict',
+      reason: 'The existing Manager GUI returned an unexpected status payload.',
+    };
+  }
+
+  const statusPayload = payload as Record<string, unknown>;
+  if (
+    typeof statusPayload.running !== 'boolean' ||
+    typeof statusPayload.configured !== 'boolean' ||
+    typeof statusPayload.builtinBackend !== 'boolean'
+  ) {
+    return {
+      state: 'conflict',
+      reason:
+        'The service on the configured Manager port does not look like thread-inbox manager-gui.',
+    };
+  }
+
+  return {
+    state: 'ready',
+    reason: 'Manager GUI is already running for this workspace.',
+  };
 }
 
 function startManagerGuiDetached(
   workspaceRoot: string,
-  host: string,
-  port: number
+  port: number,
+  authToken: string | null
 ): void {
   const args = [
     'manager-gui',
@@ -377,9 +514,12 @@ function startManagerGuiDetached(
     '--port',
     String(port),
     '--host',
-    host,
+    '127.0.0.1',
     '--no-open-browser',
   ];
+  if (authToken) {
+    args.push('--auth-token', authToken);
+  }
   const child = spawn('thread-inbox', args, {
     shell: true,
     detached: true,
@@ -389,19 +529,157 @@ function startManagerGuiDetached(
   child.unref();
 }
 
-async function waitForManagerGui(
-  host: string,
-  port: number,
-  maxWaitMs = 6000
-): Promise<boolean> {
+async function waitForManagerGuiReady(input: {
+  host: string;
+  port: number;
+  workspaceRoot: string;
+  authRequired: boolean;
+  authToken: string | null;
+  maxWaitMs?: number;
+}): Promise<ManagerGuiProbeResult> {
+  const maxWaitMs = input.maxWaitMs ?? 6000;
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    if (await checkManagerGuiRunning(host, port)) {
-      return true;
+    const probe = await probeManagerGuiInstance({
+      host: input.host,
+      port: input.port,
+      workspaceRoot: input.workspaceRoot,
+      authRequired: input.authRequired,
+      authToken: input.authToken,
+    });
+    if (probe.state !== 'absent') {
+      return probe;
     }
     await new Promise<void>((r) => setTimeout(r, 400));
   }
-  return false;
+  return {
+    state: 'absent',
+    reason:
+      'Manager GUI did not start in time. Make sure thread-inbox is installed globally (npm install -g @metyatech/thread-inbox).',
+  };
+}
+
+async function ensureManagerGuiAvailable(input: {
+  workspaceRoot: string;
+  port: number;
+  authConfig: Pick<WebUiAuthConfig, 'required' | 'token'>;
+}): Promise<{
+  alreadyRunning: boolean;
+}> {
+  const initialProbe = await probeManagerGuiInstance({
+    host: '127.0.0.1',
+    port: input.port,
+    workspaceRoot: input.workspaceRoot,
+    authRequired: input.authConfig.required,
+    authToken: input.authConfig.token,
+  });
+
+  if (initialProbe.state === 'ready') {
+    return { alreadyRunning: true };
+  }
+
+  if (initialProbe.state === 'conflict') {
+    throw new Error(initialProbe.reason);
+  }
+
+  startManagerGuiDetached(
+    input.workspaceRoot,
+    input.port,
+    input.authConfig.required ? input.authConfig.token : null
+  );
+  const startedProbe = await waitForManagerGuiReady({
+    host: '127.0.0.1',
+    port: input.port,
+    workspaceRoot: input.workspaceRoot,
+    authRequired: input.authConfig.required,
+    authToken: input.authConfig.token,
+  });
+  if (startedProbe.state === 'ready') {
+    return { alreadyRunning: false };
+  }
+  throw new Error(startedProbe.reason);
+}
+
+function isManagerGuiConflictMessage(message: string): boolean {
+  return (
+    message.includes('different service or workspace') ||
+    message.includes('different access-code mode') ||
+    message.includes('current Workspace Agent Hub access code')
+  );
+}
+
+function mapManagerProxyPath(pathname: string): string {
+  if (pathname === '/manager' || pathname === '/manager/') {
+    return '/';
+  }
+  const suffix = pathname.slice('/manager'.length);
+  return suffix.startsWith('/') ? suffix : `/${suffix}`;
+}
+
+function readRequestBuffer(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    req.on('end', () => resolvePromise(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+async function proxyManagerGuiRequest(input: {
+  req: IncomingMessage;
+  res: ServerResponse;
+  pathname: string;
+  search: string;
+  method: string;
+  port: number;
+  authConfig: Pick<WebUiAuthConfig, 'required' | 'token' | 'storageKey'>;
+}): Promise<void> {
+  const targetPath = `${mapManagerProxyPath(input.pathname)}${input.search}`;
+  const headers = new Headers();
+  const contentType = input.req.headers['content-type'];
+  if (typeof contentType === 'string' && contentType.trim()) {
+    headers.set('Content-Type', contentType);
+  }
+  if (input.authConfig.token) {
+    headers.set('X-Thread-Inbox-Token', input.authConfig.token);
+  }
+  const body =
+    input.method === 'GET' || input.method === 'HEAD'
+      ? undefined
+      : new Uint8Array(await readRequestBuffer(input.req));
+
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${input.port}${targetPath}`, {
+      method: input.method,
+      headers,
+      body,
+    });
+  } catch {
+    sendError(
+      input.res,
+      'Could not reach the local Manager GUI. Open Manager again to restart it.',
+      502
+    );
+    return;
+  }
+
+  const upstreamContentType =
+    response.headers.get('Content-Type') ?? 'text/plain; charset=utf-8';
+  if (targetPath === '/' && input.method === 'GET') {
+    sendText(
+      input.res,
+      rewriteManagerGuiHtmlForHub(await response.text(), input.authConfig),
+      response.status,
+      upstreamContentType
+    );
+    return;
+  }
+
+  input.res.writeHead(response.status, {
+    'Content-Type': upstreamContentType,
+  });
+  input.res.end(Buffer.from(await response.arrayBuffer()));
 }
 
 export function extractTailscaleServeSetupUrl(text: string): string | null {
@@ -942,32 +1220,58 @@ export async function createWebUiServer(
         }
 
         if (method === 'POST' && pathname === '/api/manager-gui/ensure') {
-          const managerGuiHost = isWildcardHost(host) ? '0.0.0.0' : '127.0.0.1';
-          const alreadyRunning = await checkManagerGuiRunning(
-            '127.0.0.1',
-            managerGuiPort
-          );
-          if (!alreadyRunning) {
-            startManagerGuiDetached(
-              bridge.getWorkspaceRoot(),
-              managerGuiHost,
-              managerGuiPort
-            );
-            const started = await waitForManagerGui(
-              '127.0.0.1',
-              managerGuiPort
-            );
-            if (!started) {
-              sendError(
-                res,
-                'Manager GUI did not start in time. Make sure thread-inbox is installed globally (npm install -g @metyatech/thread-inbox).',
-                503
-              );
-              return;
+          try {
+            const ensured = await ensureManagerGuiAvailable({
+              workspaceRoot: bridge.getWorkspaceRoot(),
+              port: managerGuiPort,
+              authConfig,
+            });
+            sendJson(res, {
+              url: buildManagerUiUrl({ connectInfo, authConfig }),
+              alreadyRunning: ensured.alreadyRunning,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            const status = isManagerGuiConflictMessage(message) ? 409 : 503;
+            sendError(res, message, status);
+          }
+          return;
+        }
+
+        if (pathname === '/manager' || pathname.startsWith('/manager/')) {
+          if (
+            pathname.startsWith('/manager/api/') &&
+            !isWebUiAuthorized(req, authConfig)
+          ) {
+            sendUnauthorized(res);
+            return;
+          }
+
+          try {
+            await ensureManagerGuiAvailable({
+              workspaceRoot: bridge.getWorkspaceRoot(),
+              port: managerGuiPort,
+              authConfig,
+            });
+            await proxyManagerGuiRequest({
+              req,
+              res,
+              pathname,
+              search: requestUrl.search,
+              method,
+              port: managerGuiPort,
+              authConfig,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            if (pathname.startsWith('/manager/api/')) {
+              sendError(res, message, 409);
+            } else {
+              sendText(res, message, 409);
             }
           }
-          const url = deriveManagerGuiUrl(connectInfo, managerGuiPort);
-          sendJson(res, { url, alreadyRunning });
           return;
         }
 

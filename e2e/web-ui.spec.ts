@@ -164,7 +164,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
     { timeout: 20000 }
   );
 
-  await page.getByRole('button', { name: '閉じた session も表示' }).click();
+  await page.locator('#showArchivedButton').click();
   await page.getByRole('button', { name: '一覧から隠す' }).click();
   await expect(page.locator('#selectedSessionSummary')).toContainText(
     '一覧では非表示',

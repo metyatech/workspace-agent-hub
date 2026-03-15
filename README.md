@@ -14,8 +14,8 @@ It provides:
 - A browser UI/PWA for smartphone and desktop session management, transcript
   viewing, prompt sending, and browser-local resume cues
 - Regression tests for the primary PC/mobile handoff paths
-- A foundation that can be paired with `thread-inbox manager-gui` as the
-  higher-level Manager inbox
+- An `Open Manager` path that reuses `thread-inbox manager-gui` through the
+  hub so PC and smartphone land on the same higher-level Manager inbox
 
 ## Supported environments
 
@@ -273,17 +273,34 @@ Installable/PWA note:
   page and the browser UI shows the same next step so you can finish HTTPS
   approval without guessing why the upgrade did not happen.
 
-### Pairing with Manager
+### Open Manager
 
-Workspace Agent Hub is the session fabric. The current higher-level Manager
-inbox UI lives in `thread-inbox`:
+Workspace Agent Hub now provides the official `Open Manager` entrypoint in the
+browser UI.
 
-```powershell
-thread-inbox manager-gui .. --host 0.0.0.0 --port 3335 --auth-token auto
-```
+How it works:
 
-That GUI can sit above this session fabric while start-or-attach integration is
-being completed.
+1. Open the normal Hub page from the PC or smartphone.
+2. Use `Manager を開く`.
+3. If `thread-inbox manager-gui` is not running yet for this workspace, Hub
+   starts it on the PC host.
+4. If it is already running for the same workspace and access-code mode, Hub
+   reuses that exact instance instead of starting a duplicate.
+5. The browser opens the Manager UI through the Hub's own `/manager/` path, so
+   cross-device access stays on the same Hub origin instead of exposing the raw
+   Manager port directly.
+
+Important behavior:
+
+- Hub does **not** reimplement the Manager inbox. It reuses the existing
+  `thread-inbox manager-gui`.
+- Hub keeps the Manager GUI bound to `127.0.0.1` on the PC host and proxies it
+  through the authenticated Hub origin.
+- The same Hub access code continues to protect the smartphone/desktop Manager
+  path.
+- If the configured Manager port is already occupied by a different service or
+  by a Manager GUI for another workspace/auth mode, Hub fails safely instead of
+  attaching to the wrong instance.
 
 ## Verification
 
@@ -334,6 +351,7 @@ This repository claims the following primary handoff paths.
 | `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                                                                                                                                                                                                                                                                                                                       | `scripts/test-mobile-ssh.py`                                                                                                     |
 | `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                                                                                                                                                                                                                                                                                                             | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
 | `P5` | The browser UI can authenticate, list sessions, start a session, restore the remembered last session plus saved prompt drafts, mark sessions with unseen output, display transcript output, search/prioritize browser-local favorite sessions, surface install/offline/notification guidance, expose Tailscale-aware secure-launch hints, render QR/copyable smartphone pairing links, locally lock the current browser, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
+| `P6` | `Open Manager` starts or reuses the existing `thread-inbox manager-gui`, keeps it on the PC host, and exposes the same Manager UI safely through the Hub origin for both desktop and smartphone-oriented browser entry paths.                                                                                                                                                                                                                                   | `src/__tests__/web-ui.test.ts`                                                                                                   |
 
 ## Environment variables
 

@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
+import { resolve as resolvePath } from 'node:path';
 import {
   buildBrowserOpenCommand,
-  checkManagerGuiRunning,
+  buildManagerUiUrl,
   CommandExecutionError,
   buildBrowserOpenUrl,
   buildWebUiLaunchInfo,
   createWebUiServer,
-  deriveManagerGuiUrl,
   extractTailscaleServeSetupUrl,
+  probeManagerGuiInstance,
+  rewriteManagerGuiHtmlForHub,
   runCommand,
 } from '../web-ui.js';
 import type { SessionBridge } from '../session-bridge.js';
@@ -180,6 +182,70 @@ class FakeBridge implements SessionBridge {
 }
 
 let activeServer: Server | null = null;
+
+async function startMockManagerGuiServer(input?: {
+  workspaceRoot?: string;
+  authToken?: string | null;
+  running?: boolean;
+}): Promise<Server> {
+  const workspaceRoot = resolvePath(input?.workspaceRoot ?? 'D:\\ghws');
+  const authToken = input?.authToken ?? null;
+  const running = input?.running ?? true;
+  const server = createServer(async (req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    if (pathname === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html lang="ja">
+  <head><title>マネージャー</title></head>
+  <body>
+    <script>
+      window.GUI_DIR = ${JSON.stringify(workspaceRoot)};
+      window.MANAGER_AUTH_REQUIRED = ${authToken ? 'true' : 'false'};
+      window.MANAGER_AUTH_STORAGE_KEY = ${JSON.stringify(`thread-inbox.manager-token:${workspaceRoot}`)};
+    </script>
+    <script type="module" src="/manager-app.js"></script>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (pathname === '/manager-app.js') {
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+      });
+      res.end('console.log("manager-app");');
+      return;
+    }
+
+    if (pathname === '/api/manager/status') {
+      const provided = req.headers['x-thread-inbox-token'];
+      if (authToken && provided !== authToken) {
+        res.writeHead(401, {
+          'Content-Type': 'application/json; charset=utf-8',
+        });
+        res.end(
+          JSON.stringify({ error: 'Access code required', authRequired: true })
+        );
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          running,
+          configured: true,
+          builtinBackend: true,
+        })
+      );
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return server;
+}
 
 afterEach(async () => {
   if (activeServer) {
@@ -518,93 +584,62 @@ To enable, visit:
   });
 });
 
-describe('deriveManagerGuiUrl', () => {
-  it('prefers the tailscale direct URL with the manager-gui port', () => {
-    const url = deriveManagerGuiUrl(
-      {
-        preferredConnectUrl: 'https://desktop.tail.ts.net',
-        source: 'tailscale-serve',
-        tailscale: {
-          dnsName: 'desktop.tail.ts.net',
-          directConnectUrl: 'http://desktop.tail.ts.net:3360',
-          secureConnectUrl: 'https://desktop.tail.ts.net',
-          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
-          serveEnabled: true,
-          serveFallbackReason: null,
-          serveSetupUrl: null,
-        },
-      },
-      3335
-    );
-    expect(url).toBe('http://desktop.tail.ts.net:3335/');
-  });
-
-  it('uses preferredConnectUrl hostname when there is no tailscale direct URL and source is not tailscale-serve', () => {
-    const url = deriveManagerGuiUrl(
-      {
-        preferredConnectUrl: 'http://100.64.0.5:3360',
-        source: 'tailscale-direct',
-        tailscale: {
-          dnsName: 'desktop.tail.ts.net',
-          directConnectUrl: null,
-          secureConnectUrl: 'https://desktop.tail.ts.net',
-          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
-          serveEnabled: false,
-          serveFallbackReason: null,
-          serveSetupUrl: null,
-        },
-      },
-      3335
-    );
-    expect(url).toBe('http://100.64.0.5:3335/');
-  });
-
-  it('falls back to localhost when source is tailscale-serve and there is no direct URL', () => {
-    const url = deriveManagerGuiUrl(
-      {
-        preferredConnectUrl: 'https://desktop.tail.ts.net',
-        source: 'tailscale-serve',
-        tailscale: {
-          dnsName: 'desktop.tail.ts.net',
-          directConnectUrl: null,
-          secureConnectUrl: 'https://desktop.tail.ts.net',
-          serveCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
-          serveEnabled: true,
-          serveFallbackReason: null,
-          serveSetupUrl: null,
-        },
-      },
-      3335
-    );
-    expect(url).toBe('http://127.0.0.1:3335');
-  });
-
-  it('uses listen-url hostname with the manager-gui port for local-only setups', () => {
-    const url = deriveManagerGuiUrl(
-      {
-        preferredConnectUrl: 'http://127.0.0.1:3360',
-        source: 'listen-url',
-        tailscale: null,
-      },
-      3335
-    );
-    expect(url).toBe('http://127.0.0.1:3335/');
-  });
-
-  it('uses public-url hostname with the manager-gui port', () => {
-    const url = deriveManagerGuiUrl(
-      {
+describe('buildManagerUiUrl', () => {
+  it('builds a same-origin manager path under the preferred connect URL', () => {
+    const url = buildManagerUiUrl({
+      connectInfo: {
         preferredConnectUrl: 'https://hub.example.test/connect',
         source: 'public-url',
         tailscale: null,
       },
-      3335
+      authConfig: {
+        required: true,
+        token: 'secret-token',
+      },
+    });
+    expect(url).toBe(
+      'https://hub.example.test/connect/manager/#accessCode=secret-token'
     );
-    expect(url).toBe('https://hub.example.test:3335/');
+  });
+
+  it('keeps a local listen URL on the hub origin instead of synthesizing TLS on the manager port', () => {
+    const url = buildManagerUiUrl({
+      connectInfo: {
+        preferredConnectUrl: 'http://127.0.0.1:3360',
+        source: 'listen-url',
+        tailscale: null,
+      },
+      authConfig: {
+        required: false,
+        token: null,
+      },
+    });
+    expect(url).toBe('http://127.0.0.1:3360/manager/');
   });
 });
 
-describe('checkManagerGuiRunning', () => {
+describe('rewriteManagerGuiHtmlForHub', () => {
+  it('rewrites the manager HTML to use the hub proxy path and the hub storage key', () => {
+    const rewritten = rewriteManagerGuiHtmlForHub(
+      `<!doctype html><html><body>
+<script>
+window.MANAGER_AUTH_REQUIRED = true;
+window.MANAGER_AUTH_STORAGE_KEY = "thread-inbox.manager-token:D:\\\\ghws";
+</script>
+<script type="module" src="/manager-app.js"></script>
+</body></html>`,
+      {
+        storageKey: 'workspace-agent-hub.test-token',
+      }
+    );
+
+    expect(rewritten).toContain('src="/manager/manager-app.js"');
+    expect(rewritten).toContain('window.fetch = function (input, init)');
+    expect(rewritten).toContain('workspace-agent-hub.test-token');
+  });
+});
+
+describe('probeManagerGuiInstance', () => {
   let mockGuiServer: Server | null = null;
 
   afterEach(async () => {
@@ -614,22 +649,68 @@ describe('checkManagerGuiRunning', () => {
     }
   });
 
-  it('returns true when an HTTP server is listening on the given port', async () => {
-    const srv = createServer((_req, res) => {
-      res.writeHead(200);
-      res.end('ok');
+  it('accepts only a matching manager-gui instance for the current workspace and auth token', async () => {
+    mockGuiServer = await startMockManagerGuiServer({
+      workspaceRoot: 'D:\\ghws',
+      authToken: 'secret-token',
     });
-    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
-    mockGuiServer = srv;
-    const addr = srv.address();
-    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const address = mockGuiServer.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
 
-    expect(await checkManagerGuiRunning('127.0.0.1', port)).toBe(true);
+    await expect(
+      probeManagerGuiInstance({
+        host: '127.0.0.1',
+        port,
+        workspaceRoot: 'D:\\ghws',
+        authRequired: true,
+        authToken: 'secret-token',
+      })
+    ).resolves.toEqual({
+      state: 'ready',
+      reason: 'Manager GUI is already running for this workspace.',
+    });
   });
 
-  it('returns false when no server is listening on the given port', async () => {
-    // Port 1 is not accessible without elevated privileges, so it reliably fails fast
-    expect(await checkManagerGuiRunning('127.0.0.1', 1)).toBe(false);
+  it('rejects an unrelated HTTP server on the manager port', async () => {
+    const unrelatedServer = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not a manager');
+    });
+    await new Promise<void>((resolve) =>
+      unrelatedServer.listen(0, '127.0.0.1', resolve)
+    );
+    mockGuiServer = unrelatedServer;
+    const address = unrelatedServer.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const result = await probeManagerGuiInstance({
+      host: '127.0.0.1',
+      port,
+      workspaceRoot: 'D:\\ghws',
+      authRequired: true,
+      authToken: 'secret-token',
+    });
+    expect(result.state).toBe('conflict');
+    expect(result.reason).toContain('different service or workspace');
+  });
+
+  it('rejects a manager-gui instance that does not accept the current hub token', async () => {
+    mockGuiServer = await startMockManagerGuiServer({
+      workspaceRoot: 'D:\\ghws',
+      authToken: 'other-token',
+    });
+    const address = mockGuiServer.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const result = await probeManagerGuiInstance({
+      host: '127.0.0.1',
+      port,
+      workspaceRoot: 'D:\\ghws',
+      authRequired: true,
+      authToken: 'secret-token',
+    });
+    expect(result.state).toBe('conflict');
+    expect(result.reason).toContain('access code');
   });
 });
 
@@ -643,19 +724,14 @@ describe('Manager GUI ensure endpoint', () => {
     }
   });
 
-  it('returns the manager-gui URL and alreadyRunning=true when the server is already up', async () => {
-    // Start a mock manager-gui server on a random port
-    const guiSrv = createServer((_req, res) => {
-      res.writeHead(200);
-      res.end('manager gui');
+  it('returns a hub-relative manager URL and alreadyRunning=true when the matching manager server is already up', async () => {
+    mockGuiServer = await startMockManagerGuiServer({
+      workspaceRoot: 'D:\\ghws',
+      authToken: 'secret-token',
     });
-    await new Promise<void>((resolve) =>
-      guiSrv.listen(0, '127.0.0.1', resolve)
-    );
-    mockGuiServer = guiSrv;
-    const guiAddr = guiSrv.address();
+    const guiAddress = mockGuiServer.address();
     const guiPort =
-      typeof guiAddr === 'object' && guiAddr ? guiAddr.port : 3335;
+      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
 
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(),
@@ -679,8 +755,92 @@ describe('Manager GUI ensure endpoint', () => {
       url: string;
       alreadyRunning: boolean;
     };
-    expect(payload.alreadyRunning).toBe(true);
-    expect(payload.url).toContain(String(guiPort));
+    expect(payload).toEqual({
+      url: `http://127.0.0.1:${port}/manager/#accessCode=secret-token`,
+      alreadyRunning: true,
+    });
+  });
+
+  it('fails safely when the configured manager port is occupied by a different service', async () => {
+    const unrelatedServer = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('not a manager');
+    });
+    await new Promise<void>((resolve) =>
+      unrelatedServer.listen(0, '127.0.0.1', resolve)
+    );
+    mockGuiServer = unrelatedServer;
+    const guiAddress = unrelatedServer.address();
+    const guiPort =
+      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+      managerGuiPort: guiPort,
+    });
+    activeServer = server;
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+      }
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('different service or workspace'),
+    });
+  });
+
+  it('proxies the manager page and API through the hub origin', async () => {
+    mockGuiServer = await startMockManagerGuiServer({
+      workspaceRoot: 'D:\\ghws',
+      authToken: 'secret-token',
+    });
+    const guiAddress = mockGuiServer.address();
+    const guiPort =
+      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+      managerGuiPort: guiPort,
+    });
+    activeServer = server;
+
+    const pageResponse = await fetch(`http://127.0.0.1:${port}/manager/`);
+    expect(pageResponse.status).toBe(200);
+    const pageHtml = await pageResponse.text();
+    expect(pageHtml).toContain('src="/manager/manager-app.js"');
+    expect(pageHtml).toContain(
+      'window.MANAGER_AUTH_STORAGE_KEY = "workspace-agent-hub.token:D:\\\\ghws";'
+    );
+
+    const unauthorizedApiResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`
+    );
+    expect(unauthorizedApiResponse.status).toBe(401);
+
+    const authorizedApiResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      {
+        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+      }
+    );
+    expect(authorizedApiResponse.status).toBe(200);
+    await expect(authorizedApiResponse.json()).resolves.toMatchObject({
+      running: true,
+      configured: true,
+      builtinBackend: true,
+    });
   });
 
   it('requires auth before attempting to start the Manager GUI', async () => {
