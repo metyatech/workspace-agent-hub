@@ -1020,6 +1020,8 @@ describe('web-app DOM', () => {
     const document = await loadApp(fetchMock, true, {
       secureContext: true,
       url: 'https://hub.example.test/#accessCode=hash-token',
+      preferredConnectUrl: 'https://hub.example.test',
+      preferredConnectUrlSource: 'public-url',
     });
 
     expect(
@@ -1030,6 +1032,57 @@ describe('web-app DOM', () => {
     expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
       'hash-token'
     );
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
+  });
+
+  it('overrides a stale localStorage token when a newer access code is present in the URL hash', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        // Simulate a stale token from a previous server run stored in localStorage.
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'stale-old-token'
+        );
+      },
+      secureContext: true,
+      url: 'http://127.0.0.1:3360/#accessCode=fresh-new-token',
+      preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      preferredConnectUrlSource: 'tailscale-serve',
+    });
+
+    // The new token from the hash must replace the stale token.
+    expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
+      'fresh-new-token'
+    );
+    // Auth overlay must not be shown — the hash token is sufficient.
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(false);
+    // The QR must be visible with the new token.
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
   });
 
   it('uses the browser share API for pairing details when available', async () => {

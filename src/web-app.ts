@@ -413,7 +413,7 @@ function applyAccessCodeFromLocationHash(): void {
   const accessCode = new URLSearchParams(currentUrl.hash.replace(/^#/, '')).get(
     'accessCode'
   );
-  if (!accessCode || authToken) {
+  if (!accessCode) {
     return;
   }
   authToken = accessCode;
