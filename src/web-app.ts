@@ -371,6 +371,15 @@ function getOneTapPairingLink(): string {
   return `${baseUrl}#accessCode=${encodeURIComponent(accessCode)}`;
 }
 
+function isPhoneReachablePairingUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname;
+    return !/^(127\.0\.0\.1|localhost|0\.0\.0\.0|::1|::)$/i.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
 function canSharePairingDetails(): boolean {
   return typeof navigator.share === 'function';
 }
@@ -549,6 +558,13 @@ async function updatePairingQr(link: string): Promise<void> {
       'アクセスコードを受け付けると QR を表示します。';
     return;
   }
+  if (!isPhoneReachablePairingUrl(link)) {
+    pairingQrImage.hidden = true;
+    pairingQrImage.removeAttribute('src');
+    pairingQrStatus.textContent =
+      'この起動ではスマホ用 QR をまだ出せません。-PhoneReady か --public-url でスマホ向け URL を用意してください。';
+    return;
+  }
 
   try {
     const pairingQr = await apiJson<{ connectUrl: string; dataUrl: string }>(
@@ -559,8 +575,7 @@ async function updatePairingQr(link: string): Promise<void> {
     }
     pairingQrImage.src = pairingQr.dataUrl;
     pairingQrImage.hidden = false;
-    pairingQrStatus.textContent =
-      'スマホで読み取ると、同じ接続先をそのまま開けます。';
+    pairingQrStatus.textContent = 'スマホではまずこれを読み取ってください。';
   } catch {
     pairingQrImage.hidden = true;
     pairingQrImage.removeAttribute('src');
@@ -580,21 +595,21 @@ function setPairingUiState(): void {
 
   if (preferredConnectSource === 'tailscale-serve') {
     pairingHint.textContent =
-      'この URL は Tailscale Serve で HTTPS 化されています。スマホでそのまま開き、ホーム画面にも追加しやすい経路です。';
+      'まずこの QR をスマホで読み取ってください。Tailscale Serve で HTTPS 化されているので、そのまま開き、ホーム画面にも追加しやすい経路です。';
   } else if (preferredConnectSource === 'public-url') {
     pairingHint.textContent =
-      'この URL はスマホ向けに固定されています。リンクか QR をそのまま渡せます。';
+      'まずこの QR をスマホで読み取ってください。共有やリンク貼り付けは、QR が使えないときだけで十分です。';
   } else if (preferredConnectSource === 'tailscale-direct') {
     pairingHint.textContent =
-      'この URL は Tailscale 直結でそのままスマホから開けます。HTTPS ではないので、ホーム画面追加まで欲しいときは下の HTTPS 化コマンドが有効です。';
+      'まずこの QR をスマホで読み取ってください。Tailscale 直結でそのまま開けます。HTTPS ではないので、ホーム画面追加まで欲しいときは下の HTTPS 化コマンドが有効です。';
   } else if (
     /^(127\.0\.0\.1|localhost|0\.0\.0\.0)$/i.test(new URL(baseUrl).hostname)
   ) {
     pairingHint.textContent =
-      'いま見えている URL はこの PC 向けです。スマホ向けには --public-url を付けると、共有しやすい固定 URL にできます。';
+      'いま見えている URL はこの PC 向けです。スマホで開くには -PhoneReady か --public-url でスマホ向け URL を用意してください。';
   } else {
     pairingHint.textContent =
-      '現在のブラウザ URL をそのまま共有できます。アクセスコード付きリンクも同時に使えます。';
+      'まずこの QR をスマホで読み取ってください。リンク共有は QR が使えないときの予備です。';
   }
 
   sharePairingButton.textContent = canSharePairingDetails()

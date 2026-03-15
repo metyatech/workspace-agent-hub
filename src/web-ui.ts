@@ -442,6 +442,19 @@ export function buildWebUiLaunchInfo(input: {
   };
 }
 
+export function buildBrowserOpenUrl(input: {
+  host: string;
+  port: number;
+  authConfig: Pick<WebUiAuthConfig, 'required' | 'token'>;
+}): string {
+  const browserHost = isWildcardHost(input.host) ? '127.0.0.1' : input.host;
+  const browserUrl = new URL(`http://${browserHost}:${input.port}`);
+  if (input.authConfig.required && input.authConfig.token) {
+    browserUrl.hash = `accessCode=${encodeURIComponent(input.authConfig.token)}`;
+  }
+  return browserUrl.toString();
+}
+
 export async function createWebUiServer(
   options: StartWebUiOptions = {}
 ): Promise<{
@@ -754,6 +767,9 @@ export async function startWebUi(
     console.log(
       `Preferred connect URL (${launchInfo.preferredConnectUrlSource}): ${launchInfo.preferredConnectUrl}`
     );
+    console.log(
+      'Phone onboarding: scan the QR on the opened PC page first. Copy/share the link only if scanning is not available.'
+    );
     if (launchInfo.authRequired && launchInfo.accessCode) {
       console.log(`Access code: ${launchInfo.accessCode}`);
       console.log(`One-tap pairing link: ${launchInfo.oneTapPairingLink}`);
@@ -792,9 +808,11 @@ export async function startWebUi(
   }
 
   if (options.openBrowser !== false) {
-    const localBrowserUrl = isWildcardHost(host)
-      ? `http://127.0.0.1:${port}`
-      : launchInfo.listenUrl;
+    const localBrowserUrl = buildBrowserOpenUrl({
+      host,
+      port,
+      authConfig,
+    });
     openBrowser(localBrowserUrl);
   }
 

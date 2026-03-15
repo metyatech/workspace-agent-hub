@@ -651,12 +651,24 @@
             </div>
           </div>
           <div id="pairingCard" class="status-card pairing-card">
-            <strong>スマホへ渡す</strong>
+            <strong>スマホで開く</strong>
             <p id="pairingHint">
-              接続先 URL とアクセスコードを、スマホへそのまま渡せます。
+              まずこの QR をスマホで読み取ります。リンク共有は QR
+              が使えないときの予備です。
+            </p>
+            <div class="qr-shell">
+              <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
+              <span id="pairingQrStatus" class="install-note"
+                >アクセスコードを受け付けると QR を表示します。</span
+              >
+            </div>
+            <p class="install-note">
+              QR が使えないときだけ、下のリンクや共有文を使います。
             </p>
             <div class="field">
-              <label for="pairingUrlInput">ワンタップ再接続リンク</label>
+              <label for="pairingUrlInput"
+                >QR が使えないときのワンタップ再接続リンク</label
+              >
               <input
                 id="pairingUrlInput"
                 class="pairing-url"
@@ -680,7 +692,9 @@
               </button>
             </div>
             <div class="field">
-              <label for="pairingCodeInput">アクセスコード</label>
+              <label for="pairingCodeInput"
+                >QR が使えないときのアクセスコード</label
+              >
               <input
                 id="pairingCodeInput"
                 class="pairing-url"
@@ -692,12 +706,6 @@
               <button id="copyPairingCodeButton" class="subtle" type="button">
                 コードをコピー
               </button>
-            </div>
-            <div class="qr-shell">
-              <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
-              <span id="pairingQrStatus" class="install-note"
-                >アクセスコードを受け付けると QR を表示します。</span
-              >
             </div>
             <div id="secureLaunchShell" class="field" hidden>
               <label for="secureLaunchCommandInput">HTTPS 化コマンド</label>

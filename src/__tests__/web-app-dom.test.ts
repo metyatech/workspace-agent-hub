@@ -871,6 +871,12 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLButtonElement>('#sharePairingButton')!
         .textContent
     ).toContain('共有文をコピー');
+    expect(
+      document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
+    ).toContain('まずこの QR');
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
   });
 
   it('surfaces a Tailscale direct URL and HTTPS upgrade command when available', async () => {
@@ -906,7 +912,10 @@ describe('web-app DOM', () => {
     );
     expect(
       document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
-    ).toContain('Tailscale 直結');
+    ).toContain('まずこの QR');
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
     expect(
       document.querySelector<HTMLDivElement>('#secureLaunchShell')!.hidden
     ).toBe(false);
@@ -918,6 +927,40 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
         .textContent
     ).toContain('https://desktop.tail5a2d2d.ts.net');
+  });
+
+  it('does not render a smartphone QR when the pairing URL only targets the local PC', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+      },
+      preferredConnectUrl: null,
+      url: 'http://127.0.0.1:3360/',
+    });
+
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('スマホ用 QR をまだ出せません');
+    expect(
+      document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
+    ).toContain('-PhoneReady');
   });
 
   it('accepts an access code from the pairing link hash on first load', async () => {

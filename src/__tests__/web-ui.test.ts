@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { buildWebUiLaunchInfo, createWebUiServer } from '../web-ui.js';
+import {
+  buildBrowserOpenUrl,
+  buildWebUiLaunchInfo,
+  createWebUiServer,
+} from '../web-ui.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
   DirectorySuggestion,
@@ -204,6 +208,32 @@ describe('web UI server', () => {
         'https://hub.example.test/connect#accessCode=secret-token',
       tailscale: null,
     });
+  });
+
+  it('builds a browser-open URL that preloads the access code on the local page', () => {
+    expect(
+      buildBrowserOpenUrl({
+        host: '0.0.0.0',
+        port: 3360,
+        authConfig: {
+          required: true,
+          token: 'secret-token',
+        },
+      })
+    ).toBe('http://127.0.0.1:3360/#accessCode=secret-token');
+  });
+
+  it('keeps the browser-open URL plain when auth is disabled', () => {
+    expect(
+      buildBrowserOpenUrl({
+        host: '127.0.0.1',
+        port: 3360,
+        authConfig: {
+          required: false,
+          token: null,
+        },
+      })
+    ).toBe('http://127.0.0.1:3360/');
   });
 
   it('requires an access code for API requests when auth is enabled', async () => {

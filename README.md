@@ -129,7 +129,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1
 Start it in the recommended smartphone-ready mode so the script configures
 Tailscale Serve and emits an installable HTTPS tailnet URL. If automatic HTTPS
 setup does not complete on this machine, it falls back to a Tailscale-direct
-URL instead of hanging:
+URL instead of hanging. The opened PC page is preloaded so the smartphone QR is
+ready immediately:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady
@@ -211,14 +212,12 @@ workspace-agent-hub web-ui --host 0.0.0.0 --port 3360 --auth-token auto --no-ope
 First-use flow:
 
 1. Start the web UI on the PC.
-2. Read the printed URL and access code from the terminal.
-3. Open the URL from the phone over Tailscale or another trusted route.
-4. Paste the access code once.
-5. Use the pairing card to share or copy a one-tap reconnect link, or scan its QR on the phone.
-6. If the page is served over HTTPS, use the install card to add it to the home screen.
-7. Start or reopen a session, then use the transcript and prompt box from the same page.
-8. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
-9. Use the session search box, browser-local favorites, the remembered last-session card, and saved prompt drafts to jump back into the same work quickly on that device.
+2. Let the local PC page open and show the pairing card.
+3. Scan the pairing QR from the phone. Treat the printed link and copy/share controls as fallback only when scanning is not available.
+4. If the page is served over HTTPS, use the install card to add it to the home screen.
+5. Start or reopen a session, then use the transcript and prompt box from the same page.
+6. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
+7. Use the session search box, browser-local favorites, the remembered last-session card, and saved prompt drafts to jump back into the same work quickly on that device.
 
 Installable/PWA note:
 
@@ -240,9 +239,9 @@ Installable/PWA note:
 - The browser remembers the last reopened session on that device, preserves
   unsent prompt drafts per session, and marks sessions with unseen output based
   on browser-local seen activity.
-- When `--public-url` is provided, the browser app shows a QR, a share action,
-  and a copyable one-tap reconnect link that includes the access code in the
-  URL fragment.
+- When `--public-url` is provided, the browser app treats the QR as the primary
+  smartphone entry path, while the share action and one-tap reconnect link stay
+  available as fallback.
 
 ### Pairing with Manager
 

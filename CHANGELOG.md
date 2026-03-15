@@ -50,6 +50,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   coverage
 - Made `-PhoneReady` fall back when automatic Tailscale Serve setup stalls, so
   startup still prints connect details and keeps a tailnet-direct URL available
+- Shifted smartphone onboarding to a QR-first flow so the opened PC page can
+  show the scannable pairing QR immediately, while copy/share links remain
+  fallback-only paths
 
 ## [0.1.0] - 2026-01-26
 

@@ -42,7 +42,7 @@ test.beforeAll(async () => {
     host: '127.0.0.1',
     port: 0,
     authToken,
-    publicUrl: 'http://127.0.0.1:3362',
+    publicUrl: 'https://hub.example.test/connect',
     openBrowser: false,
     bridge,
   });
@@ -91,6 +91,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
   await expect(page.locator('#workingDirectoryInput')).toHaveValue('D:\\ghws');
   await expect(page.locator('#connectionHint')).toContainText('接続');
   await expect(page.locator('#installHint')).toContainText('ホーム画面');
+  await expect(page.locator('#pairingHint')).toContainText('まずこの QR');
   await expect(page.locator('#pairingUrlInput')).toHaveValue(
     /#accessCode=playwright-token$/
   );
