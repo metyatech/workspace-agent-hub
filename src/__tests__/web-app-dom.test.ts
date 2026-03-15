@@ -12,6 +12,11 @@ const baseHtml = `
     <input id="workingDirectoryInput" />
     <datalist id="workingDirectorySuggestions"></datalist>
     <button id="startSessionButton">start</button>
+    <div id="lastSessionCard" hidden>
+      <span id="lastSessionTitle"></span>
+      <div id="lastSessionMeta"></div>
+      <button id="openLastSessionButton">open last</button>
+    </div>
     <button id="showArchivedButton">toggle</button>
     <input id="sessionSearchInput" />
     <button id="favoriteSessionsOnlyButton">favorites</button>
@@ -422,6 +427,219 @@ describe('web-app DOM', () => {
     expect(
       document.querySelector<HTMLSpanElement>('#sessionsListHint')!.textContent
     ).toContain('固定');
+  });
+
+  it('restores the remembered session and its saved prompt draft on reload', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(
+          JSON.stringify([
+            {
+              Name: 'codex-followup',
+              Type: 'codex',
+              DisplayName: 'followup',
+              Distro: 'Ubuntu',
+              CreatedUnix: 1,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 50,
+              LastActivityLocal: '2026-03-14 00:00:50',
+              Title: 'Follow-up',
+              WorkingDirectoryWindows: 'D:\\ghws\\workspace-agent-hub',
+              PreviewText: 'need one more change',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 50,
+              DisplayTitle: 'Follow-up',
+            },
+          ]),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/sessions/codex-followup/output')) {
+        return new Response(
+          JSON.stringify({
+            SessionName: 'codex-followup',
+            WorkingDirectoryWsl: '/mnt/d/ghws/workspace-agent-hub',
+            Transcript: 'codex output',
+            CapturedAtUtc: new Date().toISOString(),
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.last-session-name',
+          'codex-followup'
+        );
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.session-drafts',
+          JSON.stringify({ 'codex-followup': '続きの指示をあとで送る' })
+        );
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('CODEX');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('#sessionPromptInput')!.value
+    ).toBe('続きの指示をあとで送る');
+    expect(
+      document.querySelector<HTMLDivElement>('#lastSessionCard')!.hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLDivElement>('#selectedSessionSummary')!
+        .textContent
+    ).toContain('下書きあり');
+
+    const searchInput = document.querySelector<HTMLInputElement>(
+      '#sessionSearchInput'
+    )!;
+    searchInput.value = 'missing';
+    searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await waitForTick();
+
+    document
+      .querySelector<HTMLButtonElement>('#openLastSessionButton')!
+      .click();
+    await waitForTick();
+
+    expect(searchInput.value).toBe('');
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('CODEX');
+  });
+
+  it('persists prompt drafts locally and surfaces unseen output badges', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(
+          JSON.stringify([
+            {
+              Name: 'shell-alpha',
+              Type: 'shell',
+              DisplayName: 'alpha',
+              Distro: 'Ubuntu',
+              CreatedUnix: 1,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 15,
+              LastActivityLocal: '2026-03-14 00:00:15',
+              Title: 'Alpha Session',
+              WorkingDirectoryWindows: 'D:\\ghws\\alpha',
+              PreviewText: 'preview alpha',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 15,
+              DisplayTitle: 'Alpha Session',
+            },
+            {
+              Name: 'shell-beta',
+              Type: 'shell',
+              DisplayName: 'beta',
+              Distro: 'Ubuntu',
+              CreatedUnix: 2,
+              CreatedLocal: '2026-03-14 00:00:00',
+              AttachedClients: 0,
+              WindowCount: 1,
+              LastActivityUnix: 25,
+              LastActivityLocal: '2026-03-14 00:00:25',
+              Title: 'Beta Session',
+              WorkingDirectoryWindows: 'D:\\ghws\\beta',
+              PreviewText: 'preview beta',
+              Archived: false,
+              ClosedUtc: '',
+              IsLive: true,
+              State: 'Running',
+              SortUnix: 25,
+              DisplayTitle: 'Beta Session',
+            },
+          ]),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/sessions/shell-alpha/output')) {
+        return new Response(
+          JSON.stringify({
+            SessionName: 'shell-alpha',
+            WorkingDirectoryWsl: '/mnt/d/ghws/alpha',
+            Transcript: 'alpha output',
+            CapturedAtUtc: new Date().toISOString(),
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/sessions/shell-beta/output')) {
+        return new Response(
+          JSON.stringify({
+            SessionName: 'shell-beta',
+            WorkingDirectoryWsl: '/mnt/d/ghws/beta',
+            Transcript: 'beta output',
+            CapturedAtUtc: new Date().toISOString(),
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.session-seen-activity',
+          JSON.stringify({ 'shell-alpha': 15, 'shell-beta': 10 })
+        );
+      },
+    });
+
+    expect(
+      [...document.querySelectorAll('.badge')].some(
+        (element) => element.textContent === '新しい出力'
+      )
+    ).toBe(true);
+
+    document.querySelector<HTMLDivElement>('.session-card')!.click();
+    await waitForTick();
+
+    const promptInput = document.querySelector<HTMLTextAreaElement>(
+      '#sessionPromptInput'
+    )!;
+    promptInput.value = 'あとで送りたいメモ';
+    promptInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await waitForTick();
+
+    expect(
+      window.localStorage.getItem(
+        'workspace-agent-hub.test-token.session-drafts'
+      )
+    ).toContain('あとで送りたいメモ');
+
+    const selectedCard = document.querySelector<HTMLDivElement>(
+      '.session-card.selected'
+    )!;
+    expect(selectedCard.textContent).toContain('下書きあり');
+    expect(selectedCard.textContent).not.toContain('新しい出力');
   });
 
   it('shows the auth overlay when auth is required and no token is saved', async () => {

@@ -26,6 +26,9 @@ const authStorageKey = config.authStorageKey;
 const sessionsCacheKey = `${authStorageKey}.sessions`;
 const notificationsPreferenceKey = `${authStorageKey}.notifications-enabled`;
 const favoriteSessionsKey = `${authStorageKey}.favorite-sessions`;
+const lastSessionNameKey = `${authStorageKey}.last-session-name`;
+const sessionDraftsKey = `${authStorageKey}.session-drafts`;
+const sessionSeenActivityKey = `${authStorageKey}.session-seen-activity`;
 
 const sessionsList = document.querySelector<HTMLDivElement>('#sessionsList')!;
 const refreshSessionsButton = document.querySelector<HTMLButtonElement>(
@@ -43,6 +46,15 @@ const workingDirectorySuggestions = document.querySelector<HTMLDataListElement>(
 )!;
 const startSessionButton = document.querySelector<HTMLButtonElement>(
   '#startSessionButton'
+)!;
+const lastSessionCard =
+  document.querySelector<HTMLDivElement>('#lastSessionCard')!;
+const lastSessionTitle =
+  document.querySelector<HTMLSpanElement>('#lastSessionTitle')!;
+const lastSessionMeta =
+  document.querySelector<HTMLDivElement>('#lastSessionMeta')!;
+const openLastSessionButton = document.querySelector<HTMLButtonElement>(
+  '#openLastSessionButton'
 )!;
 const showArchivedButton = document.querySelector<HTMLButtonElement>(
   '#showArchivedButton'
@@ -150,6 +162,14 @@ let lastTranscript = '';
 let favoriteSessionNames = new Set(
   readStoredJson<string[]>(favoriteSessionsKey) ?? []
 );
+let promptDraftBySession = new Map(
+  Object.entries(readStoredJson<Record<string, string>>(sessionDraftsKey) ?? {})
+);
+let seenActivityBySession = new Map(
+  Object.entries(
+    readStoredJson<Record<string, number>>(sessionSeenActivityKey) ?? {}
+  ).map(([sessionName, seenUnix]) => [sessionName, Number(seenUnix) || 0])
+);
 let authToken = readStoredAuthToken();
 let notificationsEnabled =
   readStoredJson<boolean>(notificationsPreferenceKey) ?? false;
@@ -184,6 +204,31 @@ function writeStoredAuthToken(token: string): void {
   }
 }
 
+function readStoredText(key: string): string | null {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && value.trim() ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredText(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+function removeStoredValue(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 function readStoredJson<T>(key: string): T | null {
   try {
     const raw = window.localStorage.getItem(key);
@@ -198,6 +243,71 @@ function writeStoredJson(key: string, value: unknown): void {
     window.localStorage.setItem(key, JSON.stringify(value));
   } catch {
     /* ignore */
+  }
+}
+
+function persistPromptDrafts(): void {
+  const trimmedDrafts = [...promptDraftBySession.entries()].filter(
+    ([, draft]) => draft.trim().length > 0
+  );
+  promptDraftBySession = new Map(trimmedDrafts);
+  writeStoredJson(sessionDraftsKey, Object.fromEntries(trimmedDrafts));
+}
+
+function persistSeenActivity(): void {
+  writeStoredJson(
+    sessionSeenActivityKey,
+    Object.fromEntries(seenActivityBySession.entries())
+  );
+}
+
+function getSavedDraft(sessionName: string): string {
+  return promptDraftBySession.get(sessionName) ?? '';
+}
+
+function sessionHasSavedDraft(sessionName: string): boolean {
+  return getSavedDraft(sessionName).trim().length > 0;
+}
+
+function persistCurrentPromptDraft(): void {
+  if (!selectedSessionName) {
+    return;
+  }
+  const draft = sessionPromptInput.value;
+  if (draft.trim()) {
+    promptDraftBySession.set(selectedSessionName, draft);
+  } else {
+    promptDraftBySession.delete(selectedSessionName);
+  }
+  persistPromptDrafts();
+
+  const session = sessions.find((item) => item.Name === selectedSessionName);
+  const sessionRow = session ? sessionRows.get(session.Name) : null;
+  if (session && sessionRow) {
+    patchSessionCard(sessionRow, session);
+  }
+}
+
+function clearPromptDraft(sessionName: string): void {
+  promptDraftBySession.delete(sessionName);
+  persistPromptDrafts();
+}
+
+function getRememberedSessionName(): string {
+  return readStoredText(lastSessionNameKey) ?? '';
+}
+
+function rememberSession(sessionName: string): void {
+  writeStoredText(lastSessionNameKey, sessionName);
+}
+
+function clearRememberedSession(sessionName?: string): void {
+  const rememberedSessionName = getRememberedSessionName();
+  if (!rememberedSessionName) {
+    return;
+  }
+  if (!sessionName || rememberedSessionName === sessionName) {
+    removeStoredValue(lastSessionNameKey);
   }
 }
 
@@ -576,6 +686,9 @@ function lockCurrentDevice(): void {
   selectedSessionName = '';
   lastTranscript = '';
   sessionTranscript.textContent = '';
+  sessionPromptInput.value = '';
+  promptDraftBySession = new Map();
+  seenActivityBySession = new Map();
   lastNotifiedTranscriptBySession.clear();
   renderSessions(sessions);
   renderSelectedSession();
@@ -621,6 +734,7 @@ function primeCachedSessions(): void {
   }
 
   sessions = cachedSessions;
+  restorePreferredSelection();
   renderSessions(sessions);
   renderSelectedSession();
   setConnectionState(
@@ -722,6 +836,114 @@ function getSelectedSession(): SessionRecord | undefined {
   return sessions.find((session) => session.Name === selectedSessionName);
 }
 
+function getRememberedSession(): SessionRecord | undefined {
+  const rememberedSessionName = getRememberedSessionName();
+  if (!rememberedSessionName) {
+    return undefined;
+  }
+  return sessions.find((session) => session.Name === rememberedSessionName);
+}
+
+function sessionHasUnseenActivity(session: SessionRecord): boolean {
+  const lastSeenUnix = seenActivityBySession.get(session.Name) ?? 0;
+  return (
+    session.Name !== selectedSessionName &&
+    session.LastActivityUnix > lastSeenUnix
+  );
+}
+
+function markSessionSeen(session: SessionRecord): void {
+  const lastSeenUnix = seenActivityBySession.get(session.Name) ?? 0;
+  if (session.LastActivityUnix <= lastSeenUnix) {
+    return;
+  }
+  seenActivityBySession.set(session.Name, session.LastActivityUnix);
+  persistSeenActivity();
+  const existingCard = sessionRows.get(session.Name);
+  if (existingCard) {
+    patchSessionCard(existingCard, session);
+  }
+}
+
+function renderLastSessionCard(): void {
+  const rememberedSessionName = getRememberedSessionName();
+  const rememberedSession = getRememberedSession();
+
+  if (!rememberedSessionName || !rememberedSession) {
+    lastSessionCard.hidden = true;
+    lastSessionTitle.textContent = '前回の session';
+    lastSessionMeta.textContent =
+      'このブラウザで最後に開いていた session へ戻れます。';
+    openLastSessionButton.disabled = true;
+    return;
+  }
+
+  lastSessionCard.hidden = false;
+  lastSessionTitle.textContent = rememberedSession.DisplayTitle;
+  const statusLabel = rememberedSession.IsLive ? '動作中' : '停止済み';
+  const hiddenLabel = rememberedSession.Archived ? ' / 一覧では非表示' : '';
+  const draftLabel = sessionHasSavedDraft(rememberedSession.Name)
+    ? ' / 下書きあり'
+    : '';
+  lastSessionMeta.textContent =
+    `${rememberedSession.Type.toUpperCase()} / ${statusLabel}${hiddenLabel}${draftLabel}\n` +
+    `${rememberedSession.WorkingDirectoryWindows || config.workspaceRoot}`;
+  openLastSessionButton.disabled = false;
+}
+
+function selectSession(sessionName: string): void {
+  if (selectedSessionName === sessionName) {
+    return;
+  }
+  persistCurrentPromptDraft();
+  selectedSessionName = sessionName;
+  rememberSession(sessionName);
+  lastTranscript = '';
+  sessionTranscript.textContent = '';
+  sessionPromptInput.value = getSavedDraft(sessionName);
+  const session = sessions.find((item) => item.Name === sessionName);
+  if (session) {
+    markSessionSeen(session);
+  }
+  renderSessions(sessions);
+  renderSelectedSession();
+}
+
+function restorePreferredSelection(): void {
+  if (
+    selectedSessionName &&
+    sessions.some((session) => session.Name === selectedSessionName)
+  ) {
+    return;
+  }
+  const rememberedSession = getRememberedSession();
+  if (rememberedSession) {
+    selectedSessionName = rememberedSession.Name;
+    sessionPromptInput.value = getSavedDraft(rememberedSession.Name);
+  }
+}
+
+function openRememberedSession(): void {
+  const rememberedSession = getRememberedSession();
+  if (!rememberedSession) {
+    showToast('前回の session が見つかりません。');
+    return;
+  }
+  if (rememberedSession.Archived || !rememberedSession.IsLive) {
+    includeArchived = true;
+    showArchivedButton.textContent = '動作中だけ表示';
+  }
+  showFavoriteSessionsOnly = false;
+  favoriteSessionsOnlyButton.textContent = 'お気に入りだけ表示';
+  sessionSearchInput.value = '';
+  if (selectedSessionName === rememberedSession.Name) {
+    renderSessions(sessions);
+    renderSelectedSession();
+    return;
+  }
+  selectSession(rememberedSession.Name);
+}
+
 function isRefreshPaused(): boolean {
   return refreshPauseDepth > 0;
 }
@@ -791,6 +1013,12 @@ function patchSessionCard(card: HTMLDivElement, session: SessionRecord): void {
       session.IsLive ? 'Running' : 'Closed'
     )
   );
+  if (sessionHasUnseenActivity(session)) {
+    statusRow.appendChild(makeBadge('unseen', '新しい出力'));
+  }
+  if (sessionHasSavedDraft(session.Name)) {
+    statusRow.appendChild(makeBadge('draft', '下書きあり'));
+  }
   if (isFavoriteSession(session.Name)) {
     statusRow.appendChild(makeBadge('live', 'お気に入り'));
   }
@@ -847,6 +1075,8 @@ function renderSessions(nextSessions: SessionRecord[]): void {
     sessionsListHint.textContent = '最近動いた session が上に出ます。';
   }
 
+  renderLastSessionCard();
+
   if (visibleSessions.length === 0) {
     const emptyState = showFavoriteSessionsOnly
       ? 'お気に入りにした session がありません。カード右上の星で固定できます。'
@@ -867,11 +1097,7 @@ function renderSessions(nextSessions: SessionRecord[]): void {
       card = document.createElement('div');
       card.className = 'session-card';
       card.addEventListener('click', () => {
-        selectedSessionName = session.Name;
-        lastTranscript = '';
-        sessionTranscript.textContent = '';
-        renderSessions(sessions);
-        renderSelectedSession();
+        selectSession(session.Name);
       });
       sessionRows.set(session.Name, card);
     }
@@ -883,9 +1109,11 @@ function renderSessions(nextSessions: SessionRecord[]): void {
     selectedSessionName &&
     !visibleSessions.some((session) => session.Name === selectedSessionName)
   ) {
+    persistCurrentPromptDraft();
     selectedSessionName = '';
     lastTranscript = '';
     sessionTranscript.textContent = '';
+    sessionPromptInput.value = '';
     renderSelectedSession();
   }
 }
@@ -934,6 +1162,7 @@ async function refreshTranscript(): Promise<void> {
         sessionTranscript.scrollTop = sessionTranscript.scrollHeight;
       }
     }
+    markSessionSeen(session);
     setConnectionState(
       'online',
       `session 出力を同期しました。最終取得 ${new Date().toLocaleTimeString('ja-JP')}`
@@ -989,6 +1218,9 @@ function renderSelectedSession(): void {
   if (isFavoriteSession(session.Name)) {
     selectedSessionSummary.appendChild(makeBadge('live', 'お気に入り'));
   }
+  if (sessionHasSavedDraft(session.Name)) {
+    selectedSessionSummary.appendChild(makeBadge('draft', '下書きあり'));
+  }
   if (session.Archived) {
     selectedSessionSummary.appendChild(makeBadge('archived', '一覧では非表示'));
   }
@@ -1012,6 +1244,7 @@ function renderSelectedSession(): void {
   const cachedTranscript = readStoredJson<string>(
     getTranscriptCacheKey(session.Name)
   );
+  sessionPromptInput.value = getSavedDraft(session.Name);
   if (cachedTranscript && !lastTranscript) {
     sessionTranscript.textContent = cachedTranscript;
     lastTranscript = cachedTranscript;
@@ -1027,6 +1260,7 @@ async function refreshSessions(): Promise<void> {
     sessions = await apiJson<SessionRecord[]>(
       '/api/sessions?includeArchived=true'
     );
+    restorePreferredSelection();
     writeStoredJson(sessionsCacheKey, sessions);
     renderSessions(sessions);
     renderSelectedSession();
@@ -1102,12 +1336,8 @@ async function startSession(): Promise<void> {
       })
     );
     upsertSession(session);
-    selectedSessionName = session.Name;
-    lastTranscript = '';
-    sessionTranscript.textContent = '';
-    sessionPromptInput.value = '';
-    renderSessions(sessions);
-    renderSelectedSession();
+    clearPromptDraft(session.Name);
+    selectSession(session.Name);
     showToast('新しい session を開始しました。');
     void refreshSessions();
   } catch (error) {
@@ -1156,6 +1386,7 @@ async function sendPrompt(submit: boolean): Promise<void> {
         body: JSON.stringify({ text, submit }),
       })
     );
+    clearPromptDraft(session.Name);
     sessionPromptInput.value = '';
     await refreshTranscript();
     void refreshSessions();
@@ -1344,10 +1575,16 @@ async function deleteSelectedSession(): Promise<void> {
         method: 'DELETE',
       })
     );
+    clearPromptDraft(session.Name);
+    seenActivityBySession.delete(session.Name);
+    persistSeenActivity();
+    clearRememberedSession(session.Name);
+    lastNotifiedTranscriptBySession.delete(session.Name);
     sessions = sessions.filter((item) => item.Name !== session.Name);
     selectedSessionName = '';
     lastTranscript = '';
     sessionTranscript.textContent = '';
+    sessionPromptInput.value = '';
     renderSessions(sessions);
     renderSelectedSession();
     void refreshSessions();
@@ -1378,6 +1615,9 @@ workingDirectoryInput.value = config.workspaceRoot;
 
 refreshSessionsButton.addEventListener('click', () => void refreshSessions());
 startSessionButton.addEventListener('click', () => void startSession());
+openLastSessionButton.addEventListener('click', () => {
+  openRememberedSession();
+});
 showArchivedButton.addEventListener('click', () => {
   includeArchived = !includeArchived;
   showArchivedButton.textContent = includeArchived
@@ -1389,6 +1629,9 @@ showArchivedButton.addEventListener('click', () => {
 sessionSearchInput.addEventListener('input', () => {
   renderSessions(sessions);
   renderSelectedSession();
+});
+sessionPromptInput.addEventListener('input', () => {
+  persistCurrentPromptDraft();
 });
 favoriteSessionsOnlyButton.addEventListener('click', () => {
   showFavoriteSessionsOnly = !showFavoriteSessionsOnly;

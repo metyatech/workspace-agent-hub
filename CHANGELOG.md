@@ -28,6 +28,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   automation/integration flows
 - Added browser-local session search and favorites to keep the mobile session
   list easier to reopen
+- Added browser-local last-session recall, per-session prompt draft persistence,
+  and unseen-output badges for faster smartphone resume flows
 
 ### Changed
 

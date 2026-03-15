@@ -69,11 +69,12 @@ test('authenticates and manages a shell session from the browser UI', async ({
   const workingDirectory = 'D:\\ghws\\workspace-agent-hub';
   let createdSessionName = '';
 
-  await page.addInitScript(() => {
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
   });
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(
     page.getByRole('heading', { name: 'この画面を開くコードを入力' })
   ).toBeVisible();
@@ -129,6 +130,15 @@ test('authenticates and manages a shell session from the browser UI', async ({
   expect(created).toBeTruthy();
   createdSessionName = created!.Name;
 
+  await page.locator('#sessionPromptInput').fill('draft-before-reload');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
+  await expect(page.locator('#lastSessionCard')).toBeVisible();
+  await expect(page.locator('#lastSessionTitle')).toContainText(title);
+  await expect(page.locator('#sessionPromptInput')).toHaveValue(
+    'draft-before-reload'
+  );
+
   await page
     .locator('#sessionPromptInput')
     .fill('echo playwright-browser-path-pass');
@@ -136,6 +146,9 @@ test('authenticates and manages a shell session from the browser UI', async ({
   await expect(page.locator('#sessionTranscript')).toContainText(
     'playwright-browser-path-pass',
     { timeout: 20000 }
+  );
+  await expect(page.locator('#selectedSessionSummary')).not.toContainText(
+    '下書きあり'
   );
 
   await page.getByRole('button', { name: '閉じた session も表示' }).click();

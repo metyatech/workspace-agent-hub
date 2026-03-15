@@ -278,6 +278,34 @@
         gap: 10px;
       }
 
+      .resume-card {
+        display: grid;
+        gap: 10px;
+        padding: 16px 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(154, 230, 180, 0.18);
+        background: linear-gradient(
+          135deg,
+          rgba(18, 58, 43, 0.9),
+          rgba(10, 28, 21, 0.92)
+        );
+      }
+
+      .resume-card[hidden] {
+        display: none;
+      }
+
+      .resume-card strong {
+        font-size: 15px;
+      }
+
+      .resume-meta {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+      }
+
       .button,
       button {
         appearance: none;
@@ -446,6 +474,16 @@
       .badge.archived {
         background: rgba(183, 214, 196, 0.08);
         color: var(--muted);
+      }
+
+      .badge.unseen {
+        background: rgba(125, 211, 252, 0.16);
+        color: #d8f5ff;
+      }
+
+      .badge.draft {
+        background: rgba(244, 196, 48, 0.14);
+        color: #fff0b3;
       }
 
       .terminal {
@@ -709,6 +747,22 @@
               <button id="showArchivedButton" class="secondary" type="button">
                 閉じた session も表示
               </button>
+            </div>
+
+            <div id="lastSessionCard" class="resume-card" hidden>
+              <strong id="lastSessionTitle">前回の session</strong>
+              <div id="lastSessionMeta" class="resume-meta">
+                このブラウザで最後に開いていた session へ戻れます。
+              </div>
+              <div class="button-row">
+                <button
+                  id="openLastSessionButton"
+                  class="secondary"
+                  type="button"
+                >
+                  前回の session を開く
+                </button>
+              </div>
             </div>
 
             <div class="field">
