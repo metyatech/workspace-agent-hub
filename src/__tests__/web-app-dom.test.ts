@@ -1126,4 +1126,95 @@ describe('web-app DOM', () => {
       url: 'https://hub.example.test/connect#accessCode=pairing-token',
     });
   });
+
+  it('keeps the selected summary unarchived even if the next list poll is stale', async () => {
+    let listResponses = 0;
+    let unarchiveRequests = 0;
+    const archivedSession = {
+      Name: 'shell-demo',
+      Type: 'shell',
+      DisplayName: 'demo',
+      Distro: 'Ubuntu',
+      CreatedUnix: 1,
+      CreatedLocal: '2026-03-14 00:00:00',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 2,
+      LastActivityLocal: '2026-03-14 00:00:02',
+      Title: 'Demo Session',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: 'preview',
+      Archived: true,
+      ClosedUtc: '',
+      IsLive: true,
+      State: 'Running',
+      SortUnix: 2,
+      DisplayTitle: 'Demo Session',
+    };
+    const unarchivedSession = {
+      ...archivedSession,
+      Archived: false,
+    };
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/directories')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (url.includes('/api/sessions?includeArchived=true')) {
+          listResponses += 1;
+          return new Response(JSON.stringify([archivedSession]), {
+            status: 200,
+          });
+        }
+        if (
+          url.includes('/api/sessions/shell-demo/unarchive') &&
+          init?.method === 'POST'
+        ) {
+          unarchiveRequests += 1;
+          return new Response(JSON.stringify(unarchivedSession), {
+            status: 200,
+          });
+        }
+        if (url.includes('/api/sessions/shell-demo/output')) {
+          return new Response(
+            JSON.stringify({
+              SessionName: 'shell-demo',
+              WorkingDirectoryWsl: '/mnt/d/ghws',
+              Transcript: 'echo demo',
+              CapturedAtUtc: new Date().toISOString(),
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.last-session-name',
+          'shell-demo'
+        );
+      },
+    });
+
+    document
+      .querySelector<HTMLButtonElement>('#openLastSessionButton')!
+      .click();
+    await waitForTick();
+
+    expect(
+      document.querySelector<HTMLDivElement>('#selectedSessionSummary')!
+        .textContent
+    ).toContain('一覧では非表示');
+
+    document.querySelector<HTMLButtonElement>('#archiveSessionButton')!.click();
+    await waitForTick();
+    await waitForTick();
+
+    expect(unarchiveRequests).toBe(1);
+  });
 });

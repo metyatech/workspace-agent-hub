@@ -33,18 +33,73 @@ if (-not (Test-Path -Path $wslTmuxScriptPath)) {
     throw "Missing script: $wslTmuxScriptPath"
 }
 
+function ConvertTo-QuotedArgumentString {
+    param(
+        [string[]]$ArgumentList = @()
+    )
+
+    $quoted = foreach ($argument in $ArgumentList) {
+        $value = [string]$argument
+        if (-not $value.Length) {
+            '""'
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+
+        $escaped = $value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"' + $escaped + '"'
+    }
+    return ($quoted -join ' ')
+}
+
+function Invoke-HiddenConsoleCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$ErrorContext = 'Hidden console command failed.'
+    )
+
+    $stdoutPath = Join-Path $env:TEMP ("workspace-agent-hub-stdout-" + [guid]::NewGuid().ToString('N') + '.log')
+    $stderrPath = Join-Path $env:TEMP ("workspace-agent-hub-stderr-" + [guid]::NewGuid().ToString('N') + '.log')
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList (ConvertTo-QuotedArgumentString -ArgumentList $ArgumentList) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdoutText = if (Test-Path -Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
+        $stderrText = if (Test-Path -Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
+        $stdoutLines = if (Test-Path -Path $stdoutPath) { @(Get-Content -Path $stdoutPath) } else { @() }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut = $stdoutText
+            StdErr = $stderrText
+            StdOutLines = $stdoutLines
+        }
+    } finally {
+        foreach ($pathValue in @($stdoutPath, $stderrPath)) {
+            if (Test-Path -Path $pathValue) {
+                [IO.File]::SetAttributes($pathValue, [IO.FileAttributes]::Normal)
+                [IO.File]::Delete($pathValue)
+            }
+        }
+    }
+}
+
 function Invoke-LauncherCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments
     )
 
-    $raw = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcherScriptPath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Launcher failed. Args: $($Arguments -join ' ')"
+    $result = Invoke-HiddenConsoleCommand -FilePath 'powershell.exe' -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherScriptPath) + $Arguments) -ErrorContext 'Launcher failed.'
+    if ($result.ExitCode -ne 0) {
+        $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
+        throw "Launcher failed. Args: $($Arguments -join ' ') $detail"
     }
 
-    return @($raw)
+    return @($result.StdOutLines)
 }
 
 function Invoke-LauncherJson {
@@ -115,12 +170,13 @@ function Convert-WindowsPathToWslPath {
     )
 
     $normalizedPath = $WindowsPath -replace '\\', '/'
-    $output = & wsl.exe -d $Distro -- wslpath -a -u $normalizedPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to convert Windows path to WSL path: $WindowsPath"
+    $result = Invoke-HiddenConsoleCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $Distro, '--', 'wslpath', '-a', '-u', $normalizedPath) -ErrorContext 'Unable to convert Windows path to WSL path.'
+    if ($result.ExitCode -ne 0) {
+        $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
+        throw "Unable to convert Windows path to WSL path: $WindowsPath $detail"
     }
 
-    return (($output | Out-String).Trim())
+    return $result.StdOut.Trim()
 }
 
 function Invoke-WslBridge {
@@ -134,11 +190,12 @@ function Invoke-WslBridge {
         "'$argument'"
     }
     $commandText = "$bridgeWslPath $($quotedArguments -join ' ')"
-    $output = & wsl.exe -d $Distro -- bash -lc $commandText
-    if ($LASTEXITCODE -ne 0) {
-        throw "WSL bridge failed. Args: $($BridgeArguments -join ' ')"
+    $result = Invoke-HiddenConsoleCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $Distro, '--', 'bash', '-lc', $commandText) -ErrorContext 'WSL bridge failed.'
+    if ($result.ExitCode -ne 0) {
+        $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
+        throw "WSL bridge failed. Args: $($BridgeArguments -join ' ') $detail"
     }
-    return @($output)
+    return @($result.StdOutLines)
 }
 
 if ($Action -eq 'list') {
@@ -170,9 +227,10 @@ if ($Action -eq 'start') {
     if ($Type -eq 'shell') {
         $resolvedWindowsWorkingDirectory = if ($WorkingDirectory -and $WorkingDirectory.Trim()) { $WorkingDirectory } else { Split-Path -Parent (Resolve-Path (Join-Path $PSScriptRoot '..')) }
         $resolvedWslWorkingDirectory = Convert-WindowsPathToWslPath -WindowsPath $resolvedWindowsWorkingDirectory
-        [void](& powershell -NoProfile -ExecutionPolicy Bypass -File $wslTmuxScriptPath -Action ensure -SessionName $resolvedName -Distro $Distro -WorkingDirectory $resolvedWslWorkingDirectory -StartupCommand 'exec bash' -Detach)
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to stabilize detached shell session for web UI.'
+        $stabilizeResult = Invoke-HiddenConsoleCommand -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wslTmuxScriptPath, '-Action', 'ensure', '-SessionName', $resolvedName, '-Distro', $Distro, '-WorkingDirectory', $resolvedWslWorkingDirectory, '-StartupCommand', 'exec bash', '-Detach') -ErrorContext 'Failed to stabilize detached shell session for web UI.'
+        if ($stabilizeResult.ExitCode -ne 0) {
+            $detail = if ($stabilizeResult.StdErr.Trim()) { $stabilizeResult.StdErr.Trim() } elseif ($stabilizeResult.StdOut.Trim()) { $stabilizeResult.StdOut.Trim() } else { "Exit code $($stabilizeResult.ExitCode)." }
+            throw "Failed to stabilize detached shell session for web UI. $detail"
         }
     }
     $session = Wait-ForSessionByName -TargetSessionName $resolvedName -Condition { param($candidate) [bool]$candidate.IsLive }

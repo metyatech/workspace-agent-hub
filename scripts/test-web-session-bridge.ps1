@@ -5,18 +5,71 @@ $bridgeScriptPath = Join-Path $PSScriptRoot 'session-web-bridge.ps1'
 $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
 
+function ConvertTo-QuotedArgumentString {
+    param(
+        [string[]]$ArgumentList = @()
+    )
+
+    $quoted = foreach ($argument in $ArgumentList) {
+        $value = [string]$argument
+        if (-not $value.Length) {
+            '""'
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+
+        $escaped = $value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"' + $escaped + '"'
+    }
+    return ($quoted -join ' ')
+}
+
+function Invoke-HiddenPowerShell {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $stdoutPath = Join-Path $env:TEMP ("workspace-agent-hub-test-stdout-" + [guid]::NewGuid().ToString('N') + '.log')
+    $stderrPath = Join-Path $env:TEMP ("workspace-agent-hub-test-stderr-" + [guid]::NewGuid().ToString('N') + '.log')
+    try {
+        $process = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-QuotedArgumentString -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments)) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdoutText = if (Test-Path -Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
+        $stderrText = if (Test-Path -Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut = $stdoutText
+            StdErr = $stderrText
+        }
+    } finally {
+        foreach ($pathValue in @($stdoutPath, $stderrPath)) {
+            if (Test-Path -Path $pathValue) {
+                [IO.File]::SetAttributes($pathValue, [IO.FileAttributes]::Normal)
+                [IO.File]::Delete($pathValue)
+            }
+        }
+    }
+}
+
 function Invoke-BridgeJson {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments
     )
 
-    $raw = & powershell -NoProfile -ExecutionPolicy Bypass -File $bridgeScriptPath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Bridge command failed. Args: $($Arguments -join ' ')"
+    $result = Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments $Arguments
+    if ($result.ExitCode -ne 0) {
+        $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
+        throw "Bridge command failed. Args: $($Arguments -join ' ') $detail"
     }
 
-    return ((($raw | Out-String).Trim()) | ConvertFrom-Json)
+    return (($result.StdOut.Trim()) | ConvertFrom-Json)
 }
 
 try {
@@ -91,7 +144,7 @@ try {
     Write-Output 'PASS'
 } finally {
     try {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $bridgeScriptPath -Action delete -SessionName $resolvedSessionName -Json | Out-Null
+        [void](Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments @('-Action', 'delete', '-SessionName', $resolvedSessionName, '-Json'))
     } catch {
     }
 }

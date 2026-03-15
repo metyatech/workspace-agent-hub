@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import {
+  buildBrowserOpenCommand,
   CommandExecutionError,
   buildBrowserOpenUrl,
   buildWebUiLaunchInfo,
@@ -237,6 +238,14 @@ describe('web UI server', () => {
         },
       })
     ).toBe('http://127.0.0.1:3360/');
+  });
+
+  it('builds a hidden Windows browser launch command instead of shell exec', () => {
+    expect(buildBrowserOpenCommand('http://127.0.0.1:3360/', 'win32')).toEqual({
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'start', '', 'http://127.0.0.1:3360/'],
+      windowsHide: true,
+    });
   });
 
   it('extracts a Tailscale Serve approval URL from command output', () => {

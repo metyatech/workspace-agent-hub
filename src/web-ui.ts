@@ -3,7 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { toDataURL as toQrDataUrl } from 'qrcode';
 import {
   PowerShellSessionBridge,
@@ -119,21 +119,51 @@ function tryListen(
   });
 }
 
-function openBrowser(url: string): void {
-  let command = '';
-  if (process.platform === 'win32') {
-    command = `start "" "${url}"`;
-  } else if (process.platform === 'darwin') {
-    command = `open "${url}"`;
-  } else {
-    command = `xdg-open "${url}"`;
+export interface BrowserOpenCommand {
+  command: string;
+  args: string[];
+  windowsHide: boolean;
+}
+
+export function buildBrowserOpenCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform
+): BrowserOpenCommand {
+  if (platform === 'win32') {
+    return {
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'start', '', url],
+      windowsHide: true,
+    };
   }
 
-  exec(command, (error) => {
-    if (error) {
-      console.log(`Could not open browser automatically. Visit: ${url}`);
+  if (platform === 'darwin') {
+    return {
+      command: 'open',
+      args: [url],
+      windowsHide: false,
+    };
+  }
+
+  return {
+    command: 'xdg-open',
+    args: [url],
+    windowsHide: false,
+  };
+}
+
+function openBrowser(url: string): void {
+  const launch = buildBrowserOpenCommand(url);
+  execFile(
+    launch.command,
+    launch.args,
+    { windowsHide: launch.windowsHide },
+    (error) => {
+      if (error) {
+        console.log(`Could not open browser automatically. Visit: ${url}`);
+      }
     }
-  });
+  );
 }
 
 function injectIndexHtml(

@@ -1501,7 +1501,6 @@ async function renameSelectedSession(): Promise<void> {
     upsertSession(updated);
     renderSessions(sessions);
     renderSelectedSession();
-    void refreshSessions();
   } catch (error) {
     if (
       handleOfflineError(
