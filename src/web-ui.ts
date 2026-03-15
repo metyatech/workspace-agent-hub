@@ -174,6 +174,10 @@ function injectIndexHtml(
     .replace(
       '__WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_COMMAND__',
       JSON.stringify(connectInfo.tailscale?.serveCommand ?? null)
+    )
+    .replace(
+      '__WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_SETUP_URL__',
+      JSON.stringify(connectInfo.tailscale?.serveSetupUrl ?? null)
     );
 }
 
@@ -225,7 +229,33 @@ interface TailscaleStatusPayload {
   };
 }
 
-function runCommand(
+export class CommandExecutionError extends Error {
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+
+  constructor(input: {
+    message: string;
+    stdout?: string;
+    stderr?: string;
+    timedOut?: boolean;
+  }) {
+    super(input.message);
+    this.name = 'CommandExecutionError';
+    this.stdout = input.stdout ?? '';
+    this.stderr = input.stderr ?? '';
+    this.timedOut = input.timedOut ?? false;
+  }
+}
+
+export function extractTailscaleServeSetupUrl(text: string): string | null {
+  const match = text.match(
+    /https:\/\/login\.tailscale\.com\/f\/serve\?node=[^\s]+/i
+  );
+  return match?.[0] ?? null;
+}
+
+export function runCommand(
   command: string,
   args: string[],
   options?: {
@@ -235,6 +265,8 @@ function runCommand(
   return new Promise((resolvePromise, reject) => {
     let settled = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
     const child = execFile(
       command,
       args,
@@ -249,15 +281,28 @@ function runCommand(
         }
         if (error) {
           reject(
-            new Error(
-              stderr.trim() || stdout.trim() || error.message || String(error)
-            )
+            new CommandExecutionError({
+              message:
+                stderr.trim() ||
+                stdout.trim() ||
+                error.message ||
+                String(error),
+              stdout: stdoutBuffer || stdout.toString(),
+              stderr: stderrBuffer || stderr.toString(),
+            })
           );
           return;
         }
-        resolvePromise(stdout.toString());
+        resolvePromise(stdoutBuffer || stdout.toString());
       }
     );
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdoutBuffer += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderrBuffer += chunk.toString();
+    });
 
     timeoutHandle =
       options?.timeoutMs && options.timeoutMs > 0
@@ -268,9 +313,12 @@ function runCommand(
             settled = true;
             child.kill();
             reject(
-              new Error(
-                `Command timed out after ${options.timeoutMs}ms: ${command} ${args.join(' ')}`
-              )
+              new CommandExecutionError({
+                message: `Command timed out after ${options.timeoutMs}ms`,
+                stdout: stdoutBuffer,
+                stderr: stderrBuffer,
+                timedOut: true,
+              })
             );
           }, options.timeoutMs)
         : null;
@@ -322,6 +370,7 @@ async function detectTailscaleConnectInfo(input: {
     : `http://${dnsName}:${input.port}`;
   let serveEnabled = false;
   let serveFallbackReason: string | null = null;
+  let serveSetupUrl: string | null = null;
 
   if (input.enableServe) {
     try {
@@ -332,8 +381,18 @@ async function detectTailscaleConnectInfo(input: {
       );
       serveEnabled = true;
     } catch (error) {
-      serveFallbackReason =
-        error instanceof Error ? error.message : String(error);
+      const diagnosticText =
+        error instanceof CommandExecutionError
+          ? `${error.stdout}\n${error.stderr}\n${error.message}`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      serveSetupUrl = extractTailscaleServeSetupUrl(diagnosticText);
+      serveFallbackReason = serveSetupUrl
+        ? 'Tailscale Serve needs one-time approval on this tailnet.'
+        : error instanceof Error
+          ? error.message
+          : String(error);
     }
   }
 
@@ -344,6 +403,7 @@ async function detectTailscaleConnectInfo(input: {
     serveCommand,
     serveEnabled,
     serveFallbackReason,
+    serveSetupUrl,
   };
 }
 
@@ -795,6 +855,14 @@ export async function startWebUi(
         `To enable installable HTTPS on the tailnet: ${launchInfo.tailscale.serveCommand}`
       );
     }
+    if (launchInfo.tailscale?.serveSetupUrl) {
+      console.log(
+        `Enable Tailscale Serve once in your browser: ${launchInfo.tailscale.serveSetupUrl}`
+      );
+      console.log(
+        'After approval, run the same -PhoneReady command again to get the HTTPS tailnet URL.'
+      );
+    }
     if (
       options.tailscaleServe &&
       !options.publicUrl &&
@@ -802,7 +870,9 @@ export async function startWebUi(
       launchInfo.preferredConnectUrlSource !== 'tailscale-serve'
     ) {
       console.log(
-        'Automatic Tailscale Serve setup did not complete. Continuing with the available connect URL instead.'
+        launchInfo.tailscale?.serveSetupUrl
+          ? 'Automatic Tailscale Serve setup is waiting for one-time tailnet approval. Continuing with the available connect URL instead.'
+          : 'Automatic Tailscale Serve setup did not complete. Continuing with the available connect URL instead.'
       );
     }
   }

@@ -55,6 +55,7 @@ export interface TailscaleConnectInfo {
   serveCommand: string;
   serveEnabled: boolean;
   serveFallbackReason: string | null;
+  serveSetupUrl: string | null;
 }
 
 export interface WebUiConfigBootstrap {
@@ -66,4 +67,5 @@ export interface WebUiConfigBootstrap {
   tailscaleDirectUrl: string | null;
   tailscaleSecureUrl: string | null;
   tailscaleServeCommand: string | null;
+  tailscaleServeSetupUrl: string | null;
 }

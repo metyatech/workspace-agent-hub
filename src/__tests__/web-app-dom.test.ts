@@ -53,6 +53,7 @@ const baseHtml = `
     <span id="pairingQrStatus"></span>
     <div id="secureLaunchShell">
       <input id="secureLaunchCommandInput" />
+      <button id="openSecureLaunchSetupButton">open secure launch setup</button>
       <button id="copySecureLaunchCommandButton">copy secure launch</button>
       <span id="secureLaunchStatus"></span>
     </div>
@@ -84,6 +85,7 @@ async function loadApp(
     tailscaleDirectUrl?: string | null;
     tailscaleSecureUrl?: string | null;
     tailscaleServeCommand?: string | null;
+    tailscaleServeSetupUrl?: string | null;
   }
 ): Promise<Document> {
   const dom = new JSDOM(baseHtml, {
@@ -125,6 +127,7 @@ async function loadApp(
       tailscaleDirectUrl: options?.tailscaleDirectUrl ?? null,
       tailscaleSecureUrl: options?.tailscaleSecureUrl ?? null,
       tailscaleServeCommand: options?.tailscaleServeCommand ?? null,
+      tailscaleServeSetupUrl: options?.tailscaleServeSetupUrl ?? null,
     },
     configurable: true,
   });
@@ -927,6 +930,46 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
         .textContent
     ).toContain('https://desktop.tail5a2d2d.ts.net');
+  });
+
+  it('surfaces a one-time Tailscale Serve approval step when the tailnet has not enabled Serve yet', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+      },
+      preferredConnectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      preferredConnectUrlSource: 'tailscale-direct',
+      tailscaleDirectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      tailscaleSecureUrl: 'https://desktop.tail5a2d2d.ts.net',
+      tailscaleServeCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+      tailscaleServeSetupUrl:
+        'https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL',
+    });
+
+    expect(
+      document.querySelector<HTMLButtonElement>('#openSecureLaunchSetupButton')!
+        .hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
+        .textContent
+    ).toContain(
+      'まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください'
+    );
   });
 
   it('does not render a smartphone QR when the pairing URL only targets the local PC', async () => {

@@ -148,6 +148,9 @@ const secureLaunchShell =
 const secureLaunchCommandInput = document.querySelector<HTMLInputElement>(
   '#secureLaunchCommandInput'
 )!;
+const openSecureLaunchSetupButton = document.querySelector<HTMLButtonElement>(
+  '#openSecureLaunchSetupButton'
+)!;
 const copySecureLaunchCommandButton = document.querySelector<HTMLButtonElement>(
   '#copySecureLaunchCommandButton'
 )!;
@@ -621,14 +624,20 @@ function setPairingUiState(): void {
   copyPairingCodeButton.disabled = !config.authRequired || !accessCode;
   secureLaunchCommandInput.value = config.tailscaleServeCommand ?? '';
   secureLaunchShell.hidden =
-    !config.tailscaleServeCommand ||
+    (!config.tailscaleServeCommand && !config.tailscaleServeSetupUrl) ||
     preferredConnectSource === 'tailscale-serve' ||
     preferredConnectSource === 'public-url';
+  openSecureLaunchSetupButton.hidden = !config.tailscaleServeSetupUrl;
   copySecureLaunchCommandButton.disabled = !config.tailscaleServeCommand;
 
   if (preferredConnectSource === 'tailscale-serve') {
     secureLaunchStatus.textContent =
       'この起動では Tailscale Serve を使っているため、スマホ向け HTTPS 導線はすでに準備できています。';
+  } else if (config.tailscaleServeSetupUrl && config.tailscaleSecureUrl) {
+    secureLaunchStatus.textContent = `まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直すと ${config.tailscaleSecureUrl} を使えます。`;
+  } else if (config.tailscaleServeSetupUrl) {
+    secureLaunchStatus.textContent =
+      'まず有効化ページで Tailscale Serve を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直してください。';
   } else if (config.tailscaleServeCommand && config.tailscaleSecureUrl) {
     secureLaunchStatus.textContent = `より良い HTTPS 導線が必要なら、このコマンドで ${config.tailscaleSecureUrl} を有効にできます。`;
   } else if (config.tailscaleServeCommand) {
@@ -1781,6 +1790,12 @@ copySecureLaunchCommandButton.addEventListener('click', async () => {
       ? 'HTTPS 化コマンドをコピーしました。'
       : 'コマンドをコピーできませんでした。'
   );
+});
+openSecureLaunchSetupButton.addEventListener('click', () => {
+  if (!config.tailscaleServeSetupUrl) {
+    return;
+  }
+  window.open(config.tailscaleServeSetupUrl, '_blank', 'noopener,noreferrer');
 });
 
 authSubmitButton.addEventListener('click', async () => {

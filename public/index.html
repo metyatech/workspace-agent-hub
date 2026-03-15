@@ -717,6 +717,14 @@
               />
               <div class="button-row">
                 <button
+                  id="openSecureLaunchSetupButton"
+                  class="secondary"
+                  type="button"
+                  hidden
+                >
+                  有効化ページを開く
+                </button>
+                <button
                   id="copySecureLaunchCommandButton"
                   class="secondary"
                   type="button"
@@ -942,6 +950,8 @@
         tailscaleDirectUrl: __WORKSPACE_AGENT_HUB_TAILSCALE_DIRECT_URL__,
         tailscaleSecureUrl: __WORKSPACE_AGENT_HUB_TAILSCALE_SECURE_URL__,
         tailscaleServeCommand: __WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_COMMAND__,
+        tailscaleServeSetupUrl:
+          __WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_SETUP_URL__,
       };
     </script>
     <script type="module" src="/web-app.js"></script>

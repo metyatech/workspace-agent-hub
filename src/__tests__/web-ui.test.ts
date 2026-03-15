@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import {
+  CommandExecutionError,
   buildBrowserOpenUrl,
   buildWebUiLaunchInfo,
   createWebUiServer,
+  extractTailscaleServeSetupUrl,
+  runCommand,
 } from '../web-ui.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
@@ -236,6 +239,35 @@ describe('web UI server', () => {
     ).toBe('http://127.0.0.1:3360/');
   });
 
+  it('extracts a Tailscale Serve approval URL from command output', () => {
+    expect(
+      extractTailscaleServeSetupUrl(`
+Serve is not enabled on your tailnet.
+To enable, visit:
+
+         https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL
+`)
+    ).toBe('https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL');
+  });
+
+  it('captures partial stdout when a command times out', async () => {
+    await expect(
+      runCommand(
+        process.execPath,
+        [
+          '-e',
+          "console.log('Serve is not enabled on your tailnet.'); console.log('To enable, visit:'); console.log('https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL'); setInterval(() => {}, 1000);",
+        ],
+        { timeoutMs: 200 }
+      )
+    ).rejects.toMatchObject({
+      timedOut: true,
+      stdout: expect.stringContaining(
+        'https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL'
+      ),
+    } satisfies Partial<CommandExecutionError>);
+  });
+
   it('requires an access code for API requests when auth is enabled', async () => {
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(),
@@ -338,6 +370,7 @@ describe('web UI server', () => {
       serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
       serveEnabled: false,
       serveFallbackReason: null,
+      serveSetupUrl: null,
     });
   });
 
@@ -382,6 +415,7 @@ describe('web UI server', () => {
       ),
       serveEnabled: true,
       serveFallbackReason: null,
+      serveSetupUrl: null,
     });
     expect(invocations).toHaveLength(2);
     expect(invocations[0]).toBe('tailscale status --json');
@@ -390,7 +424,7 @@ describe('web UI server', () => {
     );
   });
 
-  it('falls back to a direct tailnet URL when Tailscale Serve does not complete', async () => {
+  it('falls back to a direct tailnet URL and surfaces approval when Tailscale Serve is not enabled yet', async () => {
     const invocations: string[] = [];
     const { server, connectInfo } = await createWebUiServer({
       bridge: new FakeBridge(),
@@ -411,7 +445,15 @@ describe('web UI server', () => {
           command === 'tailscale' &&
           args.join(' ').startsWith('serve --bg --yes http://127.0.0.1:')
         ) {
-          throw new Error('Command timed out after 5000ms');
+          throw new CommandExecutionError({
+            message: 'Command timed out after 5000ms',
+            stdout: `Serve is not enabled on your tailnet.
+To enable, visit:
+
+         https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL
+`,
+            timedOut: true,
+          });
         }
         throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
       },
@@ -427,7 +469,10 @@ describe('web UI server', () => {
       secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
       serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
       serveEnabled: false,
-      serveFallbackReason: 'Command timed out after 5000ms',
+      serveFallbackReason:
+        'Tailscale Serve needs one-time approval on this tailnet.',
+      serveSetupUrl:
+        'https://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL',
     });
     expect(invocations).toHaveLength(2);
     expect(invocations[0]).toBe('tailscale status --json');
