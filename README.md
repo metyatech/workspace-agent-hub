@@ -297,6 +297,22 @@ Important behavior:
 - Thread storage remains compatible with `thread-inbox` data files, but the
   higher-level Manager GUI now belongs to `workspace-agent-hub`.
 
+#### Manager browser auth state matrix
+
+The Manager page carries the same browser-local access-code behavior as the Hub
+page. The claimed primary states are:
+
+| State               | localStorage token   | URL hash `#accessCode=` | Auth source                       | Manager result                                               |
+| ------------------- | -------------------- | ----------------------- | --------------------------------- | ------------------------------------------------------------ |
+| **Fresh**           | absent               | absent                  | none                              | Auth panel is shown before any inbox/task fetch              |
+| **Fresh**           | absent               | present                 | URL hash → stored to localStorage | Manager opens immediately and boots with the new token       |
+| **Resumed**         | present and valid    | absent                  | localStorage                      | Manager opens directly without showing the auth panel        |
+| **Stale (no hash)** | present but rejected | absent                  | localStorage (rejected)           | Stored token is cleared and the auth panel reopens           |
+| **Stale + hash**    | present (old)        | present (new)           | URL hash overrides localStorage   | New token replaces the old one and Manager opens immediately |
+
+Automated tests in `src/__tests__/manager-app-dom.test.ts` cover these five
+rows.
+
 ## Verification
 
 Lint:
@@ -346,7 +362,7 @@ This repository claims the following primary handoff paths.
 | `P3` | A session started from the mobile SSH menu becomes visible and reopenable from the PC-side launcher flow.                                                                                                                                                                                                                                                                                                                                                       | `scripts/test-mobile-ssh.py`                                                                                                     |
 | `P4` | When multiple sessions exist, the user can distinguish and reopen the intended one by title/folder.                                                                                                                                                                                                                                                                                                                                                             | `scripts/test-primary-path-matrix.ps1` and `scripts/test-mobile-ssh.py`                                                          |
 | `P5` | The browser UI can authenticate, list sessions, start a session, restore the remembered last session plus saved prompt drafts, mark sessions with unseen output, display transcript output, search/prioritize browser-local favorite sessions, surface install/offline/notification guidance, expose Tailscale-aware secure-launch hints, render QR/copyable smartphone pairing links, locally lock the current browser, and manage archive/close/delete flows. | `e2e/web-ui.spec.ts`, `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `scripts/test-web-session-bridge.ps1` |
-| `P6` | `Open Manager` opens Hub's native `/manager/` page on the same authenticated origin, and that page can read/write workspace threads, show active tasks, and start/use the built-in manager backend for both desktop and smartphone-oriented browser entry paths.                                                                                                                                                                                                | `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`                                                              |
+| `P6` | `Open Manager` opens Hub's native `/manager/` page on the same authenticated origin, and that page can authenticate across fresh/resumed/stale browser states, read/write workspace threads, show active tasks, and start/use the built-in manager backend for both desktop and smartphone-oriented browser entry paths.                                                                                                                                        | `src/__tests__/web-ui.test.ts`, `src/__tests__/web-app-dom.test.ts`, `src/__tests__/manager-app-dom.test.ts`                     |
 
 ## Environment variables
 

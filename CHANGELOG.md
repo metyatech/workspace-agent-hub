@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- Added browser-DOM regression coverage for the native Manager page's
+  fresh/resumed/stale access-code states
+
+### Changed
+
+- Expanded the README Manager verification notes so `workspace-agent-hub` is
+  documented as the sole Manager UI with an explicit browser auth state matrix
+
 ## [0.2.1] - 2026-03-16
 
 ### Changed
