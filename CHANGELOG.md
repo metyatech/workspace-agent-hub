@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-16
+
 ### Added
 
 - Added standalone repository documentation and local AGENTS composition for
@@ -33,6 +35,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Added Tailscale-aware launch metadata, browser secure-launch hints, and an
   explicit `--tailscale-serve` / `-PhoneReady` path for smartphone-ready HTTPS
   PWA access
+- Added a native Manager page under `/manager/`, including the inbox UI,
+  thread/task view, and built-in manager backend integration
 
 ### Changed
 
@@ -57,6 +61,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   points to the stable Tailscale DNS settings page in both the startup output
   and the browser UI instead of relying on a node-specific approval URL that
   may fail after sign-in
+- `Open Manager` now opens Hub's native Manager page instead of reusing a
+  separate `thread-inbox manager-gui` process
 
 ## [0.1.0] - 2026-01-26
 

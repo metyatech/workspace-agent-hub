@@ -1,6 +1,6 @@
 {
   "name": "@metyatech/workspace-agent-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Windows + WSL tmux session fabric with a mobile-friendly web UI for AI agent CLI handoff",
   "type": "module",
   "bin": {
@@ -39,7 +39,7 @@
     "web-ui": "node dist/cli.js web-ui"
   },
   "dependencies": {
-    "@metyatech/thread-inbox": "file:../thread-inbox",
+    "@metyatech/thread-inbox": "^0.4.0",
     "commander": "^14.0.3",
     "qrcode": "^1.5.4"
   },
