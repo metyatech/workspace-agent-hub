@@ -370,12 +370,13 @@ This repository claims the following primary handoff paths.
 Release the package and create the matching GitHub release:
 
 ```powershell
-npm version 0.2.0 --no-git-tag-version
+$version = '0.2.1'
+npm version $version --no-git-tag-version
 npm run verify
 git push origin main
-git tag v0.2.0
-git push origin v0.2.0
-gh release create v0.2.0 --repo metyatech/workspace-agent-hub --title v0.2.0 --notes "See CHANGELOG.md"
+git tag v$version
+git push origin v$version
+gh release create v$version --repo metyatech/workspace-agent-hub --title v$version --notes "See CHANGELOG.md"
 npm publish
 ```
 
@@ -383,7 +384,7 @@ Verify the published package resolves and runs:
 
 ```powershell
 npm view @metyatech/workspace-agent-hub version
-npm exec --yes --package @metyatech/workspace-agent-hub@0.2.0 workspace-agent-hub -- --version
+npm exec --yes --package @metyatech/workspace-agent-hub@latest workspace-agent-hub -- --version
 ```
 
 ## Links

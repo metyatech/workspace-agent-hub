@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-16
+
+### Changed
+
+- Reissued the native Manager release with an explicitly pushed Git tag so the latest Hub release chain is aligned end-to-end
+- Updated the bundled `@metyatech/thread-inbox` dependency to the clean post-`manager-gui` line
+
 ## [0.2.0] - 2026-03-16
 
 ### Added
