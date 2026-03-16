@@ -10,11 +10,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 - Added browser-DOM regression coverage for the native Manager page's
   fresh/resumed/stale access-code states
+- Added Playwright coverage for opening Manager from Hub on both desktop and
+  mobile-width browser paths
 
 ### Changed
 
 - Expanded the README Manager verification notes so `workspace-agent-hub` is
   documented as the sole Manager UI with an explicit browser auth state matrix
+- Changed `Open Manager` to reuse the current browser origin and move into the
+  native `/manager/` page in the same tab instead of relying on a separate tab
 
 ## [0.2.1] - 2026-03-16
 

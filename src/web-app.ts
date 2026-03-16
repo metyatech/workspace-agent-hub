@@ -1830,11 +1830,24 @@ authSubmitButton.addEventListener('click', async () => {
 });
 
 openManagerButton.addEventListener('click', () => {
-  void openManager();
+  openManager();
 });
 
+function navigateTo(url: string): void {
+  const testHook = (
+    window as Window & {
+      __WORKSPACE_AGENT_HUB_NAVIGATE__?: (nextUrl: string) => void;
+    }
+  ).__WORKSPACE_AGENT_HUB_NAVIGATE__;
+  if (typeof testHook === 'function') {
+    testHook(url);
+    return;
+  }
+  window.location.assign(url);
+}
+
 function buildManagerUrl(): string {
-  const base = new URL(config.preferredConnectUrl || getCurrentPageUrl());
+  const base = new URL(getCurrentPageUrl());
   const basePath = base.pathname.replace(/\/+$/, '');
   base.pathname = basePath ? `${basePath}/manager/` : '/manager/';
   base.search = '';
@@ -1845,19 +1858,17 @@ function buildManagerUrl(): string {
   return base.toString();
 }
 
-async function openManager(): Promise<void> {
+function openManager(): void {
   openManagerButton.disabled = true;
-  managerStatus.textContent = '開いています…';
+  managerStatus.textContent = '移動しています…';
   try {
     const managerUrl = buildManagerUrl();
-    managerStatus.textContent = '別タブで開きました。';
-    window.open(managerUrl, '_blank', 'noopener,noreferrer');
+    navigateTo(managerUrl);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Manager の起動に失敗しました';
     managerStatus.textContent = message;
     showToast('Manager を開けませんでした');
-  } finally {
     openManagerButton.disabled = false;
   }
 }

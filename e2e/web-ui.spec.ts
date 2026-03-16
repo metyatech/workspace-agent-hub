@@ -191,3 +191,63 @@ test('authenticates and manages a shell session from the browser UI', async ({
     await cleanupPlaywrightSessions();
   }
 });
+
+test('opens Manager from Hub in the same tab on desktop', async ({ page }) => {
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
+  await page.getByRole('button', { name: '開く', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Manager を開く' })
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'Manager を開く' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/manager/?$`));
+  await expect(
+    page.getByRole('heading', { name: 'マネージャー' })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'この画面を開くコードを入力' })
+  ).toHaveCount(0);
+});
+
+test('opens Manager from Hub on mobile width without horizontal overflow', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
+  await page.getByRole('button', { name: '開く', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Manager を開く' })
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'Manager を開く' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/manager/?$`));
+  await expect(
+    page.getByRole('heading', { name: 'マネージャー' })
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '+ 新しいトピック' })).toBeVisible();
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth
+      )
+    )
+    .toBe(true);
+});

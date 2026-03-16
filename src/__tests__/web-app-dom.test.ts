@@ -280,7 +280,7 @@ describe('web-app DOM', () => {
     ).toContain('echo demo');
   });
 
-  it('opens the native manager page directly without a preflight ensure request', async () => {
+  it('navigates to the native manager page directly without a preflight ensure request', async () => {
     const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/directories')) {
@@ -293,28 +293,26 @@ describe('web-app DOM', () => {
     });
     const fetchMock = fetchMockImpl as unknown as typeof fetch;
 
-    const openMock = vi.fn();
+    const assignMock = vi.fn();
     const document = await loadApp(fetchMock, true, {
       beforeImport: (window) => {
         window.localStorage.setItem(
           'workspace-agent-hub.test-token',
           'manager-token'
         );
-        Object.defineProperty(window, 'open', {
-          value: openMock,
-          configurable: true,
-        });
+        (
+          window as Window & {
+            __WORKSPACE_AGENT_HUB_NAVIGATE__?: (nextUrl: string) => void;
+          }
+        ).__WORKSPACE_AGENT_HUB_NAVIGATE__ = assignMock;
       },
-      preferredConnectUrl: 'https://hub.example.test/connect',
     });
 
     document.querySelector<HTMLButtonElement>('#openManagerButton')!.click();
     await waitForTick();
 
-    expect(openMock).toHaveBeenCalledWith(
-      'https://hub.example.test/connect/manager/#accessCode=manager-token',
-      '_blank',
-      'noopener,noreferrer'
+    expect(assignMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3360/manager/#accessCode=manager-token'
     );
     expect(
       fetchMockImpl.mock.calls.some(([input]) =>
@@ -323,7 +321,7 @@ describe('web-app DOM', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLSpanElement>('#managerStatus')!.textContent
-    ).toContain('別タブ');
+    ).toContain('移動');
   });
 
   it('filters sessions by search text and keeps favorite sessions first', async () => {
