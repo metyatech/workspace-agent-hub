@@ -301,6 +301,33 @@ function Start-WebUiProcess {
     }
 }
 
+function Get-ProcessLaunchDetail {
+    param(
+        [Parameter(Mandatory = $true)]
+        $ProcessInfo
+    )
+
+    $stderrText = if (Test-Path -Path $ProcessInfo.StdErrPath) {
+        (Get-Content -Path $ProcessInfo.StdErrPath -Raw -Encoding utf8).Trim()
+    } else {
+        ''
+    }
+    $stdoutText = if (Test-Path -Path $ProcessInfo.StdOutPath) {
+        (Get-Content -Path $ProcessInfo.StdOutPath -Raw -Encoding utf8).Trim()
+    } else {
+        ''
+    }
+
+    if ($stderrText) {
+        return $stderrText
+    }
+    if ($stdoutText) {
+        return $stdoutText
+    }
+
+    return 'No process output captured.'
+}
+
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
 $resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState
@@ -347,7 +374,10 @@ if (
     $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -TargetStatePath $resolvedStatePath
     $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
     $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
-    [void](Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken)
+    $ready = Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken -TimeoutMilliseconds 90000
+    if (-not $ready) {
+        throw "Workspace Agent Hub web UI did not become ready at $localListenUrl. $(Get-ProcessLaunchDetail -ProcessInfo $started)"
+    }
 
     $finalState = [pscustomobject]@{
         ListenUrl = $localListenUrl

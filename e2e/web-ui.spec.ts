@@ -71,6 +71,32 @@ test.afterAll(async () => {
   });
 });
 
+async function expectAuthScreenOwnsViewport(page: Page): Promise<void> {
+  await expect(
+    page.getByRole('heading', { name: 'この画面を開くコードを入力' })
+  ).toBeVisible();
+  await expect
+    .poll(async () =>
+      page.evaluate(() => ({
+        htmlLocked: document.documentElement.classList.contains('auth-locked'),
+        authLocked: document.body.classList.contains('auth-locked'),
+        shellPointerEvents: getComputedStyle(
+          document.querySelector('.shell') as HTMLElement
+        ).pointerEvents,
+        topElement:
+          document
+            .elementFromPoint(Math.floor(window.innerWidth / 2), 24)
+            ?.closest('#authOverlay')?.id ?? '',
+      }))
+    )
+    .toEqual({
+      htmlLocked: true,
+      authLocked: true,
+      shellPointerEvents: 'none',
+      topElement: 'authOverlay',
+    });
+}
+
 test('authenticates and manages a shell session from the browser UI', async ({
   page,
 }) => {
@@ -86,9 +112,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
       window.sessionStorage.clear();
     });
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await expect(
-      page.getByRole('heading', { name: 'この画面を開くコードを入力' })
-    ).toBeVisible();
+    await expectAuthScreenOwnsViewport(page);
 
     await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
     await page.getByRole('button', { name: '開く', exact: true }).click();
@@ -193,6 +217,24 @@ test('authenticates and manages a shell session from the browser UI', async ({
     ).toBeVisible();
   } finally {
     await cleanupPlaywrightSessions();
+  }
+});
+
+test('keeps the access-code screen above the hub on desktop and mobile widths', async ({
+  page,
+}) => {
+  for (const viewport of [
+    { width: 1365, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expectAuthScreenOwnsViewport(page);
   }
 });
 

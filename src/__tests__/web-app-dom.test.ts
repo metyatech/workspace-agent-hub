@@ -5,6 +5,7 @@ const baseHtml = `
 <!doctype html>
 <html>
   <body>
+    <div class="shell">
     <div id="sessionsList"></div>
     <button id="refreshSessionsButton"></button>
     <select id="sessionTypeSelect"><option value="shell">shell</option></select>
@@ -64,6 +65,7 @@ const baseHtml = `
       <span id="secureLaunchStatus"></span>
     </div>
     <div id="toast"></div>
+    </div>
     <div id="authOverlay"></div>
     <input id="authTokenInput" />
     <button id="authSubmitButton">auth</button>
@@ -847,6 +849,15 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(true);
+    expect(document.documentElement.classList.contains('auth-locked')).toBe(
+      true
+    );
+    expect(document.body.classList.contains('auth-locked')).toBe(true);
+    expect(
+      document
+        .querySelector<HTMLDivElement>('.shell')!
+        .getAttribute('aria-hidden')
+    ).toBe('true');
   });
 
   it('renders cached sessions and offline state when refresh fails', async () => {
@@ -1199,6 +1210,10 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(false);
+    expect(document.documentElement.classList.contains('auth-locked')).toBe(
+      false
+    );
+    expect(document.body.classList.contains('auth-locked')).toBe(false);
     expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
       'hash-token'
     );
@@ -1246,6 +1261,10 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(false);
+    expect(document.documentElement.classList.contains('auth-locked')).toBe(
+      false
+    );
+    expect(document.body.classList.contains('auth-locked')).toBe(false);
     // The QR must be visible with the new token.
     expect(
       document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
@@ -1284,6 +1303,15 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#authOverlay')!
         .classList.contains('visible')
     ).toBe(true);
+    expect(document.documentElement.classList.contains('auth-locked')).toBe(
+      true
+    );
+    expect(document.body.classList.contains('auth-locked')).toBe(true);
+    expect(
+      document
+        .querySelector<HTMLDivElement>('.shell')!
+        .getAttribute('aria-hidden')
+    ).toBe('true');
     // The QR must stay hidden because the token could not be validated.
     expect(
       document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden

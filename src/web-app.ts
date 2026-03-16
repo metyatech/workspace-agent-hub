@@ -29,6 +29,7 @@ const favoriteSessionsKey = `${authStorageKey}.favorite-sessions`;
 const lastSessionNameKey = `${authStorageKey}.last-session-name`;
 const sessionDraftsKey = `${authStorageKey}.session-drafts`;
 const sessionSeenActivityKey = `${authStorageKey}.session-seen-activity`;
+const appShell = document.querySelector<HTMLDivElement>('.shell')!;
 
 const sessionsList = document.querySelector<HTMLDivElement>('#sessionsList')!;
 const refreshSessionsButton = document.querySelector<HTMLButtonElement>(
@@ -891,6 +892,10 @@ function setBusy(
 function setAuthOverlayVisible(visible: boolean): void {
   authOverlay.classList.toggle('visible', visible);
   authOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  document.documentElement.classList.toggle('auth-locked', visible);
+  document.body.classList.toggle('auth-locked', visible);
+  appShell.setAttribute('aria-hidden', visible ? 'true' : 'false');
+  (appShell as HTMLElement & { inert?: boolean }).inert = visible;
   if (visible) {
     setConnectionState(
       'auth',
