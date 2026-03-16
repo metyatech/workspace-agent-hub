@@ -76,6 +76,13 @@ const selectedSessionSummary = document.querySelector<HTMLDivElement>(
 const selectedSessionControls = document.querySelector<HTMLDivElement>(
   '#selectedSessionControls'
 )!;
+const promptComposerShell = document.querySelector<HTMLDivElement>(
+  '#promptComposerShell'
+)!;
+const sessionPromptLead =
+  document.querySelector<HTMLSpanElement>('#sessionPromptLead')!;
+const sessionPromptHint =
+  document.querySelector<HTMLSpanElement>('#sessionPromptHint')!;
 const sessionTranscript =
   document.querySelector<HTMLPreElement>('#sessionTranscript')!;
 const sessionPromptInput = document.querySelector<HTMLTextAreaElement>(
@@ -197,6 +204,7 @@ let connectionState: 'connecting' | 'online' | 'offline' | 'auth' =
   'connecting';
 const lastNotifiedTranscriptBySession = new Map<string, string>();
 let pairingQrLink = '';
+let promptAttentionTimer: number | null = null;
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -341,6 +349,46 @@ function getTranscriptCacheKey(sessionName: string): string {
   return `${authStorageKey}.transcript.${sessionName}`;
 }
 
+function isCompactLayout(): boolean {
+  return (
+    window.matchMedia('(max-width: 920px)').matches || window.innerWidth <= 920
+  );
+}
+
+function spotlightPromptComposer(options?: {
+  focusInput?: boolean;
+  scrollIntoView?: boolean;
+}): void {
+  if (promptAttentionTimer !== null) {
+    window.clearTimeout(promptAttentionTimer);
+    promptAttentionTimer = null;
+  }
+
+  promptComposerShell.classList.remove('attention');
+  void promptComposerShell.offsetWidth;
+  promptComposerShell.classList.add('attention');
+
+  if (options?.scrollIntoView || isCompactLayout()) {
+    promptComposerShell.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+  }
+
+  if (options?.focusInput) {
+    window.setTimeout(() => {
+      sessionPromptInput.focus();
+      const end = sessionPromptInput.value.length;
+      sessionPromptInput.setSelectionRange(end, end);
+    }, 0);
+  }
+
+  promptAttentionTimer = window.setTimeout(() => {
+    promptComposerShell.classList.remove('attention');
+    promptAttentionTimer = null;
+  }, 1800);
+}
+
 function isFavoriteSession(sessionName: string): boolean {
   return favoriteSessionNames.has(sessionName);
 }
@@ -481,7 +529,7 @@ function setInstallUiState(): void {
     installAppButton.hidden = true;
     installAppButton.disabled = true;
     installHint.textContent =
-      'この端末では、すでにホーム画面アプリとして開いています。';
+      'この端末では、すでにホーム画面アプリとして開いています。PC ではデスクトップかスタートメニューの Workspace Agent Hub から開けます。';
     installStatus.textContent = 'インストール済みです。';
     return;
   }
@@ -490,7 +538,7 @@ function setInstallUiState(): void {
     installAppButton.hidden = true;
     installAppButton.disabled = true;
     installHint.textContent =
-      'HTTPS で開くとホーム画面アプリとして追加できます。Tailscale Serve などの secure context を使ってください。';
+      'HTTPS で開くとホーム画面アプリとして追加できます。Tailscale Serve などの secure context を使ってください。PC ではデスクトップかスタートメニューの Workspace Agent Hub から開けます。';
     installStatus.textContent = '現在は通常のブラウザ表示です。';
     return;
   }
@@ -499,7 +547,7 @@ function setInstallUiState(): void {
     installAppButton.hidden = false;
     installAppButton.disabled = false;
     installHint.textContent =
-      'この端末に追加できます。追加するとスマホから 1 タップで開けます。';
+      'この端末に追加できます。追加するとスマホから 1 タップで開けます。PC ではデスクトップかスタートメニューの Workspace Agent Hub から開けます。';
     installStatus.textContent = 'インストール可能です。';
     return;
   }
@@ -507,7 +555,7 @@ function setInstallUiState(): void {
   installAppButton.hidden = true;
   installAppButton.disabled = true;
   installHint.textContent =
-    'このブラウザでは追加ボタンがまだ利用できません。共有メニューの「ホーム画面に追加」でも構いません。';
+    'このブラウザでは追加ボタンがまだ利用できません。共有メニューの「ホーム画面に追加」でも構いません。PC ではデスクトップかスタートメニューの Workspace Agent Hub から開けます。';
   installStatus.textContent = 'ブラウザ側の準備待ちです。';
 }
 
@@ -970,8 +1018,14 @@ function renderLastSessionCard(): void {
   openLastSessionButton.disabled = false;
 }
 
-function selectSession(sessionName: string): void {
+function selectSession(
+  sessionName: string,
+  options?: { revealPrompt?: boolean }
+): void {
   if (selectedSessionName === sessionName) {
+    if (options?.revealPrompt) {
+      spotlightPromptComposer({ focusInput: true });
+    }
     return;
   }
   persistCurrentPromptDraft();
@@ -986,6 +1040,11 @@ function selectSession(sessionName: string): void {
   }
   renderSessions(sessions);
   renderSelectedSession();
+  if (options?.revealPrompt) {
+    spotlightPromptComposer({
+      focusInput: Boolean(getSelectedSession()?.IsLive),
+    });
+  }
 }
 
 function restorePreferredSelection(): void {
@@ -1018,9 +1077,10 @@ function openRememberedSession(): void {
   if (selectedSessionName === rememberedSession.Name) {
     renderSessions(sessions);
     renderSelectedSession();
+    spotlightPromptComposer({ focusInput: Boolean(rememberedSession.IsLive) });
     return;
   }
-  selectSession(rememberedSession.Name);
+  selectSession(rememberedSession.Name, { revealPrompt: true });
 }
 
 function isRefreshPaused(): boolean {
@@ -1179,7 +1239,7 @@ function renderSessions(nextSessions: SessionRecord[]): void {
       card = document.createElement('div');
       card.className = 'session-card';
       card.addEventListener('click', () => {
-        selectSession(session.Name);
+        selectSession(session.Name, { revealPrompt: true });
       });
       sessionRows.set(session.Name, card);
     }
@@ -1274,18 +1334,34 @@ function startTranscriptPolling(): void {
 function renderSelectedSession(): void {
   const session = getSelectedSession();
   if (!session) {
-    selectedSessionState.textContent = '未選択';
+    selectedSessionState.textContent = '← 左で session を選ぶ';
     selectedSessionSummary.className = 'empty-state';
     selectedSessionSummary.textContent =
-      '左側の一覧から session を選ぶと、ここに出力と操作が出ます。';
-    selectedSessionControls.style.display = 'none';
-    sessionTranscript.textContent = '';
+      'まず左で新しい作業を始めるか、続きから開く session を選びます。選んだあと、この下の入力欄から AI に続きの指示を送れます。';
+    selectedSessionControls.style.display = 'block';
+    sessionTranscript.textContent =
+      '選んだ session の出力がここに出ます。下の入力欄は、session を選ぶと使えるようになります。';
     lastTranscript = '';
+    sessionPromptLead.textContent =
+      '次は session を選んでから、ここに一言ずつ書きます';
+    sessionPromptHint.textContent =
+      '先に左の一覧から session を選ぶと、ここがすぐ使える状態になります。';
+    sessionPromptInput.value = '';
+    sessionPromptInput.disabled = true;
+    sessionPromptInput.placeholder =
+      '先に左の一覧から session を選ぶと、ここから AI に送れます。';
+    renameSessionButton.disabled = true;
+    archiveSessionButton.disabled = true;
+    interruptSessionButton.disabled = true;
+    closeSessionButton.disabled = true;
+    deleteSessionButton.disabled = true;
+    sendPromptButton.disabled = true;
+    sendRawButton.disabled = true;
     stopTranscriptPolling();
     return;
   }
 
-  selectedSessionState.textContent = `${session.Type.toUpperCase()} / ${session.IsLive ? 'Running' : 'Closed'}`;
+  selectedSessionState.textContent = `${session.Type.toUpperCase()} / ${session.IsLive ? '動作中' : '停止済み'}`;
   selectedSessionSummary.className = 'pill-row';
   selectedSessionSummary.innerHTML = '';
   selectedSessionSummary.appendChild(
@@ -1314,12 +1390,24 @@ function renderSelectedSession(): void {
 
   selectedSessionSummary.append(folder, preview);
   selectedSessionControls.style.display = 'block';
+  sessionPromptLead.textContent = '次はここに一言ずつ書いて AI に送ります';
+  sessionPromptHint.textContent = session.IsLive
+    ? 'いま見えている session の続きをここから送れます。結果はこの入力欄のすぐ上にある出力欄へ増えていきます。'
+    : 'この session は停止済みです。再開したいときは新しく作るか、動作中の session を選んでください。';
   archiveSessionButton.textContent = session.Archived
     ? '一覧へ戻す'
     : '一覧から隠す';
+  renameSessionButton.disabled = false;
+  archiveSessionButton.disabled = false;
   sendPromptButton.disabled = !session.IsLive;
   sendRawButton.disabled = !session.IsLive;
+  sessionPromptInput.disabled = !session.IsLive;
+  sessionPromptInput.placeholder = session.IsLive
+    ? '例: いまの状況を 3 行で要約して / このテストだけ回して / 続けて'
+    : '停止済みの session には送れません。';
   interruptSessionButton.disabled = !session.IsLive;
+  closeSessionButton.disabled = !session.IsLive;
+  deleteSessionButton.disabled = false;
   const cachedTranscript = readStoredJson<string>(
     getTranscriptCacheKey(session.Name)
   );
@@ -1416,8 +1504,9 @@ async function startSession(): Promise<void> {
     );
     upsertSession(session);
     clearPromptDraft(session.Name);
-    selectSession(session.Name);
-    showToast('新しい session を開始しました。');
+    sessionTitleInput.value = '';
+    selectSession(session.Name, { revealPrompt: true });
+    showToast('新しい session を開始しました。続きは下の入力欄から送れます。');
     void refreshSessions();
   } catch (error) {
     if (error instanceof AuthRequiredError) {

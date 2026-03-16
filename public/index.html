@@ -171,6 +171,7 @@
       .install-note {
         color: var(--muted);
         font-size: 12px;
+        line-height: 1.55;
       }
 
       .pairing-card {
@@ -509,6 +510,34 @@
         word-break: break-word;
       }
 
+      .composer-shell {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+        padding: 16px;
+        border-radius: 20px;
+        border: 1px solid rgba(154, 230, 180, 0.12);
+        background: rgba(11, 31, 23, 0.7);
+        transition:
+          border-color 180ms ease,
+          box-shadow 180ms ease,
+          transform 180ms ease;
+      }
+
+      .composer-shell.attention {
+        border-color: rgba(154, 230, 180, 0.45);
+        box-shadow: 0 0 0 4px rgba(154, 230, 180, 0.12);
+      }
+
+      .composer-guide {
+        display: grid;
+        gap: 6px;
+      }
+
+      .composer-guide strong {
+        font-size: 15px;
+      }
+
       .empty-state {
         padding: 18px;
         border-radius: 18px;
@@ -580,6 +609,11 @@
         .hero {
           position: static;
         }
+
+        .shell {
+          width: min(100vw, calc(100vw - 12px));
+          padding-top: 12px;
+        }
       }
     </style>
   </head>
@@ -595,7 +629,7 @@
         </p>
         <div class="hint-grid">
           <div class="hint">1. 上で session を始めるか一覧から選ぶ</div>
-          <div class="hint">2. 右側で出力を見ながら一言ずつ追加指示する</div>
+          <div class="hint">2. 出力を見ながら一言ずつ追加指示する</div>
           <div class="hint">
             3. PC でもスマホでも同じ session を続きから開ける
           </div>
@@ -604,8 +638,9 @@
           <div id="managerCard" class="status-card ok">
             <strong>Manager を開く</strong>
             <p>
-              スレッドと作業状況をまとめた一画面ビューです。PC
-              でもスマホでも同じ Manager 画面を開けます。
+              Hub は目の前の 1 本の session を続ける画面です。Manager
+              は複数の依頼やスレッドを整理するときの画面です。PC
+              でもスマホでも同じ Manager を開けます。
             </p>
             <div class="install-row">
               <button id="openManagerButton" class="secondary" type="button">
@@ -625,7 +660,9 @@
           <div id="installCard" class="status-card">
             <strong>スマホに追加</strong>
             <p id="installHint">
-              HTTPS で開いているときは、ホーム画面アプリとして追加できます。
+              HTTPS で開いているときは、ホーム画面アプリとして追加できます。PC
+              ではデスクトップかスタートメニューの Workspace Agent Hub
+              を使うと、毎回コマンドを打たずに開けます。
             </p>
             <div class="install-row">
               <button
@@ -663,6 +700,9 @@
               <button id="lockDeviceButton" class="subtle" type="button">
                 この端末をロック
               </button>
+            </div>
+            <div id="deviceLockHint" class="install-note">
+              ロックすると、このブラウザに保存したアクセスコードとキャッシュを消します。
             </div>
           </div>
           <div id="pairingCard" class="status-card pairing-card">
@@ -779,6 +819,10 @@
                 <option value="gemini">Gemini</option>
                 <option value="shell">Shell</option>
               </select>
+              <span id="sessionTypeHint" class="install-note">
+                迷ったら Codex です。普通のターミナルだけ開きたいときは Shell
+                を選びます。
+              </span>
             </div>
             <div class="field">
               <label for="sessionTitleInput">何についての作業か</label>
@@ -854,22 +898,26 @@
         <section class="panel">
           <div class="panel-head">
             <div>
-              <h2 class="panel-title">いま見ている session</h2>
+              <h2 class="panel-title">ここで続きを送る</h2>
               <p class="panel-copy">
-                選んだ session の出力と操作をここにまとめています。
+                選んだ session
+                の出力と、この下の入力欄をこの場所で続けて使います。
               </p>
             </div>
             <div class="pill-row">
-              <span id="selectedSessionState" class="pill">未選択</span>
+              <span id="selectedSessionState" class="pill"
+                >← 左で session を選ぶ</span
+              >
               <span id="connectionHint" class="pill">ブラウザ接続</span>
             </div>
           </div>
           <div class="panel-body">
             <div id="selectedSessionSummary" class="empty-state">
-              左側の一覧から session を選ぶと、ここに出力と操作が出ます。
+              まず左で新しく始めるか、続きから開く session
+              を選びます。選ぶと、ここで出力を見ながら続きを送れます。
             </div>
 
-            <div id="selectedSessionControls" style="display: none">
+            <div id="selectedSessionControls">
               <div class="button-row" style="margin-top: 16px">
                 <button
                   id="renameSessionButton"
@@ -890,7 +938,7 @@
                   class="secondary"
                   type="button"
                 >
-                  Ctrl+C
+                  中断 (Ctrl+C)
                 </button>
                 <button id="closeSessionButton" class="secondary" type="button">
                   閉じる
@@ -906,22 +954,31 @@
                 aria-live="polite"
               ></pre>
 
-              <div class="field" style="margin-top: 16px">
-                <label for="sessionPromptInput"
-                  >いまの session に送る指示</label
-                >
-                <textarea
-                  id="sessionPromptInput"
-                  placeholder="例: いまの状況を 3 行で要約して / このテストだけ回して / 続けて"
-                ></textarea>
-              </div>
-              <div class="button-row">
-                <button id="sendPromptButton" type="button">
-                  送信して続ける
-                </button>
-                <button id="sendRawButton" class="secondary" type="button">
-                  Enter なしで貼る
-                </button>
+              <div id="promptComposerShell" class="composer-shell">
+                <div class="composer-guide">
+                  <strong id="sessionPromptLead"
+                    >次はここに一言ずつ書いて AI に送ります</strong
+                  >
+                  <span id="sessionPromptHint" class="install-note"
+                    >先に左の一覧から session
+                    を選ぶと、ここがすぐ使える状態になります。</span
+                  >
+                </div>
+                <div class="field">
+                  <label for="sessionPromptInput"
+                    >この session に送る内容</label
+                  >
+                  <textarea
+                    id="sessionPromptInput"
+                    placeholder="例: いまの状況を 3 行で要約して / このテストだけ回して / 続けて"
+                  ></textarea>
+                </div>
+                <div class="button-row">
+                  <button id="sendPromptButton" type="button">AI に送る</button>
+                  <button id="sendRawButton" class="secondary" type="button">
+                    Enter なしで貼る
+                  </button>
+                </div>
               </div>
             </div>
           </div>

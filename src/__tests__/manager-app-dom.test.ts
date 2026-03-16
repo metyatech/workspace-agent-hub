@@ -141,6 +141,12 @@ describe('manager-app DOM auth state matrix', () => {
         .classList.contains('hidden')
     ).toBe(false);
     expect(
+      document.querySelector<HTMLElement>('#auth-context-title')!.textContent
+    ).toContain('Manager は複数の依頼と返事を整理する画面');
+    expect(
+      document.querySelector<HTMLElement>('#auth-context-copy')!.textContent
+    ).toContain('同じ受信箱と同じ進行状況');
+    expect(
       document
         .querySelector<HTMLElement>('#manager-bar')!
         .classList.contains('auth-hidden')

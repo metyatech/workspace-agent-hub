@@ -5,8 +5,10 @@ param(
     [string]$Type,
     [string]$SessionName = '',
     [string]$Title = '',
+    [string]$TitlePath = '',
     [string]$WorkingDirectory = '',
     [string]$Text = '',
+    [string]$TextPath = '',
     [int]$Lines = 400,
     [string]$Distro = 'Ubuntu',
     [switch]$Submit,
@@ -16,6 +18,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$utf8Encoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8Encoding
+[Console]::OutputEncoding = $utf8Encoding
 
 $launcherScriptPath = Join-Path $PSScriptRoot 'agent-session-launcher.ps1'
 $wslBridgeScriptPath = Join-Path $PSScriptRoot 'wsl-session-bridge.sh'
@@ -31,6 +36,22 @@ if (-not (Test-Path -Path $wslBridgeScriptPath)) {
 
 if (-not (Test-Path -Path $wslTmuxScriptPath)) {
     throw "Missing script: $wslTmuxScriptPath"
+}
+
+function Read-Utf8PayloadValue {
+    param(
+        [string]$PathValue = ''
+    )
+
+    if (-not $PathValue -or -not $PathValue.Trim()) {
+        return ''
+    }
+
+    if (-not (Test-Path -Path $PathValue)) {
+        throw "Missing payload file: $PathValue"
+    }
+
+    return (Get-Content -Path $PathValue -Raw -Encoding utf8)
 }
 
 function ConvertTo-QuotedArgumentString {
@@ -64,26 +85,30 @@ function Invoke-HiddenConsoleCommand {
         [string]$ErrorContext = 'Hidden console command failed.'
     )
 
-    $stdoutPath = Join-Path $env:TEMP ("workspace-agent-hub-stdout-" + [guid]::NewGuid().ToString('N') + '.log')
-    $stderrPath = Join-Path $env:TEMP ("workspace-agent-hub-stderr-" + [guid]::NewGuid().ToString('N') + '.log')
-    try {
-        $process = Start-Process -FilePath $FilePath -ArgumentList (ConvertTo-QuotedArgumentString -ArgumentList $ArgumentList) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        $stdoutText = if (Test-Path -Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
-        $stderrText = if (Test-Path -Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
-        $stdoutLines = if (Test-Path -Path $stdoutPath) { @(Get-Content -Path $stdoutPath) } else { @() }
-        return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StdOut = $stdoutText
-            StdErr = $stderrText
-            StdOutLines = $stdoutLines
-        }
-    } finally {
-        foreach ($pathValue in @($stdoutPath, $stderrPath)) {
-            if (Test-Path -Path $pathValue) {
-                [IO.File]::SetAttributes($pathValue, [IO.FileAttributes]::Normal)
-                [IO.File]::Delete($pathValue)
-            }
-        }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    foreach ($argument in $ArgumentList) {
+        [void]$startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdoutText = $process.StandardOutput.ReadToEnd()
+    $stderrText = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    $stdoutLines = if ($stdoutText) { @($stdoutText -split "`r?`n") | Where-Object { $_ -ne '' } } else { @() }
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        StdOut = $stdoutText
+        StdErr = $stderrText
+        StdOutLines = $stdoutLines
     }
 }
 
@@ -93,13 +118,39 @@ function Invoke-LauncherCommand {
         [string[]]$Arguments
     )
 
-    $result = Invoke-HiddenConsoleCommand -FilePath 'powershell.exe' -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherScriptPath) + $Arguments) -ErrorContext 'Launcher failed.'
-    if ($result.ExitCode -ne 0) {
-        $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
+    $scriptParameters = @{}
+    $index = 0
+    while ($index -lt $Arguments.Count) {
+        $token = [string]$Arguments[$index]
+        if (-not $token.StartsWith('-')) {
+            throw "Launcher argument token must start with '-'. Got '$token'."
+        }
+
+        $parameterName = $token.TrimStart('-')
+        $nextIsValue =
+            ($index + 1) -lt $Arguments.Count -and
+            -not (([string]$Arguments[$index + 1]).StartsWith('-'))
+        if ($nextIsValue) {
+            $scriptParameters[$parameterName] = [string]$Arguments[$index + 1]
+            $index += 2
+            continue
+        }
+
+        $scriptParameters[$parameterName] = $true
+        $index += 1
+    }
+
+    $captured = & $launcherScriptPath @scriptParameters 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        $detail = (($captured | Out-String).Trim())
+        if (-not $detail) {
+            $detail = "Exit code $exitCode."
+        }
         throw "Launcher failed. Args: $($Arguments -join ' ') $detail"
     }
 
-    return @($result.StdOutLines)
+    return @($captured | ForEach-Object { [string]$_ })
 }
 
 function Invoke-LauncherJson {
@@ -118,13 +169,8 @@ function Invoke-LauncherJson {
 }
 
 function Get-AllSessions {
-    $args = @('-Mode', 'list', '-Json')
-    if ($IncludeArchived) {
-        $args += '-IncludeArchived'
-    } else {
-        $args += '-IncludeArchived'
-    }
-    return @(Invoke-LauncherJson -Arguments $args)
+    $launcherArgs = @('-Mode', 'list', '-Json', '-IncludeArchived')
+    return @(Invoke-LauncherJson -Arguments $launcherArgs)
 }
 
 function Get-SessionByName {
@@ -198,6 +244,14 @@ function Invoke-WslBridge {
     return @($result.StdOutLines)
 }
 
+if ($TitlePath -and $TitlePath.Trim()) {
+    $Title = Read-Utf8PayloadValue -PathValue $TitlePath
+}
+
+if ($TextPath -and $TextPath.Trim()) {
+    $Text = Read-Utf8PayloadValue -PathValue $TextPath
+}
+
 if ($Action -eq 'list') {
     $sessions = @(Get-AllSessions)
     if ($Json) {
@@ -227,9 +281,12 @@ if ($Action -eq 'start') {
     if ($Type -eq 'shell') {
         $resolvedWindowsWorkingDirectory = if ($WorkingDirectory -and $WorkingDirectory.Trim()) { $WorkingDirectory } else { Split-Path -Parent (Resolve-Path (Join-Path $PSScriptRoot '..')) }
         $resolvedWslWorkingDirectory = Convert-WindowsPathToWslPath -WindowsPath $resolvedWindowsWorkingDirectory
-        $stabilizeResult = Invoke-HiddenConsoleCommand -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wslTmuxScriptPath, '-Action', 'ensure', '-SessionName', $resolvedName, '-Distro', $Distro, '-WorkingDirectory', $resolvedWslWorkingDirectory, '-StartupCommand', 'exec bash', '-Detach') -ErrorContext 'Failed to stabilize detached shell session for web UI.'
-        if ($stabilizeResult.ExitCode -ne 0) {
-            $detail = if ($stabilizeResult.StdErr.Trim()) { $stabilizeResult.StdErr.Trim() } elseif ($stabilizeResult.StdOut.Trim()) { $stabilizeResult.StdOut.Trim() } else { "Exit code $($stabilizeResult.ExitCode)." }
+        $stabilizeOutput = & $wslTmuxScriptPath -Action ensure -SessionName $resolvedName -Distro $Distro -WorkingDirectory $resolvedWslWorkingDirectory -StartupCommand 'exec bash' -Detach 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detail = (($stabilizeOutput | Out-String).Trim())
+            if (-not $detail) {
+                $detail = "Exit code $LASTEXITCODE."
+            }
             throw "Failed to stabilize detached shell session for web UI. $detail"
         }
     }
@@ -254,15 +311,15 @@ if ($Action -in @('rename', 'archive', 'unarchive', 'close', 'delete')) {
         throw 'Use -SessionName with this action.'
     }
 
-    $args = @('-Mode', $Action, '-SessionName', $SessionName, '-Distro', $Distro)
+    $launcherArgs = @('-Mode', $Action, '-SessionName', $SessionName, '-Distro', $Distro)
     if ($Action -eq 'rename') {
         if (-not $Title -or -not $Title.Trim()) {
             throw 'Use -Title with -Action rename.'
         }
-        $args += @('-Title', $Title)
+        $launcherArgs += @('-Title', $Title)
     }
 
-    [void](Invoke-LauncherCommand -Arguments $args)
+    [void](Invoke-LauncherCommand -Arguments $launcherArgs)
 
     $session = switch ($Action) {
         'rename' {
@@ -350,7 +407,7 @@ if ($Action -eq 'send') {
 
     $tempFile = Join-Path $env:TEMP ("workspace-agent-hub-send-" + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        Set-Content -Path $tempFile -Value $Text -NoNewline
+        Set-Content -Path $tempFile -Value $Text -NoNewline -Encoding utf8
         $wslPayloadPath = Convert-WindowsPathToWslPath -WindowsPath $tempFile
         $submitMode = if ($Submit) { 'submit' } else { 'paste-only' }
         [void](Invoke-WslBridge -BridgeArguments @('send', $SessionName, $wslPayloadPath, $submitMode))

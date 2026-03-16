@@ -154,6 +154,8 @@ if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
     exit 1
 }
 
+& (Join-Path $PSScriptRoot 'test-ensure-web-ui-running.ps1')
+
 $tls12 = [Net.SecurityProtocolType]::Tls12
 if (-not ([Net.ServicePointManager]::SecurityProtocol.HasFlag($tls12))) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12

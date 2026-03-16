@@ -58,6 +58,12 @@ It provides:
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-agent-session-launcher-shortcuts.ps1
    ```
 
+6. Optionally install the always-on browser UI shortcuts:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-web-ui-shortcuts.ps1
+   ```
+
 ## Usage
 
 ### Windows launcher
@@ -119,6 +125,29 @@ Open the mobile management flow for rename/archive/close/delete:
 ```
 
 ### Browser UI / PWA
+
+Open the browser UI without remembering the full command. This helper reuses an
+already-running background server when possible and opens the browser directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/open-web-ui.ps1
+```
+
+Keep the browser UI server running in the background without opening a browser:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1
+```
+
+The shortcut installer creates:
+
+- `Workspace Agent Hub` on the Desktop and Start Menu, which opens the browser
+  UI directly
+- `Workspace Agent Hub Background` in the Windows Startup folder, which keeps
+  the web UI available after sign-in so the phone can reconnect anytime while
+  the PC is on
+
+Use the direct wrapper if you still want to launch it manually once:
 
 Start the local browser UI with an auto-generated access code:
 

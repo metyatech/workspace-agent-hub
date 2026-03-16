@@ -40,7 +40,14 @@ SSHD_EXE = resolve_windows_openssh_binary("sshd.exe")
 
 
 def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=check, text=True, capture_output=True)
+    return subprocess.run(
+        args,
+        check=check,
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def powershell_file(script_path: Path, *script_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:

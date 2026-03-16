@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 $bridgeScriptPath = Join-Path $PSScriptRoot 'session-web-bridge.ps1'
 $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
+$preferredPowerShell = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
+$powerShellPath = if ($preferredPowerShell) { $preferredPowerShell.Source } else { (Get-Command 'powershell.exe' -ErrorAction Stop).Source }
 
 function ConvertTo-QuotedArgumentString {
     param(
@@ -36,24 +38,28 @@ function Invoke-HiddenPowerShell {
         [string[]]$Arguments
     )
 
-    $stdoutPath = Join-Path $env:TEMP ("workspace-agent-hub-test-stdout-" + [guid]::NewGuid().ToString('N') + '.log')
-    $stderrPath = Join-Path $env:TEMP ("workspace-agent-hub-test-stderr-" + [guid]::NewGuid().ToString('N') + '.log')
-    try {
-        $process = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-QuotedArgumentString -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments)) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        $stdoutText = if (Test-Path -Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw } else { '' }
-        $stderrText = if (Test-Path -Path $stderrPath) { Get-Content -Path $stderrPath -Raw } else { '' }
-        return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StdOut = $stdoutText
-            StdErr = $stderrText
-        }
-    } finally {
-        foreach ($pathValue in @($stdoutPath, $stderrPath)) {
-            if (Test-Path -Path $pathValue) {
-                [IO.File]::SetAttributes($pathValue, [IO.FileAttributes]::Normal)
-                [IO.File]::Delete($pathValue)
-            }
-        }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $powerShellPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    foreach ($argument in (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments)) {
+        [void]$startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdoutText = $process.StandardOutput.ReadToEnd()
+    $stderrText = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        StdOut = $stdoutText
+        StdErr = $stderrText
     }
 }
 
@@ -72,18 +78,37 @@ function Invoke-BridgeJson {
     return (($result.StdOut.Trim()) | ConvertFrom-Json)
 }
 
+function New-Utf8PayloadFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value,
+        [Parameter(Mandatory = $true)]
+        [string]$Prefix
+    )
+
+    $tempPath = Join-Path $env:TEMP ("workspace-agent-hub-$Prefix-" + [guid]::NewGuid().ToString('N') + '.txt')
+    Set-Content -Path $tempPath -Value $Value -NoNewline -Encoding utf8
+    return $tempPath
+}
+
+$titlePayloadPath = ''
+
 try {
+    $titlePayloadPath = New-Utf8PayloadFile -Value 'テスト' -Prefix 'title'
     $started = Invoke-BridgeJson -Arguments @(
         '-Action', 'start',
         '-Type', 'shell',
         '-SessionName', $sessionLabel,
-        '-Title', 'Web Session Bridge Test',
+        '-TitlePath', $titlePayloadPath,
         '-WorkingDirectory', 'D:\ghws',
         '-Json'
     )
 
     if ([string]$started.Name -ne $resolvedSessionName) {
         throw "Unexpected session name. Expected '$resolvedSessionName', got '$($started.Name)'."
+    }
+    if ([string]$started.DisplayTitle -ne 'テスト') {
+        throw "Expected the started shell session title to preserve UTF-8 text. Got '$([string]$started.DisplayTitle)'."
     }
     if (-not [bool]$started.IsLive) {
         throw 'Expected started shell session to be live.'
@@ -97,6 +122,9 @@ try {
     $listed = @($listedSessions | Where-Object { [string]$_.Name -eq $resolvedSessionName })
     if ($listed.Count -ne 1) {
         throw 'Expected the newly started shell session to appear exactly once in the web-session inventory.'
+    }
+    if ([string]$listed[0].DisplayTitle -ne 'テスト') {
+        throw "Expected the listed shell session title to preserve UTF-8 text. Got '$([string]$listed[0].DisplayTitle)'."
     }
     if (-not [bool]$listed[0].IsLive) {
         throw 'Expected the newly started shell session to be live in the web-session inventory.'
@@ -143,6 +171,9 @@ try {
 
     Write-Output 'PASS'
 } finally {
+    if ($titlePayloadPath -and (Test-Path -Path $titlePayloadPath)) {
+        [IO.File]::Delete($titlePayloadPath)
+    }
     try {
         [void](Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments @('-Action', 'delete', '-SessionName', $resolvedSessionName, '-Json'))
     } catch {

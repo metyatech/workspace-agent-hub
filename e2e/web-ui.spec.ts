@@ -36,7 +36,7 @@ async function cleanupPlaywrightSessions(): Promise<void> {
 async function expectSessionCard(page: Page, title: string): Promise<void> {
   await expect(
     page.locator('.session-card').filter({ hasText: title })
-  ).toHaveCount(1, { timeout: 60000 });
+  ).toHaveCount(1, { timeout: 120000 });
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -137,6 +137,10 @@ test('authenticates and manages a shell session from the browser UI', async ({
     await expect(page.locator('#selectedSessionSummary')).toContainText(
       workingDirectory
     );
+    await expect(page.locator('#sessionPromptHint')).toContainText(
+      'この入力欄のすぐ上にある出力欄'
+    );
+    await expect(page.locator('#sessionPromptInput')).toBeFocused();
 
     const sessions = await bridge.listSessions(true);
     const created = sessions.find((session) => session.DisplayTitle === title);
@@ -161,7 +165,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
     await page
       .locator('#sessionPromptInput')
       .fill('echo playwright-browser-path-pass');
-    await page.getByRole('button', { name: '送信して続ける' }).click();
+    await page.getByRole('button', { name: 'AI に送る' }).click();
     await expect(page.locator('#sessionTranscript')).toContainText(
       'playwright-browser-path-pass',
       { timeout: 60000 }

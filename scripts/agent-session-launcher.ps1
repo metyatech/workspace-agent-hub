@@ -59,14 +59,31 @@ function Ensure-SessionCatalogFile {
     }
 
     if (-not (Test-Path -Path $sessionCatalogPath)) {
-        '[]' | Set-Content -Path $sessionCatalogPath
+        Write-SessionCatalogText -Text '[]'
     }
+}
+
+function Read-SessionCatalogText {
+    if (-not (Test-Path -Path $sessionCatalogPath)) {
+        return ''
+    }
+
+    return (Get-Content -Path $sessionCatalogPath -Raw -Encoding utf8)
+}
+
+function Write-SessionCatalogText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+
+    Set-Content -Path $sessionCatalogPath -Value $Text -Encoding utf8
 }
 
 function Get-SessionCatalogEntries {
     Ensure-SessionCatalogFile
 
-    $raw = (Get-Content -Path $sessionCatalogPath -Raw).Trim()
+    $raw = (Read-SessionCatalogText).Trim()
     if (-not $raw) {
         return @()
     }
@@ -87,11 +104,11 @@ function Save-SessionCatalogEntries {
 
     Ensure-SessionCatalogFile
     if ($Entries.Count -eq 0) {
-        '[]' | Set-Content -Path $sessionCatalogPath
+        Write-SessionCatalogText -Text '[]'
         return
     }
 
-    ($Entries | ConvertTo-Json -Depth 6) | Set-Content -Path $sessionCatalogPath
+    Write-SessionCatalogText -Text ($Entries | ConvertTo-Json -Depth 6)
 }
 
 function Remove-ObjectPropertyIfPresent {

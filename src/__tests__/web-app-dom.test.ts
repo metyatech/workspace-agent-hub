@@ -8,6 +8,7 @@ const baseHtml = `
     <div id="sessionsList"></div>
     <button id="refreshSessionsButton"></button>
     <select id="sessionTypeSelect"><option value="shell">shell</option></select>
+    <span id="sessionTypeHint">迷ったら Codex です。普通のターミナルだけ開きたいときは Shell を選びます。</span>
     <input id="sessionTitleInput" />
     <input id="workingDirectoryInput" />
     <datalist id="workingDirectorySuggestions"></datalist>
@@ -23,7 +24,11 @@ const baseHtml = `
     <span id="sessionsListHint"></span>
     <span id="selectedSessionState"></span>
     <div id="selectedSessionSummary"></div>
-    <div id="selectedSessionControls" style="display:none"></div>
+    <div id="selectedSessionControls">
+      <div id="promptComposerShell"></div>
+      <span id="sessionPromptLead"></span>
+      <span id="sessionPromptHint"></span>
+    </div>
     <pre id="sessionTranscript"></pre>
     <textarea id="sessionPromptInput"></textarea>
     <button id="sendPromptButton">send</button>
@@ -42,6 +47,7 @@ const baseHtml = `
     <button id="enableNotificationsButton">notify</button>
     <span id="notificationStatus"></span>
     <button id="lockDeviceButton">lock</button>
+    <div id="deviceLockHint">ロックすると、このブラウザに保存したアクセスコードとキャッシュを消します。</div>
     <p id="pairingHint"></p>
     <input id="pairingUrlInput" />
     <button id="sharePairingButton">share</button>
@@ -211,6 +217,41 @@ afterEach(() => {
 });
 
 describe('web-app DOM', () => {
+  it('keeps the prompt area visible and disabled until a session is selected', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('左で session を選ぶ');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('#sessionPromptInput')!
+        .disabled
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLSpanElement>('#sessionPromptHint')!.textContent
+    ).toContain('先に左の一覧');
+    expect(
+      document.querySelector<HTMLButtonElement>('#sendPromptButton')!.disabled
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLSpanElement>('#sessionTypeHint')!.textContent
+    ).toContain('迷ったら Codex');
+    expect(
+      document.querySelector<HTMLDivElement>('#deviceLockHint')!.textContent
+    ).toContain('アクセスコードとキャッシュを消します');
+  });
+
   it('renders fetched sessions and selects one on click', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -278,6 +319,89 @@ describe('web-app DOM', () => {
     expect(
       document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
     ).toContain('echo demo');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('#sessionPromptInput')!
+        .disabled
+    ).toBe(false);
+  });
+
+  it('focuses the prompt composer after starting a new session', async () => {
+    const createdSession = {
+      Name: 'shell-new',
+      Type: 'shell',
+      DisplayName: 'new',
+      Distro: 'Ubuntu',
+      CreatedUnix: 3,
+      CreatedLocal: '2026-03-16 18:00:00',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 3,
+      LastActivityLocal: '2026-03-16 18:00:00',
+      Title: 'テスト',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: '',
+      Archived: false,
+      ClosedUtc: '',
+      IsLive: true,
+      State: 'Running',
+      SortUnix: 3,
+      DisplayTitle: 'テスト',
+    };
+    let sessionWasCreated = false;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/directories')) {
+          return new Response(
+            JSON.stringify([{ label: 'Workspace root', path: 'D:\\ghws' }]),
+            { status: 200 }
+          );
+        }
+        if (url.includes('/api/sessions?includeArchived=true')) {
+          return new Response(
+            JSON.stringify(sessionWasCreated ? [createdSession] : []),
+            { status: 200 }
+          );
+        }
+        if (url.endsWith('/api/sessions') && init?.method === 'POST') {
+          sessionWasCreated = true;
+          return new Response(JSON.stringify(createdSession), { status: 201 });
+        }
+        if (url.includes('/api/sessions/shell-new/output')) {
+          return new Response(
+            JSON.stringify({
+              SessionName: 'shell-new',
+              WorkingDirectoryWsl: '/mnt/d/ghws',
+              Transcript: '',
+              CapturedAtUtc: new Date().toISOString(),
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+    document.querySelector<HTMLInputElement>('#sessionTitleInput')!.value =
+      'テスト';
+    document.querySelector<HTMLButtonElement>('#startSessionButton')!.click();
+    await waitForTick();
+    await waitForTick();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('#sessionPromptInput')!
+        .disabled
+    ).toBe(false);
+    expect(document.activeElement?.id).toBe('sessionPromptInput');
+    expect(
+      document.querySelector<HTMLInputElement>('#sessionTitleInput')!.value
+    ).toBe('');
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#promptComposerShell')!
+        .classList.contains('attention')
+    ).toBe(true);
   });
 
   it('navigates to the native manager page directly without a preflight ensure request', async () => {

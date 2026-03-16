@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readdirSync, statSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import type {
   DirectorySuggestion,
   SessionMutationResult,
@@ -22,6 +25,8 @@ const DEFAULT_BRIDGE_SCRIPT = join(
   'scripts',
   'session-web-bridge.ps1'
 );
+const DEFAULT_POWERSHELL_COMMAND =
+  process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
 
 function normalizeJson<T>(stdout: string): T {
   const trimmed = stdout.trim();
@@ -87,33 +92,71 @@ export interface SessionBridge {
 export class PowerShellSessionBridge implements SessionBridge {
   #bridgeScriptPath: string;
   #workspaceRoot: string;
+  #powerShellCommand: string;
 
-  constructor(options?: { bridgeScriptPath?: string; workspaceRoot?: string }) {
+  constructor(options?: {
+    bridgeScriptPath?: string;
+    workspaceRoot?: string;
+    powerShellCommand?: string;
+  }) {
     this.#bridgeScriptPath = options?.bridgeScriptPath ?? DEFAULT_BRIDGE_SCRIPT;
     this.#workspaceRoot = options?.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT;
+    this.#powerShellCommand =
+      options?.powerShellCommand ?? DEFAULT_POWERSHELL_COMMAND;
   }
 
   getWorkspaceRoot(): string {
     return this.#workspaceRoot;
   }
 
-  async #runBridge(args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        this.#bridgeScriptPath,
-        ...args,
-      ],
-      {
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
+  async #runBridge(
+    args: string[],
+    filePayloads?: Partial<Record<'TitlePath' | 'TextPath', string>>
+  ): Promise<string> {
+    const tempPaths: string[] = [];
+    const finalArgs = [...args];
+
+    for (const [parameterName, payloadValue] of Object.entries(
+      filePayloads ?? {}
+    )) {
+      if (!payloadValue?.length) {
+        continue;
       }
-    );
-    return stdout;
+
+      const tempPath = join(
+        tmpdir(),
+        `workspace-agent-hub-${parameterName.toLowerCase()}-${randomUUID()}.txt`
+      );
+      await writeFile(tempPath, payloadValue, 'utf8');
+      tempPaths.push(tempPath);
+      finalArgs.push(`-${parameterName}`, tempPath);
+    }
+
+    try {
+      const { stdout } = await execFileAsync(
+        this.#powerShellCommand,
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          this.#bridgeScriptPath,
+          ...finalArgs,
+        ],
+        {
+          encoding: 'utf8',
+          maxBuffer: 16 * 1024 * 1024,
+          windowsHide: true,
+        }
+      );
+      return stdout;
+    } finally {
+      await Promise.all(
+        tempPaths.map((tempPath) =>
+          rm(tempPath, { force: true }).catch(() => {})
+        )
+      );
+    }
   }
 
   async listSessions(includeArchived = true): Promise<SessionRecord[]> {
@@ -142,14 +185,15 @@ export class PowerShellSessionBridge implements SessionBridge {
       label,
       '-Json',
     ];
-    if (input.title?.trim()) {
-      args.push('-Title', input.title.trim());
-    }
     args.push(
       '-WorkingDirectory',
       input.workingDirectory?.trim() || this.#workspaceRoot
     );
-    return normalizeJson<SessionRecord>(await this.#runBridge(args));
+    return normalizeJson<SessionRecord>(
+      await this.#runBridge(args, {
+        TitlePath: input.title?.trim(),
+      })
+    );
   }
 
   async renameSession(
@@ -157,15 +201,12 @@ export class PowerShellSessionBridge implements SessionBridge {
     title: string
   ): Promise<SessionRecord | SessionMutationResult> {
     return normalizeJson<SessionRecord | SessionMutationResult>(
-      await this.#runBridge([
-        '-Action',
-        'rename',
-        '-SessionName',
-        sessionName,
-        '-Title',
-        title,
-        '-Json',
-      ])
+      await this.#runBridge(
+        ['-Action', 'rename', '-SessionName', sessionName, '-Json'],
+        {
+          TitlePath: title,
+        }
+      )
     );
   }
 
@@ -247,19 +288,15 @@ export class PowerShellSessionBridge implements SessionBridge {
     text: string,
     submit: boolean
   ): Promise<SessionMutationResult> {
-    const args = [
-      '-Action',
-      'send',
-      '-SessionName',
-      sessionName,
-      '-Text',
-      text,
-      '-Json',
-    ];
+    const args = ['-Action', 'send', '-SessionName', sessionName, '-Json'];
     if (submit) {
       args.push('-Submit');
     }
-    return normalizeJson<SessionMutationResult>(await this.#runBridge(args));
+    return normalizeJson<SessionMutationResult>(
+      await this.#runBridge(args, {
+        TextPath: text,
+      })
+    );
   }
 
   async interruptSession(sessionName: string): Promise<SessionMutationResult> {
