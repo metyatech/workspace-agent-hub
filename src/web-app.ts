@@ -309,6 +309,14 @@ function persistCurrentPromptDraft(): void {
 function clearPromptDraft(sessionName: string): void {
   promptDraftBySession.delete(sessionName);
   persistPromptDrafts();
+  const session = sessions.find((item) => item.Name === sessionName);
+  const sessionRow = session ? sessionRows.get(session.Name) : null;
+  if (session && sessionRow) {
+    patchSessionCard(sessionRow, session);
+  }
+  if (sessionName === selectedSessionName) {
+    renderSelectedSession();
+  }
 }
 
 function getRememberedSessionName(): string {
@@ -1113,6 +1121,9 @@ function patchSessionCard(card: HTMLDivElement, session: SessionRecord): void {
 }
 
 function renderSessions(nextSessions: SessionRecord[]): void {
+  const selectedSessionStillExists = selectedSessionName
+    ? nextSessions.some((session) => session.Name === selectedSessionName)
+    : false;
   const visibleSessions = nextSessions
     .filter(sessionIsVisible)
     .filter((session) =>
@@ -1155,7 +1166,7 @@ function renderSessions(nextSessions: SessionRecord[]): void {
         ? '一致する session がありません。言葉を変えるか、お気に入り絞り込みを外してください。'
         : 'まだ session がありません。左上から新しい session を始めてください。';
     sessionsList.innerHTML = `<div class="empty-state">${emptyState}</div>`;
-    if (selectedSessionName) {
+    if (selectedSessionName && !selectedSessionStillExists) {
       selectedSessionName = '';
       renderSelectedSession();
     }
@@ -1176,10 +1187,7 @@ function renderSessions(nextSessions: SessionRecord[]): void {
     sessionsList.appendChild(card);
   }
 
-  if (
-    selectedSessionName &&
-    !visibleSessions.some((session) => session.Name === selectedSessionName)
-  ) {
+  if (selectedSessionName && !selectedSessionStillExists) {
     persistCurrentPromptDraft();
     selectedSessionName = '';
     lastTranscript = '';

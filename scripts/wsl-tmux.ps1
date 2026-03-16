@@ -11,6 +11,8 @@ param(
     [string]$SessionLabel,
 
     [string]$Distro = 'Ubuntu',
+    [ValidatePattern('^[A-Za-z0-9._-]*$')]
+    [string]$SocketName = '',
     [string]$WorkingDirectory = '',
     [string]$StartupCommand,
     [switch]$Detach,
@@ -64,6 +66,30 @@ function Start-WslStartupOnAttach {
     )
 
     Start-Process -FilePath 'wsl.exe' -ArgumentList $argumentList -WindowStyle Hidden | Out-Null
+}
+
+function Get-TmuxCommandArguments {
+    param(
+        [string[]]$TmuxArguments = @()
+    )
+
+    $arguments = @('-d', $Distro, '--', 'tmux')
+    if ($SocketName) {
+        $arguments += @('-L', $SocketName)
+    }
+    if ($TmuxArguments.Count -gt 0) {
+        $arguments += $TmuxArguments
+    }
+
+    return $arguments
+}
+
+function Get-TmuxShellCommand {
+    if ($SocketName) {
+        return "tmux -L '$SocketName'"
+    }
+
+    return 'tmux'
 }
 
 function ConvertTo-SafeSessionLabel {
@@ -122,7 +148,7 @@ function Split-TypedSessionName {
     }
 }
 
-[void](Invoke-WslCommand -Arguments @('-d', $Distro, '--', 'tmux', '-V'))
+[void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @('-V')))
 
 function Set-TmuxServerOption {
     param(
@@ -130,14 +156,17 @@ function Set-TmuxServerOption {
         [string[]]$TmuxArguments
     )
 
-    [void](Invoke-WslCommand -Arguments (@('-d', $Distro, '--', 'tmux') + $TmuxArguments))
+    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments $TmuxArguments))
 }
 
-Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'mouse', 'on')
-Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'history-limit', '200000')
+function Ensure-TmuxServerDefaults {
+    Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'mouse', 'on')
+    Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'history-limit', '200000')
+}
 
 if ($Action -eq 'list') {
-    $rawList = & wsl.exe -d $Distro -- bash -lc "if tmux list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}' 2>/dev/null; then true; else true; fi"
+    $tmuxShellCommand = Get-TmuxShellCommand
+    $rawList = & wsl.exe -d $Distro -- bash -lc "if $tmuxShellCommand list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}' 2>/dev/null; then true; else true; fi"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list tmux sessions in distro '$Distro'."
     }
@@ -175,7 +204,7 @@ if ($Action -eq 'list') {
         }
     }
 
-    $sorted = $items | Sort-Object -Property LastActivityUnix -Descending
+    $sorted = @($items | Sort-Object -Property LastActivityUnix -Descending)
     if ($Json) {
         if ($sorted.Count -eq 0) {
             '[]'
@@ -191,10 +220,11 @@ if ($Action -eq 'list') {
 $resolvedSessionName = Resolve-SessionName
 
 if ($Action -eq 'kill') {
+    $tmuxShellCommand = Get-TmuxShellCommand
     $killExitCode = Invoke-WslCommand -Arguments @(
         '-d', $Distro, '--',
         'bash', '-lc',
-        "tmux kill-session -t '$resolvedSessionName' >/dev/null 2>&1"
+        "$tmuxShellCommand kill-session -t '$resolvedSessionName' >/dev/null 2>&1"
     ) -AllowNonZeroExit
 
     if ($killExitCode -eq 0) {
@@ -205,7 +235,8 @@ if ($Action -eq 'kill') {
     exit 0
 }
 
-$sessionCheckOutput = & wsl.exe -d $Distro -- bash -lc "if tmux has-session -t '$resolvedSessionName' >/dev/null 2>&1; then echo exists; else echo missing; fi"
+$tmuxShellCommand = Get-TmuxShellCommand
+$sessionCheckOutput = & wsl.exe -d $Distro -- bash -lc "if $tmuxShellCommand has-session -t '$resolvedSessionName' >/dev/null 2>&1; then echo exists; else echo missing; fi"
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to check tmux session status for '$resolvedSessionName' in distro '$Distro'."
 }
@@ -218,9 +249,8 @@ if (-not $sessionExists -and $Action -eq 'attach') {
 }
 
 if (-not $sessionExists) {
-    $createArgs = @(
-        '-d', $Distro, '--',
-        'tmux', 'new-session', '-d',
+    $createArgs = Get-TmuxCommandArguments -TmuxArguments @(
+        'new-session', '-d',
         '-s', $resolvedSessionName
     )
 
@@ -229,26 +259,27 @@ if (-not $sessionExists) {
     }
 
     [void](Invoke-WslCommand -Arguments $createArgs)
+    Ensure-TmuxServerDefaults
 
     if ($StartupCommand -and -not $Detach) {
         Start-WslStartupOnAttach -TargetDistro $Distro -TargetSessionName $resolvedSessionName -TargetStartupCommand $StartupCommand
     } elseif ($StartupCommand -and $Detach) {
-        [void](Invoke-WslCommand -Arguments @(
-            '-d', $Distro, '--',
-            'tmux', 'send-keys',
+        [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
+            'send-keys',
             '-t', $resolvedSessionName,
             $StartupCommand,
             'C-m'
-        ))
+        )))
     }
 
     Write-Output "Created tmux session '$resolvedSessionName' in distro '$Distro'."
 } else {
+    Ensure-TmuxServerDefaults
     Write-Output "Reusing existing tmux session '$resolvedSessionName' in distro '$Distro'."
 }
 
 if ($Action -eq 'attach') {
-    [void](Invoke-WslCommand -Arguments @('-d', $Distro, '--', 'tmux', 'attach-session', '-t', $resolvedSessionName))
+    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @('attach-session', '-t', $resolvedSessionName)))
     exit 0
 }
 
@@ -256,4 +287,4 @@ if ($Detach) {
     exit 0
 }
 
-[void](Invoke-WslCommand -Arguments @('-d', $Distro, '--', 'tmux', 'attach-session', '-t', $resolvedSessionName))
+[void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @('attach-session', '-t', $resolvedSessionName)))

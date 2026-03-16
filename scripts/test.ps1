@@ -83,6 +83,12 @@ if (($catalogPathOutput | Out-String).Trim() -notmatch 'PASS') {
     exit 1
 }
 
+$wslTmuxOutput = & (Join-Path $PSScriptRoot 'test-wsl-tmux.ps1')
+if (($wslTmuxOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected wsl-tmux to list an empty isolated socket cleanly and to create, list, and kill sessions without relying on a pre-existing tmux server.'
+    exit 1
+}
+
 $primaryPathMatrixOutput = & (Join-Path $PSScriptRoot 'test-primary-path-matrix.ps1')
 if (($primaryPathMatrixOutput | Out-String).Trim() -notmatch 'PASS') {
     Write-Error 'Expected the PC-side primary path matrix verification to pass for start, inventory, and resume availability.'

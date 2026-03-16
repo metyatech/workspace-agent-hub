@@ -336,7 +336,7 @@ To enable, visit:
           '-e',
           "process.stdout.write('Serve is not enabled on your tailnet.\\nTo enable, visit:\\nhttps://login.tailscale.com/f/serve?node=n2tFH92z1n11CNTRL\\n'); setInterval(() => {}, 1000);",
         ],
-        { timeoutMs: 200 }
+        { timeoutMs: 1000 }
       )
     ).rejects.toMatchObject({
       timedOut: true,

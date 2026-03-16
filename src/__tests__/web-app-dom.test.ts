@@ -1254,4 +1254,103 @@ describe('web-app DOM', () => {
 
     expect(unarchiveRequests).toBe(1);
   });
+
+  it('keeps the selected summary visible when the session is hidden from the list', async () => {
+    let isArchived = false;
+    let archiveRequests = 0;
+    const baseSession = {
+      Name: 'shell-demo',
+      Type: 'shell',
+      DisplayName: 'demo',
+      Distro: 'Ubuntu',
+      CreatedUnix: 1,
+      CreatedLocal: '2026-03-14 00:00:00',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 2,
+      LastActivityLocal: '2026-03-14 00:00:02',
+      Title: 'Demo Session',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: 'preview',
+      Archived: false,
+      ClosedUtc: '',
+      IsLive: true,
+      State: 'Running',
+      SortUnix: 2,
+      DisplayTitle: 'Demo Session',
+    };
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/directories')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (url.includes('/api/sessions?includeArchived=true')) {
+          return new Response(
+            JSON.stringify([
+              {
+                ...baseSession,
+                Archived: isArchived,
+              },
+            ]),
+            {
+              status: 200,
+            }
+          );
+        }
+        if (
+          url.includes('/api/sessions/shell-demo/archive') &&
+          init?.method === 'POST'
+        ) {
+          archiveRequests += 1;
+          isArchived = true;
+          return new Response(
+            JSON.stringify({
+              ...baseSession,
+              Archived: true,
+            }),
+            {
+              status: 200,
+            }
+          );
+        }
+        if (url.includes('/api/sessions/shell-demo/output')) {
+          return new Response(
+            JSON.stringify({
+              SessionName: 'shell-demo',
+              WorkingDirectoryWsl: '/mnt/d/ghws',
+              Transcript: 'echo demo',
+              CapturedAtUtc: new Date().toISOString(),
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+
+    document.querySelector<HTMLDivElement>('.session-card')!.click();
+    await waitForTick();
+
+    document.querySelector<HTMLButtonElement>('#archiveSessionButton')!.click();
+    await waitForTick();
+    await waitForTick();
+
+    expect(archiveRequests).toBe(1);
+    expect(
+      document.querySelector<HTMLDivElement>('#selectedSessionSummary')!
+        .textContent
+    ).toContain('一覧では非表示');
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('SHELL');
+    expect(document.querySelectorAll('.session-card')).toHaveLength(0);
+    expect(
+      document.querySelector<HTMLDivElement>('#sessionsList')!.textContent
+    ).toContain('まだ session がありません');
+  });
 });
