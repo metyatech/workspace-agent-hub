@@ -1833,23 +1833,30 @@ openManagerButton.addEventListener('click', () => {
   void openManager();
 });
 
+function buildManagerUrl(): string {
+  const base = new URL(config.preferredConnectUrl || getCurrentPageUrl());
+  const basePath = base.pathname.replace(/\/+$/, '');
+  base.pathname = basePath ? `${basePath}/manager/` : '/manager/';
+  base.search = '';
+  base.hash = '';
+  if (config.authRequired && authToken) {
+    base.hash = `accessCode=${encodeURIComponent(authToken)}`;
+  }
+  return base.toString();
+}
+
 async function openManager(): Promise<void> {
   openManagerButton.disabled = true;
-  managerStatus.textContent = '起動中…';
+  managerStatus.textContent = '開いています…';
   try {
-    const data = await apiJson<{ url: string; alreadyRunning: boolean }>(
-      '/api/manager-gui/ensure',
-      { method: 'POST' }
-    );
-    managerStatus.textContent = data.alreadyRunning
-      ? '既に起動済みです。'
-      : '起動しました。';
-    window.open(data.url, '_blank', 'noopener,noreferrer');
+    const managerUrl = buildManagerUrl();
+    managerStatus.textContent = '別タブで開きました。';
+    window.open(managerUrl, '_blank', 'noopener,noreferrer');
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Manager の起動に失敗しました';
     managerStatus.textContent = message;
-    showToast('Manager の起動に失敗しました');
+    showToast('Manager を開けませんでした');
   } finally {
     openManagerButton.disabled = false;
   }

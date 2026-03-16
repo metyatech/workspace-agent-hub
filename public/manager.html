@@ -1,0 +1,867 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>マネージャー</title>
+    <style>
+      /* ── Reset & base ───────────────────────────────────────────── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family:
+          ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+        background: #030712;
+        color: #e5e7eb;
+        min-height: 100vh;
+        font-size: 14px;
+      }
+      .hidden {
+        display: none !important;
+      }
+      textarea {
+        resize: vertical;
+      }
+
+      /* ── Buttons ────────────────────────────────────────────────── */
+      .btn {
+        font-size: 0.72rem;
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: none;
+        cursor: pointer;
+        flex-shrink: 0;
+        font-family: inherit;
+        transition: background 0.1s;
+      }
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .btn-ghost {
+        background: #1f2937;
+        color: #d1d5db;
+      }
+      .btn-ghost:hover {
+        background: #374151;
+      }
+      .btn-primary {
+        background: #1d4ed8;
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background: #1e40af;
+      }
+      .btn-success {
+        background: #065f46;
+        color: #6ee7b7;
+      }
+      .btn-success:hover {
+        background: #047857;
+      }
+      .btn-emerald {
+        background: #064e3b;
+        color: #6ee7b7;
+      }
+      .btn-emerald:hover {
+        background: #065f46;
+      }
+      .btn-manager {
+        background: #1e3a5f;
+        color: #93c5fd;
+        border: 1px solid #2563eb;
+      }
+      .btn-manager:hover {
+        background: #1d4ed8;
+        color: #fff;
+      }
+
+      /* ── Header ─────────────────────────────────────────────────── */
+      .app-header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: #030712;
+        border-bottom: 1px solid #1f2937;
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .app-header h1 {
+        font-weight: 700;
+        color: #fff;
+        font-size: 0.9rem;
+        flex-shrink: 0;
+      }
+      #dir-label {
+        color: #4b5563;
+        font-size: 0.68rem;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Manager status bar ─────────────────────────────────────── */
+      #manager-bar {
+        background: #0a0f1a;
+        border-bottom: 1px solid #1f2937;
+        padding: 7px 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        min-height: 38px;
+      }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #374151;
+        flex-shrink: 0;
+        display: inline-block;
+      }
+
+      /* ── New thread form ────────────────────────────────────────── */
+      #new-thread-form {
+        padding: 9px 16px;
+        border-bottom: 1px solid #1f2937;
+        background: #0a1628;
+      }
+      .new-thread-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        max-width: 680px;
+      }
+      .form-label {
+        font-size: 0.7rem;
+        color: #9ca3af;
+        flex-shrink: 0;
+      }
+      .text-input {
+        flex: 1;
+        min-width: 160px;
+        background: #1f2937;
+        color: #f3f4f6;
+        border: 1px solid #4b5563;
+        border-radius: 4px;
+        padding: 5px 10px;
+        font-size: 0.78rem;
+        outline: none;
+        font-family: inherit;
+      }
+      .text-input:focus {
+        border-color: #3b82f6;
+      }
+      .auth-hidden {
+        display: none !important;
+      }
+
+      /* ── Access panel ───────────────────────────────────────────── */
+      #auth-panel {
+        max-width: 880px;
+        margin: 14px auto 0;
+        padding: 0 16px;
+      }
+      .auth-card {
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .auth-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #f8fafc;
+      }
+      .auth-copy {
+        color: #cbd5e1;
+        font-size: 0.78rem;
+        line-height: 1.6;
+      }
+      .auth-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .auth-input {
+        flex: 1;
+        min-width: 180px;
+        background: #020617;
+        color: #f8fafc;
+        border: 1px solid #475569;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 0.82rem;
+        font-family: inherit;
+      }
+      .auth-hint {
+        color: #94a3b8;
+        font-size: 0.72rem;
+      }
+      .auth-error {
+        color: #fca5a5;
+        font-size: 0.76rem;
+        min-height: 1.2em;
+      }
+
+      /* ── Main content ───────────────────────────────────────────── */
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 14px 16px;
+      }
+
+      /* ── Section cards (conversation threads) ───────────────────── */
+      .section-card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 7px;
+        margin-bottom: 9px;
+        overflow: hidden;
+      }
+      .section-header {
+        padding: 7px 12px;
+        background: #1e293b;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .section-header:hover {
+        background: #253348;
+      }
+      .section-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        display: inline-block;
+      }
+      .section-title {
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+      .section-count {
+        font-size: 0.68rem;
+        color: #6b7280;
+      }
+      .section-chevron {
+        font-size: 0.68rem;
+        color: #4b5563;
+        margin-left: auto;
+      }
+      .section-body {
+        padding: 7px;
+      }
+      .section-empty {
+        color: #4b5563;
+        font-size: 0.7rem;
+        text-align: center;
+        padding: 10px 0;
+      }
+      .getting-started {
+        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 12px;
+      }
+      .getting-started h2 {
+        font-size: 0.95rem;
+        color: #f8fafc;
+        margin-bottom: 6px;
+      }
+      .getting-started p {
+        color: #cbd5e1;
+        font-size: 0.78rem;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+      .getting-started ol {
+        margin-left: 18px;
+        color: #cbd5e1;
+        font-size: 0.76rem;
+        line-height: 1.7;
+        margin-bottom: 12px;
+      }
+      .getting-started strong {
+        color: #f8fafc;
+      }
+
+      /* ── Status badge ───────────────────────────────────────────── */
+      .status-badge {
+        font-size: 0.6rem;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        flex-shrink: 0;
+      }
+
+      /* ── Thread row ─────────────────────────────────────────────── */
+      .thread-row {
+        border: 1px solid #1f2937;
+        border-radius: 5px;
+        margin-bottom: 4px;
+        padding: 7px 10px;
+        cursor: pointer;
+        transition: background 0.1s;
+        background: #0f172a;
+      }
+      .thread-row:hover {
+        background: #1e293b;
+      }
+      .thread-row.selected {
+        background: #1e293b;
+        border-color: #334155;
+      }
+      .thread-row-top {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+      .thread-title {
+        font-size: 0.78rem;
+        color: #f3f4f6;
+        font-weight: 600;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .thread-age {
+        font-size: 0.6rem;
+        color: #6b7280;
+        flex-shrink: 0;
+      }
+      .thread-preview {
+        font-size: 0.66rem;
+        color: #6b7280;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Tasks section (separate from the 5 conversation sections) ─ */
+      .tasks-card {
+        background: #070d1a;
+        border: 1px solid #1e293b;
+        border-radius: 7px;
+        margin-top: 14px;
+        overflow: hidden;
+      }
+      .tasks-card .section-header {
+        background: #101827;
+      }
+      .tasks-card .section-header:hover {
+        background: #18253a;
+      }
+      .task-row {
+        border-radius: 4px;
+        margin-bottom: 4px;
+        padding: 7px 10px;
+        background: #111827;
+        border: 1px solid #1f2937;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .task-desc {
+        font-size: 0.78rem;
+        color: #d1d5db;
+        flex: 1;
+        min-width: 0;
+      }
+      .task-age {
+        font-size: 0.6rem;
+        color: #6b7280;
+        flex-shrink: 0;
+      }
+
+      /* ── Thread detail panel ────────────────────────────────────── */
+      #thread-detail {
+        margin-top: 12px;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 7px;
+        overflow: hidden;
+      }
+      .detail-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 12px;
+        background: #0f172a;
+        border-bottom: 1px solid #334155;
+        flex-wrap: wrap;
+      }
+      .close-btn {
+        color: #6b7280;
+        font-size: 1.2rem;
+        line-height: 1;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0 4px;
+        flex-shrink: 0;
+        font-family: inherit;
+      }
+      .close-btn:hover {
+        color: #f87171;
+      }
+      .detail-title {
+        font-weight: 700;
+        font-size: 0.85rem;
+        color: #f9fafb;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Message area ───────────────────────────────────────────── */
+      .msg-area {
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 380px;
+        overflow-y: auto;
+      }
+      .bubble {
+        border-radius: 6px;
+        padding: 7px 10px;
+      }
+      .bubble-ai {
+        background: #0e2233;
+        border: 1px solid #164e63;
+      }
+      .bubble-user {
+        background: #0d2b16;
+        border: 1px solid #14532d;
+      }
+      .bubble-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 3px;
+      }
+      .bubble-sender {
+        font-size: 0.6rem;
+        font-weight: 700;
+      }
+      .bubble-sender-ai {
+        color: #67e8f9;
+      }
+      .bubble-sender-user {
+        color: #86efac;
+      }
+      .bubble-ts {
+        font-size: 0.58rem;
+        color: #6b7280;
+      }
+      .bubble-content {
+        font-size: 0.76rem;
+        color: #e5e7eb;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .msg-empty {
+        color: #6b7280;
+        font-size: 0.78rem;
+        text-align: center;
+        padding: 18px 0;
+      }
+
+      /* ── Reply form ─────────────────────────────────────────────── */
+      .reply-form {
+        padding: 9px 12px;
+        border-top: 1px solid #334155;
+        background: #0f172a;
+      }
+      .reply-textarea {
+        width: 100%;
+        background: #374151;
+        color: #f3f4f6;
+        border: 1px solid #6b7280;
+        border-radius: 4px;
+        padding: 7px 10px;
+        font-size: 0.76rem;
+        outline: none;
+        font-family: inherit;
+        margin-bottom: 7px;
+      }
+      .reply-textarea:focus {
+        border-color: #3b82f6;
+      }
+      .reply-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .reply-hint {
+        font-size: 0.6rem;
+        color: #4b5563;
+        margin-left: auto;
+      }
+
+      /* Quick-action buttons in reply form */
+      .btn-reply {
+        background: #1d4ed8;
+        color: #fff;
+      }
+      .btn-reply:hover {
+        background: #1e40af;
+      }
+      .btn-needs-reply {
+        background: #78350f;
+        color: #fde68a;
+        border: 1px solid #92400e;
+      }
+      .btn-needs-reply:hover {
+        background: #92400e;
+      }
+      .btn-review {
+        background: #4c1d95;
+        color: #ddd6fe;
+        border: 1px solid #5b21b6;
+      }
+      .btn-review:hover {
+        background: #5b21b6;
+      }
+      .btn-resolve {
+        background: #1f2937;
+        color: #9ca3af;
+        border: 1px solid #374151;
+      }
+      .btn-resolve:hover {
+        background: #166534;
+        color: #86efac;
+        border-color: #166534;
+      }
+      .btn-reopen {
+        background: #1d4ed8;
+        color: #fff;
+      }
+      .btn-reopen:hover {
+        background: #1e40af;
+      }
+
+      /* Advanced sender panel (collapsed by default) */
+      .advanced-toggle {
+        font-size: 0.62rem;
+        color: #4b5563;
+        cursor: pointer;
+        background: none;
+        border: none;
+        font-family: inherit;
+        padding: 2px 4px;
+      }
+      .advanced-toggle:hover {
+        color: #6b7280;
+      }
+      .advanced-panel {
+        margin-top: 7px;
+        padding: 7px 10px;
+        background: #0a0f1a;
+        border: 1px solid #1f2937;
+        border-radius: 4px;
+      }
+      .advanced-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 5px;
+      }
+      .advanced-row:last-child {
+        margin-bottom: 0;
+      }
+      .adv-label {
+        font-size: 0.68rem;
+        color: #9ca3af;
+        flex-shrink: 0;
+      }
+      .opt-btn {
+        font-size: 0.65rem;
+        padding: 2px 7px;
+        border-radius: 3px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .opt-inactive {
+        background: transparent;
+        border: 1px solid #374151;
+        color: #6b7280;
+      }
+      .opt-user {
+        background: #0d2b16;
+        border: 1px solid #166534;
+        color: #86efac;
+      }
+      .opt-ai {
+        background: #0e2233;
+        border: 1px solid #155e75;
+        color: #67e8f9;
+      }
+      .opt-status {
+        background: #581c87;
+        border: 1px solid #6b21a8;
+        color: #d8b4fe;
+      }
+
+      /* ── Mobile adjustments ─────────────────────────────────────── */
+      @media (max-width: 600px) {
+        main {
+          padding: 10px;
+        }
+        .app-header {
+          padding: 8px 10px;
+        }
+        #manager-bar {
+          padding: 6px 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="app-header">
+      <a
+        href="/"
+        class="btn btn-ghost"
+        style="text-decoration: none; flex-shrink: 0"
+        >← Hub</a
+      >
+      <h1>マネージャー</h1>
+      <span id="dir-label"></span>
+      <button data-action="refresh" class="btn btn-ghost">↻ 更新</button>
+      <button data-action="new-thread" class="btn btn-primary">
+        + 新しいトピック
+      </button>
+    </header>
+
+    <div id="auth-panel" class="hidden">
+      <div class="auth-card">
+        <div class="auth-title">アクセスコードを入力してください</div>
+        <p class="auth-copy">
+          この Manager はネットワーク共有向けに保護されています。PC
+          側で設定したアクセスコードを入力すると、
+          同じ画面のまま受信箱を開けます。
+        </p>
+        <div class="auth-row">
+          <input
+            id="auth-token-input"
+            type="password"
+            placeholder="アクセスコード"
+            class="auth-input"
+            autocomplete="current-password"
+          />
+          <button data-action="unlock-auth" class="btn btn-primary">
+            接続する
+          </button>
+          <button
+            id="auth-clear-btn"
+            data-action="clear-auth"
+            class="btn btn-ghost hidden"
+          >
+            保存済みを消す
+          </button>
+        </div>
+        <div class="auth-hint">
+          この端末ではアクセスコードを保存して、次回から自動で再利用できます。
+        </div>
+        <div id="auth-error" class="auth-error"></div>
+      </div>
+    </div>
+
+    <!-- Manager status bar -->
+    <div id="manager-bar" data-auth-content>
+      <span id="manager-status-dot" class="status-dot"></span>
+      <span id="manager-status-text" style="font-size: 0.72rem; color: #6b7280"
+        >マネージャー状態を確認中...</span
+      >
+      <button
+        id="manager-start-btn"
+        data-action="start-manager"
+        class="btn btn-emerald hidden"
+      >
+        ▶ 起動する
+      </button>
+    </div>
+
+    <!-- New thread form (hidden by default) -->
+    <div id="new-thread-form" class="hidden" data-auth-content>
+      <div class="new-thread-row">
+        <span class="form-label">新しいトピック:</span>
+        <input
+          id="new-thread-title"
+          type="text"
+          placeholder="タイトルを入力..."
+          class="text-input"
+        />
+        <button data-action="create-thread" class="btn btn-primary">
+          作成
+        </button>
+        <button
+          data-action="create-thread-manager"
+          class="btn btn-manager"
+          title="スレッドを作成し、タイトルをマネージャーAIに転送します"
+        >
+          🤖 作成してマネージャーに送る
+        </button>
+        <button data-action="hide-new-thread" class="btn btn-ghost">
+          キャンセル
+        </button>
+      </div>
+    </div>
+
+    <!-- Main -->
+    <main data-auth-content>
+      <section id="getting-started" class="getting-started hidden">
+        <h2>最初にやること</h2>
+        <p>
+          まず話題を 1
+          つ作り、その中でマネージャーに依頼を送ると、この画面が受信箱として回り始めます。
+        </p>
+        <ol>
+          <li><strong>新しいトピック</strong>で話題を作る</li>
+          <li>開いた話題で <strong>マネージャーに送る</strong> を押す</li>
+          <li>返事や確認待ちは、この一覧で追いかける</li>
+        </ol>
+        <button data-action="new-thread" class="btn btn-primary">
+          最初の話題を作る
+        </button>
+      </section>
+
+      <!--
+        Inbox grouping (mutually exclusive, non-resolved threads only):
+
+        返事が来ています  → status === 'active' AND last message sender === 'ai'
+                           AI sent an informational update; thread is open but no explicit action was requested.
+
+        あなたの返答待ち  → status === 'needs-reply'
+                           AI explicitly asked for user input or a decision.
+
+        確認待ちです      → status === 'review'
+                           AI completed something and needs the user to review/approve.
+
+        進んでいます      → status === 'waiting'
+                           User sent instructions; AI is working on the task.
+
+        止まっています    → status === 'active' AND (no messages OR last message sender !== 'ai')
+                           Thread is open but idle — no recent AI activity.
+
+        Resolved threads are hidden from all sections.
+      -->
+
+      <!-- Section: 返事が来ています (active threads where AI last replied) -->
+      <div class="section-card" id="sec-ai-replied">
+        <div class="section-header" data-section-key="ai-replied">
+          <span class="section-dot" style="background: #ca8a04"></span>
+          <span class="section-title" style="color: #fde68a"
+            >返事が来ています</span
+          >
+          <span id="count-ai-replied" class="section-count"></span>
+          <span class="section-chevron" id="chevron-ai-replied">▲</span>
+        </div>
+        <div class="section-body" id="body-ai-replied"></div>
+      </div>
+
+      <!-- Section: あなたの返答待ち (needs-reply threads) -->
+      <div class="section-card" id="sec-needs-reply">
+        <div class="section-header" data-section-key="needs-reply">
+          <span class="section-dot" style="background: #b45309"></span>
+          <span class="section-title" style="color: #fcd34d"
+            >あなたの返答待ち</span
+          >
+          <span id="count-needs-reply" class="section-count"></span>
+          <span class="section-chevron" id="chevron-needs-reply">▲</span>
+        </div>
+        <div class="section-body" id="body-needs-reply"></div>
+      </div>
+
+      <!-- Section: 確認待ちです (review threads) -->
+      <div class="section-card" id="sec-review">
+        <div class="section-header" data-section-key="review">
+          <span class="section-dot" style="background: #7c3aed"></span>
+          <span class="section-title" style="color: #c4b5fd">確認待ちです</span>
+          <span id="count-review" class="section-count"></span>
+          <span class="section-chevron" id="chevron-review">▲</span>
+        </div>
+        <div class="section-body" id="body-review"></div>
+      </div>
+
+      <!-- Section: 進んでいます (waiting — AI working) -->
+      <div class="section-card" id="sec-waiting">
+        <div class="section-header" data-section-key="waiting">
+          <span class="section-dot" style="background: #0e7490"></span>
+          <span class="section-title" style="color: #67e8f9">進んでいます</span>
+          <span id="count-waiting" class="section-count"></span>
+          <span class="section-chevron" id="chevron-waiting">▲</span>
+        </div>
+        <div class="section-body" id="body-waiting"></div>
+      </div>
+
+      <!-- Section: 止まっています (active + idle) -->
+      <div class="section-card" id="sec-idle">
+        <div class="section-header" data-section-key="idle">
+          <span class="section-dot" style="background: #374151"></span>
+          <span class="section-title" style="color: #9ca3af"
+            >止まっています</span
+          >
+          <span id="count-idle" class="section-count"></span>
+          <span class="section-chevron" id="chevron-idle">▲</span>
+        </div>
+        <div class="section-body" id="body-idle"></div>
+      </div>
+
+      <!-- Thread detail panel -->
+      <div id="thread-detail" class="hidden"></div>
+
+      <!-- Tasks section (separate from conversation sections) -->
+      <div class="tasks-card" id="sec-tasks">
+        <div class="section-header" data-section-key="tasks">
+          <span class="section-dot" style="background: #1e40af"></span>
+          <span class="section-title" style="color: #93c5fd"
+            >タスク（進行中）</span
+          >
+          <span id="count-tasks" class="section-count"></span>
+          <span class="section-chevron" id="chevron-tasks">▲</span>
+        </div>
+        <div class="section-body" id="body-tasks"></div>
+      </div>
+    </main>
+
+    <script>
+      window.GUI_DIR = __GUI_DIR__;
+      window.MANAGER_AUTH_REQUIRED = __MANAGER_AUTH_REQUIRED__;
+      window.MANAGER_AUTH_STORAGE_KEY = __MANAGER_AUTH_STORAGE_KEY__;
+      window.MANAGER_API_BASE = './api';
+    </script>
+    <script type="module" src="./manager-app.js"></script>
+  </body>
+</html>

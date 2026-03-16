@@ -2,7 +2,13 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineConfig } from 'tsup';
 
-const publicAssets = ['index.html', 'app.webmanifest', 'icon.svg', 'sw.js'];
+const publicAssets = [
+  'index.html',
+  'manager.html',
+  'app.webmanifest',
+  'icon.svg',
+  'sw.js',
+];
 
 export default defineConfig([
   {
@@ -28,6 +34,7 @@ export default defineConfig([
   {
     entry: {
       'public/web-app': 'src/web-app.ts',
+      'public/manager-app': 'src/manager-app.ts',
     },
     format: ['esm'],
     target: 'es2022',

@@ -280,6 +280,52 @@ describe('web-app DOM', () => {
     ).toContain('echo demo');
   });
 
+  it('opens the native manager page directly without a preflight ensure request', async () => {
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
+
+    const openMock = vi.fn();
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'manager-token'
+        );
+        Object.defineProperty(window, 'open', {
+          value: openMock,
+          configurable: true,
+        });
+      },
+      preferredConnectUrl: 'https://hub.example.test/connect',
+    });
+
+    document.querySelector<HTMLButtonElement>('#openManagerButton')!.click();
+    await waitForTick();
+
+    expect(openMock).toHaveBeenCalledWith(
+      'https://hub.example.test/connect/manager/#accessCode=manager-token',
+      '_blank',
+      'noopener,noreferrer'
+    );
+    expect(
+      fetchMockImpl.mock.calls.some(([input]) =>
+        String(input).includes('/api/manager-gui/ensure')
+      )
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#managerStatus')!.textContent
+    ).toContain('別タブ');
+  });
+
   it('filters sessions by search text and keeps favorite sessions first', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

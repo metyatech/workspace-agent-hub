@@ -1,17 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createServer } from 'node:http';
 import type { Server } from 'node:http';
-import { resolve as resolvePath } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   buildBrowserOpenCommand,
-  buildManagerUiUrl,
   CommandExecutionError,
   buildBrowserOpenUrl,
   buildWebUiLaunchInfo,
   createWebUiServer,
   extractTailscaleServeSetupUrl,
-  probeManagerGuiInstance,
-  rewriteManagerGuiHtmlForHub,
   runCommand,
 } from '../web-ui.js';
 import type { SessionBridge } from '../session-bridge.js';
@@ -52,6 +50,8 @@ function makeSession(
 }
 
 class FakeBridge implements SessionBridge {
+  constructor(private readonly workspaceRoot = 'D:\\ghws') {}
+
   sessions: SessionRecord[] = [
     makeSession('shell-existing', { DisplayTitle: 'Existing Session' }),
   ];
@@ -68,7 +68,7 @@ class FakeBridge implements SessionBridge {
   ]);
 
   getWorkspaceRoot(): string {
-    return 'D:\\ghws';
+    return this.workspaceRoot;
   }
 
   async listSessions(): Promise<SessionRecord[]> {
@@ -84,7 +84,7 @@ class FakeBridge implements SessionBridge {
       Type: input.type,
       DisplayTitle: input.title || 'New Session',
       Title: input.title || '',
-      WorkingDirectoryWindows: input.workingDirectory || 'D:\\ghws',
+      WorkingDirectoryWindows: input.workingDirectory || this.workspaceRoot,
     });
     this.sessions = [created, ...this.sessions];
     return created;
@@ -175,82 +175,32 @@ class FakeBridge implements SessionBridge {
 
   async listSuggestedDirectories(): Promise<DirectorySuggestion[]> {
     return [
-      { label: 'Workspace root', path: 'D:\\ghws' },
-      { label: 'workspace-agent-hub', path: 'D:\\ghws\\workspace-agent-hub' },
+      { label: 'Workspace root', path: this.workspaceRoot },
+      {
+        label: 'workspace-agent-hub',
+        path: join(this.workspaceRoot, 'workspace-agent-hub'),
+      },
     ];
   }
 }
 
 let activeServer: Server | null = null;
+const tempDirs: string[] = [];
 
-async function startMockManagerGuiServer(input?: {
-  workspaceRoot?: string;
-  authToken?: string | null;
-  running?: boolean;
-}): Promise<Server> {
-  const workspaceRoot = resolvePath(input?.workspaceRoot ?? 'D:\\ghws');
-  const authToken = input?.authToken ?? null;
-  const running = input?.running ?? true;
-  const server = createServer(async (req, res) => {
-    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-    if (pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!doctype html>
-<html lang="ja">
-  <head><title>マネージャー</title></head>
-  <body>
-    <script>
-      window.GUI_DIR = ${JSON.stringify(workspaceRoot)};
-      window.MANAGER_AUTH_REQUIRED = ${authToken ? 'true' : 'false'};
-      window.MANAGER_AUTH_STORAGE_KEY = ${JSON.stringify(`thread-inbox.manager-token:${workspaceRoot}`)};
-    </script>
-    <script type="module" src="/manager-app.js"></script>
-  </body>
-</html>`);
-      return;
-    }
-
-    if (pathname === '/manager-app.js') {
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript; charset=utf-8',
-      });
-      res.end('console.log("manager-app");');
-      return;
-    }
-
-    if (pathname === '/api/manager/status') {
-      const provided = req.headers['x-thread-inbox-token'];
-      if (authToken && provided !== authToken) {
-        res.writeHead(401, {
-          'Content-Type': 'application/json; charset=utf-8',
-        });
-        res.end(
-          JSON.stringify({ error: 'Access code required', authRequired: true })
-        );
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(
-        JSON.stringify({
-          running,
-          configured: true,
-          builtinBackend: true,
-        })
-      );
-      return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('not found');
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return server;
+async function createTempWorkspace(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-test-'));
+  tempDirs.push(dir);
+  return dir;
 }
 
 afterEach(async () => {
   if (activeServer) {
     await new Promise<void>((resolve) => activeServer!.close(() => resolve()));
     activeServer = null;
+  }
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop()!;
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -584,268 +534,94 @@ To enable, visit:
   });
 });
 
-describe('buildManagerUiUrl', () => {
-  it('builds a same-origin manager path under the preferred connect URL', () => {
-    const url = buildManagerUiUrl({
-      connectInfo: {
-        preferredConnectUrl: 'https://hub.example.test/connect',
-        source: 'public-url',
-        tailscale: null,
-      },
-      authConfig: {
-        required: true,
-        token: 'secret-token',
-      },
-    });
-    expect(url).toBe(
-      'https://hub.example.test/connect/manager/#accessCode=secret-token'
-    );
-  });
-
-  it('keeps a local listen URL on the hub origin instead of synthesizing TLS on the manager port', () => {
-    const url = buildManagerUiUrl({
-      connectInfo: {
-        preferredConnectUrl: 'http://127.0.0.1:3360',
-        source: 'listen-url',
-        tailscale: null,
-      },
-      authConfig: {
-        required: false,
-        token: null,
-      },
-    });
-    expect(url).toBe('http://127.0.0.1:3360/manager/');
-  });
-});
-
-describe('rewriteManagerGuiHtmlForHub', () => {
-  it('rewrites the manager HTML to use the hub proxy path and the hub storage key', () => {
-    const rewritten = rewriteManagerGuiHtmlForHub(
-      `<!doctype html><html><body>
-<script>
-window.MANAGER_AUTH_REQUIRED = true;
-window.MANAGER_AUTH_STORAGE_KEY = "thread-inbox.manager-token:D:\\\\ghws";
-</script>
-<script type="module" src="/manager-app.js"></script>
-</body></html>`,
-      {
-        storageKey: 'workspace-agent-hub.test-token',
-      }
-    );
-
-    expect(rewritten).toContain('src="/manager/manager-app.js"');
-    expect(rewritten).toContain('window.fetch = function (input, init)');
-    expect(rewritten).toContain('workspace-agent-hub.test-token');
-  });
-});
-
-describe('probeManagerGuiInstance', () => {
-  let mockGuiServer: Server | null = null;
-
-  afterEach(async () => {
-    if (mockGuiServer) {
-      await new Promise<void>((r) => mockGuiServer!.close(() => r()));
-      mockGuiServer = null;
-    }
-  });
-
-  it('accepts only a matching manager-gui instance for the current workspace and auth token', async () => {
-    mockGuiServer = await startMockManagerGuiServer({
-      workspaceRoot: 'D:\\ghws',
-      authToken: 'secret-token',
-    });
-    const address = mockGuiServer.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-
-    await expect(
-      probeManagerGuiInstance({
-        host: '127.0.0.1',
-        port,
-        workspaceRoot: 'D:\\ghws',
-        authRequired: true,
-        authToken: 'secret-token',
-      })
-    ).resolves.toEqual({
-      state: 'ready',
-      reason: 'Manager GUI is already running for this workspace.',
-    });
-  });
-
-  it('rejects an unrelated HTTP server on the manager port', async () => {
-    const unrelatedServer = createServer((_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('not a manager');
-    });
-    await new Promise<void>((resolve) =>
-      unrelatedServer.listen(0, '127.0.0.1', resolve)
-    );
-    mockGuiServer = unrelatedServer;
-    const address = unrelatedServer.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-
-    const result = await probeManagerGuiInstance({
-      host: '127.0.0.1',
-      port,
-      workspaceRoot: 'D:\\ghws',
-      authRequired: true,
-      authToken: 'secret-token',
-    });
-    expect(result.state).toBe('conflict');
-    expect(result.reason).toContain('different service or workspace');
-  });
-
-  it('rejects a manager-gui instance that does not accept the current hub token', async () => {
-    mockGuiServer = await startMockManagerGuiServer({
-      workspaceRoot: 'D:\\ghws',
-      authToken: 'other-token',
-    });
-    const address = mockGuiServer.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-
-    const result = await probeManagerGuiInstance({
-      host: '127.0.0.1',
-      port,
-      workspaceRoot: 'D:\\ghws',
-      authRequired: true,
-      authToken: 'secret-token',
-    });
-    expect(result.state).toBe('conflict');
-    expect(result.reason).toContain('access code');
-  });
-});
-
-describe('Manager GUI ensure endpoint', () => {
-  let mockGuiServer: Server | null = null;
-
-  afterEach(async () => {
-    if (mockGuiServer) {
-      await new Promise<void>((r) => mockGuiServer!.close(() => r()));
-      mockGuiServer = null;
-    }
-  });
-
-  it('returns a hub-relative manager URL and alreadyRunning=true when the matching manager server is already up', async () => {
-    mockGuiServer = await startMockManagerGuiServer({
-      workspaceRoot: 'D:\\ghws',
-      authToken: 'secret-token',
-    });
-    const guiAddress = mockGuiServer.address();
-    const guiPort =
-      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
-
+describe('native manager page', () => {
+  it('serves manager.html at /manager/ with injected config', async () => {
+    const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
-      bridge: new FakeBridge(),
+      bridge: new FakeBridge(workspaceRoot),
       host: '127.0.0.1',
       port: 0,
       authToken: 'secret-token',
       openBrowser: false,
-      managerGuiPort: guiPort,
     });
     activeServer = server;
 
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
-      {
-        method: 'POST',
-        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
-      }
-    );
+    const response = await fetch(`http://127.0.0.1:${port}/manager/`);
     expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      url: string;
-      alreadyRunning: boolean;
-    };
-    expect(payload).toEqual({
-      url: `http://127.0.0.1:${port}/manager/#accessCode=secret-token`,
-      alreadyRunning: true,
-    });
+    const html = await response.text();
+    expect(html).toContain('マネージャー');
+    expect(html).toContain('MANAGER_AUTH_REQUIRED');
   });
 
-  it('fails safely when the configured manager port is occupied by a different service', async () => {
-    const unrelatedServer = createServer((_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('not a manager');
-    });
-    await new Promise<void>((resolve) =>
-      unrelatedServer.listen(0, '127.0.0.1', resolve)
-    );
-    mockGuiServer = unrelatedServer;
-    const guiAddress = unrelatedServer.address();
-    const guiPort =
-      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
-
+  it('also serves manager page at /manager without trailing slash', async () => {
+    const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
-      bridge: new FakeBridge(),
+      bridge: new FakeBridge(workspaceRoot),
       host: '127.0.0.1',
       port: 0,
       authToken: 'secret-token',
       openBrowser: false,
-      managerGuiPort: guiPort,
     });
     activeServer = server;
 
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
-      {
-        method: 'POST',
-        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
-      }
-    );
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringContaining('different service or workspace'),
-    });
+    const response = await fetch(`http://127.0.0.1:${port}/manager`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('マネージャー');
   });
 
-  it('proxies the manager page and API through the hub origin', async () => {
-    mockGuiServer = await startMockManagerGuiServer({
-      workspaceRoot: 'D:\\ghws',
-      authToken: 'secret-token',
-    });
-    const guiAddress = mockGuiServer.address();
-    const guiPort =
-      typeof guiAddress === 'object' && guiAddress ? guiAddress.port : 3335;
-
+  it('requires auth for /manager/api/ routes and can start the built-in manager', async () => {
+    const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
-      bridge: new FakeBridge(),
+      bridge: new FakeBridge(workspaceRoot),
       host: '127.0.0.1',
       port: 0,
       authToken: 'secret-token',
       openBrowser: false,
-      managerGuiPort: guiPort,
     });
     activeServer = server;
 
-    const pageResponse = await fetch(`http://127.0.0.1:${port}/manager/`);
-    expect(pageResponse.status).toBe(200);
-    const pageHtml = await pageResponse.text();
-    expect(pageHtml).toContain('src="/manager/manager-app.js"');
-    expect(pageHtml).toContain(
-      'window.MANAGER_AUTH_STORAGE_KEY = "workspace-agent-hub.token:D:\\\\ghws";'
-    );
-
-    const unauthorizedApiResponse = await fetch(
+    const unauthResponse = await fetch(
       `http://127.0.0.1:${port}/manager/api/manager/status`
     );
-    expect(unauthorizedApiResponse.status).toBe(401);
+    expect(unauthResponse.status).toBe(401);
 
-    const authorizedApiResponse = await fetch(
+    const authResponse = await fetch(
       `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' } }
+    );
+    expect(authResponse.status).toBe(200);
+    await expect(authResponse.json()).resolves.toMatchObject({
+      running: false,
+      configured: true,
+      builtinBackend: true,
+    });
+
+    const startResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/start`,
       {
+        method: 'POST',
         headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
       }
     );
-    expect(authorizedApiResponse.status).toBe(200);
-    await expect(authorizedApiResponse.json()).resolves.toMatchObject({
+    expect(startResponse.status).toBe(200);
+
+    const afterStartResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' } }
+    );
+    expect(afterStartResponse.status).toBe(200);
+    await expect(afterStartResponse.json()).resolves.toMatchObject({
       running: true,
       configured: true,
       builtinBackend: true,
     });
   });
 
-  it('requires auth before attempting to start the Manager GUI', async () => {
+  it('creates and lists threads through the native manager API', async () => {
+    const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
-      bridge: new FakeBridge(),
+      bridge: new FakeBridge(workspaceRoot),
       host: '127.0.0.1',
       port: 0,
       authToken: 'secret-token',
@@ -853,10 +629,54 @@ describe('Manager GUI ensure endpoint', () => {
     });
     activeServer = server;
 
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/manager-gui/ensure`,
-      { method: 'POST' }
+    const headers = {
+      'X-Workspace-Agent-Hub-Token': 'secret-token',
+      'Content-Type': 'application/json',
+    };
+
+    const createRes = await fetch(
+      `http://127.0.0.1:${port}/manager/api/threads`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ title: 'Test thread' }),
+      }
     );
-    expect(response.status).toBe(401);
+    expect(createRes.status).toBe(201);
+    const thread = (await createRes.json()) as {
+      id: string;
+      title: string;
+      status: string;
+    };
+    expect(thread.title).toBe('Test thread');
+    expect(thread.status).toBe('active');
+    expect(typeof thread.id).toBe('string');
+
+    const listRes = await fetch(
+      `http://127.0.0.1:${port}/manager/api/threads`,
+      { headers }
+    );
+    expect(listRes.status).toBe(200);
+    const threads = (await listRes.json()) as { id: string }[];
+    expect(threads.some((t) => t.id === thread.id)).toBe(true);
+  });
+
+  it('returns tasks from the native manager API', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/manager/api/tasks`, {
+      headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+    });
+    expect(res.status).toBe(200);
+    const tasks = await res.json();
+    expect(Array.isArray(tasks)).toBe(true);
   });
 });
