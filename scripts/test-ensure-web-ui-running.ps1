@@ -150,6 +150,7 @@ $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-open-web-' + [guid]::
 $statePath = Join-Path $testDirectory 'state.json'
 $port = Get-FreeTcpPort
 $testPassed = $false
+$originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
 
 try {
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'first' -TargetDirectory $testDirectory
@@ -182,6 +183,45 @@ try {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the same background process when the instance is already healthy.'
     }
 
+    $tailscaleState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $tailscaleState.PreferredConnectUrlSource = 'tailscale-serve'
+    $tailscaleState.PreferredConnectUrl = 'https://desktop-dr5v76c.tail5a2d2d.ts.net'
+    ($tailscaleState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$firstPort
+"@
+
+    $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-healthy' -TargetDirectory $testDirectory
+    $serveHealthy = Wait-ForLaunchMetadata -TargetStdOutPath $serveHealthyRun.StdOutPath
+    Wait-ForProcessSuccess -ProcessInfo $serveHealthyRun
+    $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
+    Wait-ForApiReady -PortNumber $serveHealthyPort -Token 'ensure-test-token'
+
+    if ([int]$serveHealthy.ProcessId -ne [int]$first.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to keep reusing the existing instance when the saved Tailscale Serve target still matches the listener port.'
+    }
+
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
+https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:57921
+'@
+
+    $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-mismatch' -TargetDirectory $testDirectory
+    $serveMismatch = Wait-ForLaunchMetadata -TargetStdOutPath $serveMismatchRun.StdOutPath
+    Wait-ForProcessSuccess -ProcessInfo $serveMismatchRun
+    $serveMismatchPort = ([Uri][string]$serveMismatch.ListenUrl).Port
+    Wait-ForApiReady -PortNumber $serveMismatchPort -Token 'ensure-test-token'
+
+    if ([int]$serveMismatch.ProcessId -eq [int]$first.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to restart when the saved Tailscale Serve target no longer matches the listener port.'
+    }
+
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$serveMismatchPort
+"@
+
     $corruptedState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
     $corruptedState.ProcessId = 999999
     ($corruptedState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
@@ -191,7 +231,7 @@ try {
     Wait-ForProcessSuccess -ProcessInfo $stalePidRun
     Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token 'ensure-test-token'
 
-    if ([int]$stalePid.ProcessId -ne [int]$first.ProcessId) {
+    if ([int]$stalePid.ProcessId -ne [int]$serveMismatch.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to recover the real listener PID when the saved wrapper PID is stale.'
     }
 
@@ -221,6 +261,12 @@ try {
             } catch {
             }
         }
+    }
+
+    if ($null -eq $originalTailscaleServeStatusText) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = $originalTailscaleServeStatusText
     }
 
     if (Test-Path -Path $testDirectory) {

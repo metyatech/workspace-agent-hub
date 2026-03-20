@@ -155,6 +155,79 @@ function Get-ListenerProcessId {
     return $null
 }
 
+function Get-TailscaleServeProxyTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StatusText
+    )
+
+    $match = [regex]::Match(
+        $StatusText,
+        '(?im)^\|--\s+/\s+proxy\s+(\S+)\s*$'
+    )
+    if ($match.Success) {
+        return $match.Groups[1].Value.Trim()
+    }
+
+    return $null
+}
+
+function Get-TailscaleServeStatusText {
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -and
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT.Trim()
+    ) {
+        return $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT.Trim()
+    }
+
+    try {
+        return (& tailscale serve status 2>&1 | Out-String).Trim()
+    } catch {
+        return ''
+    }
+}
+
+function Test-TailscaleServeTargetMatchesListenUrl {
+    param(
+        $ExistingState,
+        [string]$ListenUrl
+    )
+
+    if (
+        -not $ExistingState -or
+        [string]$ExistingState.PreferredConnectUrlSource -ne 'tailscale-serve'
+    ) {
+        return $true
+    }
+
+    if (-not $ListenUrl) {
+        return $false
+    }
+
+    try {
+        $listenUri = [Uri]$ListenUrl
+        $statusText = Get-TailscaleServeStatusText
+        if (-not $statusText) {
+            return $false
+        }
+
+        $proxyTarget = Get-TailscaleServeProxyTarget -StatusText $statusText
+        if (-not $proxyTarget) {
+            return $false
+        }
+
+        $proxyUri = [Uri]$proxyTarget
+        $loopbackHosts = @('127.0.0.1', 'localhost', '::1', '[::1]')
+        return (
+            $proxyUri.Scheme -eq 'http' -and
+            $loopbackHosts -contains $proxyUri.Host.ToLowerInvariant() -and
+            $proxyUri.Port -eq $listenUri.Port
+        )
+    } catch {
+        return $false
+    }
+}
+
 function Test-WebUiReady {
     param(
         [Parameter(Mandatory = $true)]
@@ -398,7 +471,10 @@ if (
     } else {
         Get-ReadyListenerProcessId -ListenUrl $existingListenUrl -Token $resolvedToken
     }
-    $canReuseExistingInstance = if ($existingListenerProcessId) {
+    $canReuseExistingInstance = if (
+        $existingListenerProcessId -and
+        (Test-TailscaleServeTargetMatchesListenUrl -ExistingState $existingState -ListenUrl $existingListenUrl)
+    ) {
         $true
     } else {
         $false
