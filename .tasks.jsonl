@@ -1,1 +1,2 @@
 {"id":"9nE4jXSx","description":"Bootstrap standalone workspace-agent-hub repository and publish the current session fabric","stage":"in-progress","createdAt":"2026-03-14T07:55:24.666Z","updatedAt":"2026-03-14T07:55:42.237Z"}
+{"id":"lrWKYfGD","description":"Fix smartphone/Tailscale 502 path and migrate manager backend from Claude CLI to Codex GPT-5.4 xhigh with queue continuity validation","stage":"in-progress","createdAt":"2026-03-20T06:31:47.629Z","updatedAt":"2026-03-20T06:31:53.244Z"}

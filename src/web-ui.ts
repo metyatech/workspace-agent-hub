@@ -207,6 +207,10 @@ function injectIndexHtml(
       JSON.stringify(connectInfo.tailscale?.serveCommand ?? null)
     )
     .replace(
+      '__WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_FALLBACK_REASON__',
+      JSON.stringify(connectInfo.tailscale?.serveFallbackReason ?? null)
+    )
+    .replace(
       '__WORKSPACE_AGENT_HUB_TAILSCALE_SERVE_SETUP_URL__',
       JSON.stringify(connectInfo.tailscale?.serveSetupUrl ?? null)
     );
@@ -246,6 +250,46 @@ export type CommandRunner = (
     timeoutMs?: number;
   }
 ) => Promise<string>;
+
+export interface ConnectUrlProbeResult {
+  reachable: boolean;
+  detail: string | null;
+}
+
+export type ConnectUrlProbe = (url: string) => Promise<ConnectUrlProbeResult>;
+
+export async function probeConnectUrl(
+  url: string
+): Promise<ConnectUrlProbeResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (response.status >= 500) {
+      return {
+        reachable: false,
+        detail: `HTTP ${response.status}`,
+      };
+    }
+    return {
+      reachable: true,
+      detail: null,
+    };
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.message : `Failed to fetch ${url}`;
+    return {
+      reachable: false,
+      detail,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export interface ResolvedConnectInfo {
   preferredConnectUrl: string;
@@ -379,6 +423,7 @@ async function detectTailscaleConnectInfo(input: {
   port: number;
   enableServe: boolean;
   commandRunner: CommandRunner;
+  connectUrlProbe: ConnectUrlProbe;
 }): Promise<TailscaleConnectInfo | null> {
   let payload: TailscaleStatusPayload;
   try {
@@ -431,6 +476,23 @@ async function detectTailscaleConnectInfo(input: {
     }
   }
 
+  if (serveEnabled) {
+    const probeResult = await input.connectUrlProbe(secureConnectUrl);
+    if (!probeResult.reachable) {
+      serveEnabled = false;
+      serveFallbackReason = probeResult.detail
+        ? `Tailscale HTTPS endpoint is not reachable yet (${probeResult.detail}).`
+        : 'Tailscale HTTPS endpoint is not reachable yet.';
+      if (
+        !serveSetupUrl &&
+        probeResult.detail &&
+        probeResult.detail.includes('HTTP 502')
+      ) {
+        serveSetupUrl = TAILSCALE_ADMIN_DNS_URL;
+      }
+    }
+  }
+
   return {
     dnsName,
     directConnectUrl,
@@ -448,6 +510,7 @@ async function resolveConnectInfo(input: {
   publicUrl?: string;
   tailscaleServe?: boolean;
   commandRunner?: CommandRunner;
+  connectUrlProbe?: ConnectUrlProbe;
 }): Promise<ResolvedConnectInfo> {
   const listenOriginHost = isWildcardHost(input.host)
     ? '127.0.0.1'
@@ -459,6 +522,7 @@ async function resolveConnectInfo(input: {
     port: input.port,
     enableServe: Boolean(input.tailscaleServe) && !explicitPublicUrl,
     commandRunner: input.commandRunner ?? runCommand,
+    connectUrlProbe: input.connectUrlProbe ?? probeConnectUrl,
   });
 
   if (explicitPublicUrl) {
@@ -517,6 +581,7 @@ export interface StartWebUiOptions {
   openBrowser?: boolean;
   bridge?: SessionBridge;
   commandRunner?: CommandRunner;
+  connectUrlProbe?: ConnectUrlProbe;
 }
 
 export interface WebUiLaunchInfo {
@@ -858,6 +923,7 @@ export async function createWebUiServer(
     publicUrl: options.publicUrl,
     tailscaleServe: options.tailscaleServe,
     commandRunner: options.commandRunner,
+    connectUrlProbe: options.connectUrlProbe,
   });
   return {
     server,

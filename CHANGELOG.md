@@ -19,6 +19,12 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   documented as the sole Manager UI with an explicit browser auth state matrix
 - Changed `Open Manager` to reuse the current browser origin and move into the
   native `/manager/` page in the same tab instead of relying on a separate tab
+- Hardened the smartphone/Tailscale onboarding path so a detected HTTPS
+  tailnet `HTTP 502` now keeps QR/default pairing on the verified direct
+  tailnet URL and surfaces deterministic HTTPS recovery guidance
+- Switched the built-in Manager backend runtime from Claude CLI to Codex CLI
+  (`gpt-5.4` + `model_reasoning_effort="xhigh"`), while preserving serialized
+  queue processing and persisted cross-turn continuity via Codex thread resume
 
 ## [0.2.1] - 2026-03-16
 

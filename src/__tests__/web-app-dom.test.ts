@@ -95,6 +95,7 @@ async function loadApp(
     tailscaleDirectUrl?: string | null;
     tailscaleSecureUrl?: string | null;
     tailscaleServeCommand?: string | null;
+    tailscaleServeFallbackReason?: string | null;
     tailscaleServeSetupUrl?: string | null;
   }
 ): Promise<Document> {
@@ -137,6 +138,8 @@ async function loadApp(
       tailscaleDirectUrl: options?.tailscaleDirectUrl ?? null,
       tailscaleSecureUrl: options?.tailscaleSecureUrl ?? null,
       tailscaleServeCommand: options?.tailscaleServeCommand ?? null,
+      tailscaleServeFallbackReason:
+        options?.tailscaleServeFallbackReason ?? null,
       tailscaleServeSetupUrl: options?.tailscaleServeSetupUrl ?? null,
     },
     configurable: true,
@@ -1150,6 +1153,52 @@ describe('web-app DOM', () => {
     ).toContain(
       'DNS 設定ページで HTTPS Certificates を 1 回だけ有効にしてください'
     );
+  });
+
+  it('keeps the direct smartphone path when HTTPS tailnet probing reports 502', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'pairing-token'
+        );
+      },
+      preferredConnectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      preferredConnectUrlSource: 'tailscale-direct',
+      tailscaleDirectUrl: 'http://desktop.tail5a2d2d.ts.net:3360',
+      tailscaleSecureUrl: 'https://desktop.tail5a2d2d.ts.net',
+      tailscaleServeCommand: 'tailscale serve --bg --yes http://127.0.0.1:3360',
+      tailscaleServeFallbackReason:
+        'Tailscale HTTPS endpoint is not reachable yet (HTTP 502).',
+    });
+
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingUrlInput')!.value
+    ).toContain(
+      'http://desktop.tail5a2d2d.ts.net:3360#accessCode=pairing-token'
+    );
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
+    expect(
+      document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
+        .textContent
+    ).toContain('まだ使えません');
+    expect(
+      document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
+        .textContent
+    ).toContain('HTTP 502');
   });
 
   it('does not render a smartphone QR when the pairing URL only targets the local PC', async () => {

@@ -819,6 +819,7 @@ list_sessions() {
   local include_archived="${1:-0}"
   local include_catalog_only="${2:-0}"
   local line session_name type label title folder_text preview_text attached windows activity_unix activity_local archived is_live closed_utc state display_title
+  ensure_session_catalog_file
   printf '%-24s %-8s %-20s %-26s %-28s %-8s %s\n' 'Title' 'Type' 'State' 'Folder' 'Preview' 'Attached' 'Last Activity'
   while IFS="$SESSION_FIELD_DELIM" read -r session_name type label title folder_text preview_text attached windows activity_unix activity_local archived is_live closed_utc state; do
     [[ -n "$session_name" ]] || continue

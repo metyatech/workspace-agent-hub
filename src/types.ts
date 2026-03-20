@@ -67,5 +67,6 @@ export interface WebUiConfigBootstrap {
   tailscaleDirectUrl: string | null;
   tailscaleSecureUrl: string | null;
   tailscaleServeCommand: string | null;
+  tailscaleServeFallbackReason: string | null;
   tailscaleServeSetupUrl: string | null;
 }

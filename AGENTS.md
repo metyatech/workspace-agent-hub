@@ -24,7 +24,7 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/agent-rules-composition.m
 
 - Never edit AGENTS.md directly; update source rules and regenerate. "Update rules" = update module/ruleset, then regenerate.
 - Persistent user instructions → encode in appropriate module (global vs local) in the same change set.
-- New repos must meet all global rules (AGENTS.md, CI, linting, community health, docs, scanning) before reporting complete.
+- New repos must include a root `agent-ruleset.json`, compose `AGENTS.md` from it, and meet all global rules (CI, linting, community health, docs, scanning) before reporting complete.
 - Update rulesets for missing domain rules before proceeding. Omit AGENTS.md diffs unless asked.
 - Treat AGENTS.md diffs produced by compose-agentsmd as intentional updates: do not discard/revert them unless the requester explicitly asks to drop them.
 - When the repository is git-managed, stage those intentional AGENTS.md updates normally (git add) unless the requester explicitly says to exclude them.
@@ -46,7 +46,7 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/autonomous-operations.md
 - Correctness, safety, robustness, verifiability > speed unless requester explicitly approves the tradeoff.
 - Default to long-term maintainability over short-term optimization.
 - End-to-end repo autonomy (issues, PRs, pushes, merges, releases, admin) within user-controlled repos; third-party repos require explicit request.
-- No backward compatibility unless requested; no legacy aliases, shims, or temporary fallback behavior.
+- No backward compatibility unless requested; no legacy aliases, shims, or temporary fallback behavior. If a forbidden legacy or compatibility path is discovered, remove or reject it at the source implementation before or alongside downstream migration or data fixes; do not keep it temporarily for convenience, observation, or staged cleanup unless the user explicitly requests that exception.
 - Proactively fix rule gaps, redundancy, or misplacement; regenerate AGENTS.md without waiting.
 - Self-evaluate continuously; fix rule/skill gaps immediately on discovery. In delegated mode, include improvement suggestions in the task result.
 - On user-reported failures: treat as systemic - fix, update rules, check for same pattern elsewhere, in one action.
@@ -55,10 +55,11 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/autonomous-operations.md
 - Investigate unclear items before proceeding; no assumptions without approval. Make scope/risk/cost/irreversibility decisions explicit.
 - In direct mode, treat any normal user instruction as approval for the full in-scope follow-up work needed to satisfy that request, unless the user explicitly narrows scope or higher-priority rules require additional approval.
 - After any user instruction, infer and execute the natural delivery chain by default: implementation, testing, debugging, runtime verification, deployment/release when applicable, documentation updates, follow-on defect cleanup, and residual-risk reduction, until the strongest justified terminal state is reached or an irreducible blocker remains.
+- When the user has requested multiple tasks, keep the conversation focused on the current in-progress task until it reaches a clear terminal state or blocker. Do not shift discussion to later requested tasks early unless the user explicitly asks to switch now.
 - When asked to handle PR review feedback, keep running the full PR review loop across successive review rounds without waiting for another user prompt: address feedback, verify, commit/push, re-request the relevant reviewer(s), monitor for new feedback, and repeat until no actionable review feedback remains or a blocker requires user input.
 - Do not stop at intermediate milestones or pause for optional reassurance, optional next-step confirmation, or convenience check-ins while actionable in-scope work remains; interrupt only for blockers, mandatory approvals imposed by higher-priority rules, explicit stop/pause instructions, or material scope/risk changes that require user input.
 - Do not lower the requested outcome on your own. If the intended end state is not yet fully met, continue working or explicitly return the remaining gap to the user; never treat partial satisfaction as completion by your own judgment.
-- Actively consider whether user input carries intent beyond its literal wording, and when it does, state that inferred intent and propose the matching next step.
+- Actively consider whether user input carries intent beyond its literal wording, and when it does, state that inferred intent and propose the matching next step. For requests to design or build systems jointly managed by humans and AI agents, make actors, canonical store, human surface, AI surface, sync, conflict policy, validation surfaces, generated artifacts, and human startup path explicit before implementation, and use the `human-ai-system-builder` skill.
 - If a problem can be fundamentally solved by modifying global rules, solve it by modifying global rules.
 - When modifying global rules, choose the shortest rule change that is still sufficient to solve the problem.
 - When multiple viable approaches exist, default to the highest-standard option that maximizes long-term quality, maintainability, and durability; lower-standard tradeoffs require explicit user request.
@@ -79,12 +80,14 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/command-execution.md
 - Do not add wrappers or pipes to commands unless the user explicitly asks.
 - Prefer repository-standard scripts/commands (package.json scripts, README instructions).
 - Reproduce reported command issues by running the same command (or closest equivalent) before proposing fixes.
+- Treat nonzero exits from external commands as failures unless a specific exit code is explicitly documented and checked as an expected condition; never map unknown nonzero exits to benign states.
 - When a Windows process is intended to run headlessly, every non-interactive child console process in that spawn chain must also be launched headlessly (`windowsHide: true`, `CreateNoWindow`, or `Start-Process -WindowStyle Hidden` as appropriate).
 - From a windowless PowerShell parent, do not spawn non-interactive console children with the `&` call operator; use an explicit hidden process launch that preserves output/exit-code handling.
 - When diagnosing third-party tool failures, check the latest stable release first; if the latest still reproduces the failure, treat upgrade as insufficient, record the verified limitation, and use a deterministic workaround when available.
 - Avoid interactive git prompts by using --no-edit or setting GIT_EDITOR=true.
 - If elevated privileges are required, use sudo directly; do not launch a separate elevated shell (e.g., Start-Process -Verb RunAs). Fall back to run as Administrator only when sudo is unavailable.
 - Keep changes scoped to affected repositories; when shared modules change, update consumers and verify at least one.
+- When the destination repo/path is inferred rather than explicitly requested, verify from the repo's stated purpose and the user's intent that it is the canonical home for the work; structural or tooling fit alone is insufficient, and if ownership is unclear, keep the work isolated until the destination is confirmed.
 - If no branch is specified, work on the current branch; direct commits to main/master are allowed.
 - Do not assume agent platform capabilities beyond what is available; fail explicitly when unavailable.
 - When building a CLI, follow standard conventions: --help/-h, --version/-V, stdin/stdout piping, --json output, --dry-run for mutations, deterministic exit codes, and JSON Schema config validation.
@@ -96,9 +99,9 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/command-execution.md
 - `Remove-Item -Recurse` (aliases: `rmdir`, `rd`) ↁEUse: `if ([IO.Directory]::Exists($d)) { [IO.File]::SetAttributes($d,[IO.FileAttributes]::Normal); foreach ($e in [IO.Directory]::EnumerateFileSystemEntries($d,'*',[IO.SearchOption]::AllDirectories)) { [IO.File]::SetAttributes($e,[IO.FileAttributes]::Normal) }; [IO.Directory]::Delete($d,$true) }`
 - In PowerShell, use `;` for sequential command chaining; never use `&&` or `||` as control-flow operators.
 ## Post-change deployment
-- After modifying code, check whether deployment steps beyond commit/push are needed before concluding.
-- If the repo is globally linked (`npm ls -g` shows `->` to local path), rebuild and verify the global binary is functional.
+- After modifying code, check whether deployment steps beyond commit/push are needed before concluding; if the repo is globally linked (`npm ls -g` shows `->` to local path), rebuild and verify the global binary is functional.
 - If the repo powers a running service, daemon, or scheduled task, rebuild, restart, and verify with deterministic evidence; do not claim completion until the running instance reflects the changes. Detection and verification procedures are in the `post-deploy` skill.
+- For tests or helper flows that spawn background services, daemons, browsers, or other long-lived processes, verify teardown and absence of agent-owned orphaned temp/process artifacts before concluding; if teardown fails, fix the harness instead of leaving residue.
 - **PowerShell native environment**: This is a Windows/PowerShell environment. Do not use Unix commands directly. On Windows, any Bash-tool command containing `pwsh` or `powershell` is invalid; rewrite it to `pwsh`/`powershell -File` with a `.ps1` file before execution. Do not use `-Command`, stdin, heredoc, or `-EncodedCommand` for PowerShell scripts.
 
 Source: github:metyatech/agent-rules@HEAD/rules/global/implementation-and-coding-standards.md
@@ -109,7 +112,7 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/implementation-and-coding
 - Use latest stable versions of packages/tools; document blockers if not.
 - Prefer OSS/free-tier services; call out tradeoffs.
 - PowerShell: \ is literal; avoid shadowing auto-vars; prefer single quotes.
-- Assess reuse first; prefer remote dependencies over local paths.
+- Assess reuse first: before designing or building a system, verify whether the whole system or any decomposed subsystem can be satisfied by an existing official or well-maintained system, service, or tool; use existing systems by default and build custom logic only for verified gaps.
 - Single responsibility; composition over inheritance; clean dependency direction.
 - Avoid deep nesting; guard clauses; small functions; intention-revealing names.
 - Prefer config/constants over hardcoding; consolidate change points.
@@ -143,6 +146,7 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/linting-formatting-and-st
 - Treat warnings as errors in CI.
 - Do not disable rules globally; keep suppressions narrow, justified, and time-bounded.
 - Pin tool versions (lockfiles/manifests) for reproducible CI.
+- Repositories with GitHub Actions must configure Dependabot version updates for applicable package ecosystems and for `github-actions`, unless the repository has no external dependency/update surface.
 - For web UI projects, enforce automated visual accessibility checks in CI.
 - Require dependency vulnerability scanning, secret scanning, and CodeQL for supported languages.
 
@@ -214,12 +218,12 @@ Non-negotiable gates for any state-changing work or any claim of "done", "fixed"
 - Anything not directly verified must be reported as unverified or unsupported; use real devices or live environments only when lower-cost faithful environments cannot validate the behavior.
 - For authentication, billing, authorization, data persistence, and other critical systems, passing unit/integration tests, CI, build, and health checks is necessary but insufficient; completion requires live or production-like end-to-end verification of the critical user journey.
 - If an intended environment cannot be exercised with available tools or access, stop short of a completion claim, state the exact gap, and leave that environment unclaimed until verified.
-- For GUI work, include a first-use walkthrough against the primary user goal; functional E2E alone is insufficient when clarity/usability is in scope.
-- For GUI work, do not conclude from functional correctness alone: require screenshot-based review plus automated checks for overflow, clipping, wrapping, and clearly visible primary/current state where feasible; if the user still reports confusion, treat that as a failed acceptance gate and add a regression check for that confusion class before concluding.
+- For GUI work, include a first-use walkthrough against the primary user goal, and do not conclude from functional correctness alone: require screenshot-based review plus automated checks for overflow, clipping, wrapping, and clearly visible primary/current state where feasible; if the user still reports confusion, treat that as a failed acceptance gate and add a regression check for that confusion class before concluding.
 - For GUI work that affects first-use flow, information hierarchy, navigation, or user guidance, require a separate agent review before concluding; the reviewer must assess the rendered UI from the primary user goal and report whether the next action and result location are immediately understandable.
 - For GUI work, perform a whole-screen plausibility review: if the result would look obviously wrong, broken, or visually incoherent to a reasonable user at a glance, treat it as unfinished even when tests pass.
-- Never claim bug-free behavior. Report scope, evidence, and residual risk explicitly.
-- External checks and reviews are advisory. They can support completion, but they do not justify concluding a task while a known gap against the requested outcome remains.
+- On every user-reported bug, identify the earliest deterministic gate that should have caught it and add or strengthen that gate in the same change set before concluding; a fix without a new catching gate is incomplete.
+- For GUI states that intentionally block progress (for example auth walls, modal dialogs, overlays, loading covers, or permission prompts), treat each blocking state as a primary UI state and verify at every primary viewport that it visually dominates, suppresses background interaction, and keeps the next action obvious.
+- Never claim bug-free behavior. Report scope, evidence, and residual risk explicitly, and do not let external checks or reviews justify concluding while a known gap against the requested outcome remains.
 - For AI review bots, follow the re-triggering procedures in the `pr-review-workflow` skill. Detailed evidence format and procedures are in the quality-workflow skill.
 
 Source: github:metyatech/agent-rules@HEAD/rules/global/release-and-publication.md
@@ -232,8 +236,9 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/release-and-publication.m
 - Keep package version and Git tag consistent.
 - Run dependency security checks before release.
 - Verify published packages resolve and run correctly before reporting done.
-- For new user-owned repositories created during a task, create the GitHub remote and push the initial history before reporting complete unless the user explicitly opts out.
+- When work is intentionally isolated into a new user-owned repository because it is the canonical home for that work, bootstrap it as a real repository, create the GitHub remote, and push the initial history before reporting complete unless the user explicitly opts out.
 - For public repos, set GitHub Description, Topics, and Homepage. Assign topics from the standard set defined in the `release-publish` skill.
+- For public npm packages published from GitHub Actions, use npm trusted publishing (OIDC) instead of long-lived npm tokens whenever supported, and keep the publish workflow on a Node/npm runtime that satisfies trusted-publishing requirements.
 - Before reporting a publishable-package change as complete, verify the full delivery chain (commit → push → version bump → release → publish → install verify). Procedures in the `release-publish` skill.
 - For user-owned publishable packages, when the user asks to commit/push or finalize a fix, treat release/publish as in-scope follow-up by default and execute the full delivery chain unless the user explicitly opts out.
 
@@ -272,6 +277,7 @@ Source: github:metyatech/agent-rules@HEAD/rules/global/thread-inbox.md
 - `thread-inbox` is the persistent cross-session conversation context tracker. Use it to preserve discussion topics, decisions, and context that span sessions.
 - If `thread-inbox` is not installed, install it via `npm install -g @metyatech/thread-inbox` before proceeding.
 - Store `.threads.jsonl` in the workspace root directory (use `--dir <workspace-root>`). Do not commit it to version control.
+- Add `.threads.jsonl` to the repository `.gitignore` explicitly so it stays untracked by default.
 - At session start, run `thread-inbox inbox` and `thread-inbox list --status waiting` to find threads needing attention; report findings before starting new work.
 - Do not create threads for tasks already tracked by `task-tracker`; threads are for context and decisions, not work items.
 - CLI: `thread-inbox new "title" --dir <dir>` (must create before adding messages) / `add <id> --from user|ai "msg" --dir <dir>` / `inbox --dir <dir>` / `list --status <status> --dir <dir>`.

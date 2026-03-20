@@ -427,6 +427,10 @@ To enable, visit:
         }
         throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
       },
+      connectUrlProbe: async () => ({
+        reachable: true,
+        detail: null,
+      }),
     });
     activeServer = server;
 
@@ -444,6 +448,58 @@ To enable, visit:
       serveEnabled: true,
       serveFallbackReason: null,
       serveSetupUrl: null,
+    });
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0]).toBe('tailscale status --json');
+    expect(invocations[1]).toMatch(
+      /^tailscale serve --bg --yes http:\/\/127\.0\.0\.1:\d+$/
+    );
+  });
+
+  it('falls back to the direct tailnet URL when HTTPS probing reports 502 after serve setup', async () => {
+    const invocations: string[] = [];
+    const { server, connectInfo } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '0.0.0.0',
+      port: 0,
+      authToken: 'secret-token',
+      tailscaleServe: true,
+      openBrowser: false,
+      commandRunner: async (command, args) => {
+        invocations.push(`${command} ${args.join(' ')}`);
+        if (command === 'tailscale' && args.join(' ') === 'status --json') {
+          return JSON.stringify({
+            BackendState: 'Running',
+            Self: { DNSName: 'desktop.tail5a2d2d.ts.net.' },
+          });
+        }
+        if (
+          command === 'tailscale' &&
+          args.join(' ').startsWith('serve --bg --yes http://127.0.0.1:')
+        ) {
+          return '';
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
+      },
+      connectUrlProbe: async () => ({
+        reachable: false,
+        detail: 'HTTP 502',
+      }),
+    });
+    activeServer = server;
+
+    const preferredUrl = new URL(connectInfo.preferredConnectUrl);
+    expect(connectInfo.source).toBe('tailscale-direct');
+    expect(preferredUrl.hostname).toBe('desktop.tail5a2d2d.ts.net');
+    expect(connectInfo.tailscale).toEqual({
+      dnsName: 'desktop.tail5a2d2d.ts.net',
+      directConnectUrl: connectInfo.preferredConnectUrl,
+      secureConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      serveCommand: `tailscale serve --bg --yes http://127.0.0.1:${preferredUrl.port}`,
+      serveEnabled: false,
+      serveFallbackReason:
+        'Tailscale HTTPS endpoint is not reachable yet (HTTP 502).',
+      serveSetupUrl: 'https://login.tailscale.com/admin/dns',
     });
     expect(invocations).toHaveLength(2);
     expect(invocations[0]).toBe('tailscale status --json');

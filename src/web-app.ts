@@ -659,6 +659,8 @@ function setPairingUiState(): void {
   const oneTapLink = getOneTapPairingLink();
   const accessCode = getPairingCode();
   const preferredConnectSource = config.preferredConnectUrlSource;
+  const tailscaleFallbackReason =
+    config.tailscaleServeFallbackReason?.trim() || '';
 
   pairingUrlInput.value = oneTapLink;
   pairingCodeInput.value = accessCode || '不要';
@@ -691,7 +693,9 @@ function setPairingUiState(): void {
   copyPairingCodeButton.disabled = !config.authRequired || !accessCode;
   secureLaunchCommandInput.value = config.tailscaleServeCommand ?? '';
   secureLaunchShell.hidden =
-    (!config.tailscaleServeCommand && !config.tailscaleServeSetupUrl) ||
+    (!config.tailscaleServeCommand &&
+      !config.tailscaleServeSetupUrl &&
+      !tailscaleFallbackReason) ||
     preferredConnectSource === 'tailscale-serve' ||
     preferredConnectSource === 'public-url';
   openSecureLaunchSetupButton.hidden = !config.tailscaleServeSetupUrl;
@@ -705,6 +709,13 @@ function setPairingUiState(): void {
   } else if (config.tailscaleServeSetupUrl) {
     secureLaunchStatus.textContent =
       'まず Tailscale の DNS 設定ページで HTTPS Certificates を 1 回だけ有効にしてください。完了後、同じ -PhoneReady 起動をやり直してください。';
+  } else if (
+    preferredConnectSource === 'tailscale-direct' &&
+    tailscaleFallbackReason
+  ) {
+    secureLaunchStatus.textContent =
+      'この起動では HTTPS 側を確認しましたが、まだ使えません。いまは QR の Tailscale 直結 URL を使ってください。' +
+      ` 詳細: ${tailscaleFallbackReason}`;
   } else if (config.tailscaleServeCommand && config.tailscaleSecureUrl) {
     secureLaunchStatus.textContent = `より良い HTTPS 導線が必要なら、このコマンドで ${config.tailscaleSecureUrl} を有効にできます。`;
   } else if (config.tailscaleServeCommand) {

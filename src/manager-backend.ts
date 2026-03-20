@@ -1,18 +1,18 @@
 /**
  * Built-in Manager backend for Workspace Agent Hub.
  *
- * Uses the Claude CLI directly (`claude -p ...`) to handle manager conversations.
+ * Uses the Codex CLI directly (`codex exec ...`) to handle manager conversations.
  * Maintains per-workspace state in two workspace-local files (not committed):
  *
  *   .workspace-agent-hub-manager.json        — session state (idle/busy, session ID, PID)
  *   .workspace-agent-hub-manager-queue.jsonl — persistent message queue
  *
  * Key design rules:
- *  - One Claude conversation session per workspace, resumed via --resume <sessionId>
+ *  - One Codex thread per workspace, resumed via `codex exec resume <sessionId>`
  *  - Messages are processed serially; concurrent arrivals are queued and flushed in order
  *  - On server restart, a stale PID is detected and the queue resumes automatically
- *  - No external npm dependencies — only the `claude` CLI in PATH is required
- *  - Requires: Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
+ *  - No external npm dependencies — only the `codex` CLI in PATH is required
+ *  - Requires: Codex CLI (`npm install -g @openai/codex`)
  */
 
 import { spawn } from 'child_process';
@@ -25,8 +25,9 @@ import { addMessage } from '@metyatech/thread-inbox';
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
 
-/** Default model per workspace rules: Claude Sonnet 4.6, medium effort. */
-export const MANAGER_MODEL = 'claude-sonnet-4-6';
+/** Manager backend target: Codex GPT-5.4 at xhigh reasoning effort. */
+export const MANAGER_MODEL = 'gpt-5.4';
+export const MANAGER_REASONING_EFFORT = 'xhigh';
 
 /**
  * Status applied to successful manager replies.
@@ -49,9 +50,9 @@ export interface ManagerSession {
   workspaceKey: string;
   /** idle: ready to process; busy: currently running; not-started: never initialised */
   status: 'idle' | 'busy' | 'not-started';
-  /** Claude session ID used with --resume for conversation continuity */
+  /** Codex thread ID used with `codex exec resume` for conversation continuity */
   sessionId: string | null;
-  /** PID of the currently running claude process, or null */
+  /** PID of the currently running codex process, or null */
   pid: number | null;
   /** Queue entry ID currently being processed */
   currentQueueId: string | null;
@@ -235,54 +236,38 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-/**
- * Returns the claude command name used for spawning.
- *
- * Always returns `'claude'` — Node.js spawn with shell: false (the default) resolves
- * executables via OS PATHEXT/PATH on all platforms, so whether the installation is a
- * plain `claude.exe` or a wrapper, `'claude'` is found correctly.
- *
- * Using `shell: false` (no concatenation) is critical: with `shell: true` the args
- * array is joined into a single command string and the shell (cmd.exe on Windows)
- * splits on whitespace, causing prompts like "Final runtime check." to be received
- * by Claude as just "Final".  With `shell: false` each array element is passed as
- * a distinct quoted token, preserving full prompt content.
- */
-export function resolveClaudeCommand(): string {
-  return 'claude';
+/** Returns the codex command name used for spawning. */
+export function resolveCodexCommand(): string {
+  return 'codex';
 }
 
 /**
- * Build the CLI args for invoking `claude -p`.
- *
- * --verbose is required when combining --print (-p) with --output-format stream-json;
- * omitting it produces: "Error: When using --print, --output-format=stream-json requires --verbose"
+ * Build the CLI args for invoking Codex in non-interactive JSON mode.
+ * First turn uses `codex exec`; follow-up turns use `codex exec resume <sessionId>`.
  */
-export function buildClaudeArgs(
+export function buildCodexArgs(
   prompt: string,
   sessionId: string | null
 ): string[] {
-  const args: string[] = [
-    '-p',
-    prompt,
-    '--output-format',
-    'stream-json',
-    '--verbose',
+  const args: string[] = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
+
+  args.push(
+    '--json',
     '--model',
     MANAGER_MODEL,
-  ];
-  if (sessionId) {
-    args.push('--resume', sessionId);
-  }
+    '-c',
+    `model_reasoning_effort="${MANAGER_REASONING_EFFORT}"`,
+    prompt
+  );
   return args;
 }
 
 /**
- * Build the prompt for claude.
+ * Build the prompt for codex.
  * First turn: include system context + workspace path.
- * Subsequent turns: just the message (claude retains context via --resume).
+ * Subsequent turns: just the message (codex retains context via exec resume).
  */
-export function buildClaudePrompt(
+export function buildCodexPrompt(
   content: string,
   threadId: string,
   resolvedDir: string,
@@ -294,61 +279,104 @@ export function buildClaudePrompt(
   return `${MANAGER_SYSTEM_PROMPT}\n\nWorkspace: ${resolvedDir}\n\n[Thread: ${threadId}]\n${content}`;
 }
 
+function collectTextFragments(value: unknown): string[] {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text ? [text] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectTextFragments(entry));
+  }
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const record = value as Record<string, unknown>;
+  const directText = collectTextFragments(record['text']);
+  if (directText.length > 0) {
+    return directText;
+  }
+
+  const messageText = collectTextFragments(record['message']);
+  if (messageText.length > 0) {
+    return messageText;
+  }
+
+  const contentText = collectTextFragments(record['content']);
+  if (contentText.length > 0) {
+    return contentText;
+  }
+
+  const partsText = collectTextFragments(record['parts']);
+  if (partsText.length > 0) {
+    return partsText;
+  }
+
+  return [];
+}
+
+export function isSessionInvalidError(output: string): boolean {
+  const lower = output.toLowerCase();
+  return (
+    (lower.includes('resume') &&
+      (lower.includes('not found') ||
+        lower.includes('invalid') ||
+        lower.includes('expired'))) ||
+    ((lower.includes('thread') || lower.includes('session')) &&
+      (lower.includes('not found') ||
+        lower.includes('does not exist') ||
+        lower.includes('no such')))
+  );
+}
+
 /**
- * Parse claude --output-format stream-json output.
- * Returns the final text reply and the session ID (for future --resume calls).
+ * Parse `codex exec --json` output.
+ * Returns the final text reply and the Codex thread ID used for continuation.
  */
-export function parseClaudeOutput(stdout: string): {
+export function parseCodexOutput(stdout: string): {
   text: string;
   sessionId: string | null;
 } {
   let sessionId: string | null = null;
-  const lines = stdout.split('\n').filter((l) => l.trim());
+  let latestText = '';
+  const lines = stdout.split('\n');
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
     try {
       const obj = JSON.parse(line) as Record<string, unknown>;
-      if (obj['type'] === 'result' && typeof obj['result'] === 'string') {
-        const sid = obj['session_id'];
-        if (typeof sid === 'string') sessionId = sid;
-        return { text: (obj['result'] as string).trim(), sessionId };
+      if (
+        obj['type'] === 'thread.started' &&
+        typeof obj['thread_id'] === 'string'
+      ) {
+        sessionId = obj['thread_id'] as string;
+        continue;
       }
-      if (obj['type'] === 'system' && typeof obj['session_id'] === 'string') {
-        sessionId = obj['session_id'] as string;
+      if (obj['type'] !== 'item.completed') {
+        continue;
+      }
+      const item = obj['item'];
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const typedItem = item as Record<string, unknown>;
+      const itemType = typedItem['type'];
+      if (
+        itemType === 'agent_message' ||
+        itemType === 'assistant_message' ||
+        itemType === 'message'
+      ) {
+        const fragments = collectTextFragments(typedItem);
+        if (fragments.length > 0) {
+          latestText = fragments.join('\n').trim();
+        }
       }
     } catch {
       // Not JSON — skip
     }
   }
-
-  // Fallback: collect non-JSON lines as plain text
-  const textLines = lines.filter((l) => {
-    try {
-      JSON.parse(l);
-      return false;
-    } catch {
-      return true;
-    }
-  });
-  return { text: textLines.join('\n').trim(), sessionId };
-}
-
-/**
- * Returns true when stderr output indicates the Claude session ID is no longer
- * valid, so the next attempt should start a fresh session instead of retrying
- * --resume with the stale ID.
- */
-export function isSessionInvalidError(stderr: string): boolean {
-  const s = stderr.toLowerCase();
-  return (
-    (s.includes('session') &&
-      (s.includes('not found') ||
-        s.includes('invalid') ||
-        s.includes('expired') ||
-        s.includes('does not exist'))) ||
-    s.includes('no such session') ||
-    (s.includes('--resume') && s.includes('error'))
-  );
+  return { text: latestText, sessionId };
 }
 
 // Per-workspace in-flight guard (module-level singleton, safe for single server process).
@@ -364,180 +392,221 @@ export async function processNextQueued(
   resolvedDir: string
 ): Promise<void> {
   if (inFlight.has(resolvedDir)) return;
-
-  const session = await readSession(dir);
-
-  // Recovery: PID died without cleanup → reset to idle so queue can resume
-  if (
-    session.status === 'busy' &&
-    session.pid !== null &&
-    !isPidAlive(session.pid)
-  ) {
-    await writeSession(dir, {
-      ...session,
-      status: 'idle',
-      pid: null,
-      currentQueueId: null,
-    });
-  } else if (session.status === 'busy') {
-    return; // Genuinely still running
-  }
-
-  const queue = await readQueue(dir);
-  const next = queue.find((e) => !e.processed);
-  if (!next) return;
-
+  // Claim the workspace immediately to avoid duplicate concurrent spawns.
   inFlight.add(resolvedDir);
+  let handedOffToChild = false;
 
-  // Mark session as busy before spawning
-  const freshSession = await readSession(dir);
-  await writeSession(dir, {
-    ...freshSession,
-    status: 'busy',
-    currentQueueId: next.id,
-    lastMessageAt: new Date().toISOString(),
-  });
+  try {
+    const session = await readSession(dir);
 
-  const isFirstTurn = freshSession.sessionId === null;
-  const prompt = buildClaudePrompt(
-    next.content,
-    next.threadId,
-    resolvedDir,
-    isFirstTurn
-  );
+    // Recovery: PID died without cleanup → reset to idle so queue can resume
+    if (
+      session.status === 'busy' &&
+      session.pid !== null &&
+      !isPidAlive(session.pid)
+    ) {
+      await writeSession(dir, {
+        ...session,
+        status: 'idle',
+        pid: null,
+        currentQueueId: null,
+      });
+    } else if (session.status === 'busy') {
+      return; // Genuinely still running
+    }
 
-  const args = buildClaudeArgs(prompt, freshSession.sessionId);
+    const queue = await readQueue(dir);
+    const next = queue.find((e) => !e.processed);
+    if (!next) return;
 
-  // Always spawn `claude` with shell: false so Node passes each argv element
-  // separately instead of concatenating them through a shell command string.
-  // This preserves full prompt content with spaces/newlines on Windows too.
-  const proc = spawn(resolveClaudeCommand(), args, {
-    cwd: resolvedDir,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    // Mark session as busy before spawning
+    const freshSession = await readSession(dir);
+    await writeSession(dir, {
+      ...freshSession,
+      status: 'busy',
+      currentQueueId: next.id,
+      lastMessageAt: new Date().toISOString(),
+    });
 
-  // Persist PID so recovery works after a server crash
-  if (proc.pid) {
-    const withPid = await readSession(dir);
-    await writeSession(dir, { ...withPid, pid: proc.pid });
-  }
+    const isFirstTurn = freshSession.sessionId === null;
+    const prompt = buildCodexPrompt(
+      next.content,
+      next.threadId,
+      resolvedDir,
+      isFirstTurn
+    );
+    const args = buildCodexArgs(prompt, freshSession.sessionId);
 
-  let stdout = '';
-  let stderr = '';
-  proc.stdout?.on('data', (chunk: Buffer) => {
-    stdout += chunk.toString();
-  });
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
+    // Always spawn `codex` with shell: false so Node passes each argv element
+    // separately instead of concatenating them through a shell command string.
+    // This preserves full prompt content with spaces/newlines on Windows too.
+    const proc = spawn(resolveCodexCommand(), args, {
+      cwd: resolvedDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    handedOffToChild = true;
 
-  const finish = async (code: number | null): Promise<void> => {
-    inFlight.delete(resolvedDir);
-    try {
-      // Remove the processed entry from the queue (compaction).
-      // This keeps the queue file bounded — only unprocessed entries are retained.
-      await updateQueueLocked(dir, (q) => q.filter((e) => e.id !== next.id));
+    // Persist PID so recovery works after a server crash
+    if (proc.pid) {
+      const withPid = await readSession(dir);
+      await writeSession(dir, { ...withPid, pid: proc.pid });
+    }
 
-      const currentSession = await readSession(dir);
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
 
-      if (code === 0 && stdout.trim()) {
-        const { text, sessionId: newSessionId } = parseClaudeOutput(stdout);
-        if (text) {
-          await addMessage(
-            resolvedDir,
-            next.threadId,
-            text,
-            'ai',
-            MANAGER_REPLY_STATUS
-          );
-        }
-        await writeSession(dir, {
-          ...currentSession,
-          status: 'idle',
-          sessionId: newSessionId ?? currentSession.sessionId,
-          pid: null,
-          currentQueueId: null,
-        });
-      } else {
-        const errDetail = stderr ? `\n${stderr.slice(0, 300)}` : '';
-        const errMsg = `[Manager error] claude CLI exited with code ${code ?? '?'}.${errDetail}`;
-        try {
-          await addMessage(
-            resolvedDir,
-            next.threadId,
-            errMsg,
-            'ai',
-            'needs-reply'
-          );
-        } catch {
-          /* thread may have been deleted */
-        }
-        // Reset sessionId if the error looks like an invalid/expired session so the
-        // next attempt starts a fresh conversation instead of retrying --resume.
-        const resetSession = isSessionInvalidError(stderr);
-        await writeSession(dir, {
-          ...currentSession,
-          status: 'idle',
-          pid: null,
-          currentQueueId: null,
-          ...(resetSession ? { sessionId: null } : {}),
-        });
-      }
-    } catch (err) {
-      console.error('[manager-backend] finish handler error:', err);
+    const finish = async (code: number | null): Promise<void> => {
       inFlight.delete(resolvedDir);
       try {
-        const s = await readSession(dir);
-        await writeSession(dir, {
-          ...s,
-          status: 'idle',
-          pid: null,
-          currentQueueId: null,
-        });
+        const currentSession = await readSession(dir);
+        const combinedOutput = `${stdout}\n${stderr}`;
+
+        if (code === 0 && stdout.trim()) {
+          const { text, sessionId: newSessionId } = parseCodexOutput(stdout);
+          if (text) {
+            // Once Codex produced a usable reply, treat this queue entry as consumed
+            // even if writing that reply back into thread storage later fails.
+            await updateQueueLocked(dir, (q) =>
+              q.filter((e) => e.id !== next.id)
+            );
+            await addMessage(
+              resolvedDir,
+              next.threadId,
+              text,
+              'ai',
+              MANAGER_REPLY_STATUS
+            );
+            await writeSession(dir, {
+              ...currentSession,
+              status: 'idle',
+              sessionId: newSessionId ?? currentSession.sessionId,
+              pid: null,
+              currentQueueId: null,
+            });
+          } else {
+            const errMsg =
+              '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.';
+            try {
+              await addMessage(
+                resolvedDir,
+                next.threadId,
+                errMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            await updateQueueLocked(dir, (q) =>
+              q.filter((e) => e.id !== next.id)
+            );
+            await writeSession(dir, {
+              ...currentSession,
+              status: 'idle',
+              sessionId:
+                newSessionId ??
+                (isSessionInvalidError(combinedOutput)
+                  ? null
+                  : currentSession.sessionId),
+              pid: null,
+              currentQueueId: null,
+            });
+          }
+        } else {
+          const errDetail = stderr ? `\n${stderr.slice(0, 300)}` : '';
+          const errMsg = `[Manager error] codex CLI exited with code ${code ?? '?'}.${errDetail}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              next.threadId,
+              errMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await updateQueueLocked(dir, (q) =>
+            q.filter((e) => e.id !== next.id)
+          );
+          await writeSession(dir, {
+            ...currentSession,
+            status: 'idle',
+            sessionId: isSessionInvalidError(combinedOutput)
+              ? null
+              : currentSession.sessionId,
+            pid: null,
+            currentQueueId: null,
+          });
+        }
+      } catch (err) {
+        console.error('[manager-backend] finish handler error:', err);
+        inFlight.delete(resolvedDir);
+        try {
+          const s = await readSession(dir);
+          await writeSession(dir, {
+            ...s,
+            status: 'idle',
+            pid: null,
+            currentQueueId: null,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      // Tail-call to flush remaining queue entries
+      void processNextQueued(dir, resolvedDir);
+    };
+
+    proc.on('close', (code) => {
+      void finish(code);
+    });
+
+    proc.on('error', async (err: NodeJS.ErrnoException) => {
+      inFlight.delete(resolvedDir);
+      console.error('[manager-backend] spawn error:', err.message);
+
+      // Remove entry from queue to prevent infinite retry on permanent spawn errors.
+      await updateQueueLocked(dir, (q) => q.filter((e) => e.id !== next.id));
+
+      const notFoundMsg =
+        err.code === 'ENOENT'
+          ? '[Manager error] `codex` CLI not found in PATH. Install Codex CLI to use the built-in manager backend.'
+          : `[Manager error] Failed to start codex: ${err.message}`;
+      try {
+        await addMessage(
+          resolvedDir,
+          next.threadId,
+          notFoundMsg,
+          'ai',
+          'needs-reply'
+        );
       } catch {
         /* ignore */
       }
-    }
-    // Tail-call to flush remaining queue entries
-    void processNextQueued(dir, resolvedDir);
-  };
 
-  proc.on('close', (code) => {
-    void finish(code);
-  });
-
-  proc.on('error', async (err: NodeJS.ErrnoException) => {
-    inFlight.delete(resolvedDir);
-    console.error('[manager-backend] spawn error:', err.message);
-
-    // Remove entry from queue to prevent infinite retry on permanent spawn errors.
-    await updateQueueLocked(dir, (q) => q.filter((e) => e.id !== next.id));
-
-    const notFoundMsg =
-      err.code === 'ENOENT'
-        ? '[Manager error] `claude` CLI not found in PATH. Install Claude Code to use the built-in manager backend.'
-        : `[Manager error] Failed to start claude: ${err.message}`;
-    try {
-      await addMessage(
-        resolvedDir,
-        next.threadId,
-        notFoundMsg,
-        'ai',
-        'needs-reply'
-      );
-    } catch {
-      /* ignore */
-    }
-
-    const s = await readSession(dir);
-    await writeSession(dir, {
-      ...s,
-      status: 'idle',
-      pid: null,
-      currentQueueId: null,
+      const s = await readSession(dir);
+      await writeSession(dir, {
+        ...s,
+        status: 'idle',
+        pid: null,
+        currentQueueId: null,
+      });
+      void processNextQueued(dir, resolvedDir);
     });
-    void processNextQueued(dir, resolvedDir);
-  });
+  } catch (err) {
+    console.error('[manager-backend] processNextQueued error:', err);
+  } finally {
+    if (!handedOffToChild) {
+      inFlight.delete(resolvedDir);
+    }
+  }
 }
 
 // ── Public API (consumed by manager-adapter.ts) ────────────────────────────

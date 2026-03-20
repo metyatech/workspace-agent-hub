@@ -162,7 +162,9 @@ URL instead of hanging. The opened PC page is preloaded so the smartphone QR is
 ready immediately. If Tailscale Serve has not been enabled on the tailnet yet,
 the command now points you at the stable Tailscale DNS settings page and keeps
 the direct tailnet URL available until you enable HTTPS Certificates there and
-rerun the same command:
+rerun the same command. If the HTTPS tailnet endpoint currently responds with
+`HTTP 502`, Hub now keeps the QR/default smartphone path on the verified
+Tailscale-direct URL and shows HTTPS recovery guidance as a secondary step:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady
@@ -323,6 +325,13 @@ Important behavior:
 - The same Hub access code protects the smartphone/desktop Manager path.
 - There is no separate `manager-gui` process or second GUI server anymore.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
+- The built-in manager backend runs on Codex CLI (`gpt-5.4` with
+  `model_reasoning_effort="xhigh"`).
+- Manager messages are serialized: one queued message is processed at a time,
+  and messages received during an in-flight turn continue automatically in
+  queue order.
+- Manager continuity is persisted by reusing the same Codex thread ID across
+  turns and server restarts.
 - Thread storage remains compatible with `thread-inbox` data files, but the
   higher-level Manager GUI now belongs to `workspace-agent-hub`.
 
