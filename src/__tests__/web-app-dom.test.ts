@@ -1274,6 +1274,64 @@ describe('web-app DOM', () => {
     ).toContain('まずこれを読み取ってください');
   });
 
+  it('accepts an access code when the hash is added after the app is already open', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.endsWith('/api/pairing-qr')) {
+        return new Response(
+          JSON.stringify({
+            connectUrl: 'https://hub.example.test/#accessCode=late-token',
+            dataUrl: 'data:image/png;base64,late-qr',
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, true, {
+      secureContext: true,
+      url: 'https://hub.example.test/',
+      preferredConnectUrl: 'https://hub.example.test',
+      preferredConnectUrlSource: 'public-url',
+    });
+
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(true);
+
+    window.location.hash = '#accessCode=late-token';
+    window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+    await waitForTick();
+    await waitForTick();
+
+    expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
+      'late-token'
+    );
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLImageElement>('#pairingQrImage')!.hidden
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('まずこれを読み取ってください');
+  });
+
   it('overrides a stale localStorage token when a newer access code is present in the URL hash', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

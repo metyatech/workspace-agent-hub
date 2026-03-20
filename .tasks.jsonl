@@ -1,2 +1,3 @@
 {"id":"9nE4jXSx","description":"Bootstrap standalone workspace-agent-hub repository and publish the current session fabric","stage":"in-progress","createdAt":"2026-03-14T07:55:24.666Z","updatedAt":"2026-03-14T07:55:42.237Z"}
 {"id":"lrWKYfGD","description":"Fix smartphone/Tailscale 502 path and migrate manager backend from Claude CLI to Codex GPT-5.4 xhigh with queue continuity validation","stage":"committed","createdAt":"2026-03-20T06:31:47.629Z","updatedAt":"2026-03-20T07:38:12.639Z","committedEventId":"ArqIidM9tUoC5-IG"}
+{"id":"BCWS765I","description":"Fix workspace-agent-hub smartphone pairing QR disappearing during dogfood","stage":"committed","createdAt":"2026-03-20T08:12:48.850Z","updatedAt":"2026-03-20T08:32:27.763Z","committedEventId":"V3yGcXZwMUXBFqeV"}

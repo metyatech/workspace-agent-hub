@@ -469,18 +469,19 @@ function getLatestTranscriptSnippet(transcript: string): string {
   return lines.at(-1) ?? '新しい出力があります。';
 }
 
-function applyAccessCodeFromLocationHash(): void {
+function applyAccessCodeFromLocationHash(): boolean {
   const currentUrl = new URL(window.location.href);
   const accessCode = new URLSearchParams(currentUrl.hash.replace(/^#/, '')).get(
     'accessCode'
   );
   if (!accessCode) {
-    return;
+    return false;
   }
   authToken = accessCode;
   writeStoredAuthToken(accessCode);
   currentUrl.hash = '';
   window.history.replaceState({}, document.title, currentUrl.toString());
+  return true;
 }
 
 function isInstalledPwa(): boolean {
@@ -2006,6 +2007,16 @@ window.addEventListener('beforeinstallprompt', (event: Event) => {
   event.preventDefault();
   deferredInstallPrompt = event as BeforeInstallPromptEvent;
   setInstallUiState();
+});
+window.addEventListener('hashchange', () => {
+  if (!applyAccessCodeFromLocationHash()) {
+    return;
+  }
+  setAuthOverlayVisible(false);
+  void refreshSessions();
+  if (selectedSessionName) {
+    void refreshTranscript();
+  }
 });
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
