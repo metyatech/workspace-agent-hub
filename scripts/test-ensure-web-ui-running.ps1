@@ -182,6 +182,19 @@ try {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the same background process when the instance is already healthy.'
     }
 
+    $corruptedState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $corruptedState.ProcessId = 999999
+    ($corruptedState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
+
+    $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'stale-pid' -TargetDirectory $testDirectory
+    $stalePid = Wait-ForLaunchMetadata -TargetStdOutPath $stalePidRun.StdOutPath
+    Wait-ForProcessSuccess -ProcessInfo $stalePidRun
+    Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token 'ensure-test-token'
+
+    if ([int]$stalePid.ProcessId -ne [int]$first.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to recover the real listener PID when the saved wrapper PID is stale.'
+    }
+
     $thirdRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-next-token' -RunName 'third' -TargetDirectory $testDirectory
     $third = Wait-ForLaunchMetadata -TargetStdOutPath $thirdRun.StdOutPath
     Wait-ForProcessSuccess -ProcessInfo $thirdRun

@@ -135,6 +135,26 @@ function Get-LocalReachableUrl {
     return $builder.Uri.AbsoluteUri
 }
 
+function Get-ListenerProcessId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ListenUrl
+    )
+
+    try {
+        $uri = [Uri]$ListenUrl
+        $listeners = Get-NetTCPConnection -LocalPort $uri.Port -State Listen -ErrorAction Stop
+        foreach ($listener in $listeners) {
+            if ($listener.OwningProcess) {
+                return [int]$listener.OwningProcess
+            }
+        }
+    } catch {
+    }
+
+    return $null
+}
+
 function Test-WebUiReady {
     param(
         [Parameter(Mandatory = $true)]
@@ -177,21 +197,32 @@ function Wait-ForWebUiReady {
 
 function Stop-ManagedProcessIfPresent {
     param(
-        $ExistingState
+        $ExistingState,
+        [int]$FallbackProcessId = 0
     )
 
-    if (-not $ExistingState -or -not $ExistingState.ProcessId) {
+    $candidateProcessIds = [System.Collections.Generic.List[int]]::new()
+    if ($ExistingState -and $ExistingState.ProcessId) {
+        $candidateProcessIds.Add([int]$ExistingState.ProcessId)
+    }
+    if ($FallbackProcessId -gt 0 -and -not $candidateProcessIds.Contains($FallbackProcessId)) {
+        $candidateProcessIds.Add($FallbackProcessId)
+    }
+
+    if ($candidateProcessIds.Count -eq 0) {
         return
     }
 
-    try {
-        $process = Get-Process -Id ([int]$ExistingState.ProcessId) -ErrorAction Stop
-        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    foreach ($candidateProcessId in $candidateProcessIds) {
         try {
-            Wait-Process -Id $process.Id -Timeout 10 -ErrorAction Stop
+            $process = Get-Process -Id $candidateProcessId -ErrorAction Stop
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            try {
+                Wait-Process -Id $process.Id -Timeout 10 -ErrorAction Stop
+            } catch {
+            }
         } catch {
         }
-    } catch {
     }
 }
 
@@ -301,6 +332,23 @@ function Start-WebUiProcess {
     }
 }
 
+function Get-ReadyListenerProcessId {
+    param(
+        [string]$ListenUrl,
+        [string]$Token
+    )
+
+    if (-not $ListenUrl -or -not $Token) {
+        return $null
+    }
+
+    if (-not (Wait-ForWebUiReady -ListenUrl $ListenUrl -Token $Token -TimeoutMilliseconds 3000)) {
+        return $null
+    }
+
+    return (Get-ListenerProcessId -ListenUrl $ListenUrl)
+}
+
 function Get-ProcessLaunchDetail {
     param(
         [Parameter(Mandatory = $true)]
@@ -337,6 +385,7 @@ $existingListenUrl = if ($existingState -and $existingState.ListenUrl) {
 } else {
     ''
 }
+$existingListenerProcessId = $null
 $canReuseExistingInstance = $false
 
 if (
@@ -344,10 +393,15 @@ if (
     $existingListenUrl -and
     [string]$existingState.AccessCode -eq $resolvedToken
 ) {
-    $canReuseExistingInstance = if ($existingProcessAlive) {
+    $existingListenerProcessId = if ($existingProcessAlive) {
+        [int]$existingState.ProcessId
+    } else {
+        Get-ReadyListenerProcessId -ListenUrl $existingListenUrl -Token $resolvedToken
+    }
+    $canReuseExistingInstance = if ($existingListenerProcessId) {
         $true
     } else {
-        Wait-ForWebUiReady -ListenUrl $existingListenUrl -Token $resolvedToken -TimeoutMilliseconds 3000
+        $false
     }
 }
 
@@ -361,7 +415,7 @@ if (
         PreferredConnectUrlSource = [string]$existingState.PreferredConnectUrlSource
         AccessCode = [string]$existingState.AccessCode
         OneTapPairingLink = [string]$existingState.OneTapPairingLink
-        ProcessId = [int]$existingState.ProcessId
+        ProcessId = [int]$existingListenerProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
         StatePath = $resolvedStatePath
         StdOutPath = [string]$existingState.StdOutPath
@@ -370,13 +424,26 @@ if (
     }
     Write-State -TargetStatePath $resolvedStatePath -State $finalState
 } else {
-    Stop-ManagedProcessIfPresent -ExistingState $existingState
+    $fallbackProcessId = if (
+        $existingState -and
+        $existingListenUrl -and
+        $existingState.AccessCode
+    ) {
+        Get-ReadyListenerProcessId -ListenUrl $existingListenUrl -Token ([string]$existingState.AccessCode)
+    } else {
+        $null
+    }
+    Stop-ManagedProcessIfPresent -ExistingState $existingState -FallbackProcessId $fallbackProcessId
     $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -TargetStatePath $resolvedStatePath
     $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
     $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
     $ready = Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken -TimeoutMilliseconds 90000
     if (-not $ready) {
         throw "Workspace Agent Hub web UI did not become ready at $localListenUrl. $(Get-ProcessLaunchDetail -ProcessInfo $started)"
+    }
+    $actualProcessId = Get-ListenerProcessId -ListenUrl $localListenUrl
+    if (-not $actualProcessId) {
+        $actualProcessId = [int]$started.Process.Id
     }
 
     $finalState = [pscustomobject]@{
@@ -385,7 +452,7 @@ if (
         PreferredConnectUrlSource = [string]$launchInfo.preferredConnectUrlSource
         AccessCode = [string]$launchInfo.accessCode
         OneTapPairingLink = [string]$launchInfo.oneTapPairingLink
-        ProcessId = [int]$started.Process.Id
+        ProcessId = [int]$actualProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
         StatePath = $resolvedStatePath
         StdOutPath = $started.StdOutPath
