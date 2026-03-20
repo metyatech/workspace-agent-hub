@@ -1656,4 +1656,152 @@ describe('web-app DOM', () => {
       document.querySelector<HTMLDivElement>('#sessionsList')!.textContent
     ).toContain('まだ session がありません');
   });
+
+  it('does not poll output for a remembered stopped session and shows cached transcript', async () => {
+    let outputPolled = false;
+    const stoppedSession = {
+      Name: 'codex-stopped',
+      Type: 'codex',
+      DisplayName: 'codex-stopped',
+      Distro: 'Ubuntu',
+      CreatedUnix: 1,
+      CreatedLocal: '2026-03-16 08:35:57',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 2,
+      LastActivityLocal: '2026-03-16 08:36:10',
+      Title: '停止済み session',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: 'preview',
+      Archived: false,
+      ClosedUtc: '2026-03-16T00:36:10.000Z',
+      IsLive: false,
+      State: 'Saved',
+      SortUnix: 2,
+      DisplayTitle: '停止済み session',
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([stoppedSession]), { status: 200 });
+      }
+      if (url.includes('/api/sessions/codex-stopped/output')) {
+        outputPolled = true;
+        throw new Error('stopped session should not poll live output');
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.last-session-name',
+          'codex-stopped'
+        );
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.transcript.codex-stopped',
+          JSON.stringify('cached transcript from previous run')
+        );
+      },
+    });
+
+    await waitForTick();
+
+    expect(outputPolled).toBe(false);
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('停止済み');
+    expect(
+      document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
+    ).toContain('cached transcript from previous run');
+    expect(
+      document.querySelector<HTMLButtonElement>('#sendPromptButton')!.disabled
+    ).toBe(true);
+  });
+
+  it('marks the selected session stopped when live transcript polling reports the tmux session missing', async () => {
+    let sessionListCalls = 0;
+    let outputRequests = 0;
+    const liveSession = {
+      Name: 'codex-live',
+      Type: 'codex',
+      DisplayName: 'codex-live',
+      Distro: 'Ubuntu',
+      CreatedUnix: 1,
+      CreatedLocal: '2026-03-16 08:35:57',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 2,
+      LastActivityLocal: '2026-03-16 08:36:10',
+      Title: '動作中 session',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: 'preview',
+      Archived: false,
+      ClosedUtc: '',
+      IsLive: true,
+      State: 'Running',
+      SortUnix: 2,
+      DisplayTitle: '動作中 session',
+    };
+    const stoppedSession = {
+      ...liveSession,
+      IsLive: false,
+      State: 'Saved',
+      ClosedUtc: '2026-03-16T00:36:12.000Z',
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        sessionListCalls += 1;
+        return new Response(
+          JSON.stringify([
+            sessionListCalls === 1 ? liveSession : stoppedSession,
+          ]),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/sessions/codex-live/output')) {
+        outputRequests += 1;
+        return new Response(
+          JSON.stringify({
+            error: "Command failed: ... Session 'codex-live' not found.",
+          }),
+          { status: 500 }
+        );
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.last-session-name',
+          'codex-live'
+        );
+      },
+    });
+
+    await waitForTick();
+    await waitForTick();
+    await waitForTick();
+
+    expect(
+      document.querySelector<HTMLSpanElement>('#selectedSessionState')!
+        .textContent
+    ).toContain('停止済み');
+    expect(
+      document.querySelector<HTMLButtonElement>('#sendPromptButton')!.disabled
+    ).toBe(true);
+    expect(outputRequests).toBe(1);
+    expect(
+      document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
+    ).toContain('停止済み');
+  });
 });

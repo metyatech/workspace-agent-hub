@@ -1290,6 +1290,48 @@ function stopTranscriptPolling(): void {
   }
 }
 
+function showStoppedSessionTranscript(sessionName: string): void {
+  const cachedTranscript = readStoredJson<string>(
+    getTranscriptCacheKey(sessionName)
+  );
+  if (cachedTranscript) {
+    sessionTranscript.textContent = cachedTranscript;
+    lastTranscript = cachedTranscript;
+    return;
+  }
+
+  if (!sessionTranscript.textContent.trim()) {
+    sessionTranscript.textContent =
+      'この session は停止済みです。保存済みの transcript がないため、ここには新しい出力を表示できません。';
+  }
+  lastTranscript = '';
+}
+
+function isMissingLiveSessionError(
+  error: unknown,
+  sessionName: string
+): error is Error {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes(sessionName) &&
+    error.message.includes('Session') &&
+    error.message.includes('not found')
+  );
+}
+
+function markSessionStopped(sessionName: string): void {
+  const session = sessions.find((item) => item.Name === sessionName);
+  if (!session || !session.IsLive) {
+    return;
+  }
+
+  session.IsLive = false;
+  session.State = 'Saved';
+}
+
 async function refreshTranscript(): Promise<void> {
   const session = getSelectedSession();
   if (!session || !hasAccessToken()) {
@@ -1333,6 +1375,18 @@ async function refreshTranscript(): Promise<void> {
         'offline',
         'ネットワークが戻るまで、最後に取得した transcript を表示しています。'
       );
+      return;
+    }
+    if (isMissingLiveSessionError(error, session.Name)) {
+      stopTranscriptPolling();
+      markSessionStopped(session.Name);
+      renderSessions(sessions);
+      renderSelectedSession();
+      setConnectionState(
+        'online',
+        'session が停止したため、保存済み transcript の表示に切り替えました。'
+      );
+      void refreshSessions();
       return;
     }
     showToast(error instanceof Error ? error.message : String(error));
@@ -1425,10 +1479,16 @@ function renderSelectedSession(): void {
   interruptSessionButton.disabled = !session.IsLive;
   closeSessionButton.disabled = !session.IsLive;
   deleteSessionButton.disabled = false;
+  sessionPromptInput.value = getSavedDraft(session.Name);
+  if (!session.IsLive) {
+    stopTranscriptPolling();
+    showStoppedSessionTranscript(session.Name);
+    return;
+  }
+
   const cachedTranscript = readStoredJson<string>(
     getTranscriptCacheKey(session.Name)
   );
-  sessionPromptInput.value = getSavedDraft(session.Name);
   if (cachedTranscript && !lastTranscript) {
     sessionTranscript.textContent = cachedTranscript;
     lastTranscript = cachedTranscript;
