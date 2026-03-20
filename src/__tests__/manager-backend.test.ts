@@ -72,8 +72,23 @@ afterEach(async () => {
 });
 
 describe('manager backend codex integration', () => {
-  it('builds codex exec args for first and resumed turns', () => {
-    expect(resolveCodexCommand()).toBe('codex');
+  it('resolves the codex command for Windows and builds exec args for first and resumed turns', () => {
+    expect(
+      resolveCodexCommand({
+        platform: 'win32',
+        env: {
+          APPDATA: 'C:\\Users\\Origin\\AppData\\Roaming',
+        } as NodeJS.ProcessEnv,
+        exists: (targetPath) => targetPath.endsWith('codex.cmd'),
+      })
+    ).toBe('C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd');
+    expect(
+      resolveCodexCommand({
+        platform: 'linux',
+        env: {} as NodeJS.ProcessEnv,
+        exists: () => false,
+      })
+    ).toBe('codex');
 
     expect(buildCodexArgs('hello', null)).toEqual([
       'exec',

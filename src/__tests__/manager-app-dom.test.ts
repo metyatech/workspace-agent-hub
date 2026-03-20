@@ -278,4 +278,117 @@ describe('manager-app DOM auth state matrix', () => {
       })
     ).toBe(true);
   });
+
+  it('keeps a newly created topic visible while the manager thread list catches up', async () => {
+    const validToken = 'manager-token';
+    let threadsCalls = 0;
+    const createdThread = {
+      id: 'thread-1',
+      title: '新しい topic',
+      status: 'waiting',
+      messages: [] as Array<{ sender: 'ai' | 'user'; content: string }>,
+      updatedAt: '2026-03-20T10:00:00.000Z',
+    };
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (
+          isRoute(url, '/threads') &&
+          (!init?.method || init.method === 'GET')
+        ) {
+          threadsCalls += 1;
+          if (threadsCalls <= 2) {
+            return new Response(JSON.stringify([]), { status: 200 });
+          }
+          return new Response(
+            JSON.stringify([
+              {
+                ...createdThread,
+                messages: [{ sender: 'user', content: createdThread.title }],
+              },
+            ]),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: false,
+              configured: true,
+              builtinBackend: true,
+              detail: '未起動 — メッセージ送信で自動起動します',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/threads') && init?.method === 'POST') {
+          return new Response(JSON.stringify(createdThread), { status: 200 });
+        }
+
+        if (isRoute(url, `/threads/${createdThread.id}/messages`)) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/send')) {
+          return new Response(JSON.stringify({ accepted: true }), {
+            status: 200,
+          });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="new-thread"]')!
+      .click();
+    await flushAsync();
+
+    const titleInput =
+      document.querySelector<HTMLInputElement>('#new-thread-title')!;
+    titleInput.value = createdThread.title;
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-action="create-thread-manager"]'
+      )!
+      .click();
+
+    await flushAsync(8);
+
+    expect(threadsCalls).toBeGreaterThanOrEqual(2);
+    expect(
+      document.querySelector<HTMLDivElement>('.thread-row .thread-title')!
+        .textContent
+    ).toContain(createdThread.title);
+    expect(
+      document.querySelector<HTMLElement>('[data-pending-note]')!.textContent
+    ).toContain('返信待ち');
+  });
 });

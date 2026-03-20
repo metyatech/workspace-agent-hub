@@ -236,8 +236,41 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-/** Returns the codex command name used for spawning. */
-export function resolveCodexCommand(): string {
+/** Returns the codex command used for spawning. */
+export function resolveCodexCommand(options?: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  exists?: (path: string) => boolean;
+}): string {
+  const platform = options?.platform ?? process.platform;
+  const env = options?.env ?? process.env;
+  const exists = options?.exists ?? existsSync;
+
+  const override = (
+    env.WORKSPACE_AGENT_HUB_CODEX_PATH ??
+    env.AGENT_CODEX_PATH ??
+    env.CODEX_PATH ??
+    ''
+  ).trim();
+  if (override) {
+    return override;
+  }
+
+  if (platform === 'win32') {
+    const roamingAppData =
+      env.APPDATA?.trim() ||
+      (env.USERPROFILE?.trim()
+        ? join(env.USERPROFILE.trim(), 'AppData', 'Roaming')
+        : '');
+    if (roamingAppData) {
+      const codexCmd = join(roamingAppData, 'npm', 'codex.cmd');
+      if (exists(codexCmd)) {
+        return codexCmd;
+      }
+    }
+    return 'codex.cmd';
+  }
+
   return 'codex';
 }
 

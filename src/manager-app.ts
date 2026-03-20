@@ -1272,6 +1272,7 @@ class ManagerApp {
 
   async loadAll(): Promise<boolean> {
     try {
+      const previousThreads = this.allThreads;
       const [threadsRes, tasksRes] = await Promise.all([
         this.apiFetch('/api/threads'),
         this.apiFetch('/api/tasks'),
@@ -1279,8 +1280,13 @@ class ManagerApp {
       if (!threadsRes || !tasksRes) {
         return false;
       }
-      if (threadsRes.ok)
-        this.allThreads = (await threadsRes.json()) as Thread[];
+      if (threadsRes.ok) {
+        const fetchedThreads = (await threadsRes.json()) as Thread[];
+        this.allThreads = this.#mergePendingThreads(
+          previousThreads,
+          fetchedThreads
+        );
+      }
       if (tasksRes.ok) this.allTasks = (await tasksRes.json()) as Task[];
 
       // Clear pending state when the manager has replied (last message is from AI)
@@ -1313,6 +1319,28 @@ class ManagerApp {
       return false;
     }
     return true;
+  }
+
+  #mergePendingThreads(
+    previousThreads: Thread[],
+    fetchedThreads: Thread[]
+  ): Thread[] {
+    if (!this.managerPendingThreadId) {
+      return fetchedThreads;
+    }
+
+    const pendingThread = previousThreads.find(
+      (thread) => thread.id === this.managerPendingThreadId
+    );
+    if (!pendingThread) {
+      return fetchedThreads;
+    }
+
+    if (fetchedThreads.some((thread) => thread.id === pendingThread.id)) {
+      return fetchedThreads;
+    }
+
+    return [pendingThread, ...fetchedThreads];
   }
 
   async loadManagerStatus(): Promise<boolean> {
@@ -1473,6 +1501,7 @@ class ManagerApp {
     if (res?.ok) {
       const thread = (await res.json()) as Thread;
       this.#hideNewThreadForm();
+      let optimisticThread = thread;
       if (sendToManager) {
         const addMessageRes = await this.apiFetch(
           `/api/threads/${thread.id}/messages`,
@@ -1494,10 +1523,27 @@ class ManagerApp {
         });
         if (!sendRes) return;
         this.managerPendingThreadId = thread.id;
+        optimisticThread = {
+          ...thread,
+          status: 'waiting',
+          updatedAt: new Date().toISOString(),
+          messages: [
+            ...(thread.messages ?? []),
+            {
+              sender: 'user',
+              content: title,
+              at: new Date().toISOString(),
+            },
+          ],
+        };
         void this.loadManagerStatus();
       }
-      await this.loadAll();
+      this.allThreads = [
+        optimisticThread,
+        ...this.allThreads.filter((existing) => existing.id !== thread.id),
+      ];
       this.openDetail(thread.id);
+      await this.loadAll();
     }
   }
 
