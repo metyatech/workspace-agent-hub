@@ -396,6 +396,15 @@ function Start-WebUiProcess {
         '-AuthToken',
         $Token
     )
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -and
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+    ) {
+        $argumentList += @(
+            '-PublicUrl',
+            $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+        )
+    }
 
     $process = Start-Process -FilePath $shellPath -ArgumentList $argumentList -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     return [pscustomobject]@{

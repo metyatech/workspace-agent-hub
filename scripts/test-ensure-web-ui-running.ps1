@@ -151,6 +151,8 @@ $statePath = Join-Path $testDirectory 'state.json'
 $port = Get-FreeTcpPort
 $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
+$originalTestPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
+$env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = 'https://hub.example.test/connect'
 
 try {
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'first' -TargetDirectory $testDirectory
@@ -267,6 +269,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -ErrorAction SilentlyContinue
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = $originalTailscaleServeStatusText
+    }
+    if ($null -eq $originalTestPublicUrl) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = $originalTestPublicUrl
     }
 
     if (Test-Path -Path $testDirectory) {
