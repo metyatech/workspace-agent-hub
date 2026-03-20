@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,8 +18,11 @@ vi.mock('@metyatech/thread-inbox', () => ({
 }));
 
 import {
+  buildCodexSpawnOptions,
+  buildCodexSpawnSpec,
   buildCodexArgs,
   buildCodexPrompt,
+  getBuiltinManagerStatus,
   isSessionInvalidError,
   MANAGER_MODEL,
   MANAGER_REASONING_EFFORT,
@@ -28,12 +31,18 @@ import {
   readSession,
   resolveCodexCommand,
   sendToBuiltinManager,
+  shouldUseShellForCodexCommand,
 } from '../manager-backend.js';
 
 interface FakeProc extends EventEmitter {
   pid: number;
   stdout: EventEmitter;
   stderr: EventEmitter;
+  stdin: {
+    write: ReturnType<typeof vi.fn>;
+    end: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeProc(pid: number): FakeProc {
@@ -41,6 +50,11 @@ function makeProc(pid: number): FakeProc {
   proc.pid = pid;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
+  proc.stdin = {
+    write: vi.fn(),
+    end: vi.fn(),
+    on: vi.fn(),
+  };
   return proc;
 }
 
@@ -97,7 +111,7 @@ describe('manager backend codex integration', () => {
       MANAGER_MODEL,
       '-c',
       `model_reasoning_effort="${MANAGER_REASONING_EFFORT}"`,
-      'hello',
+      '-',
     ]);
 
     expect(buildCodexArgs('follow-up', 'thread-123')).toEqual([
@@ -109,8 +123,18 @@ describe('manager backend codex integration', () => {
       MANAGER_MODEL,
       '-c',
       `model_reasoning_effort="${MANAGER_REASONING_EFFORT}"`,
-      'follow-up',
+      '-',
     ]);
+
+    expect(
+      shouldUseShellForCodexCommand(
+        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
+        'win32'
+      )
+    ).toBe(true);
+    expect(shouldUseShellForCodexCommand('/usr/bin/codex', 'linux')).toBe(
+      false
+    );
   });
 
   it('builds prompts that preserve system context only on first turn', () => {
@@ -162,6 +186,13 @@ describe('manager backend codex integration', () => {
 
     await sendToBuiltinManager(tempDir, 'thread-idle', 'idle message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    expect(proc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('[Thread: thread-idle]\nidle message')
+    );
+    expect(proc.stdin.end).toHaveBeenCalledTimes(1);
 
     proc.stdout.emit(
       'data',
@@ -184,6 +215,92 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('idle reply');
   });
 
+  it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {
+    expect(
+      buildCodexSpawnSpec(
+        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
+        ['exec', '--json', '-'],
+        'D:\\ghws',
+        {
+          platform: 'win32',
+          exists: (candidatePath) =>
+            candidatePath.endsWith('node.exe') ||
+            candidatePath.endsWith(
+              'node_modules\\@openai\\codex\\bin\\codex.js'
+            ),
+        }
+      )
+    ).toEqual({
+      command: 'C:\\Users\\Origin\\AppData\\Roaming\\npm\\node.exe',
+      args: [
+        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js',
+        'exec',
+        '--json',
+        '-',
+      ],
+      spawnOptions: {
+        cwd: 'D:\\ghws',
+        shell: false,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    });
+
+    expect(
+      buildCodexSpawnOptions(
+        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
+        'D:\\ghws',
+        'win32'
+      )
+    ).toEqual({
+      cwd: 'D:\\ghws',
+      shell: true,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  });
+
+  it('resumes a stuck pending queue when manager status is polled', async () => {
+    const proc = makeProc(9101);
+    spawnMock.mockReturnValueOnce(proc);
+
+    const stuckQueuePath = join(
+      tempDir,
+      '.workspace-agent-hub-manager-queue.jsonl'
+    );
+    await writeFile(
+      stuckQueuePath,
+      `${JSON.stringify({
+        id: 'q_stuck',
+        threadId: 'thread-stuck',
+        content: 'resume me',
+        createdAt: new Date().toISOString(),
+        processed: false,
+      })}\n`,
+      'utf-8'
+    );
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.running).toBe(true);
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    proc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-stuck"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"recovered reply"}}',
+        ].join('\n')
+      )
+    );
+    proc.emit('close', 0);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
+  });
+
   it('keeps one in-flight codex turn and serializes queued follow-up messages', async () => {
     const firstProc = makeProc(7001);
     const secondProc = makeProc(7002);
@@ -194,7 +311,7 @@ describe('manager backend codex integration', () => {
 
     await waitFor(() => spawnMock.mock.calls.length === 1);
     const firstArgs = spawnMock.mock.calls[0]?.[1] as string[];
-    expect(firstArgs[0]).toBe('exec');
+    expect(firstArgs).toContain('exec');
     expect(firstArgs).not.toContain('resume');
 
     firstProc.stdout.emit(
@@ -210,11 +327,9 @@ describe('manager backend codex integration', () => {
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
     const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
-    expect(secondArgs.slice(0, 3)).toEqual([
-      'exec',
-      'resume',
-      'codex-thread-1',
-    ]);
+    expect(secondArgs).toEqual(
+      expect.arrayContaining(['exec', 'resume', 'codex-thread-1'])
+    );
 
     secondProc.stdout.emit(
       'data',

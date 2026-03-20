@@ -19,7 +19,7 @@ import { spawn } from 'child_process';
 import { readFile, writeFile, appendFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { createHash } from 'crypto';
-import { join, resolve as resolvePath } from 'path';
+import { dirname, join, resolve as resolvePath } from 'path';
 import { addMessage } from '@metyatech/thread-inbox';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
@@ -279,7 +279,7 @@ export function resolveCodexCommand(options?: {
  * First turn uses `codex exec`; follow-up turns use `codex exec resume <sessionId>`.
  */
 export function buildCodexArgs(
-  prompt: string,
+  _prompt: string,
   sessionId: string | null
 ): string[] {
   const args: string[] = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
@@ -290,9 +290,85 @@ export function buildCodexArgs(
     MANAGER_MODEL,
     '-c',
     `model_reasoning_effort="${MANAGER_REASONING_EFFORT}"`,
-    prompt
+    '-'
   );
   return args;
+}
+
+export function shouldUseShellForCodexCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim());
+}
+
+export function buildCodexSpawnOptions(
+  command: string,
+  resolvedDir: string,
+  platform: NodeJS.Platform = process.platform
+): {
+  cwd: string;
+  shell: boolean;
+  windowsHide: boolean;
+  stdio: ['pipe', 'pipe', 'pipe'];
+} {
+  return {
+    cwd: resolvedDir,
+    shell: shouldUseShellForCodexCommand(command, platform),
+    windowsHide: platform === 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+}
+
+export function buildCodexSpawnSpec(
+  command: string,
+  args: string[],
+  resolvedDir: string,
+  options?: {
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    exists?: (path: string) => boolean;
+  }
+): {
+  command: string;
+  args: string[];
+  spawnOptions: {
+    cwd: string;
+    shell: boolean;
+    windowsHide: boolean;
+    stdio: ['pipe', 'pipe', 'pipe'];
+  };
+} {
+  const platform = options?.platform ?? process.platform;
+  const env = options?.env ?? process.env;
+  const exists = options?.exists ?? existsSync;
+
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim())) {
+    const commandDir = dirname(command);
+    const nodeShimPath = join(commandDir, 'node.exe');
+    const nodeBinary = exists(nodeShimPath) ? nodeShimPath : 'node';
+    const scriptPath = join(
+      commandDir,
+      'node_modules',
+      '@openai',
+      'codex',
+      'bin',
+      'codex.js'
+    );
+    if (exists(scriptPath)) {
+      return {
+        command: nodeBinary,
+        args: [scriptPath, ...args],
+        spawnOptions: buildCodexSpawnOptions(nodeBinary, resolvedDir, platform),
+      };
+    }
+  }
+
+  return {
+    command,
+    args,
+    spawnOptions: buildCodexSpawnOptions(command, resolvedDir, platform),
+  };
 }
 
 /**
@@ -468,15 +544,19 @@ export async function processNextQueued(
       resolvedDir,
       isFirstTurn
     );
+    const codexCommand = resolveCodexCommand();
     const args = buildCodexArgs(prompt, freshSession.sessionId);
 
     // Always spawn `codex` with shell: false so Node passes each argv element
     // separately instead of concatenating them through a shell command string.
-    // This preserves full prompt content with spaces/newlines on Windows too.
-    const proc = spawn(resolveCodexCommand(), args, {
-      cwd: resolvedDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // On Windows, `.cmd` shims require shell execution, so send the prompt via
+    // stdin and only use shell mode for the shim itself.
+    const spawnSpec = buildCodexSpawnSpec(codexCommand, args, resolvedDir);
+    const proc = spawn(
+      spawnSpec.command,
+      spawnSpec.args,
+      spawnSpec.spawnOptions
+    );
     handedOffToChild = true;
 
     // Persist PID so recovery works after a server crash
@@ -493,6 +573,11 @@ export async function processNextQueued(
     proc.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString();
     });
+    proc.stdin?.on('error', () => {
+      /* ignore prompt pipe teardown races */
+    });
+    proc.stdin?.write(prompt);
+    proc.stdin?.end();
 
     const finish = async (code: number | null): Promise<void> => {
       inFlight.delete(resolvedDir);
@@ -651,6 +736,8 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   detail: string;
 }> {
   const session = await readSession(dir);
+  const queue = await readQueue(dir);
+  const pending = queue.filter((e) => !e.processed).length;
 
   if (session.status === 'busy') {
     const alive = session.pid !== null && isPidAlive(session.pid);
@@ -671,7 +758,19 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
     });
   }
 
-  if (session.status === 'not-started') {
+  if (pending > 0) {
+    const latestSession = await readSession(dir);
+    if (latestSession.status === 'not-started') {
+      await writeSession(dir, {
+        ...latestSession,
+        status: 'idle',
+        startedAt: latestSession.startedAt ?? new Date().toISOString(),
+      });
+    }
+    void processNextQueued(dir, resolvePath(dir));
+  }
+
+  if (session.status === 'not-started' && pending === 0) {
     return {
       running: false,
       configured: true,
@@ -680,8 +779,6 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
     };
   }
 
-  const queue = await readQueue(dir);
-  const pending = queue.filter((e) => !e.processed).length;
   return {
     running: true,
     configured: true,
