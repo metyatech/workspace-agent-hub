@@ -574,6 +574,7 @@ class DetailController {
   #detailEl: HTMLElement;
   #app: ManagerApp;
   #currentThreadId: string | null = null;
+  #lastRenderedSignature: string | null = null;
 
   constructor(detailEl: HTMLElement, app: ManagerApp) {
     this.#detailEl = detailEl;
@@ -586,7 +587,34 @@ class DetailController {
       return;
     }
 
+    const nextSignature = JSON.stringify({
+      id: thread.id,
+      title: thread.title,
+      uiState: thread.uiState,
+      updatedAt: thread.updatedAt ?? '',
+      queueDepth: thread.queueDepth,
+      messages: thread.messages.map((message) => ({
+        sender: message.sender,
+        content: message.content,
+        at: message.at,
+      })),
+    });
+    if (
+      this.#currentThreadId === thread.id &&
+      this.#lastRenderedSignature === nextSignature
+    ) {
+      return;
+    }
+
+    const previousMsgArea =
+      this.#detailEl.querySelector<HTMLElement>('.msg-area');
+    const previousScrollTop =
+      this.#currentThreadId === thread.id && previousMsgArea
+        ? previousMsgArea.scrollTop
+        : null;
+
     this.#currentThreadId = thread.id;
+    this.#lastRenderedSignature = nextSignature;
     this.#detailEl.innerHTML = '';
 
     const header = document.createElement('div');
@@ -671,10 +699,15 @@ class DetailController {
     }
     body.appendChild(msgArea);
     this.#detailEl.appendChild(body);
+
+    if (previousScrollTop !== null) {
+      msgArea.scrollTop = previousScrollTop;
+    }
   }
 
   clear(): void {
     this.#currentThreadId = null;
+    this.#lastRenderedSignature = null;
     this.#detailEl.innerHTML =
       '<div class="detail-empty">左の一覧から話題を開くと、ここで流れを追えます。</div>';
   }

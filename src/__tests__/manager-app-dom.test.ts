@@ -593,4 +593,78 @@ describe('manager-app DOM auth state matrix', () => {
       document.documentElement.style.getPropertyValue('--composer-dock-reserve')
     ).toBe('268px');
   });
+
+  it('keeps the opened detail scroll position on refresh when the thread content is unchanged', async () => {
+    const validToken = 'detail-scroll-token';
+    const thread = makeThreadView('thread-scroll', '長い詳細の話題', {
+      messages: Array.from({ length: 18 }, (_, index) => ({
+        sender: index % 2 === 0 ? 'user' : 'ai',
+        content: `message-${index}`,
+        at: `2026-03-21T00:${String(index).padStart(2, '0')}:00.000Z`,
+      })),
+      updatedAt: '2026-03-21T01:00:00.000Z',
+    });
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    firstMsgArea.scrollTop = 180;
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    expect(secondMsgArea).toBe(firstMsgArea);
+    expect(secondMsgArea.scrollTop).toBe(180);
+  });
 });
