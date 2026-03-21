@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 $bridgeScriptPath = Join-Path $PSScriptRoot 'session-web-bridge.ps1'
 $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
+$codexSessionLabel = 'web-codex-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$resolvedCodexSessionName = "codex-$codexSessionLabel"
 $preferredPowerShell = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
 $powerShellPath = if ($preferredPowerShell) { $preferredPowerShell.Source } else { (Get-Command 'powershell.exe' -ErrorAction Stop).Source }
 
@@ -92,6 +94,11 @@ function New-Utf8PayloadFile {
 }
 
 $titlePayloadPath = ''
+$codexAuthSourcePath = ''
+$codexAuthTargetPath = ''
+$previousCodexAuthSource = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE
+$previousCodexAuthTarget = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET
+$previousCodexStartupCommand = $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND
 
 try {
     $titlePayloadPath = New-Utf8PayloadFile -Value 'テスト' -Prefix 'title'
@@ -169,13 +176,91 @@ try {
         '-Json'
     ))
 
+    $codexAuthSourcePath = New-Utf8PayloadFile -Value '{"refresh_token":"web-bridge-fresh-token"}' -Prefix 'codex-auth'
+    $codexAuthTargetPath = "/tmp/workspace-agent-hub-web-bridge-codex-auth-$([guid]::NewGuid().ToString('N')).json"
+    $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE = $codexAuthSourcePath
+    $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET = $codexAuthTargetPath
+    $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND = 'printf ''codex-web-sync-pass\n'''
+
+    $startedCodex = Invoke-BridgeJson -Arguments @(
+        '-Action', 'start',
+        '-Type', 'codex',
+        '-SessionName', $codexSessionLabel,
+        '-Title', 'Codex Web Sync',
+        '-WorkingDirectory', 'D:\ghws',
+        '-Json'
+    )
+
+    if ([string]$startedCodex.Name -ne $resolvedCodexSessionName) {
+        throw "Unexpected codex session name. Expected '$resolvedCodexSessionName', got '$($startedCodex.Name)'."
+    }
+
+    Start-Sleep -Milliseconds 1200
+
+    $codexOutput = Invoke-BridgeJson -Arguments @(
+        '-Action', 'output',
+        '-SessionName', $resolvedCodexSessionName,
+        '-Lines', '80',
+        '-Json'
+    )
+
+    if ([string]$codexOutput.Transcript -notmatch 'codex-web-sync-pass') {
+        throw 'Expected the codex web-session startup override to reach the transcript.'
+    }
+
+    $syncedAuthContent = @(& wsl.exe -d Ubuntu -- bash -lc "cat '$codexAuthTargetPath'")
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Expected the codex auth sync target to exist in WSL after web-session start.'
+    }
+    if ((($syncedAuthContent | Out-String).Trim()) -ne '{"refresh_token":"web-bridge-fresh-token"}') {
+        throw "Expected the codex auth sync target to match the Windows source file. Got: $($syncedAuthContent | Out-String)"
+    }
+
+    [void](Invoke-BridgeJson -Arguments @(
+        '-Action', 'close',
+        '-SessionName', $resolvedCodexSessionName,
+        '-Json'
+    ))
+
+    [void](Invoke-BridgeJson -Arguments @(
+        '-Action', 'delete',
+        '-SessionName', $resolvedCodexSessionName,
+        '-Json'
+    ))
+
     Write-Output 'PASS'
 } finally {
+    if ($null -eq $previousCodexAuthSource) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE', $null, 'Process')
+    } else {
+        $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE = $previousCodexAuthSource
+    }
+    if ($null -eq $previousCodexAuthTarget) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET', $null, 'Process')
+    } else {
+        $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET = $previousCodexAuthTarget
+    }
+    if ($null -eq $previousCodexStartupCommand) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND', $null, 'Process')
+    } else {
+        $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND = $previousCodexStartupCommand
+    }
     if ($titlePayloadPath -and (Test-Path -Path $titlePayloadPath)) {
         [IO.File]::Delete($titlePayloadPath)
     }
+    if ($codexAuthSourcePath -and (Test-Path -Path $codexAuthSourcePath)) {
+        [IO.File]::Delete($codexAuthSourcePath)
+    }
+    try {
+        [void](& wsl.exe -d Ubuntu -- bash -lc "rm -f '$codexAuthTargetPath'")
+    } catch {
+    }
     try {
         [void](Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments @('-Action', 'delete', '-SessionName', $resolvedSessionName, '-Json'))
+    } catch {
+    }
+    try {
+        [void](Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments @('-Action', 'delete', '-SessionName', $resolvedCodexSessionName, '-Json'))
     } catch {
     }
 }

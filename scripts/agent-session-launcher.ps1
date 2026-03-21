@@ -8,6 +8,7 @@ param(
     [string]$SessionName = '',
     [string]$Distro = 'Ubuntu',
     [string]$WorkingDirectory = '',
+    [switch]$NoStartup,
     [switch]$Detach,
     [switch]$IncludeArchived,
     [switch]$Json,
@@ -18,8 +19,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $tmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
+$codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
 if (-not (Test-Path -Path $tmuxScriptPath)) {
     throw "Missing script: $tmuxScriptPath"
+}
+if (-not (Test-Path -Path $codexAuthSyncScriptPath)) {
+    throw "Missing script: $codexAuthSyncScriptPath"
 }
 
 $repoRootPath = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -29,20 +34,20 @@ $workspaceRootPath = Split-Path -Parent $repoRootPath
 $profiles = @{
     codex = @{
         Type = 'codex'
-        StartupCommand = '~/.local/bin/codex'
-        HealthCheckCommand = '~/.local/bin/codex --version'
+        StartupCommand = '$HOME/.local/bin/codex'
+        HealthCheckCommand = '$HOME/.local/bin/codex --version'
         Label = 'Codex'
     }
     claude = @{
         Type = 'claude'
-        StartupCommand = '~/.local/bin/claude'
-        HealthCheckCommand = '~/.local/bin/claude --version'
+        StartupCommand = '$HOME/.local/bin/claude'
+        HealthCheckCommand = '$HOME/.local/bin/claude --version'
         Label = 'Claude'
     }
     gemini = @{
         Type = 'gemini'
-        StartupCommand = '~/.local/bin/gemini'
-        HealthCheckCommand = '~/.local/bin/gemini --version'
+        StartupCommand = '$HOME/.local/bin/gemini'
+        HealthCheckCommand = '$HOME/.local/bin/gemini --version'
         Label = 'Gemini'
     }
     shell = @{
@@ -674,6 +679,22 @@ function Invoke-TmuxScript {
     }
 }
 
+function Sync-CodexAuthForWsl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDistro
+    )
+
+    $captured = & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $codexAuthSyncScriptPath -Distro $TargetDistro -Json 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($captured | Out-String).Trim())
+        if (-not $detail) {
+            $detail = "Exit code $LASTEXITCODE."
+        }
+        throw "Failed to synchronize Codex auth for WSL startup. $detail"
+    }
+}
+
 function Get-ProfileLaunchSettings {
     param(
         [Parameter(Mandatory = $true)]
@@ -681,7 +702,8 @@ function Get-ProfileLaunchSettings {
         [Parameter(Mandatory = $true)]
         [string]$SessionLabel,
         [Parameter(Mandatory = $true)]
-        [string]$TargetDistro
+        [string]$TargetDistro,
+        [switch]$SuppressStartup
     )
 
     $profile = $profiles[$ProfileName]
@@ -693,7 +715,9 @@ function Get-ProfileLaunchSettings {
     $healthCheckCommand = if ($profile.ContainsKey('HealthCheckCommand')) { [string]$profile['HealthCheckCommand'] } else { '' }
     $fallbackMessage = $null
 
-    if ($startupCommand -and $healthCheckCommand) {
+    if ($SuppressStartup) {
+        $startupCommand = $null
+    } elseif ($startupCommand -and $healthCheckCommand) {
         $isHealthy = Test-WslCommand -Command $healthCheckCommand -TargetDistro $TargetDistro
         if (-not $isHealthy) {
             $startupCommand = $null
@@ -994,6 +1018,7 @@ function Start-ProfileSession {
         [string]$SessionLabel,
         [string]$SessionTitle,
         [string]$WindowsWorkingDirectory,
+        [switch]$NoStartup,
         [Parameter(Mandatory = $true)]
         [string]$TargetDistro
     )
@@ -1002,12 +1027,15 @@ function Start-ProfileSession {
     $resolvedWindowsWorkingDirectory = Resolve-WindowsWorkingDirectory -PathText $WindowsWorkingDirectory
     $resolvedWslWorkingDirectory = Convert-WindowsPathToWslPath -WindowsPath $resolvedWindowsWorkingDirectory -TargetDistro $TargetDistro
 
-    $settings = Get-ProfileLaunchSettings -ProfileName $ProfileName -SessionLabel $resolvedSessionLabel -TargetDistro $TargetDistro
+    $settings = Get-ProfileLaunchSettings -ProfileName $ProfileName -SessionLabel $resolvedSessionLabel -TargetDistro $TargetDistro -SuppressStartup:$NoStartup
     if ($settings.FallbackMessage) {
         Write-Warning $settings.FallbackMessage
     }
 
     $resolvedSessionName = "$($settings.SessionType)-$($settings.SessionLabel.ToLowerInvariant())"
+    if ($ProfileName -eq 'codex') {
+        Sync-CodexAuthForWsl -TargetDistro $TargetDistro
+    }
     Upsert-SessionCatalogEntry -SessionNameValue $resolvedSessionName -SessionTypeValue $settings.SessionType -SessionTitle $SessionTitle -WorkingDirectoryWindows $resolvedWindowsWorkingDirectory
     Invoke-EnsureTypedSession -SessionType $settings.SessionType -SessionLabel $settings.SessionLabel -StartupCommand $settings.StartupCommand -WorkingDirectoryPath $resolvedWslWorkingDirectory -TargetDistro $TargetDistro -NoAttach:$Detach
 }
@@ -1142,7 +1170,7 @@ if ($Mode -eq 'new' -or $Mode -eq 'start') {
     if (-not $Type) {
         throw 'Use -Type with -Mode new/start.'
     }
-    Start-ProfileSession -ProfileName $Type -SessionLabel $Name -SessionTitle $Title -WindowsWorkingDirectory $WorkingDirectory -TargetDistro $Distro
+    Start-ProfileSession -ProfileName $Type -SessionLabel $Name -SessionTitle $Title -WindowsWorkingDirectory $WorkingDirectory -TargetDistro $Distro -NoStartup:$NoStartup
     exit 0
 }
 

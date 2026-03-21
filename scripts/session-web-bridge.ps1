@@ -244,6 +244,65 @@ function Invoke-WslBridge {
     return @($result.StdOutLines)
 }
 
+function Invoke-TmuxScriptCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $captured = & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $wslTmuxScriptPath @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        $detail = (($captured | Out-String).Trim())
+        if (-not $detail) {
+            $detail = "Exit code $exitCode."
+        }
+        throw "wsl-tmux failed. Args: $($Arguments -join ' ') $detail"
+    }
+
+    return @($captured | ForEach-Object { [string]$_ })
+}
+
+function Get-WebStartupCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+        [string]$SessionType
+    )
+
+    switch ($SessionType) {
+        'codex' {
+            if ($env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND -and $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND.Trim()) {
+                return $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND.Trim()
+            }
+            return '$HOME/.local/bin/codex --no-alt-screen'
+        }
+        'claude' { return '$HOME/.local/bin/claude' }
+        'gemini' { return '$HOME/.local/bin/gemini' }
+        default { return '' }
+    }
+}
+
+function Send-Utf8TextToSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName,
+        [Parameter(Mandatory = $true)]
+        [string]$PayloadText
+    )
+
+    $tempFile = Join-Path $env:TEMP ("workspace-agent-hub-startup-" + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        Set-Content -Path $tempFile -Value $PayloadText -NoNewline -Encoding utf8
+        $wslPayloadPath = Convert-WindowsPathToWslPath -WindowsPath $tempFile
+        [void](Invoke-WslBridge -BridgeArguments @('send', $TargetSessionName, $wslPayloadPath, 'submit'))
+    } finally {
+        if (Test-Path -Path $tempFile) {
+            [IO.File]::Delete($tempFile)
+        }
+    }
+}
+
 if ($TitlePath -and $TitlePath.Trim()) {
     $Title = Read-Utf8PayloadValue -PathValue $TitlePath
 }
@@ -274,7 +333,11 @@ if ($Action -eq 'start') {
         throw 'Use -SessionName with -Action start.'
     }
 
-    [void](Invoke-LauncherCommand -Arguments @('-Mode', 'start', '-Type', $Type, '-Name', $SessionName, '-Title', $Title, '-WorkingDirectory', $WorkingDirectory, '-Distro', $Distro, '-Detach'))
+    $launcherArgs = @('-Mode', 'start', '-Type', $Type, '-Name', $SessionName, '-Title', $Title, '-WorkingDirectory', $WorkingDirectory, '-Distro', $Distro, '-Detach')
+    if ($Type -ne 'shell') {
+        $launcherArgs += '-NoStartup'
+    }
+    [void](Invoke-LauncherCommand -Arguments $launcherArgs)
 
     $resolvedName = "$Type-$SessionName"
 
@@ -296,6 +359,14 @@ if ($Action -eq 'start') {
     }
     if (-not [bool]$session.IsLive) {
         throw "Started session '$resolvedName' but it did not become live within the expected time window."
+    }
+    if ($Type -ne 'shell') {
+        [void](Invoke-TmuxScriptCommand -Arguments @(
+            '-Action', 'attach-hidden',
+            '-SessionName', $resolvedName,
+            '-Distro', $Distro
+        ))
+        Send-Utf8TextToSession -TargetSessionName $resolvedName -PayloadText (Get-WebStartupCommand -SessionType $Type)
     }
 
     if ($Json) {

@@ -13,7 +13,8 @@ for _ in $(seq 1 100); do
   attached="$(tmux display-message -p -t "$session_name" "#{session_attached}" 2>/dev/null || echo 0)"
   if [[ "$attached" -ge 1 ]]; then
     sleep 1
-    tmux send-keys -t "$session_name" "$startup_command" C-m
+    tmux send-keys -t "$session_name" -l "$startup_command"
+    tmux send-keys -t "$session_name" Enter
     exit 0
   fi
   sleep 0.1

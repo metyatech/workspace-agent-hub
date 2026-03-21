@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('ensure', 'attach', 'list', 'kill')]
+    [ValidateSet('ensure', 'attach', 'attach-hidden', 'list', 'kill')]
     [string]$Action = 'ensure',
 
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
@@ -15,6 +15,8 @@ param(
     [string]$SocketName = '',
     [string]$WorkingDirectory = '',
     [string]$StartupCommand,
+    [int]$WindowWidth = 120,
+    [int]$WindowHeight = 40,
     [switch]$Detach,
     [switch]$Json
 )
@@ -66,6 +68,37 @@ function Start-WslStartupOnAttach {
     )
 
     Start-Process -FilePath 'wsl.exe' -ArgumentList $argumentList -WindowStyle Hidden | Out-Null
+}
+
+function Start-HiddenTmuxAttachClient {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDistro,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName,
+        [Parameter(Mandatory = $true)]
+        [int]$TargetWindowWidth,
+        [Parameter(Mandatory = $true)]
+        [int]$TargetWindowHeight
+    )
+
+    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
+        'set-window-option',
+        '-t', $TargetSessionName,
+        'window-size',
+        'manual'
+    )))
+    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
+        'resize-window',
+        '-t', $TargetSessionName,
+        '-x', [string]$TargetWindowWidth,
+        '-y', [string]$TargetWindowHeight
+    )))
+
+    Start-Process -FilePath 'wsl.exe' -ArgumentList (Get-TmuxCommandArguments -TmuxArguments @(
+        'attach-session',
+        '-t', $TargetSessionName
+    )) -WindowStyle Hidden | Out-Null
 }
 
 function Get-TmuxCommandArguments {
@@ -248,6 +281,17 @@ if (-not $sessionExists -and $Action -eq 'attach') {
     throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."
 }
 
+if (-not $sessionExists -and $Action -eq 'attach-hidden') {
+    throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."
+}
+
+if ($Action -eq 'attach-hidden') {
+    Ensure-TmuxServerDefaults
+    Start-HiddenTmuxAttachClient -TargetDistro $Distro -TargetSessionName $resolvedSessionName -TargetWindowWidth $WindowWidth -TargetWindowHeight $WindowHeight
+    Write-Output "Started hidden tmux attach client for '$resolvedSessionName' in distro '$Distro'."
+    exit 0
+}
+
 if (-not $sessionExists) {
     $createArgs = Get-TmuxCommandArguments -TmuxArguments @(
         'new-session', '-d',
@@ -267,8 +311,13 @@ if (-not $sessionExists) {
         [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
             'send-keys',
             '-t', $resolvedSessionName,
-            $StartupCommand,
-            'C-m'
+            '-l',
+            $StartupCommand
+        )))
+        [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
+            'send-keys',
+            '-t', $resolvedSessionName,
+            'Enter'
         )))
     }
 
