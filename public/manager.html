@@ -887,7 +887,8 @@
         </h2>
         <p id="auth-context-copy" class="auth-copy">
           ここでは思いついたことをまとめて送れます。話題の分け方は AI
-          が整理し、返信が必要なものや確認すべきものが上に並びます。
+          が整理し、返信が必要なものや確認すべきものが上に並びます。現時点では
+          topic 整理と返信までが中心で、repo 修正の自動実行までは行いません。
         </p>
         <div class="auth-row">
           <input
@@ -941,7 +942,7 @@
           </div>
           <div id="activity-detail" class="activity-detail">
             少し待つと、AI
-            が作業中か待機中か、いま確認すべき話題があるかをここに表示します。
+            が返信処理中か待機中か、いま確認すべき話題があるかをここに表示します。
           </div>
           <div id="activity-counts" class="activity-counts"></div>
         </section>
@@ -952,6 +953,8 @@
           <p>
             何の話題かを先に決める必要はありません。AI
             が既存の話題に振り分けるか、新しい話題を作るか、確認が必要かを整理します。
+            ただし、ここで動く built-in Manager は topic 整理と返信が中心で、
+            repo 修正の自動実行はまだ行いません。
           </p>
           <div class="intro-steps">
             <div class="intro-step">
@@ -1035,7 +1038,7 @@
         <section class="card section-card" id="sec-ai-working">
           <div class="section-header" data-section-key="ai-working">
             <span class="section-dot" style="background: #22c55e"></span>
-            <span class="section-title">AI が作業中です</span>
+            <span class="section-title">AI が返信処理中です</span>
             <span id="count-ai-working" class="section-count"></span>
             <span id="chevron-ai-working" class="section-chevron">▲</span>
           </div>

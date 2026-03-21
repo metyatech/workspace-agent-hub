@@ -98,7 +98,7 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   'user-reply-needed': 'あなたの返信待ち',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: '未着手',
-  'ai-working': '作業中',
+  'ai-working': 'AI応答中',
   done: '完了',
 };
 
@@ -108,7 +108,7 @@ const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
   queued: 'まだ着手していない話題はありません',
-  'ai-working': 'AI が作業している話題はありません',
+  'ai-working': 'AI が返信処理中の話題はありません',
   done: '完了済みの話題はありません',
 };
 
@@ -292,7 +292,7 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
   if (thread.uiState === 'ai-working') {
-    return 'いま AI が作業中です。完了すると上の優先度へ自動で移動します。';
+    return 'いま AI がこの話題への返信を処理中です。応答が返ると自動で上の優先度へ移動します。';
   }
   if (thread.uiState === 'queued') {
     return 'この話題はまだ未着手です。AI が順番に取りかかります。';
@@ -1419,7 +1419,7 @@ class ManagerApp {
     } else if (counts['queued'] > 0) {
       primary.textContent = 'まだ着手していない話題があります';
     } else if (counts['ai-working'] > 0) {
-      primary.textContent = 'AI が作業中です';
+      primary.textContent = 'AI が返信処理中です';
     } else if (running) {
       primary.textContent = 'いまは待機中です';
     } else if (configured) {
@@ -1467,7 +1467,7 @@ class ManagerApp {
         value: counts['queued'],
       },
       {
-        label: '作業中',
+        label: 'AI応答中',
         value: counts['ai-working'],
       },
       {

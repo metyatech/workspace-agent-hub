@@ -179,6 +179,7 @@ The Manager screen must make these points obvious without external explanation:
 2. `話題の整理はAIがやる`
 3. `今すぐ自分が返すべきものはどれか`
 4. `AIが終えたので確認すべきものはどれか`
+5. `現時点では、ここで動く built-in Manager は topic 整理と返信が中心で、repo 修正の自動実行まではしない`
 
 ### Primary layout direction
 

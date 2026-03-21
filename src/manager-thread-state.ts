@@ -137,18 +137,18 @@ function deriveUiState(input: {
     return 'ai-finished-awaiting-user-confirmation';
   }
 
-  if (input.thread.status === 'active') {
-    return input.isWorking || lastSender(input.thread) === 'ai'
-      ? 'ai-working'
-      : 'queued';
-  }
-
   if (input.isWorking) {
     return 'ai-working';
   }
 
   if (input.thread.status === 'waiting' || input.queueDepth > 0) {
     return 'queued';
+  }
+
+  if (input.thread.status === 'active') {
+    return lastSender(input.thread) === 'ai'
+      ? 'ai-finished-awaiting-user-confirmation'
+      : 'queued';
   }
 
   if (lastSender(input.thread) === 'ai') {

@@ -345,6 +345,10 @@ Important behavior:
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many topics currently sit in each urgency bucket.
+- The current built-in Manager is a routing-and-reply inbox layer. It can
+  split messages, keep topic continuity, and write replies back into topics,
+  but it does not yet dispatch worker agents or apply repository changes by
+  itself.
 - Opening a topic now expands its detail inline in the same list position
   instead of jumping to a separate detail panel at the bottom of the page.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI

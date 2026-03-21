@@ -955,6 +955,6 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('返信待ち 1');
     expect(chips).toContain('AIから返答 1');
     expect(chips).toContain('未着手 0');
-    expect(chips).toContain('作業中 0');
+    expect(chips).toContain('AI応答中 0');
   });
 });
