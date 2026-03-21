@@ -26,6 +26,35 @@ async function flushAsync(turns = 3): Promise<void> {
   }
 }
 
+function makeThreadView(
+  id: string,
+  title: string,
+  overrides: Partial<Record<string, unknown>> = {}
+) {
+  return {
+    id,
+    title,
+    status: 'review',
+    messages: [
+      {
+        sender: 'ai',
+        content: `${title} の返答`,
+        at: '2026-03-21T00:00:00.000Z',
+      },
+    ],
+    updatedAt: '2026-03-21T00:00:00.000Z',
+    uiState: 'ai-finished-awaiting-user-confirmation',
+    previewText: `[ai] ${title} の返答`,
+    lastSender: 'ai',
+    hiddenByDefault: false,
+    routingConfirmationNeeded: false,
+    routingHint: null,
+    queueDepth: 0,
+    isWorking: false,
+    ...overrides,
+  };
+}
+
 function createManagerFetch(validToken: string) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -142,10 +171,10 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLElement>('#auth-context-title')!.textContent
-    ).toContain('Manager は複数の依頼と返事を整理する画面');
+    ).toContain('Manager は、あとで状況を見失わないための受信箱です');
     expect(
       document.querySelector<HTMLElement>('#auth-context-copy')!.textContent
-    ).toContain('同じ受信箱と同じ進行状況');
+    ).toContain('話題の分け方は AI');
     expect(
       document
         .querySelector<HTMLElement>('#manager-bar')!
@@ -172,7 +201,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLSpanElement>('#manager-status-text')!
         .textContent
-    ).toContain('まだ始まっていません');
+    ).toContain('未起動');
     expect(
       fetchMock.mock.calls.every(([input, init]) => {
         const url = String(input);
@@ -279,16 +308,10 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(true);
   });
 
-  it('keeps a newly created topic visible while the manager thread list catches up', async () => {
+  it('routes a global composer message and opens the routed topic', async () => {
     const validToken = 'manager-token';
     let threadsCalls = 0;
-    const createdThread = {
-      id: 'thread-1',
-      title: '新しい topic',
-      status: 'waiting',
-      messages: [] as Array<{ sender: 'ai' | 'user'; content: string }>,
-      updatedAt: '2026-03-20T10:00:00.000Z',
-    };
+    const createdThread = makeThreadView('thread-1', 'AA を進める');
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -311,18 +334,10 @@ describe('manager-app DOM auth state matrix', () => {
           (!init?.method || init.method === 'GET')
         ) {
           threadsCalls += 1;
-          if (threadsCalls <= 2) {
+          if (threadsCalls < 2) {
             return new Response(JSON.stringify([]), { status: 200 });
           }
-          return new Response(
-            JSON.stringify([
-              {
-                ...createdThread,
-                messages: [{ sender: 'user', content: createdThread.title }],
-              },
-            ]),
-            { status: 200 }
-          );
+          return new Response(JSON.stringify([createdThread]), { status: 200 });
         }
 
         if (isRoute(url, '/tasks')) {
@@ -341,18 +356,28 @@ describe('manager-app DOM auth state matrix', () => {
           );
         }
 
-        if (isRoute(url, '/threads') && init?.method === 'POST') {
-          return new Response(JSON.stringify(createdThread), { status: 200 });
-        }
-
-        if (isRoute(url, `/threads/${createdThread.id}/messages`)) {
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-
-        if (isRoute(url, '/manager/send')) {
-          return new Response(JSON.stringify({ accepted: true }), {
-            status: 200,
+        if (isRoute(url, '/manager/global-send')) {
+          expect(init?.method).toBe('POST');
+          expect(JSON.parse(String(init?.body))).toEqual({
+            content: 'AAして、BBして',
+            contextThreadId: null,
           });
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-1',
+                  title: 'AA を進める',
+                  outcome: 'created-new',
+                  reason: '新しい話題を作りました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '1件を処理しました',
+            }),
+            { status: 200 }
+          );
         }
 
         return new Response('{}', { status: 200 });
@@ -366,29 +391,92 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    composer.value = 'AAして、BBして';
     document
-      .querySelector<HTMLButtonElement>('[data-action="new-thread"]')!
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
+
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerFeedback')!.textContent
+    ).toContain('1件を処理しました');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('AA を進める');
+    expect(
+      document.querySelector<HTMLElement>('#composerContext')!.textContent
+    ).toContain('AA を進める');
+  });
+
+  it('keeps done topics hidden by default and shows them when toggled', async () => {
+    const validToken = 'manager-token';
+    const liveThread = makeThreadView('thread-live', '確認中の話題');
+    const doneThread = makeThreadView('thread-done', '終わった話題', {
+      status: 'resolved',
+      uiState: 'done',
+      hiddenByDefault: true,
+    });
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([liveThread, doneThread]), {
+            status: 200,
+          });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const doneSection = document.querySelector<HTMLElement>('#sec-done')!;
+    expect(doneSection.classList.contains('hidden')).toBe(true);
+
+    document.querySelector<HTMLButtonElement>('#toggleDoneButton')!.click();
     await flushAsync();
 
-    const titleInput =
-      document.querySelector<HTMLInputElement>('#new-thread-title')!;
-    titleInput.value = createdThread.title;
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-action="create-thread-manager"]'
-      )!
-      .click();
-
-    await flushAsync(8);
-
-    expect(threadsCalls).toBeGreaterThanOrEqual(2);
-    expect(
-      document.querySelector<HTMLDivElement>('.thread-row .thread-title')!
-        .textContent
-    ).toContain(createdThread.title);
-    expect(
-      document.querySelector<HTMLElement>('[data-pending-note]')!.textContent
-    ).toContain('返信待ち');
+    expect(doneSection.classList.contains('hidden')).toBe(false);
+    expect(doneSection.textContent).toContain('終わった話題');
   });
 });

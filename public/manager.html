@@ -5,687 +5,796 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>マネージャー</title>
     <style>
-      /* ── Reset & base ───────────────────────────────────────────── */
       *,
       *::before,
       *::after {
         box-sizing: border-box;
-        margin: 0;
-        padding: 0;
       }
+
+      :root {
+        color-scheme: dark;
+        --bg-0: #06110d;
+        --bg-1: #0a1712;
+        --panel: rgba(15, 36, 27, 0.94);
+        --panel-strong: rgba(18, 43, 32, 0.98);
+        --panel-soft: rgba(10, 24, 18, 0.9);
+        --border: rgba(165, 211, 187, 0.14);
+        --text: #eefcf3;
+        --text-soft: #b7d6c4;
+        --text-muted: #81a996;
+        --accent: #7ce3ac;
+        --accent-strong: #34d399;
+        --warning: #fbbf24;
+        --danger: #f87171;
+        --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+      }
+
+      html,
       body {
-        font-family:
-          'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+        margin: 0;
+        min-height: 100%;
         background:
           radial-gradient(
             circle at top left,
-            rgba(84, 190, 136, 0.12),
-            transparent 28%
+            rgba(124, 227, 172, 0.13),
+            transparent 26%
           ),
-          linear-gradient(180deg, #081611 0%, #06110d 100%);
-        color: #eefcf3;
-        min-height: 100vh;
-        font-size: 14px;
+          linear-gradient(180deg, #07140f 0%, #05100c 100%);
+        color: var(--text);
+        font-family:
+          'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
       }
+
+      body {
+        padding-bottom: 164px;
+      }
+
       .hidden {
         display: none !important;
       }
-      textarea {
-        resize: vertical;
+
+      .auth-hidden {
+        display: none !important;
       }
 
-      /* ── Buttons ────────────────────────────────────────────────── */
       .btn {
-        font-size: 0.72rem;
-        padding: 6px 12px;
-        border-radius: 12px;
-        border: none;
+        appearance: none;
+        border: 0;
+        border-radius: 14px;
         cursor: pointer;
-        flex-shrink: 0;
-        font-family: inherit;
-        transition: background 0.1s;
-      }
-      .btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-      .btn-ghost {
-        background: #1f2937;
-        color: #d1d5db;
-      }
-      .btn-ghost:hover {
-        background: #374151;
-      }
-      .btn-primary {
-        background: #1d4ed8;
-        color: #fff;
-      }
-      .btn-primary:hover {
-        background: #1e40af;
-      }
-      .btn-success {
-        background: #065f46;
-        color: #6ee7b7;
-      }
-      .btn-success:hover {
-        background: #047857;
-      }
-      .btn-emerald {
-        background: #064e3b;
-        color: #6ee7b7;
-      }
-      .btn-emerald:hover {
-        background: #065f46;
-      }
-      .btn-manager {
-        background: #1e3a5f;
-        color: #93c5fd;
-        border: 1px solid #2563eb;
-      }
-      .btn-manager:hover {
-        background: #1d4ed8;
-        color: #fff;
+        font: inherit;
+        font-size: 0.82rem;
+        padding: 10px 14px;
+        transition:
+          transform 0.12s ease,
+          background 0.12s ease,
+          border-color 0.12s ease,
+          color 0.12s ease;
       }
 
-      /* ── Header ─────────────────────────────────────────────────── */
+      .btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+        transform: none;
+      }
+
+      .btn-ghost {
+        background: rgba(16, 34, 26, 0.84);
+        border: 1px solid rgba(165, 211, 187, 0.16);
+        color: var(--text-soft);
+      }
+
+      .btn-ghost:hover {
+        background: rgba(23, 48, 36, 0.92);
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #77dfa8 0%, #3abf7f 100%);
+        color: #052514;
+        font-weight: 700;
+      }
+
+      .btn-primary:hover {
+        background: linear-gradient(135deg, #8ce8b7 0%, #49ca89 100%);
+      }
+
+      .btn-secondary {
+        background: rgba(20, 52, 39, 0.94);
+        border: 1px solid rgba(124, 227, 172, 0.22);
+        color: var(--accent);
+      }
+
+      .btn-secondary:hover {
+        background: rgba(26, 66, 49, 0.98);
+      }
+
+      .btn-danger {
+        background: rgba(73, 22, 22, 0.9);
+        border: 1px solid rgba(248, 113, 113, 0.25);
+        color: #fecaca;
+      }
+
+      .btn-danger:hover {
+        background: rgba(96, 28, 28, 0.96);
+      }
+
       .app-header {
         position: sticky;
         top: 0;
-        z-index: 10;
-        background: rgba(8, 22, 17, 0.92);
-        border-bottom: 1px solid rgba(165, 211, 187, 0.12);
-        padding: 12px 16px;
+        z-index: 20;
+        backdrop-filter: blur(14px);
+        background: rgba(7, 19, 14, 0.84);
+        border-bottom: 1px solid rgba(165, 211, 187, 0.1);
+      }
+
+      .app-header-inner {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 14px 18px;
         display: flex;
+        gap: 12px;
         align-items: center;
-        gap: 10px;
         flex-wrap: wrap;
       }
-      .app-header h1 {
-        font-weight: 700;
-        color: #fff;
-        font-size: 1rem;
-        flex-shrink: 0;
-      }
-      #dir-label {
-        color: #4b5563;
-        font-size: 0.68rem;
+
+      .app-title-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
         flex: 1;
+      }
+
+      .app-title {
+        font-size: 1.02rem;
+        font-weight: 800;
+      }
+
+      .app-subtitle {
+        font-size: 0.75rem;
+        color: var(--text-muted);
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
 
-      /* ── Manager status bar ─────────────────────────────────────── */
       #manager-bar {
-        background: rgba(10, 28, 21, 0.92);
-        border-bottom: 1px solid rgba(165, 211, 187, 0.1);
-        padding: 7px 16px;
+        border-bottom: 1px solid rgba(165, 211, 187, 0.08);
+        background: rgba(9, 24, 18, 0.78);
+      }
+
+      .manager-bar-inner {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 10px 18px;
         display: flex;
         align-items: center;
         gap: 10px;
         flex-wrap: wrap;
-        min-height: 38px;
       }
+
       .status-dot {
-        width: 8px;
-        height: 8px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
-        background: #374151;
-        flex-shrink: 0;
-        display: inline-block;
-      }
-
-      /* ── New thread form ────────────────────────────────────────── */
-      #new-thread-form {
-        padding: 9px 16px;
-        border-bottom: 1px solid rgba(165, 211, 187, 0.1);
-        background: rgba(12, 32, 24, 0.9);
-      }
-      .new-thread-row {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        flex-wrap: wrap;
-        max-width: 680px;
-      }
-      .form-label {
-        font-size: 0.7rem;
-        color: #9ca3af;
+        background: #334155;
         flex-shrink: 0;
       }
-      .text-input {
-        flex: 1;
-        min-width: 160px;
-        background: rgba(7, 19, 14, 0.92);
-        color: #f3f4f6;
-        border: 1px solid rgba(183, 214, 196, 0.22);
-        border-radius: 12px;
-        padding: 5px 10px;
-        font-size: 0.78rem;
-        outline: none;
-        font-family: inherit;
-      }
-      .text-input:focus {
-        border-color: #3b82f6;
-      }
-      .auth-hidden {
-        display: none !important;
+
+      #manager-status-text {
+        font-size: 0.76rem;
+        color: var(--text-muted);
       }
 
-      /* ── Access panel ───────────────────────────────────────────── */
       #auth-panel {
-        max-width: 880px;
-        margin: 14px auto 0;
+        max-width: 840px;
+        margin: 20px auto 0;
         padding: 0 16px;
       }
+
       .auth-card {
-        background: rgba(12, 36, 27, 0.92);
+        background: rgba(14, 38, 28, 0.96);
         border: 1px solid rgba(165, 211, 187, 0.16);
-        border-radius: 18px;
-        padding: 18px;
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 24px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 14px;
       }
-      .auth-title {
-        font-size: 0.95rem;
-        font-weight: 700;
-        color: #f8fafc;
-      }
+
       .auth-kicker {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
         width: fit-content;
-        padding: 5px 10px;
+        padding: 6px 12px;
         border-radius: 999px;
-        background: rgba(154, 230, 180, 0.1);
-        color: #9ae6b4;
-        font-size: 0.68rem;
+        background: rgba(124, 227, 172, 0.12);
+        color: var(--accent);
+        font-size: 0.72rem;
+        font-weight: 600;
       }
+
+      .auth-title {
+        font-size: 1.12rem;
+        font-weight: 800;
+        line-height: 1.35;
+      }
+
       .auth-copy {
-        color: #cbd5e1;
-        font-size: 0.78rem;
-        line-height: 1.6;
+        color: #d3ece0;
+        font-size: 0.85rem;
+        line-height: 1.7;
       }
+
       .auth-row {
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
         align-items: center;
       }
+
       .auth-input {
         flex: 1;
-        min-width: 180px;
-        background: #020617;
+        min-width: 220px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(165, 211, 187, 0.22);
+        background: rgba(4, 10, 8, 0.94);
         color: #f8fafc;
-        border: 1px solid #475569;
-        border-radius: 6px;
-        padding: 8px 12px;
-        font-size: 0.82rem;
-        font-family: inherit;
+        font: inherit;
       }
-      .auth-hint {
-        color: #94a3b8;
-        font-size: 0.72rem;
-      }
+
       .auth-error {
-        color: #fca5a5;
-        font-size: 0.76rem;
-        min-height: 1.2em;
+        color: #fecaca;
+        font-size: 0.78rem;
+        min-height: 1.3em;
       }
 
-      /* ── Main content ───────────────────────────────────────────── */
       main {
-        max-width: 880px;
+        max-width: 1120px;
         margin: 0 auto;
-        padding: 14px 16px;
+        padding: 18px;
+        display: grid;
+        grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
+        gap: 18px;
       }
 
-      /* ── Section cards (conversation threads) ───────────────────── */
-      .section-card {
-        background: rgba(12, 30, 23, 0.92);
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        box-shadow: var(--shadow);
+      }
+
+      .intro-card {
+        padding: 20px 20px 18px;
+      }
+
+      .intro-pill {
+        display: inline-flex;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(124, 227, 172, 0.1);
+        color: var(--accent);
+        font-size: 0.7rem;
+        font-weight: 700;
+      }
+
+      .intro-card h2 {
+        margin: 12px 0 8px;
+        font-size: 1.4rem;
+        line-height: 1.22;
+      }
+
+      .intro-card p {
+        color: var(--text-soft);
+        font-size: 0.82rem;
+        line-height: 1.7;
+      }
+
+      .intro-steps {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .intro-step {
+        background: rgba(9, 21, 16, 0.9);
         border: 1px solid rgba(165, 211, 187, 0.12);
-        border-radius: 18px;
-        margin-bottom: 9px;
+        border-radius: 16px;
+        padding: 10px 12px;
+        color: var(--text-soft);
+        font-size: 0.76rem;
+        line-height: 1.55;
+      }
+
+      .section-card {
         overflow: hidden;
       }
+
       .section-header {
-        padding: 7px 12px;
-        background: rgba(19, 46, 35, 0.96);
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
+        padding: 11px 14px;
+        background: rgba(18, 44, 33, 0.96);
         cursor: pointer;
         user-select: none;
       }
-      .section-header:hover {
-        background: rgba(24, 58, 43, 0.98);
-      }
+
       .section-dot {
-        width: 8px;
-        height: 8px;
+        width: 10px;
+        height: 10px;
         border-radius: 50%;
         flex-shrink: 0;
-        display: inline-block;
       }
+
       .section-title {
-        font-size: 0.8rem;
-        font-weight: 600;
-      }
-      .section-count {
-        font-size: 0.68rem;
-        color: #6b7280;
-      }
-      .section-chevron {
-        font-size: 0.68rem;
-        color: #4b5563;
-        margin-left: auto;
-      }
-      .section-body {
-        padding: 7px;
-      }
-      .section-empty {
-        color: #4b5563;
-        font-size: 0.7rem;
-        text-align: center;
-        padding: 10px 0;
-      }
-      .getting-started {
-        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-        border: 1px solid #334155;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-      }
-      .getting-started h2 {
-        font-size: 0.95rem;
-        color: #f8fafc;
-        margin-bottom: 6px;
-      }
-      .getting-started p {
-        color: #cbd5e1;
-        font-size: 0.78rem;
-        line-height: 1.6;
-        margin-bottom: 12px;
-      }
-      .getting-started ol {
-        margin-left: 18px;
-        color: #cbd5e1;
-        font-size: 0.76rem;
-        line-height: 1.7;
-        margin-bottom: 12px;
-      }
-      .getting-started strong {
-        color: #f8fafc;
-      }
-
-      /* ── Status badge ───────────────────────────────────────────── */
-      .status-badge {
-        font-size: 0.6rem;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        flex-shrink: 0;
-      }
-
-      /* ── Thread row ─────────────────────────────────────────────── */
-      .thread-row {
-        border: 1px solid #1f2937;
-        border-radius: 5px;
-        margin-bottom: 4px;
-        padding: 7px 10px;
-        cursor: pointer;
-        transition: background 0.1s;
-        background: #0f172a;
-      }
-      .thread-row:hover {
-        background: #1e293b;
-      }
-      .thread-row.selected {
-        background: #1e293b;
-        border-color: #334155;
-      }
-      .thread-row-top {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        flex-wrap: wrap;
-      }
-      .thread-title {
-        font-size: 0.78rem;
-        color: #f3f4f6;
-        font-weight: 600;
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .thread-age {
-        font-size: 0.6rem;
-        color: #6b7280;
-        flex-shrink: 0;
-      }
-      .thread-preview {
-        font-size: 0.66rem;
-        color: #6b7280;
-        margin-top: 2px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      /* ── Tasks section (separate from the 5 conversation sections) ─ */
-      .tasks-card {
-        background: #070d1a;
-        border: 1px solid #1e293b;
-        border-radius: 7px;
-        margin-top: 14px;
-        overflow: hidden;
-      }
-      .tasks-card .section-header {
-        background: #101827;
-      }
-      .tasks-card .section-header:hover {
-        background: #18253a;
-      }
-      .task-row {
-        border-radius: 4px;
-        margin-bottom: 4px;
-        padding: 7px 10px;
-        background: #111827;
-        border: 1px solid #1f2937;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .task-desc {
-        font-size: 0.78rem;
-        color: #d1d5db;
-        flex: 1;
-        min-width: 0;
-      }
-      .task-age {
-        font-size: 0.6rem;
-        color: #6b7280;
-        flex-shrink: 0;
-      }
-
-      /* ── Thread detail panel ────────────────────────────────────── */
-      #thread-detail {
-        margin-top: 12px;
-        background: rgba(15, 36, 27, 0.95);
-        border: 1px solid rgba(165, 211, 187, 0.14);
-        border-radius: 18px;
-        overflow: hidden;
-      }
-      .detail-header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 9px 12px;
-        background: rgba(19, 46, 35, 0.96);
-        border-bottom: 1px solid rgba(165, 211, 187, 0.12);
-        flex-wrap: wrap;
-      }
-
-      .new-thread-help {
-        margin-top: 8px;
-        color: #b7d6c4;
-        font-size: 0.72rem;
-        line-height: 1.6;
-      }
-      .close-btn {
-        color: #6b7280;
-        font-size: 1.2rem;
-        line-height: 1;
-        background: none;
-        border: none;
-        cursor: pointer;
-        padding: 0 4px;
-        flex-shrink: 0;
-        font-family: inherit;
-      }
-      .close-btn:hover {
-        color: #f87171;
-      }
-      .detail-title {
+        font-size: 0.84rem;
         font-weight: 700;
-        font-size: 0.85rem;
-        color: #f9fafb;
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
       }
 
-      /* ── Message area ───────────────────────────────────────────── */
-      .msg-area {
+      .section-count {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+      }
+
+      .section-chevron {
+        margin-left: auto;
+        font-size: 0.68rem;
+        color: var(--text-muted);
+      }
+
+      .section-body {
+        padding: 8px;
+      }
+
+      .section-empty {
+        padding: 14px 10px;
+        color: var(--text-muted);
+        font-size: 0.76rem;
+        text-align: center;
+      }
+
+      .thread-row {
+        border: 1px solid rgba(165, 211, 187, 0.1);
+        border-radius: 16px;
         padding: 10px 12px;
+        background: rgba(7, 18, 13, 0.84);
         display: flex;
         flex-direction: column;
         gap: 6px;
-        max-height: 380px;
-        overflow-y: auto;
+        cursor: pointer;
+        transition:
+          transform 0.12s ease,
+          border-color 0.12s ease,
+          background 0.12s ease;
       }
-      .bubble {
-        border-radius: 6px;
-        padding: 7px 10px;
+
+      .thread-row + .thread-row {
+        margin-top: 8px;
       }
-      .bubble-ai {
-        background: #0e2233;
-        border: 1px solid #164e63;
+
+      .thread-row:hover {
+        transform: translateY(-1px);
+        border-color: rgba(124, 227, 172, 0.24);
+        background: rgba(11, 27, 20, 0.94);
       }
-      .bubble-user {
-        background: #0d2b16;
-        border: 1px solid #14532d;
+
+      .thread-row.selected {
+        border-color: rgba(124, 227, 172, 0.34);
+        background: rgba(12, 33, 24, 0.98);
       }
-      .bubble-meta {
+
+      .thread-row-top {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .thread-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.82rem;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .thread-age {
+        font-size: 0.66rem;
+        color: var(--text-muted);
+      }
+
+      .thread-preview {
+        color: var(--text-soft);
+        font-size: 0.74rem;
+        line-height: 1.55;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .thread-note {
+        font-size: 0.72rem;
+        color: #d7f6e4;
+        background: rgba(124, 227, 172, 0.08);
+        border-radius: 12px;
+        padding: 8px 10px;
+        line-height: 1.55;
+      }
+
+      .state-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 9px;
+        font-size: 0.66rem;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+
+      .detail-card {
+        min-height: 220px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .detail-empty {
+        flex: 1;
         display: flex;
         align-items: center;
+        justify-content: center;
+        padding: 34px 24px;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 0.82rem;
+        line-height: 1.7;
+      }
+
+      .detail-header {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .detail-title {
+        font-size: 0.96rem;
+        font-weight: 800;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .detail-meta {
+        padding: 0 16px 14px;
+        display: flex;
         gap: 8px;
-        margin-bottom: 3px;
+        flex-wrap: wrap;
+        color: var(--text-muted);
+        font-size: 0.72rem;
       }
-      .bubble-sender {
-        font-size: 0.6rem;
-        font-weight: 700;
+
+      .detail-body {
+        padding: 0 16px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
       }
-      .bubble-sender-ai {
-        color: #67e8f9;
-      }
-      .bubble-sender-user {
-        color: #86efac;
-      }
-      .bubble-ts {
-        font-size: 0.58rem;
-        color: #6b7280;
-      }
-      .bubble-content {
+
+      .detail-note {
+        color: var(--text-soft);
+        background: rgba(124, 227, 172, 0.08);
+        border-radius: 14px;
+        padding: 10px 12px;
         font-size: 0.76rem;
-        color: #e5e7eb;
-        line-height: 1.5;
+        line-height: 1.65;
+      }
+
+      .msg-area {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-height: 430px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+
+      .bubble {
+        border-radius: 18px;
+        padding: 12px 14px;
+        line-height: 1.65;
+      }
+
+      .bubble-ai {
+        background: rgba(9, 32, 43, 0.9);
+        border: 1px solid rgba(103, 232, 249, 0.18);
+      }
+
+      .bubble-user {
+        background: rgba(10, 32, 18, 0.92);
+        border: 1px solid rgba(110, 231, 183, 0.16);
+      }
+
+      .bubble-meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+
+      .bubble-sender {
+        font-size: 0.68rem;
+        font-weight: 800;
+      }
+
+      .bubble-sender-ai {
+        color: #8fe9ff;
+      }
+
+      .bubble-sender-user {
+        color: #94f3c2;
+      }
+
+      .bubble-ts {
+        font-size: 0.64rem;
+        color: var(--text-muted);
+      }
+
+      .bubble-content {
+        font-size: 0.8rem;
+        color: #eefcf3;
         white-space: pre-wrap;
         word-break: break-word;
       }
-      .msg-empty {
-        color: #6b7280;
-        font-size: 0.78rem;
-        text-align: center;
-        padding: 18px 0;
-      }
 
-      /* ── Reply form ─────────────────────────────────────────────── */
-      .reply-form {
-        padding: 9px 12px;
-        border-top: 1px solid #334155;
-        background: #0f172a;
-      }
-      .reply-textarea {
-        width: 100%;
-        background: #374151;
-        color: #f3f4f6;
-        border: 1px solid #6b7280;
-        border-radius: 4px;
-        padding: 7px 10px;
-        font-size: 0.76rem;
-        outline: none;
-        font-family: inherit;
-        margin-bottom: 7px;
-      }
-      .reply-textarea:focus {
-        border-color: #3b82f6;
-      }
-      .reply-actions {
+      .detail-actions {
         display: flex;
-        gap: 6px;
+        gap: 10px;
         flex-wrap: wrap;
-        align-items: center;
-      }
-      .reply-hint {
-        font-size: 0.6rem;
-        color: #4b5563;
-        margin-left: auto;
       }
 
-      /* Quick-action buttons in reply form */
-      .btn-reply {
-        background: #1d4ed8;
-        color: #fff;
-      }
-      .btn-reply:hover {
-        background: #1e40af;
-      }
-      .btn-needs-reply {
-        background: #78350f;
-        color: #fde68a;
-        border: 1px solid #92400e;
-      }
-      .btn-needs-reply:hover {
-        background: #92400e;
-      }
-      .btn-review {
-        background: #4c1d95;
-        color: #ddd6fe;
-        border: 1px solid #5b21b6;
-      }
-      .btn-review:hover {
-        background: #5b21b6;
-      }
-      .btn-resolve {
-        background: #1f2937;
-        color: #9ca3af;
-        border: 1px solid #374151;
-      }
-      .btn-resolve:hover {
-        background: #166534;
-        color: #86efac;
-        border-color: #166534;
-      }
-      .btn-reopen {
-        background: #1d4ed8;
-        color: #fff;
-      }
-      .btn-reopen:hover {
-        background: #1e40af;
+      .tasks-card .section-header {
+        background: rgba(17, 36, 53, 0.96);
       }
 
-      /* Advanced sender panel (collapsed by default) */
-      .advanced-toggle {
-        font-size: 0.62rem;
-        color: #4b5563;
-        cursor: pointer;
-        background: none;
-        border: none;
-        font-family: inherit;
-        padding: 2px 4px;
-      }
-      .advanced-toggle:hover {
-        color: #6b7280;
-      }
-      .advanced-panel {
-        margin-top: 7px;
-        padding: 7px 10px;
-        background: #0a0f1a;
-        border: 1px solid #1f2937;
-        border-radius: 4px;
-      }
-      .advanced-row {
+      .task-row {
+        background: rgba(11, 22, 37, 0.92);
+        border: 1px solid rgba(96, 165, 250, 0.18);
+        border-radius: 16px;
+        padding: 10px 12px;
         display: flex;
-        align-items: center;
         gap: 8px;
         flex-wrap: wrap;
-        margin-bottom: 5px;
-      }
-      .advanced-row:last-child {
-        margin-bottom: 0;
-      }
-      .adv-label {
-        font-size: 0.68rem;
-        color: #9ca3af;
-        flex-shrink: 0;
-      }
-      .opt-btn {
-        font-size: 0.65rem;
-        padding: 2px 7px;
-        border-radius: 3px;
-        cursor: pointer;
-        font-family: inherit;
-      }
-      .opt-inactive {
-        background: transparent;
-        border: 1px solid #374151;
-        color: #6b7280;
-      }
-      .opt-user {
-        background: #0d2b16;
-        border: 1px solid #166534;
-        color: #86efac;
-      }
-      .opt-ai {
-        background: #0e2233;
-        border: 1px solid #155e75;
-        color: #67e8f9;
-      }
-      .opt-status {
-        background: #581c87;
-        border: 1px solid #6b21a8;
-        color: #d8b4fe;
+        align-items: center;
       }
 
-      /* ── Mobile adjustments ─────────────────────────────────────── */
-      @media (max-width: 600px) {
+      .task-row + .task-row {
+        margin-top: 8px;
+      }
+
+      .task-desc {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.8rem;
+        color: #dbeafe;
+      }
+
+      .task-age {
+        font-size: 0.68rem;
+        color: #93c5fd;
+      }
+
+      .composer-dock {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 24;
+        padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+        background: linear-gradient(
+          180deg,
+          rgba(5, 16, 12, 0) 0%,
+          rgba(5, 16, 12, 0.92) 26%,
+          rgba(5, 16, 12, 0.98) 100%
+        );
+      }
+
+      .composer-shell {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+
+      .composer-card {
+        background: rgba(10, 26, 19, 0.98);
+        border: 1px solid rgba(165, 211, 187, 0.16);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .composer-top {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .composer-label {
+        display: inline-flex;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(124, 227, 172, 0.1);
+        color: var(--accent);
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
+      .composer-hint {
+        color: var(--text-soft);
+        font-size: 0.76rem;
+        line-height: 1.55;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .composer-context {
+        color: #d7f6e4;
+        background: rgba(124, 227, 172, 0.08);
+        border-radius: 12px;
+        padding: 8px 10px;
+        font-size: 0.74rem;
+        line-height: 1.55;
+      }
+
+      .composer-textarea {
+        width: 100%;
+        min-height: 48px;
+        max-height: 180px;
+        resize: vertical;
+        border-radius: 18px;
+        border: 1px solid rgba(165, 211, 187, 0.16);
+        background: rgba(4, 10, 8, 0.94);
+        color: #f8fafc;
+        padding: 13px 14px;
+        font: inherit;
+        font-size: 0.84rem;
+        line-height: 1.6;
+      }
+
+      .composer-textarea:focus {
+        outline: none;
+        border-color: rgba(124, 227, 172, 0.42);
+      }
+
+      .composer-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .composer-feedback {
+        color: var(--text-soft);
+        background: rgba(124, 227, 172, 0.08);
+        border-radius: 14px;
+        padding: 10px 12px;
+        font-size: 0.76rem;
+        line-height: 1.65;
+      }
+
+      .composer-feedback-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .composer-chip {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(11, 24, 18, 0.92);
+        border: 1px solid rgba(165, 211, 187, 0.12);
+        color: var(--text-soft);
+        font-size: 0.7rem;
+      }
+
+      @media (max-width: 920px) {
         main {
-          padding: 10px;
+          grid-template-columns: 1fr;
         }
-        .app-header {
-          padding: 8px 10px;
+
+        .intro-steps {
+          grid-template-columns: 1fr;
         }
-        #manager-bar {
-          padding: 6px 10px;
+
+        .detail-card {
+          min-height: 0;
+        }
+      }
+
+      @media (max-width: 600px) {
+        .app-header-inner,
+        .manager-bar-inner,
+        main,
+        .composer-dock {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+
+        .auth-card,
+        .intro-card,
+        .composer-card {
+          border-radius: 20px;
+        }
+
+        .btn {
+          width: 100%;
+          justify-content: center;
+        }
+
+        .app-header-inner {
+          gap: 10px;
+        }
+
+        .app-header-inner .btn {
+          width: auto;
+        }
+
+        .composer-actions .btn {
+          width: auto;
         }
       }
     </style>
   </head>
   <body>
-    <!-- Header -->
     <header class="app-header">
-      <a
-        href="/"
-        class="btn btn-ghost"
-        style="text-decoration: none; flex-shrink: 0"
-        >← Hub</a
-      >
-      <h1>マネージャー</h1>
-      <span id="dir-label"></span>
-      <button data-action="refresh" class="btn btn-ghost">↻ 更新</button>
-      <button data-action="new-thread" class="btn btn-primary">
-        + 新しいトピック
-      </button>
+      <div class="app-header-inner">
+        <a
+          href="/"
+          class="btn btn-ghost"
+          style="text-decoration: none; width: auto"
+          >← Hub</a
+        >
+        <div class="app-title-wrap">
+          <h1 class="app-title">マネージャー</h1>
+          <div id="dir-label" class="app-subtitle"></div>
+        </div>
+        <button data-action="refresh" class="btn btn-ghost" style="width: auto">
+          ↻ 更新
+        </button>
+        <button
+          id="toggleDoneButton"
+          data-action="toggle-done"
+          class="btn btn-ghost"
+          style="width: auto"
+        >
+          完了も見る
+        </button>
+      </div>
     </header>
 
     <div id="auth-panel" class="hidden">
@@ -693,18 +802,12 @@
         <div id="auth-context-kicker" class="auth-kicker">
           Hub の次に使う画面
         </div>
-        <div id="auth-context-title" class="auth-title">
-          Manager は複数の依頼と返事を整理する画面です
-        </div>
+        <h2 id="auth-context-title" class="auth-title">
+          Manager は、あとで状況を見失わないための受信箱です
+        </h2>
         <p id="auth-context-copy" class="auth-copy">
-          PC でもスマホでも、同じ受信箱と同じ進行状況をここで追えます。
-          まずアクセスコードを入れると、そのまま同じ画面のまま開きます。
-        </p>
-        <div class="auth-title">アクセスコードを入力してください</div>
-        <p class="auth-copy">
-          この Manager はネットワーク共有向けに保護されています。PC
-          側で設定したアクセスコードを入力すると、
-          同じ画面のまま受信箱を開けます。
+          ここでは思いついたことをまとめて送れます。話題の分け方は AI
+          が整理し、返信が必要なものや確認すべきものが上に並びます。
         </p>
         <div class="auth-row">
           <input
@@ -714,185 +817,200 @@
             class="auth-input"
             autocomplete="current-password"
           />
-          <button data-action="unlock-auth" class="btn btn-primary">
-            接続する
+          <button
+            data-action="unlock-auth"
+            class="btn btn-primary"
+            style="width: auto"
+          >
+            開く
           </button>
           <button
             id="auth-clear-btn"
             data-action="clear-auth"
             class="btn btn-ghost hidden"
+            style="width: auto"
           >
             保存済みを消す
           </button>
-        </div>
-        <div class="auth-hint">
-          この端末ではアクセスコードを保存して、次回から自動で再利用できます。
         </div>
         <div id="auth-error" class="auth-error"></div>
       </div>
     </div>
 
-    <!-- Manager status bar -->
     <div id="manager-bar" data-auth-content>
-      <span id="manager-status-dot" class="status-dot"></span>
-      <span id="manager-status-text" style="font-size: 0.72rem; color: #6b7280"
-        >マネージャー状態を確認中...</span
-      >
-      <button
-        id="manager-start-btn"
-        data-action="start-manager"
-        class="btn btn-emerald hidden"
-      >
-        ▶ 起動する
-      </button>
-    </div>
-
-    <!-- New thread form (hidden by default) -->
-    <div id="new-thread-form" class="hidden" data-auth-content>
-      <div class="new-thread-row">
-        <span class="form-label">新しいトピック:</span>
-        <input
-          id="new-thread-title"
-          type="text"
-          placeholder="タイトルを入力..."
-          class="text-input"
-        />
-        <button data-action="create-thread" class="btn btn-primary">
-          作成
-        </button>
+      <div class="manager-bar-inner">
+        <span id="manager-status-dot" class="status-dot"></span>
+        <span id="manager-status-text">マネージャー状態を確認中...</span>
         <button
-          id="createThreadManagerButton"
-          data-action="create-thread-manager"
-          class="btn btn-manager"
-          title="スレッドを作成し、タイトルをマネージャーAIに転送します"
+          id="manager-start-btn"
+          data-action="start-manager"
+          class="btn btn-secondary hidden"
+          style="width: auto"
         >
-          🤖 作成して送る
-        </button>
-        <button data-action="hide-new-thread" class="btn btn-ghost">
-          キャンセル
+          ▶ 起動する
         </button>
       </div>
-      <p class="new-thread-help">
-        まずは「作成して送る」が基本です。下書きだけ先に置いておきたいときだけ「作成」を使います。
-      </p>
     </div>
 
-    <!-- Main -->
     <main data-auth-content>
-      <section id="getting-started" class="getting-started hidden">
-        <h2>最初にやること</h2>
-        <p>
-          まず話題を 1
-          つ作り、その中でマネージャーに依頼を送ると、この画面が受信箱として回り始めます。
-        </p>
-        <ol>
-          <li><strong>新しいトピック</strong>で話題を作る</li>
-          <li>開いた話題で <strong>マネージャーに送る</strong> を押す</li>
-          <li>返事や確認待ちは、この一覧で追いかける</li>
-        </ol>
-        <button data-action="new-thread" class="btn btn-primary">
-          最初の話題を作る
-        </button>
-      </section>
+      <div class="stack">
+        <section id="getting-started" class="card intro-card hidden">
+          <div class="intro-pill">最初の使い方</div>
+          <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
+          <p>
+            何の話題かを先に決める必要はありません。AI
+            が既存の話題に振り分けるか、新しい話題を作るか、確認が必要かを整理します。
+          </p>
+          <div class="intro-steps">
+            <div class="intro-step">
+              1. 下の送信欄に、やりたいことをそのまま書く
+            </div>
+            <div class="intro-step">
+              2. AI が話題ごとに分けて、必要なものを上に並べる
+            </div>
+            <div class="intro-step">3. 返事が必要なものから順に確認する</div>
+          </div>
+        </section>
 
-      <!--
-        Inbox grouping (mutually exclusive, non-resolved threads only):
-
-        返事が来ています  → status === 'active' AND last message sender === 'ai'
-                           AI sent an informational update; thread is open but no explicit action was requested.
-
-        あなたの返答待ち  → status === 'needs-reply'
-                           AI explicitly asked for user input or a decision.
-
-        確認待ちです      → status === 'review'
-                           AI completed something and needs the user to review/approve.
-
-        進んでいます      → status === 'waiting'
-                           User sent instructions; AI is working on the task.
-
-        止まっています    → status === 'active' AND (no messages OR last message sender !== 'ai')
-                           Thread is open but idle — no recent AI activity.
-
-        Resolved threads are hidden from all sections.
-      -->
-
-      <!-- Section: 返事が来ています (active threads where AI last replied) -->
-      <div class="section-card" id="sec-ai-replied">
-        <div class="section-header" data-section-key="ai-replied">
-          <span class="section-dot" style="background: #ca8a04"></span>
-          <span class="section-title" style="color: #fde68a"
-            >返事が来ています</span
+        <section class="card section-card" id="sec-routing-confirmation-needed">
+          <div
+            class="section-header"
+            data-section-key="routing-confirmation-needed"
           >
-          <span id="count-ai-replied" class="section-count"></span>
-          <span class="section-chevron" id="chevron-ai-replied">▲</span>
-        </div>
-        <div class="section-body" id="body-ai-replied"></div>
-      </div>
+            <span class="section-dot" style="background: #fb7185"></span>
+            <span class="section-title">振り分けの確認が必要です</span>
+            <span
+              id="count-routing-confirmation-needed"
+              class="section-count"
+            ></span>
+            <span
+              id="chevron-routing-confirmation-needed"
+              class="section-chevron"
+              >▲</span
+            >
+          </div>
+          <div id="body-routing-confirmation-needed" class="section-body"></div>
+        </section>
 
-      <!-- Section: あなたの返答待ち (needs-reply threads) -->
-      <div class="section-card" id="sec-needs-reply">
-        <div class="section-header" data-section-key="needs-reply">
-          <span class="section-dot" style="background: #b45309"></span>
-          <span class="section-title" style="color: #fcd34d"
-            >あなたの返答待ち</span
+        <section class="card section-card" id="sec-user-reply-needed">
+          <div class="section-header" data-section-key="user-reply-needed">
+            <span class="section-dot" style="background: #f59e0b"></span>
+            <span class="section-title">あなたの返信が必要です</span>
+            <span id="count-user-reply-needed" class="section-count"></span>
+            <span id="chevron-user-reply-needed" class="section-chevron"
+              >▲</span
+            >
+          </div>
+          <div id="body-user-reply-needed" class="section-body"></div>
+        </section>
+
+        <section
+          class="card section-card"
+          id="sec-ai-finished-awaiting-user-confirmation"
+        >
+          <div
+            class="section-header"
+            data-section-key="ai-finished-awaiting-user-confirmation"
           >
-          <span id="count-needs-reply" class="section-count"></span>
-          <span class="section-chevron" id="chevron-needs-reply">▲</span>
-        </div>
-        <div class="section-body" id="body-needs-reply"></div>
+            <span class="section-dot" style="background: #8b5cf6"></span>
+            <span class="section-title">AI から確認待ちです</span>
+            <span
+              id="count-ai-finished-awaiting-user-confirmation"
+              class="section-count"
+            ></span>
+            <span
+              id="chevron-ai-finished-awaiting-user-confirmation"
+              class="section-chevron"
+              >▲</span
+            >
+          </div>
+          <div
+            id="body-ai-finished-awaiting-user-confirmation"
+            class="section-body"
+          ></div>
+        </section>
+
+        <section class="card section-card" id="sec-queued">
+          <div class="section-header" data-section-key="queued">
+            <span class="section-dot" style="background: #38bdf8"></span>
+            <span class="section-title">まだ着手していません</span>
+            <span id="count-queued" class="section-count"></span>
+            <span id="chevron-queued" class="section-chevron">▲</span>
+          </div>
+          <div id="body-queued" class="section-body"></div>
+        </section>
+
+        <section class="card section-card" id="sec-ai-working">
+          <div class="section-header" data-section-key="ai-working">
+            <span class="section-dot" style="background: #22c55e"></span>
+            <span class="section-title">AI が作業中です</span>
+            <span id="count-ai-working" class="section-count"></span>
+            <span id="chevron-ai-working" class="section-chevron">▲</span>
+          </div>
+          <div id="body-ai-working" class="section-body"></div>
+        </section>
+
+        <section
+          class="card section-card hidden"
+          id="sec-done"
+          data-done-section
+        >
+          <div class="section-header" data-section-key="done">
+            <span class="section-dot" style="background: #6b7280"></span>
+            <span class="section-title">完了</span>
+            <span id="count-done" class="section-count"></span>
+            <span id="chevron-done" class="section-chevron">▲</span>
+          </div>
+          <div id="body-done" class="section-body"></div>
+        </section>
+
+        <section class="card section-card tasks-card" id="sec-tasks">
+          <div class="section-header" data-section-key="tasks">
+            <span class="section-dot" style="background: #60a5fa"></span>
+            <span class="section-title">タスク（進行中）</span>
+            <span id="count-tasks" class="section-count"></span>
+            <span id="chevron-tasks" class="section-chevron">▲</span>
+          </div>
+          <div id="body-tasks" class="section-body"></div>
+        </section>
       </div>
 
-      <!-- Section: 確認待ちです (review threads) -->
-      <div class="section-card" id="sec-review">
-        <div class="section-header" data-section-key="review">
-          <span class="section-dot" style="background: #7c3aed"></span>
-          <span class="section-title" style="color: #c4b5fd">確認待ちです</span>
-          <span id="count-review" class="section-count"></span>
-          <span class="section-chevron" id="chevron-review">▲</span>
-        </div>
-        <div class="section-body" id="body-review"></div>
-      </div>
-
-      <!-- Section: 進んでいます (waiting — AI working) -->
-      <div class="section-card" id="sec-waiting">
-        <div class="section-header" data-section-key="waiting">
-          <span class="section-dot" style="background: #0e7490"></span>
-          <span class="section-title" style="color: #67e8f9">進んでいます</span>
-          <span id="count-waiting" class="section-count"></span>
-          <span class="section-chevron" id="chevron-waiting">▲</span>
-        </div>
-        <div class="section-body" id="body-waiting"></div>
-      </div>
-
-      <!-- Section: 止まっています (active + idle) -->
-      <div class="section-card" id="sec-idle">
-        <div class="section-header" data-section-key="idle">
-          <span class="section-dot" style="background: #374151"></span>
-          <span class="section-title" style="color: #9ca3af"
-            >止まっています</span
-          >
-          <span id="count-idle" class="section-count"></span>
-          <span class="section-chevron" id="chevron-idle">▲</span>
-        </div>
-        <div class="section-body" id="body-idle"></div>
-      </div>
-
-      <!-- Thread detail panel -->
-      <div id="thread-detail" class="hidden"></div>
-
-      <!-- Tasks section (separate from conversation sections) -->
-      <div class="tasks-card" id="sec-tasks">
-        <div class="section-header" data-section-key="tasks">
-          <span class="section-dot" style="background: #1e40af"></span>
-          <span class="section-title" style="color: #93c5fd"
-            >タスク（進行中）</span
-          >
-          <span id="count-tasks" class="section-count"></span>
-          <span class="section-chevron" id="chevron-tasks">▲</span>
-        </div>
-        <div class="section-body" id="body-tasks"></div>
+      <div class="stack">
+        <section id="thread-detail" class="card detail-card">
+          <div class="detail-empty">
+            左の一覧から話題を開くと、ここでやり取りの流れと確認ボタンを見られます。
+          </div>
+        </section>
       </div>
     </main>
+
+    <div id="global-composer-dock" class="composer-dock" data-auth-content>
+      <div class="composer-shell">
+        <div class="composer-card">
+          <div class="composer-top">
+            <div class="composer-label">まとめて送る</div>
+            <div class="composer-hint">
+              何の話題かを先に決めなくて大丈夫です。AI
+              が既存の話題への追記・新しい話題・確認待ちに分けます。
+            </div>
+          </div>
+          <div id="composerContext" class="composer-context hidden"></div>
+          <textarea
+            id="globalComposerInput"
+            class="composer-textarea"
+            aria-label="Manager への送信内容"
+            placeholder="例: AAして、BBして。あと、さっきのCCの件ってどうなってる？"
+          ></textarea>
+          <div class="composer-actions">
+            <button id="globalComposerSendButton" class="btn btn-primary">
+              AI に送る
+            </button>
+            <span id="composerStatusText" class="composer-hint"></span>
+          </div>
+          <div id="composerFeedback" class="composer-feedback hidden"></div>
+        </div>
+      </div>
+    </div>
 
     <script>
       window.GUI_DIR = __GUI_DIR__;

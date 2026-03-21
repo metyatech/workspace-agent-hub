@@ -309,6 +309,10 @@ Installable/PWA note:
 Workspace Agent Hub now provides the official `Open Manager` entrypoint in the
 browser UI.
 
+The Manager UX design and behavior for the single global composer plus
+AI-managed topic routing is documented in
+[docs/manager-global-inbox.md](docs/manager-global-inbox.md).
+
 How it works:
 
 1. Open the normal Hub page from the PC or smartphone.
@@ -316,15 +320,25 @@ How it works:
 3. The browser moves into Hub's native `/manager/` page on the same origin and in the same tab.
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
-5. The built-in manager backend starts inside Hub when the user presses
-   `起動する` on the Manager page, then keeps handling inbox messages for that
-   workspace.
+5. The user writes into one fixed global composer instead of creating topics by
+   hand.
+6. The built-in manager backend splits each message across existing topics,
+   new topics, or routing-confirmation items, then writes replies back into the
+   resulting topics.
+7. The built-in manager backend starts inside Hub when needed and keeps
+   handling inbox messages for that workspace.
 
 Important behavior:
 
 - The same Hub access code protects the smartphone/desktop Manager path.
 - There is no separate `manager-gui` process or second GUI server anymore.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
+- Users send from one global composer; they do not need to create or pick a
+  topic before sending.
+- The inbox is ordered by urgency: routing confirmation, user reply needed, AI
+  finished awaiting user confirmation, queued, AI working, then done.
+- Topics are only marked done explicitly; the AI may move them into
+  confirmation/reply-needed states but does not auto-close them silently.
 - The built-in manager backend runs on Codex CLI (`gpt-5.4` with
   `model_reasoning_effort="xhigh"`).
 - Manager messages are serialized: one queued message is processed at a time,

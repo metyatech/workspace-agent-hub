@@ -4,9 +4,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { spawnMock, addMessageMock } = vi.hoisted(() => ({
+const {
+  spawnMock,
+  addMessageMock,
+  createThreadMock,
+  getThreadMock,
+  listThreadsMock,
+  reopenThreadMock,
+  resolveThreadMock,
+} = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   addMessageMock: vi.fn(),
+  createThreadMock: vi.fn(),
+  getThreadMock: vi.fn(),
+  listThreadsMock: vi.fn(),
+  reopenThreadMock: vi.fn(),
+  resolveThreadMock: vi.fn(),
 }));
 
 vi.mock('child_process', () => ({
@@ -15,6 +28,11 @@ vi.mock('child_process', () => ({
 
 vi.mock('@metyatech/thread-inbox', () => ({
   addMessage: addMessageMock,
+  createThread: createThreadMock,
+  getThread: getThreadMock,
+  listThreads: listThreadsMock,
+  reopenThread: reopenThreadMock,
+  resolveThread: resolveThreadMock,
 }));
 
 import {
@@ -26,6 +44,8 @@ import {
   isSessionInvalidError,
   MANAGER_MODEL,
   MANAGER_REASONING_EFFORT,
+  parseManagerReplyPayload,
+  parseManagerRoutingPlan,
   parseCodexOutput,
   readQueue,
   readSession,
@@ -78,7 +98,17 @@ beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
   spawnMock.mockReset();
   addMessageMock.mockReset();
+  createThreadMock.mockReset();
+  getThreadMock.mockReset();
+  listThreadsMock.mockReset();
+  reopenThreadMock.mockReset();
+  resolveThreadMock.mockReset();
   addMessageMock.mockResolvedValue(undefined);
+  createThreadMock.mockResolvedValue(undefined);
+  getThreadMock.mockResolvedValue(undefined);
+  listThreadsMock.mockResolvedValue([]);
+  reopenThreadMock.mockResolvedValue(undefined);
+  resolveThreadMock.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -144,7 +174,52 @@ describe('manager backend codex integration', () => {
     expect(first).toContain('You are a manager AI assistant');
     expect(first).toContain('Workspace: D:\\ghws');
     expect(first).toContain('[Thread: thread-a]');
-    expect(follow).toBe('[Thread: thread-a]\nNext');
+    expect(follow).toContain('[Thread: thread-a]');
+    expect(follow).toContain('Return only strict JSON');
+    expect(follow).toContain('Next');
+  });
+
+  it('parses manager reply and routing JSON payloads', () => {
+    expect(
+      parseManagerReplyPayload('{"status":"review","reply":"確認してください"}')
+    ).toEqual({
+      status: 'review',
+      reply: '確認してください',
+    });
+
+    expect(
+      parseManagerRoutingPlan(
+        JSON.stringify({
+          actions: [
+            {
+              kind: 'attach-existing',
+              threadId: 'thread-1',
+              content: 'CC の件どうなってる？',
+              reason: '既存の CC に続けます',
+            },
+            {
+              kind: 'create-new',
+              title: 'AA を進める',
+              content: 'AA して',
+            },
+          ],
+        })
+      )
+    ).toEqual({
+      actions: [
+        {
+          kind: 'attach-existing',
+          threadId: 'thread-1',
+          content: 'CC の件どうなってる？',
+          reason: '既存の CC に続けます',
+        },
+        {
+          kind: 'create-new',
+          title: 'AA を進める',
+          content: 'AA して',
+        },
+      ],
+    });
   });
 
   it('parses codex JSON output and extracts thread continuity id + final reply', () => {

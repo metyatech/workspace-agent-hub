@@ -1,12 +1,5 @@
 /// <reference lib="dom" />
 
-/**
- * manager-app.ts
- *
- * Browser ES module. Loaded by manager.html via <script type="module">.
- * Implements state-driven incremental UI — keyed DOM updates, no full rebuilds.
- */
-
 declare global {
   interface Window {
     GUI_DIR: string;
@@ -16,20 +9,34 @@ declare global {
   }
 }
 
-// ── Types ──────────────────────────────────────────────────────────────────
-
 interface Msg {
   sender: 'ai' | 'user';
   content: string;
   at?: string;
 }
 
-interface Thread {
+type ManagerUiState =
+  | 'routing-confirmation-needed'
+  | 'user-reply-needed'
+  | 'ai-finished-awaiting-user-confirmation'
+  | 'queued'
+  | 'ai-working'
+  | 'done';
+
+interface ThreadView {
   id: string;
   title: string;
   status: string;
-  messages?: Msg[];
+  messages: Msg[];
   updatedAt?: string;
+  uiState: ManagerUiState;
+  previewText: string;
+  lastSender: 'ai' | 'user' | null;
+  hiddenByDefault: boolean;
+  routingConfirmationNeeded: boolean;
+  routingHint: string | null;
+  queueDepth: number;
+  isWorking: boolean;
 }
 
 interface Task {
@@ -40,13 +47,36 @@ interface Task {
   createdAt?: string;
 }
 
+interface ManagerStatusPayload {
+  running: boolean;
+  configured: boolean;
+  builtinBackend: boolean;
+  detail?: string;
+}
+
+interface ManagerRoutingSummaryItem {
+  threadId: string;
+  title: string;
+  outcome:
+    | 'attached-existing'
+    | 'created-new'
+    | 'routing-confirmation'
+    | 'resolved-existing';
+  reason: string;
+}
+
+interface ManagerRoutingSummary {
+  items: ManagerRoutingSummaryItem[];
+  routedCount: number;
+  ambiguousCount: number;
+  detail: string;
+}
+
 interface StyleEntry {
   bg: string;
   color: string;
   border: string;
 }
-
-// ── Constants ──────────────────────────────────────────────────────────────
 
 const GUI_DIR = window.GUI_DIR;
 const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
@@ -54,29 +84,65 @@ const MANAGER_AUTH_STORAGE_KEY =
   window.MANAGER_AUTH_STORAGE_KEY || `workspace-agent-hub.token:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
 
-const STATUS_STYLES: Record<string, StyleEntry> = {
-  'needs-reply': { bg: '#713f12', color: '#fde68a', border: '#92400e' },
-  review: { bg: '#581c87', color: '#d8b4fe', border: '#6b21a8' },
-  waiting: { bg: '#164e63', color: '#67e8f9', border: '#155e75' },
-  active: { bg: '#1f2937', color: '#d1d5db', border: '#374151' },
-  resolved: { bg: '#111827', color: '#6b7280', border: '#1f2937' },
+const STATE_ORDER: ManagerUiState[] = [
+  'routing-confirmation-needed',
+  'user-reply-needed',
+  'ai-finished-awaiting-user-confirmation',
+  'queued',
+  'ai-working',
+  'done',
+];
+
+const STATE_LABELS: Record<ManagerUiState, string> = {
+  'routing-confirmation-needed': '振り分け確認',
+  'user-reply-needed': 'あなたの返信待ち',
+  'ai-finished-awaiting-user-confirmation': '確認待ち',
+  queued: '未着手',
+  'ai-working': '作業中',
+  done: '完了',
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  'needs-reply': '返答待ち',
-  review: '確認待ち',
-  waiting: '進行中',
-  active: '進行中',
-  resolved: '完了',
+const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
+  'routing-confirmation-needed': '振り分け確認が必要な話題はありません',
+  'user-reply-needed': 'あなたの返信が必要な話題はありません',
+  'ai-finished-awaiting-user-confirmation':
+    'AI から確認をお願いしている話題はありません',
+  queued: 'まだ着手していない話題はありません',
+  'ai-working': 'AI が作業している話題はありません',
+  done: '完了済みの話題はありません',
 };
 
-const EMPTY_SECTION_COPY: Record<string, string> = {
-  'ai-replied': '新しい返事はまだありません',
-  'needs-reply': 'いま返答が必要な話題はありません',
-  review: '確認待ちの話題はありません',
-  waiting: '進行中の話題はありません',
-  idle: '止まっている話題はありません',
-  tasks: '進行中のタスクはありません',
+const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
+  'routing-confirmation-needed': {
+    bg: 'rgba(127, 29, 29, 0.82)',
+    color: '#fecaca',
+    border: 'rgba(248, 113, 113, 0.38)',
+  },
+  'user-reply-needed': {
+    bg: 'rgba(120, 53, 15, 0.82)',
+    color: '#fde68a',
+    border: 'rgba(245, 158, 11, 0.42)',
+  },
+  'ai-finished-awaiting-user-confirmation': {
+    bg: 'rgba(76, 29, 149, 0.82)',
+    color: '#ddd6fe',
+    border: 'rgba(168, 85, 247, 0.32)',
+  },
+  queued: {
+    bg: 'rgba(8, 47, 73, 0.84)',
+    color: '#bae6fd',
+    border: 'rgba(56, 189, 248, 0.34)',
+  },
+  'ai-working': {
+    bg: 'rgba(20, 83, 45, 0.84)',
+    color: '#bbf7d0',
+    border: 'rgba(34, 197, 94, 0.34)',
+  },
+  done: {
+    bg: 'rgba(31, 41, 55, 0.84)',
+    color: '#d1d5db',
+    border: 'rgba(107, 114, 128, 0.28)',
+  },
 };
 
 class AuthRequiredError extends Error {
@@ -99,7 +165,7 @@ function writeStoredAuthToken(token: string): void {
   try {
     window.localStorage.setItem(MANAGER_AUTH_STORAGE_KEY, token);
   } catch {
-    /* ignore localStorage failures */
+    /* ignore */
   }
 }
 
@@ -107,7 +173,7 @@ function clearStoredAuthToken(): void {
   try {
     window.localStorage.removeItem(MANAGER_AUTH_STORAGE_KEY);
   } catch {
-    /* ignore localStorage failures */
+    /* ignore */
   }
 }
 
@@ -123,72 +189,25 @@ async function apiFetchWithToken(
   if (token) {
     headers.set('X-Workspace-Agent-Hub-Token', token);
   }
-  const res = await fetch(requestUrl, { ...init, headers });
-  if (res.status === 401) {
+  const response = await fetch(requestUrl, { ...init, headers });
+  if (response.status === 401) {
     throw new AuthRequiredError();
   }
-  return res;
-}
-
-// ── Pure helpers ───────────────────────────────────────────────────────────
-
-function lastMsgSender(thread: Thread): 'ai' | 'user' | null {
-  if (!thread.messages || thread.messages.length === 0) return null;
-  return thread.messages[thread.messages.length - 1].sender;
-}
-
-function groupThreads(threads: Thread[]): Record<string, Thread[]> {
-  const groups: Record<string, Thread[]> = {
-    'ai-replied': [],
-    'needs-reply': [],
-    review: [],
-    waiting: [],
-    idle: [],
-  };
-  for (const t of threads) {
-    if (t.status === 'resolved') continue;
-    if (t.status === 'review') {
-      groups['review'].push(t);
-    } else if (t.status === 'needs-reply') {
-      groups['needs-reply'].push(t);
-    } else if (t.status === 'waiting') {
-      groups['waiting'].push(t);
-    } else if (t.status === 'active' && lastMsgSender(t) === 'ai') {
-      groups['ai-replied'].push(t);
-    } else {
-      groups['idle'].push(t);
-    }
-  }
-  return groups;
-}
-
-function shouldScrollToBottom({
-  isFirstRender,
-  hasNewMessages,
-  wasNearBottom,
-}: {
-  isFirstRender: boolean;
-  hasNewMessages: boolean;
-  wasNearBottom: boolean;
-}): boolean {
-  return isFirstRender || (hasNewMessages && wasNearBottom);
+  return response;
 }
 
 function formatAge(iso: string | undefined): string {
   if (!iso) return '';
   const diffMs = Date.now() - new Date(iso).getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-  const diffWeek = Math.floor(diffDay / 7);
-  const diffMonth = Math.floor(diffDay / 30);
-  if (diffMonth > 0) return `${diffMonth}mo`;
-  if (diffWeek > 0) return `${diffWeek}w`;
-  if (diffDay > 0) return `${diffDay}d`;
-  if (diffHour > 0) return `${diffHour}h`;
-  if (diffMin > 0) return `${diffMin}m`;
-  return `${diffSec}s`;
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return 'いま';
+  if (diffMinutes < 60) return `${diffMinutes}分前`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}時間前`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}日前`;
+  const diffWeeks = Math.floor(diffDays / 7);
+  return `${diffWeeks}週間前`;
 }
 
 function formatDate(iso: string | undefined): string {
@@ -203,169 +222,176 @@ function formatDate(iso: string | undefined): string {
   }
 }
 
-function makeStatusBadge(status: string): HTMLSpanElement {
-  const s = STATUS_STYLES[status] || STATUS_STYLES['active'];
-  const span = document.createElement('span');
-  span.className = 'status-badge';
-  span.setAttribute('data-detail-badge', '');
-  span.textContent = STATUS_LABELS[status] || status;
-  span.style.cssText = `background:${s.bg};color:${s.color};border:1px solid ${s.border};`;
-  return span;
+function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
+  const badge = document.createElement('span');
+  const style = STATE_STYLES[state];
+  badge.className = 'state-badge';
+  badge.textContent = STATE_LABELS[state];
+  badge.style.background = style.bg;
+  badge.style.color = style.color;
+  badge.style.borderColor = style.border;
+  return badge;
 }
 
-function makeBubble(msg: Msg): HTMLDivElement {
-  const isAi = msg.sender === 'ai';
+function makeBubble(message: Msg): HTMLDivElement {
   const bubble = document.createElement('div');
-  bubble.className = 'bubble ' + (isAi ? 'bubble-ai' : 'bubble-user');
+  const ai = message.sender === 'ai';
+  bubble.className = `bubble ${ai ? 'bubble-ai' : 'bubble-user'}`;
 
   const meta = document.createElement('div');
   meta.className = 'bubble-meta';
 
-  const senderBadge = document.createElement('span');
-  senderBadge.className =
-    'bubble-sender ' + (isAi ? 'bubble-sender-ai' : 'bubble-sender-user');
-  senderBadge.textContent = isAi ? '[ai]' : '[user]';
+  const sender = document.createElement('span');
+  sender.className = `bubble-sender ${ai ? 'bubble-sender-ai' : 'bubble-sender-user'}`;
+  sender.textContent = ai ? '[ai]' : '[user]';
 
-  const ts = document.createElement('span');
-  ts.className = 'bubble-ts';
-  ts.textContent = formatDate(msg.at);
-
-  meta.appendChild(senderBadge);
-  meta.appendChild(ts);
+  const timestamp = document.createElement('span');
+  timestamp.className = 'bubble-ts';
+  timestamp.textContent = formatDate(message.at);
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  content.textContent = msg.content;
+  content.textContent = message.content;
 
-  bubble.appendChild(meta);
-  bubble.appendChild(content);
+  meta.append(sender, timestamp);
+  bubble.append(meta, content);
   return bubble;
 }
 
-// ── SectionController ──────────────────────────────────────────────────────
+function makeFeedbackChip(label: string): HTMLSpanElement {
+  const chip = document.createElement('span');
+  chip.className = 'composer-chip';
+  chip.textContent = label;
+  return chip;
+}
 
-class SectionController {
-  #key: string;
-  #bodyEl: HTMLElement | null;
-  #countEl: HTMLElement | null;
-  #chevronEl: HTMLElement | null;
+function describeThreadState(thread: ThreadView): string | null {
+  if (thread.routingConfirmationNeeded) {
+    return (
+      thread.routingHint ??
+      'この話題だけ、どの話として扱うかをあなたに確認したい状態です。'
+    );
+  }
+  if (thread.uiState === 'user-reply-needed') {
+    return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
+  }
+  if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
+    return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
+  }
+  if (thread.uiState === 'ai-working') {
+    return 'いま AI が作業中です。完了すると上の優先度へ自動で移動します。';
+  }
+  if (thread.uiState === 'queued') {
+    return 'この話題はまだ未着手です。AI が順番に取りかかります。';
+  }
+  if (thread.uiState === 'done') {
+    return 'この話題は完了として閉じています。必要ならもう一度開けます。';
+  }
+  return null;
+}
+
+class ThreadSectionController {
+  #key: ManagerUiState;
+  #body: HTMLElement | null;
+  #count: HTMLElement | null;
+  #chevron: HTMLElement | null;
   #collapsed = false;
-  // Map from thread.id → row element
   #rows = new Map<string, HTMLElement>();
-  // Ordered list of IDs currently in DOM
   #orderedIds: string[] = [];
-  // Last known data
-  #lastThreads: Thread[] = [];
+  #lastThreads: ThreadView[] = [];
   #lastOpenThreadId: string | null = null;
-  #lastOnSelect: ((id: string) => void) | null = null;
+  #lastSelectHandler: ((id: string) => void) | null = null;
 
-  constructor(key: string) {
+  constructor(key: ManagerUiState) {
     this.#key = key;
-    this.#bodyEl = document.getElementById(`body-${key}`);
-    this.#countEl = document.getElementById(`count-${key}`);
-    this.#chevronEl = document.getElementById(`chevron-${key}`);
+    this.#body = document.getElementById(`body-${key}`);
+    this.#count = document.getElementById(`count-${key}`);
+    this.#chevron = document.getElementById(`chevron-${key}`);
   }
 
   setCollapsed(collapsed: boolean): void {
     this.#collapsed = collapsed;
-    if (this.#bodyEl) {
-      this.#bodyEl.style.display = collapsed ? 'none' : '';
+    if (this.#body) {
+      this.#body.style.display = collapsed ? 'none' : '';
     }
-    if (this.#chevronEl) {
-      this.#chevronEl.textContent = collapsed ? '▼' : '▲';
+    if (this.#chevron) {
+      this.#chevron.textContent = collapsed ? '▼' : '▲';
     }
   }
 
   toggle(): void {
     this.setCollapsed(!this.#collapsed);
     if (!this.#collapsed) {
-      // Expanding — reconcile immediately with last known data
       this.update(
         this.#lastThreads,
         this.#lastOpenThreadId,
-        this.#lastOnSelect
+        this.#lastSelectHandler
       );
     }
   }
 
   update(
-    threads: Thread[],
+    threads: ThreadView[],
     openThreadId: string | null,
     onSelect: ((id: string) => void) | null
   ): void {
     this.#lastThreads = threads;
     this.#lastOpenThreadId = openThreadId;
-    this.#lastOnSelect = onSelect;
+    this.#lastSelectHandler = onSelect;
 
-    // Always update count badge
-    if (this.#countEl) {
-      this.#countEl.textContent =
-        threads.length > 0 ? `(${threads.length})` : '';
+    if (this.#count) {
+      this.#count.textContent = threads.length > 0 ? `(${threads.length})` : '';
+    }
+    if (!this.#body || this.#collapsed) {
+      return;
     }
 
-    if (this.#collapsed || !this.#bodyEl) return;
+    const nextIds = threads.map((thread) => thread.id);
+    const existingEmpty = this.#body.querySelector('.section-empty');
 
-    // Sort threads by updatedAt desc
-    const sorted = [...threads].sort(
-      (a, b) =>
-        new Date(b.updatedAt ?? '').getTime() -
-        new Date(a.updatedAt ?? '').getTime()
-    );
-    const nextIds = sorted.map((t) => t.id);
-
-    // Build a fast lookup for thread data
-    const threadById = new Map(sorted.map((t) => [t.id, t]));
-
-    // Remove rows no longer present
     for (const id of this.#orderedIds) {
-      if (!threadById.has(id)) {
+      if (!nextIds.includes(id)) {
         const row = this.#rows.get(id);
-        if (row && row.parentNode) row.parentNode.removeChild(row);
+        row?.remove();
         this.#rows.delete(id);
       }
     }
 
-    // Remove empty placeholder if threads exist
-    const existingEmpty = this.#bodyEl.querySelector('.section-empty');
-
     if (threads.length === 0) {
-      // Clear all rows and show empty state
-      for (const [, row] of this.#rows) {
-        if (row.parentNode) row.parentNode.removeChild(row);
+      for (const row of this.#rows.values()) {
+        row.remove();
       }
       this.#rows.clear();
       this.#orderedIds = [];
       if (!existingEmpty) {
-        const empty = document.createElement('p');
+        const empty = document.createElement('div');
         empty.className = 'section-empty';
-        empty.textContent = EMPTY_SECTION_COPY[this.#key] || 'まだありません';
-        this.#bodyEl.appendChild(empty);
+        empty.textContent = STATE_EMPTY_COPY[this.#key];
+        this.#body.appendChild(empty);
       }
-      if (this.#countEl) this.#countEl.textContent = '';
       return;
     }
 
-    // Remove empty placeholder when threads are present
-    if (existingEmpty) existingEmpty.remove();
+    existingEmpty?.remove();
 
-    // Add new rows and patch existing rows
-    for (const thread of sorted) {
+    for (const thread of threads) {
       const existing = this.#rows.get(thread.id);
       if (existing) {
         this.#patchRow(existing, thread, openThreadId);
       } else {
-        const row = this.#buildRow(thread, openThreadId, onSelect);
-        this.#rows.set(thread.id, row);
+        this.#rows.set(
+          thread.id,
+          this.#buildRow(thread, openThreadId, onSelect)
+        );
       }
     }
 
-    // Ensure correct DOM order via insertBefore
-    for (let i = 0; i < nextIds.length; i++) {
-      const row = this.#rows.get(nextIds[i]);
+    for (let index = 0; index < nextIds.length; index += 1) {
+      const row = this.#rows.get(nextIds[index]);
       if (!row) continue;
-      const currentAtIndex = this.#bodyEl.children[i];
+      const currentAtIndex = this.#body.children[index];
       if (currentAtIndex !== row) {
-        this.#bodyEl.insertBefore(row, currentAtIndex || null);
+        this.#body.insertBefore(row, currentAtIndex || null);
       }
     }
 
@@ -373,880 +399,319 @@ class SectionController {
   }
 
   #buildRow(
-    thread: Thread,
+    thread: ThreadView,
     openThreadId: string | null,
     onSelect: ((id: string) => void) | null
   ): HTMLDivElement {
     const row = document.createElement('div');
-    row.className =
-      'thread-row' + (openThreadId === thread.id ? ' selected' : '');
+    row.className = 'thread-row';
     row.dataset.threadId = thread.id;
+    if (openThreadId === thread.id) {
+      row.classList.add('selected');
+    }
 
     const top = document.createElement('div');
     top.className = 'thread-row-top';
 
-    const badge = document.createElement('span');
-    badge.className = 'status-badge';
+    const badge = makeStateBadge(thread.uiState);
     badge.dataset.rowBadge = '';
-    this.#applyBadgeStyle(badge, thread.status);
 
-    const title = document.createElement('span');
+    const title = document.createElement('div');
     title.className = 'thread-title';
     title.dataset.rowTitle = '';
     title.textContent = thread.title;
 
-    const age = document.createElement('span');
+    const age = document.createElement('div');
     age.className = 'thread-age';
     age.dataset.rowAge = '';
     age.textContent = formatAge(thread.updatedAt);
 
-    top.appendChild(badge);
-    top.appendChild(title);
-    top.appendChild(age);
-    row.appendChild(top);
-
     const preview = document.createElement('div');
     preview.className = 'thread-preview';
     preview.dataset.rowPreview = '';
-    const lastMsg =
-      thread.messages && thread.messages.length > 0
-        ? thread.messages[thread.messages.length - 1]
-        : null;
-    if (lastMsg) {
-      const senderLabel = lastMsg.sender === 'ai' ? '[ai]' : '[user]';
-      preview.textContent = `${senderLabel} ${lastMsg.content.replace(/\n/g, ' ').slice(0, 90)}`;
+    preview.textContent = thread.previewText || 'まだやり取りはありません';
+
+    top.append(badge, title, age);
+    row.append(top, preview);
+
+    if (thread.routingHint) {
+      const note = document.createElement('div');
+      note.className = 'thread-note';
+      note.dataset.rowNote = '';
+      note.textContent = thread.routingHint;
+      row.appendChild(note);
     }
-    row.appendChild(preview);
 
     row.addEventListener('click', () => {
-      if (onSelect) onSelect(thread.id);
+      onSelect?.(thread.id);
     });
-
     return row;
   }
 
   #patchRow(
     row: HTMLElement,
-    thread: Thread,
+    thread: ThreadView,
     openThreadId: string | null
   ): void {
-    // Update selected state
-    if (openThreadId === thread.id) {
-      row.classList.add('selected');
-    } else {
-      row.classList.remove('selected');
-    }
+    row.classList.toggle('selected', openThreadId === thread.id);
 
     const badge = row.querySelector<HTMLElement>('[data-row-badge]');
-    if (badge) this.#applyBadgeStyle(badge, thread.status);
+    if (badge) {
+      const next = makeStateBadge(thread.uiState);
+      badge.textContent = next.textContent;
+      badge.style.background = next.style.background;
+      badge.style.color = next.style.color;
+      badge.style.borderColor = next.style.borderColor;
+    }
 
-    const title = row.querySelector('[data-row-title]');
+    const title = row.querySelector<HTMLElement>('[data-row-title]');
     if (title && title.textContent !== thread.title) {
       title.textContent = thread.title;
     }
 
-    const age = row.querySelector('[data-row-age]');
-    if (age) age.textContent = formatAge(thread.updatedAt);
-
-    const preview = row.querySelector('[data-row-preview]');
-    if (preview) {
-      const lastMsg =
-        thread.messages && thread.messages.length > 0
-          ? thread.messages[thread.messages.length - 1]
-          : null;
-      const newPreview = lastMsg
-        ? `${lastMsg.sender === 'ai' ? '[ai]' : '[user]'} ${lastMsg.content.replace(/\n/g, ' ').slice(0, 90)}`
-        : '';
-      if (preview.textContent !== newPreview) {
-        preview.textContent = newPreview;
-      }
+    const age = row.querySelector<HTMLElement>('[data-row-age]');
+    if (age) {
+      age.textContent = formatAge(thread.updatedAt);
     }
-  }
 
-  #applyBadgeStyle(el: HTMLElement, status: string): void {
-    const s = STATUS_STYLES[status] || STATUS_STYLES['active'];
-    el.textContent = STATUS_LABELS[status] || status;
-    el.style.cssText = `background:${s.bg};color:${s.color};border:1px solid ${s.border};`;
+    const preview = row.querySelector<HTMLElement>('[data-row-preview]');
+    if (preview && preview.textContent !== thread.previewText) {
+      preview.textContent = thread.previewText || 'まだやり取りはありません';
+    }
+
+    let note = row.querySelector<HTMLElement>('[data-row-note]');
+    if (thread.routingHint) {
+      if (!note) {
+        note = document.createElement('div');
+        note.className = 'thread-note';
+        note.dataset.rowNote = '';
+        row.appendChild(note);
+      }
+      note.textContent = thread.routingHint;
+    } else {
+      note?.remove();
+    }
   }
 }
 
-// ── TaskSectionController ──────────────────────────────────────────────────
-
 class TaskSectionController {
-  #bodyEl: HTMLElement | null;
-  #countEl: HTMLElement | null;
-  #chevronEl: HTMLElement | null;
+  #body = document.getElementById('body-tasks');
+  #count = document.getElementById('count-tasks');
+  #chevron = document.getElementById('chevron-tasks');
   #collapsed = false;
-  #rows = new Map<string, HTMLElement>();
-  #orderedIds: string[] = [];
-  #lastTasks: Task[] = [];
-
-  constructor() {
-    this.#bodyEl = document.getElementById('body-tasks');
-    this.#countEl = document.getElementById('count-tasks');
-    this.#chevronEl = document.getElementById('chevron-tasks');
-  }
-
-  setCollapsed(collapsed: boolean): void {
-    this.#collapsed = collapsed;
-    if (this.#bodyEl) {
-      this.#bodyEl.style.display = collapsed ? 'none' : '';
-    }
-    if (this.#chevronEl) {
-      this.#chevronEl.textContent = collapsed ? '▼' : '▲';
-    }
-  }
 
   toggle(): void {
-    this.setCollapsed(!this.#collapsed);
-    if (!this.#collapsed) {
-      this.update(this.#lastTasks);
+    this.#collapsed = !this.#collapsed;
+    if (this.#body) {
+      this.#body.style.display = this.#collapsed ? 'none' : '';
+    }
+    if (this.#chevron) {
+      this.#chevron.textContent = this.#collapsed ? '▼' : '▲';
     }
   }
 
-  update(tasks: Task[]): void {
-    this.#lastTasks = tasks;
-
-    if (this.#countEl) {
-      this.#countEl.textContent = tasks.length > 0 ? `(${tasks.length})` : '';
+  render(tasks: Task[]): void {
+    if (this.#count) {
+      this.#count.textContent = tasks.length > 0 ? `(${tasks.length})` : '';
     }
-
-    if (this.#collapsed || !this.#bodyEl) return;
-
-    const sorted = [...tasks].sort((a, b) => {
-      const ta = a.updatedAt || a.createdAt || '';
-      const tb = b.updatedAt || b.createdAt || '';
-      return new Date(tb).getTime() - new Date(ta).getTime();
-    });
-    const nextIds = sorted.map((t) => t.id);
-    const taskById = new Map(sorted.map((t) => [t.id, t]));
-
-    // Remove gone rows
-    for (const id of this.#orderedIds) {
-      if (!taskById.has(id)) {
-        const row = this.#rows.get(id);
-        if (row && row.parentNode) row.parentNode.removeChild(row);
-        this.#rows.delete(id);
-      }
-    }
-
-    const existingEmpty = this.#bodyEl.querySelector('.section-empty');
-
-    if (tasks.length === 0) {
-      for (const [, row] of this.#rows) {
-        if (row.parentNode) row.parentNode.removeChild(row);
-      }
-      this.#rows.clear();
-      this.#orderedIds = [];
-      if (!existingEmpty) {
-        const empty = document.createElement('p');
-        empty.className = 'section-empty';
-        empty.textContent = EMPTY_SECTION_COPY['tasks'];
-        this.#bodyEl.appendChild(empty);
-      }
-      if (this.#countEl) this.#countEl.textContent = '';
+    if (!this.#body || this.#collapsed) {
       return;
     }
 
-    if (existingEmpty) existingEmpty.remove();
+    this.#body.innerHTML = '';
+    if (tasks.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'section-empty';
+      empty.textContent = '進行中のタスクはありません';
+      this.#body.appendChild(empty);
+      return;
+    }
+
+    const sorted = [...tasks].sort((left, right) => {
+      const leftAt = left.updatedAt || left.createdAt || '';
+      const rightAt = right.updatedAt || right.createdAt || '';
+      return new Date(rightAt).getTime() - new Date(leftAt).getTime();
+    });
 
     for (const task of sorted) {
-      const existing = this.#rows.get(task.id);
-      if (existing) {
-        this.#patchRow(existing, task);
-      } else {
-        const row = this.#buildRow(task);
-        this.#rows.set(task.id, row);
-      }
-    }
+      const row = document.createElement('div');
+      row.className = 'task-row';
 
-    for (let i = 0; i < nextIds.length; i++) {
-      const row = this.#rows.get(nextIds[i]);
-      if (!row) continue;
-      const currentAtIndex = this.#bodyEl.children[i];
-      if (currentAtIndex !== row) {
-        this.#bodyEl.insertBefore(row, currentAtIndex || null);
-      }
-    }
+      const stage = document.createElement('span');
+      stage.className = 'state-badge';
+      stage.textContent = task.stage || 'unknown';
+      stage.style.background = 'rgba(30, 64, 175, 0.18)';
+      stage.style.color = '#bfdbfe';
+      stage.style.borderColor = 'rgba(96, 165, 250, 0.32)';
 
-    this.#orderedIds = nextIds;
-  }
+      const desc = document.createElement('div');
+      desc.className = 'task-desc';
+      desc.textContent = task.description || task.id;
 
-  #buildRow(task: Task): HTMLDivElement {
-    const row = document.createElement('div');
-    row.className = 'task-row';
-    row.dataset.taskId = task.id;
+      const age = document.createElement('div');
+      age.className = 'task-age';
+      age.textContent = formatAge(task.updatedAt || task.createdAt);
 
-    const stageBadge = document.createElement('span');
-    stageBadge.className = 'status-badge';
-    stageBadge.dataset.taskStage = '';
-    stageBadge.textContent = task.stage || 'unknown';
-    stageBadge.style.cssText =
-      'background:#0f3460;color:#93c5fd;border:1px solid #1e40af;';
-
-    const desc = document.createElement('span');
-    desc.className = 'task-desc';
-    desc.dataset.taskDesc = '';
-    desc.textContent = task.description || task.id;
-
-    const age = document.createElement('span');
-    age.className = 'task-age';
-    age.dataset.taskAge = '';
-    age.textContent = formatAge(task.updatedAt || task.createdAt);
-
-    row.appendChild(stageBadge);
-    row.appendChild(desc);
-    row.appendChild(age);
-    return row;
-  }
-
-  #patchRow(row: HTMLElement, task: Task): void {
-    const stageBadge = row.querySelector('[data-task-stage]');
-    if (stageBadge) {
-      const newStage = task.stage || 'unknown';
-      if (stageBadge.textContent !== newStage)
-        stageBadge.textContent = newStage;
-    }
-    const desc = row.querySelector('[data-task-desc]');
-    if (desc) {
-      const newDesc = task.description || task.id;
-      if (desc.textContent !== newDesc) desc.textContent = newDesc;
-    }
-    const age = row.querySelector('[data-task-age]');
-    if (age) age.textContent = formatAge(task.updatedAt || task.createdAt);
-  }
-}
-
-// ── ReplyForm ──────────────────────────────────────────────────────────────
-
-class ReplyForm {
-  el!: HTMLElement;
-  #thread: Thread;
-  #app: ManagerApp;
-  #msgInput!: HTMLTextAreaElement;
-  #sendBtn!: HTMLButtonElement;
-  #needsReplyBtn!: HTMLButtonElement;
-  #reviewBtn!: HTMLButtonElement;
-  #managerBtn!: HTMLButtonElement;
-  #pendingNote!: HTMLElement;
-  #doSend!: () => Promise<void>;
-  #doSendWithStatus!: (status: string) => Promise<void>;
-  #doSendToManager!: () => Promise<void>;
-
-  constructor(thread: Thread, app: ManagerApp) {
-    this.#thread = thread;
-    this.#app = app;
-
-    const formArea = document.createElement('div');
-    formArea.className = 'reply-form';
-    formArea.setAttribute('data-reply-form', '');
-
-    const msgInput = document.createElement('textarea');
-    msgInput.placeholder = 'メッセージを入力...';
-    msgInput.rows = 3;
-    msgInput.className = 'reply-textarea';
-    msgInput.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        void this.#doSendToManager();
-      }
-    });
-    this.#msgInput = msgInput;
-
-    const actions = document.createElement('div');
-    actions.className = 'reply-actions';
-
-    const managerBtn = document.createElement('button');
-    managerBtn.textContent = '🤖 マネージャーに送る';
-    managerBtn.className = 'btn btn-primary';
-    managerBtn.setAttribute('data-manager-btn', '');
-    managerBtn.title =
-      'メッセージをスレッドに追加し、マネージャーAIにも送信します（Ctrl+Enter）';
-    managerBtn.addEventListener('click', () => void this.#doSendToManager());
-    this.#managerBtn = managerBtn;
-
-    const needsReplyBtn = document.createElement('button');
-    needsReplyBtn.textContent = '返答待ちにする';
-    needsReplyBtn.className = 'btn btn-needs-reply';
-    needsReplyBtn.title =
-      'メッセージを送り、ステータスを「needs-reply」に変更する';
-    needsReplyBtn.addEventListener(
-      'click',
-      () => void this.#doSendWithStatus('needs-reply')
-    );
-    this.#needsReplyBtn = needsReplyBtn;
-
-    const reviewBtn = document.createElement('button');
-    reviewBtn.textContent = '確認依頼にする';
-    reviewBtn.className = 'btn btn-review';
-    reviewBtn.title = 'メッセージを送り、ステータスを「review」に変更する';
-    reviewBtn.addEventListener(
-      'click',
-      () => void this.#doSendWithStatus('review')
-    );
-    this.#reviewBtn = reviewBtn;
-
-    const sendBtn = document.createElement('button');
-    sendBtn.textContent = 'メモを追加';
-    sendBtn.className = 'btn btn-ghost';
-    sendBtn.title = 'メッセージをスレッドに追加します（AIには送信しません）';
-    sendBtn.addEventListener('click', () => void this.#doSend());
-    this.#sendBtn = sendBtn;
-
-    const hintSpan = document.createElement('span');
-    hintSpan.className = 'reply-hint';
-    hintSpan.textContent = 'Ctrl+Enter でマネージャーに送る';
-
-    const pendingNote = document.createElement('span');
-    pendingNote.setAttribute('data-pending-note', '');
-    pendingNote.style.cssText = 'font-size:0.68rem;color:#67e8f9;';
-    pendingNote.classList.add('hidden');
-    pendingNote.textContent = '⏳ マネージャーの返信待ち';
-    this.#pendingNote = pendingNote;
-
-    // Advanced toggle and panel
-    const advToggle = document.createElement('button');
-    advToggle.className = 'advanced-toggle';
-    advToggle.textContent = '詳細 ▾';
-    advToggle.title = 'AI送信者オプション';
-
-    const advPanel = document.createElement('div');
-    advPanel.className = 'advanced-panel hidden';
-
-    // Sender selection
-    let selectedSender = 'user';
-    const senderRow = document.createElement('div');
-    senderRow.className = 'advanced-row';
-    const senderLabel = document.createElement('span');
-    senderLabel.className = 'adv-label';
-    senderLabel.textContent = '送信者:';
-    const userBtn = document.createElement('button');
-    userBtn.textContent = 'user';
-    userBtn.className = 'opt-btn opt-user';
-    const aiBtn = document.createElement('button');
-    aiBtn.textContent = 'ai';
-    aiBtn.className = 'opt-btn opt-inactive';
-
-    const updateSenderBtns = () => {
-      userBtn.className =
-        'opt-btn ' + (selectedSender === 'user' ? 'opt-user' : 'opt-inactive');
-      aiBtn.className =
-        'opt-btn ' + (selectedSender === 'ai' ? 'opt-ai' : 'opt-inactive');
-    };
-    userBtn.addEventListener('click', () => {
-      selectedSender = 'user';
-      updateSenderBtns();
-    });
-    aiBtn.addEventListener('click', () => {
-      selectedSender = 'ai';
-      updateSenderBtns();
-    });
-
-    senderRow.appendChild(senderLabel);
-    senderRow.appendChild(userBtn);
-    senderRow.appendChild(aiBtn);
-    advPanel.appendChild(senderRow);
-
-    // Status override selection
-    let selectedStatus = '';
-    const statusRow = document.createElement('div');
-    statusRow.className = 'advanced-row';
-    const statusLabel = document.createElement('span');
-    statusLabel.className = 'adv-label';
-    statusLabel.textContent = 'ステータス変更:';
-    const statusOptions = [
-      { value: '', label: '変更なし' },
-      { value: 'needs-reply', label: '返答待ちにする' },
-      { value: 'review', label: '確認待ちにする' },
-      { value: 'waiting', label: '進行中にする' },
-      { value: 'active', label: '話題として開いておく' },
-    ];
-    const statusBtns = statusOptions.map((opt) => {
-      const btn = document.createElement('button');
-      btn.textContent = opt.label;
-      btn.dataset.value = opt.value;
-      btn.className =
-        'opt-btn ' + (opt.value === '' ? 'opt-status' : 'opt-inactive');
-      btn.addEventListener('click', () => {
-        selectedStatus = opt.value;
-        updateStatusBtns();
-      });
-      statusRow.appendChild(btn);
-      return btn;
-    });
-    const updateStatusBtns = () => {
-      statusBtns.forEach((btn) => {
-        btn.className =
-          'opt-btn ' +
-          (btn.dataset.value === selectedStatus
-            ? 'opt-status'
-            : 'opt-inactive');
-      });
-    };
-    statusRow.insertBefore(statusLabel, statusRow.firstChild);
-    advPanel.appendChild(statusRow);
-
-    advToggle.addEventListener('click', () => {
-      const isHidden = advPanel.classList.toggle('hidden');
-      advToggle.textContent = isHidden ? '詳細 ▾' : '詳細 ▴';
-    });
-
-    // Expose selectedSender/Status via closures for send helpers
-    this.#doSend = async () => {
-      const content = msgInput.value.trim();
-      if (!content) {
-        msgInput.focus();
-        return;
-      }
-      this.#setBusy(true);
-      const payload: Record<string, string> = { content, from: selectedSender };
-      if (selectedStatus) payload.status = selectedStatus;
-      const res = await app.apiFetch(`/api/threads/${thread.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res) {
-        this.#setBusy(false);
-        return;
-      }
-      msgInput.value = '';
-      this.#setBusy(false);
-      await app.loadAll();
-    };
-
-    this.#doSendWithStatus = async (status: string) => {
-      const content = msgInput.value.trim();
-      if (!content) {
-        msgInput.focus();
-        return;
-      }
-      this.#setBusy(true);
-      const res = await app.apiFetch(`/api/threads/${thread.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, from: 'user', status }),
-      });
-      if (!res) {
-        this.#setBusy(false);
-        return;
-      }
-      msgInput.value = '';
-      this.#setBusy(false);
-      await app.loadAll();
-    };
-
-    this.#doSendToManager = async () => {
-      const content = msgInput.value.trim();
-      if (!content) {
-        msgInput.focus();
-        return;
-      }
-      this.#setBusy(true);
-      const addMessageRes = await app.apiFetch(
-        `/api/threads/${thread.id}/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, from: 'user', status: 'waiting' }),
-        }
-      );
-      if (!addMessageRes) {
-        this.#setBusy(false);
-        return;
-      }
-      const sendRes = await app.apiFetch('/api/manager/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ threadId: thread.id, content }),
-      });
-      if (!sendRes) {
-        this.#setBusy(false);
-        return;
-      }
-      msgInput.value = '';
-      app.managerPendingThreadId = thread.id;
-      this.#setBusy(false);
-      await app.loadAll();
-      void app.loadManagerStatus();
-    };
-
-    actions.appendChild(managerBtn);
-    actions.appendChild(needsReplyBtn);
-    actions.appendChild(reviewBtn);
-    actions.appendChild(sendBtn);
-    actions.appendChild(pendingNote);
-    actions.appendChild(hintSpan);
-    actions.appendChild(advToggle);
-
-    formArea.appendChild(msgInput);
-    formArea.appendChild(actions);
-    formArea.appendChild(advPanel);
-
-    this.el = formArea;
-
-    // Apply initial pending state
-    ReplyForm.patchPending(formArea, thread, app.managerPendingThreadId);
-  }
-
-  #setBusy(busy: boolean): void {
-    this.#sendBtn.disabled = busy;
-    this.#needsReplyBtn.disabled = busy;
-    this.#reviewBtn.disabled = busy;
-    this.#managerBtn.disabled = busy;
-  }
-
-  // Suppress unused warning — fields assigned via closures in constructor
-  get _msgInput() {
-    return this.#msgInput;
-  }
-  get _pendingNote() {
-    return this.#pendingNote;
-  }
-
-  static patchPending(
-    formEl: Element | null,
-    thread: Thread,
-    pendingId: string | null
-  ): void {
-    if (!formEl) return;
-    const managerBtn =
-      formEl.querySelector<HTMLButtonElement>('[data-manager-btn]');
-    const pendingNote = formEl.querySelector('[data-pending-note]');
-    const isPending = pendingId === thread.id;
-    if (managerBtn) {
-      managerBtn.disabled = isPending;
-      managerBtn.textContent = isPending
-        ? '🤖 返信待ち中...'
-        : '🤖 マネージャーに送る';
-    }
-    if (pendingNote) {
-      if (isPending) {
-        pendingNote.classList.remove('hidden');
-      } else {
-        pendingNote.classList.add('hidden');
-      }
+      row.append(stage, desc, age);
+      this.#body.appendChild(row);
     }
   }
 }
-
-// ── DetailController ───────────────────────────────────────────────────────
 
 class DetailController {
   #detailEl: HTMLElement;
   #app: ManagerApp;
   #currentThreadId: string | null = null;
-  #renderedMsgCount = 0;
 
   constructor(detailEl: HTMLElement, app: ManagerApp) {
     this.#detailEl = detailEl;
     this.#app = app;
   }
 
-  update(thread: Thread): void {
-    const isNewThread = this.#currentThreadId !== thread.id;
-    if (isNewThread) {
-      this.#rebuild(thread);
-    } else {
-      this.#patch(thread);
+  render(thread: ThreadView | null): void {
+    if (!thread) {
+      this.clear();
+      return;
     }
-  }
 
-  #rebuild(thread: Thread): void {
     this.#currentThreadId = thread.id;
-    this.#renderedMsgCount = 0;
-
     this.#detailEl.innerHTML = '';
-    this.#detailEl.classList.remove('hidden');
 
-    // Header
     const header = document.createElement('div');
     header.className = 'detail-header';
 
     const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.className = 'close-btn';
-    closeBtn.title = '閉じる';
+    closeBtn.className = 'btn btn-ghost';
+    closeBtn.style.width = 'auto';
+    closeBtn.textContent = '閉じる';
     closeBtn.addEventListener('click', () => this.#app.closeDetail());
 
-    const titleEl = document.createElement('span');
-    titleEl.className = 'detail-title';
-    titleEl.setAttribute('data-detail-title', '');
-    titleEl.textContent = thread.title;
+    const title = document.createElement('div');
+    title.className = 'detail-title';
+    title.textContent = thread.title;
 
-    const badge = makeStatusBadge(thread.status);
+    const badge = makeStateBadge(thread.uiState);
 
-    const actionBtn = this.#buildActionBtn(thread);
-
-    header.appendChild(closeBtn);
-    header.appendChild(titleEl);
-    header.appendChild(badge);
-    header.appendChild(actionBtn);
+    header.append(closeBtn, title, badge);
     this.#detailEl.appendChild(header);
 
-    // Message area
+    const meta = document.createElement('div');
+    meta.className = 'detail-meta';
+    meta.textContent = [
+      thread.updatedAt ? `更新: ${formatDate(thread.updatedAt)}` : '',
+      thread.queueDepth > 0 ? `キュー: ${thread.queueDepth}` : '',
+    ]
+      .filter(Boolean)
+      .join(' / ');
+    this.#detailEl.appendChild(meta);
+
+    const body = document.createElement('div');
+    body.className = 'detail-body';
+
+    const noteText = describeThreadState(thread);
+    if (noteText) {
+      const note = document.createElement('div');
+      note.className = 'detail-note';
+      note.textContent = noteText;
+      body.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'detail-actions';
+
+    const focusComposer = document.createElement('button');
+    focusComposer.className = 'btn btn-secondary';
+    focusComposer.style.width = 'auto';
+    focusComposer.textContent = 'この続きを送る';
+    focusComposer.addEventListener('click', () => this.#app.focusComposer());
+    actions.appendChild(focusComposer);
+
+    const statusButton = document.createElement('button');
+    statusButton.style.width = 'auto';
+    if (thread.uiState === 'done') {
+      statusButton.className = 'btn btn-ghost';
+      statusButton.textContent = 'もう一度開く';
+      statusButton.addEventListener('click', () => {
+        void this.#app.reopenThread(thread.id);
+      });
+    } else {
+      statusButton.className = 'btn btn-secondary';
+      statusButton.textContent = 'この件は完了';
+      statusButton.addEventListener('click', () => {
+        void this.#app.resolveThread(thread.id);
+      });
+    }
+    actions.appendChild(statusButton);
+    body.appendChild(actions);
+
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
-
-    if (!thread.messages || thread.messages.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'msg-empty';
-      empty.setAttribute('data-msg-empty', '');
-      empty.textContent = 'メッセージなし。下から追加できます。';
+    if (thread.messages.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'detail-empty';
+      empty.textContent =
+        'まだやり取りはありません。下の送信欄から最初のメッセージを送れます。';
       msgArea.appendChild(empty);
     } else {
-      for (const msg of thread.messages) {
-        msgArea.appendChild(makeBubble(msg));
-      }
-      this.#renderedMsgCount = thread.messages.length;
-    }
-    this.#detailEl.appendChild(msgArea);
-
-    // Reply form
-    const form = new ReplyForm(thread, this.#app);
-    this.#detailEl.appendChild(form.el);
-
-    // Scroll to bottom on rebuild
-    setTimeout(() => {
-      msgArea.scrollTop = msgArea.scrollHeight;
-    }, 0);
-  }
-
-  #patch(thread: Thread): void {
-    const msgArea = this.#detailEl.querySelector<HTMLElement>('.msg-area');
-
-    // Check wasNearBottom BEFORE appending
-    let wasNearBottom = true;
-    if (msgArea) {
-      const distFromBottom =
-        msgArea.scrollHeight - msgArea.scrollTop - msgArea.clientHeight;
-      wasNearBottom = distFromBottom <= 60;
-    }
-
-    const newMsgCount = thread.messages ? thread.messages.length : 0;
-    const hasNewMessages = newMsgCount > this.#renderedMsgCount;
-
-    // Update header badge if status changed
-    const badge = this.#detailEl.querySelector<HTMLElement>(
-      '[data-detail-badge]'
-    );
-    if (badge && badge.textContent !== thread.status) {
-      const s = STATUS_STYLES[thread.status] || STATUS_STYLES['active'];
-      badge.textContent = thread.status;
-      badge.style.cssText = `background:${s.bg};color:${s.color};border:1px solid ${s.border};`;
-    }
-
-    // Update title if changed
-    const titleEl = this.#detailEl.querySelector('[data-detail-title]');
-    if (titleEl && titleEl.textContent !== thread.title) {
-      titleEl.textContent = thread.title;
-    }
-
-    // Replace action button only if resolved state changed
-    const existingActionBtn =
-      this.#detailEl.querySelector<HTMLElement>('[data-action-btn]');
-    if (existingActionBtn) {
-      const wasResolved =
-        existingActionBtn.dataset.actionBtnResolved === 'true';
-      const isResolved = thread.status === 'resolved';
-      if (wasResolved !== isResolved) {
-        const newActionBtn = this.#buildActionBtn(thread);
-        existingActionBtn.parentNode?.replaceChild(
-          newActionBtn,
-          existingActionBtn
-        );
+      for (const message of thread.messages) {
+        msgArea.appendChild(makeBubble(message));
       }
     }
-
-    // Append only new messages
-    if (msgArea && hasNewMessages) {
-      const newMsgs = (thread.messages ?? []).slice(this.#renderedMsgCount);
-      // Remove empty placeholder if present
-      const emptyEl = msgArea.querySelector('[data-msg-empty]');
-      if (emptyEl) emptyEl.remove();
-      for (const msg of newMsgs) {
-        msgArea.appendChild(makeBubble(msg));
-      }
-      this.#renderedMsgCount = newMsgCount;
-
-      if (
-        shouldScrollToBottom({
-          isFirstRender: false,
-          hasNewMessages: true,
-          wasNearBottom,
-        })
-      ) {
-        setTimeout(() => {
-          msgArea.scrollTop = msgArea.scrollHeight;
-        }, 0);
-      }
-    }
-
-    // Patch reply form pending state
-    const formEl = this.#detailEl.querySelector('[data-reply-form]');
-    ReplyForm.patchPending(formEl, thread, this.#app.managerPendingThreadId);
-  }
-
-  #buildActionBtn(thread: Thread): HTMLButtonElement {
-    const actionBtn = document.createElement('button');
-    actionBtn.setAttribute('data-action-btn', '');
-    if (thread.status === 'resolved') {
-      actionBtn.textContent = '↺ 再開';
-      actionBtn.className = 'btn btn-reopen';
-      actionBtn.dataset.actionBtnResolved = 'true';
-      actionBtn.addEventListener('click', () => {
-        void (async () => {
-          const res = await this.#app.apiFetch(
-            `/api/threads/${thread.id}/reopen`,
-            {
-              method: 'PUT',
-            }
-          );
-          if (!res) return;
-          await this.#app.loadAll();
-        })();
-      });
-    } else {
-      actionBtn.textContent = '✓ 解決';
-      actionBtn.className = 'btn btn-resolve';
-      actionBtn.dataset.actionBtnResolved = 'false';
-      actionBtn.addEventListener('click', () => {
-        void (async () => {
-          const res = await this.#app.apiFetch(
-            `/api/threads/${thread.id}/resolve`,
-            {
-              method: 'PUT',
-            }
-          );
-          if (!res) return;
-          await this.#app.loadAll();
-          this.#app.closeDetail();
-        })();
-      });
-    }
-    return actionBtn;
+    body.appendChild(msgArea);
+    this.#detailEl.appendChild(body);
   }
 
   clear(): void {
     this.#currentThreadId = null;
-    this.#renderedMsgCount = 0;
-    this.#detailEl.classList.add('hidden');
-    this.#detailEl.innerHTML = '';
+    this.#detailEl.innerHTML =
+      '<div class="detail-empty">左の一覧から話題を開くと、ここで流れを追えます。</div>';
   }
 }
 
-// ── ManagerApp ─────────────────────────────────────────────────────────────
-
 class ManagerApp {
-  allThreads: Thread[] = [];
+  allThreads: ThreadView[] = [];
   allTasks: Task[] = [];
   openThreadId: string | null = null;
-  managerPendingThreadId: string | null = null;
 
-  #sectionControllers: Record<string, SectionController> = {};
-  #taskController!: TaskSectionController;
-  #detailController!: DetailController;
-  #detailEl!: HTMLElement;
-  #pollTimer: number | null = null;
+  #sections: Record<ManagerUiState, ThreadSectionController>;
+  #taskSection: TaskSectionController;
+  #detail: DetailController;
   #authToken = readStoredAuthToken();
-  #authRequired = MANAGER_AUTH_REQUIRED;
+  #pollTimer: number | null = null;
+  #showDone = false;
+  #sending = false;
 
   constructor() {
-    const sectionKeys = [
-      'ai-replied',
-      'needs-reply',
-      'review',
-      'waiting',
-      'idle',
-    ];
-    for (const key of sectionKeys) {
-      this.#sectionControllers[key] = new SectionController(key);
-    }
-    this.#taskController = new TaskSectionController();
-    this.#detailEl = document.getElementById('thread-detail') as HTMLElement;
-    this.#detailController = new DetailController(this.#detailEl, this);
+    this.#sections = {
+      'routing-confirmation-needed': new ThreadSectionController(
+        'routing-confirmation-needed'
+      ),
+      'user-reply-needed': new ThreadSectionController('user-reply-needed'),
+      'ai-finished-awaiting-user-confirmation': new ThreadSectionController(
+        'ai-finished-awaiting-user-confirmation'
+      ),
+      queued: new ThreadSectionController('queued'),
+      'ai-working': new ThreadSectionController('ai-working'),
+      done: new ThreadSectionController('done'),
+    };
+    this.#taskSection = new TaskSectionController();
+    this.#detail = new DetailController(
+      document.getElementById('thread-detail') as HTMLElement,
+      this
+    );
   }
 
   init(): void {
-    // Bootstrap auth from hash fragment (hub passes accessCode=… on redirect)
-    try {
-      const hashParams = new URLSearchParams(
-        window.location.hash.replace(/^#/, '')
-      );
-      const hashToken = hashParams.get('accessCode');
-      if (hashToken) {
-        writeStoredAuthToken(hashToken);
-        this.#authToken = hashToken;
-        history.replaceState(
-          null,
-          '',
-          window.location.pathname + window.location.search
-        );
-      }
-    } catch {
-      /* ignore hash errors */
-    }
-
-    // Set dir label
+    this.#consumeHashToken();
     const dirLabel = document.getElementById('dir-label');
-    if (dirLabel) dirLabel.textContent = GUI_DIR;
-    this.#wireAuthPanel();
-
-    // Wire data-action buttons
-    document.addEventListener('click', (e: MouseEvent) => {
-      const btn = (e.target as Element | null)?.closest('[data-action]');
-      if (!btn) return;
-      const action = btn.getAttribute('data-action');
-      switch (action) {
-        case 'refresh':
-          void this.loadAll();
-          break;
-        case 'new-thread':
-          this.#showNewThreadForm();
-          break;
-        case 'create-thread':
-          void this.#submitNewThread(false);
-          break;
-        case 'create-thread-manager':
-          void this.#submitNewThread(true);
-          break;
-        case 'hide-new-thread':
-          this.#hideNewThreadForm();
-          break;
-        case 'start-manager':
-          void this.#doStartManager();
-          break;
-        case 'unlock-auth':
-          void this.#unlockAuth();
-          break;
-        case 'clear-auth':
-          this.#clearSavedAuth();
-          break;
-      }
-    });
-
-    // Wire data-section-key headers
-    document.addEventListener('click', (e: MouseEvent) => {
-      const header = (e.target as Element | null)?.closest(
-        '[data-section-key]'
-      );
-      if (!header) return;
-      const key = header.getAttribute('data-section-key');
-      if (key) this.#toggleSection(key);
-    });
-
-    // Wire new-thread-title keydown
-    const titleInput = document.getElementById(
-      'new-thread-title'
-    ) as HTMLInputElement | null;
-    if (titleInput) {
-      titleInput.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Enter') void this.#submitNewThread(false);
-        if (e.key === 'Escape') this.#hideNewThreadForm();
-      });
+    if (dirLabel) {
+      dirLabel.textContent = GUI_DIR;
     }
+    this.#wireActions();
+    this.#wireAuthPanel();
+    this.#renderDoneToggle();
 
-    if (this.#authRequired && !this.#authToken) {
+    if (MANAGER_AUTH_REQUIRED && !this.#authToken) {
       this.#showAuthPanel();
       return;
     }
@@ -1255,327 +720,246 @@ class ManagerApp {
     void this.#bootAfterAuth();
   }
 
+  focusComposer(): void {
+    const input = document.getElementById(
+      'globalComposerInput'
+    ) as HTMLTextAreaElement | null;
+    input?.focus();
+  }
+
+  closeDetail(): void {
+    this.openThreadId = null;
+    this.#detail.clear();
+    this.#renderAll();
+  }
+
+  async resolveThread(threadId: string): Promise<void> {
+    const response = await this.apiFetch(`/api/threads/${threadId}/resolve`, {
+      method: 'PUT',
+    });
+    if (!response) {
+      return;
+    }
+    await this.loadAll();
+  }
+
+  async reopenThread(threadId: string): Promise<void> {
+    const response = await this.apiFetch(`/api/threads/${threadId}/reopen`, {
+      method: 'PUT',
+    });
+    if (!response) {
+      return;
+    }
+    await this.loadAll();
+  }
+
   async apiFetch(
     input: string,
     init: RequestInit = {}
   ): Promise<Response | null> {
     try {
       return await apiFetchWithToken(this.#authToken, input, init);
-    } catch (e) {
-      if (e instanceof AuthRequiredError) {
+    } catch (error) {
+      if (error instanceof AuthRequiredError) {
         this.#handleAuthFailure('アクセスコードを入力してください');
         return null;
       }
-      throw e;
+      throw error;
     }
   }
 
   async loadAll(): Promise<boolean> {
-    try {
-      const previousThreads = this.allThreads;
-      const [threadsRes, tasksRes] = await Promise.all([
-        this.apiFetch('/api/threads'),
-        this.apiFetch('/api/tasks'),
-      ]);
-      if (!threadsRes || !tasksRes) {
-        return false;
-      }
-      if (threadsRes.ok) {
-        const fetchedThreads = (await threadsRes.json()) as Thread[];
-        this.allThreads = this.#mergePendingThreads(
-          previousThreads,
-          fetchedThreads
-        );
-      }
-      if (tasksRes.ok) this.allTasks = (await tasksRes.json()) as Task[];
+    const [threadsRes, tasksRes] = await Promise.all([
+      this.apiFetch('/api/threads'),
+      this.apiFetch('/api/tasks'),
+    ]);
 
-      // Clear pending state when the manager has replied (last message is from AI)
-      if (this.managerPendingThreadId) {
-        const pt = this.allThreads.find(
-          (t) => t.id === this.managerPendingThreadId
-        );
-        if (
-          !pt ||
-          (pt.messages &&
-            pt.messages.length > 0 &&
-            pt.messages[pt.messages.length - 1].sender === 'ai')
-        ) {
-          this.managerPendingThreadId = null;
-        }
-      }
-
-      this.#renderAll();
-
-      if (this.openThreadId) {
-        const still = this.allThreads.find((t) => t.id === this.openThreadId);
-        if (still) {
-          this.#detailController.update(still);
-        } else {
-          this.closeDetail();
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load data:', e);
+    if (!threadsRes || !tasksRes) {
       return false;
     }
+
+    if (threadsRes.ok) {
+      this.allThreads = (await threadsRes.json()) as ThreadView[];
+    }
+    if (tasksRes.ok) {
+      this.allTasks = (await tasksRes.json()) as Task[];
+    }
+
+    if (
+      this.openThreadId &&
+      !this.allThreads.some((thread) => thread.id === this.openThreadId)
+    ) {
+      this.openThreadId = null;
+    }
+
+    this.#renderAll();
     return true;
-  }
-
-  #mergePendingThreads(
-    previousThreads: Thread[],
-    fetchedThreads: Thread[]
-  ): Thread[] {
-    if (!this.managerPendingThreadId) {
-      return fetchedThreads;
-    }
-
-    const pendingThread = previousThreads.find(
-      (thread) => thread.id === this.managerPendingThreadId
-    );
-    if (!pendingThread) {
-      return fetchedThreads;
-    }
-
-    if (fetchedThreads.some((thread) => thread.id === pendingThread.id)) {
-      return fetchedThreads;
-    }
-
-    return [pendingThread, ...fetchedThreads];
   }
 
   async loadManagerStatus(): Promise<boolean> {
-    try {
-      const res = await this.apiFetch('/api/manager/status');
-      if (!res || !res.ok) return false;
-      const data = (await res.json()) as {
-        running: boolean;
-        configured: boolean;
-        builtinBackend: boolean;
-        detail?: string;
-      };
-      const dot = document.getElementById(
-        'manager-status-dot'
-      ) as HTMLElement | null;
-      const text = document.getElementById(
-        'manager-status-text'
-      ) as HTMLElement | null;
-      const startBtn = document.getElementById(
-        'manager-start-btn'
-      ) as HTMLElement | null;
-      if (data.running) {
-        const isBusy = data.detail && data.detail.includes('処理中');
-        if (dot) dot.style.background = isBusy ? '#f59e0b' : '#22c55e';
-        if (text) {
-          text.style.color = isBusy ? '#fcd34d' : '#86efac';
-          text.textContent =
-            (isBusy
-              ? 'マネージャーが返答を作成中です'
-              : 'マネージャーは待機中です') +
-            (data.detail ? ' — ' + data.detail : '');
-        }
-        startBtn?.classList.add('hidden');
-      } else if (!data.configured) {
-        if (dot) dot.style.background = '#4b5563';
-        if (text) {
-          text.style.color = '#6b7280';
-          text.textContent = '外部マネージャー設定はありません';
-        }
-        startBtn?.classList.add('hidden');
-      } else if (data.builtinBackend) {
-        if (dot) dot.style.background = '#4b5563';
-        if (text) {
-          text.style.color = '#9ca3af';
-          text.textContent =
-            'まだ始まっていません。起動するか、そのまま送信してください';
-        }
-        startBtn?.classList.remove('hidden');
-      } else {
-        if (dot) dot.style.background = '#ef4444';
-        if (text) {
-          text.style.color = '#fca5a5';
-          text.textContent =
-            '止まっています。起動すると再開できます' +
-            (data.detail ? ' — ' + data.detail : '');
-        }
-        startBtn?.classList.remove('hidden');
-      }
-    } catch {
-      /* silently ignore */
+    const response = await this.apiFetch('/api/manager/status');
+    if (!response || !response.ok) {
       return false;
     }
-    return true;
-  }
 
-  closeDetail(): void {
-    this.openThreadId = null;
-    this.#detailController.clear();
-    this.#renderAll();
-  }
-
-  openDetail(id: string): void {
-    this.openThreadId = id;
-    this.#renderAll();
-    const thread = this.allThreads.find((t) => t.id === id);
-    if (thread) {
-      this.#detailController.update(thread);
-      this.#detailEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
-
-  #renderAll(): void {
-    const groups = groupThreads(this.allThreads);
-    this.#renderGettingStarted(groups);
-    const onSelect = (id: string) => {
-      if (this.openThreadId === id) {
-        this.closeDetail();
-      } else {
-        this.openDetail(id);
-      }
-    };
-    for (const key of [
-      'ai-replied',
-      'needs-reply',
-      'review',
-      'waiting',
-      'idle',
-    ]) {
-      this.#sectionControllers[key].update(
-        groups[key],
-        this.openThreadId,
-        onSelect
-      );
-    }
-    this.#taskController.update(this.allTasks);
-  }
-
-  #renderGettingStarted(groups: Record<string, Thread[]>): void {
-    const hero = document.getElementById('getting-started');
-    if (!hero) return;
-    const hasThreads = Object.values(groups).some((items) => items.length > 0);
-    const hasTasks = this.allTasks.length > 0;
-    hero.classList.toggle('hidden', hasThreads || hasTasks);
-  }
-
-  #toggleSection(key: string): void {
-    if (key === 'tasks') {
-      this.#taskController.toggle();
-    } else if (this.#sectionControllers[key]) {
-      this.#sectionControllers[key].toggle();
-    }
-  }
-
-  #showNewThreadForm(): void {
-    document.getElementById('new-thread-form')?.classList.remove('hidden');
-    setTimeout(
-      () =>
-        (
-          document.getElementById('new-thread-title') as HTMLElement | null
-        )?.focus(),
-      0
-    );
-  }
-
-  #hideNewThreadForm(): void {
-    document.getElementById('new-thread-form')?.classList.add('hidden');
-    const titleInput = document.getElementById(
-      'new-thread-title'
-    ) as HTMLInputElement | null;
-    if (titleInput) titleInput.value = '';
-  }
-
-  async #submitNewThread(sendToManager: boolean): Promise<void> {
-    const titleInput = document.getElementById(
-      'new-thread-title'
-    ) as HTMLInputElement | null;
-    if (!titleInput) return;
-    const title = titleInput.value.trim();
-    if (!title) {
-      titleInput.focus();
-      return;
-    }
-    const res = await this.apiFetch('/api/threads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
-    if (res?.ok) {
-      const thread = (await res.json()) as Thread;
-      this.#hideNewThreadForm();
-      let optimisticThread = thread;
-      if (sendToManager) {
-        const addMessageRes = await this.apiFetch(
-          `/api/threads/${thread.id}/messages`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              content: title,
-              from: 'user',
-              status: 'waiting',
-            }),
-          }
-        );
-        if (!addMessageRes) return;
-        const sendRes = await this.apiFetch('/api/manager/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ threadId: thread.id, content: title }),
-        });
-        if (!sendRes) return;
-        this.managerPendingThreadId = thread.id;
-        optimisticThread = {
-          ...thread,
-          status: 'waiting',
-          updatedAt: new Date().toISOString(),
-          messages: [
-            ...(thread.messages ?? []),
-            {
-              sender: 'user',
-              content: title,
-              at: new Date().toISOString(),
-            },
-          ],
-        };
-        void this.loadManagerStatus();
-      }
-      this.allThreads = [
-        optimisticThread,
-        ...this.allThreads.filter((existing) => existing.id !== thread.id),
-      ];
-      this.openDetail(thread.id);
-      await this.loadAll();
-    }
-  }
-
-  async #doStartManager(): Promise<void> {
-    const btn = document.getElementById(
-      'manager-start-btn'
-    ) as HTMLButtonElement | null;
+    const payload = (await response.json()) as ManagerStatusPayload;
+    const dot = document.getElementById(
+      'manager-status-dot'
+    ) as HTMLElement | null;
     const text = document.getElementById(
       'manager-status-text'
     ) as HTMLElement | null;
-    if (btn) btn.disabled = true;
-    if (text) text.textContent = '起動しています...';
-    try {
-      const res = await this.apiFetch('/api/manager/start', { method: 'POST' });
-      if (!res) return;
-      const data = (await res.json()) as { started: boolean; detail?: string };
-      if (data.started) {
-        if (text) {
-          text.style.color = '#86efac';
-          text.textContent = '起動しました — ' + (data.detail || '');
-        }
-      } else {
-        if (text) {
-          text.style.color = '#fca5a5';
-          text.textContent = '起動失敗: ' + (data.detail || '不明なエラー');
-        }
+    const startButton = document.getElementById(
+      'manager-start-btn'
+    ) as HTMLButtonElement | null;
+
+    if (payload.running) {
+      const busy = payload.detail?.includes('処理中') ?? false;
+      if (dot) {
+        dot.style.background = busy ? '#f59e0b' : '#22c55e';
       }
-    } catch (e) {
-      if (text) text.textContent = '起動エラー: ' + (e as Error).message;
-    } finally {
-      if (btn) btn.disabled = false;
-      setTimeout(() => void this.loadManagerStatus(), 1500);
+      if (text) {
+        text.style.color = busy ? '#fde68a' : '#86efac';
+        text.textContent = busy
+          ? `AI が作業中です${payload.detail ? ` — ${payload.detail}` : ''}`
+          : `待機中です${payload.detail ? ` — ${payload.detail}` : ''}`;
+      }
+      startButton?.classList.add('hidden');
+      return true;
+    }
+
+    if (payload.configured) {
+      if (dot) {
+        dot.style.background = '#64748b';
+      }
+      if (text) {
+        text.style.color = '#cbd5e1';
+        text.textContent =
+          payload.detail || 'まだ始まっていません。送ると自動で動きます。';
+      }
+      startButton?.classList.remove('hidden');
+      return true;
+    }
+
+    if (dot) {
+      dot.style.background = '#ef4444';
+    }
+    if (text) {
+      text.style.color = '#fecaca';
+      text.textContent = payload.detail || 'Manager を使えません。';
+    }
+    startButton?.classList.add('hidden');
+    return true;
+  }
+
+  openDetail(threadId: string): void {
+    if (this.openThreadId === threadId) {
+      this.closeDetail();
+      return;
+    }
+    this.openThreadId = threadId;
+    const thread = this.allThreads.find((item) => item.id === threadId) ?? null;
+    if (thread?.uiState === 'done') {
+      this.#showDone = true;
+      this.#renderDoneToggle();
+    }
+    this.#renderAll();
+    if (thread) {
+      document
+        .getElementById('thread-detail')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  async startManager(): Promise<void> {
+    const response = await this.apiFetch('/api/manager/start', {
+      method: 'POST',
+    });
+    if (!response) {
+      return;
+    }
+    await this.loadManagerStatus();
+  }
+
+  async sendGlobalMessage(): Promise<void> {
+    const input = document.getElementById(
+      'globalComposerInput'
+    ) as HTMLTextAreaElement | null;
+    if (!input) {
+      return;
+    }
+    const content = input.value.trim();
+    if (!content || this.#sending) {
+      if (!content) {
+        input.focus();
+      }
+      return;
+    }
+
+    const statusText = document.getElementById('composerStatusText');
+    const sendButton = document.getElementById(
+      'globalComposerSendButton'
+    ) as HTMLButtonElement | null;
+
+    this.#sending = true;
+    if (sendButton) {
+      sendButton.disabled = true;
+    }
+    if (statusText) {
+      statusText.textContent = '振り分けています…';
+    }
+
+    const response = await this.apiFetch('/api/manager/global-send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content,
+        contextThreadId: this.openThreadId,
+      }),
+    });
+
+    this.#sending = false;
+    if (sendButton) {
+      sendButton.disabled = false;
+    }
+
+    if (!response) {
+      if (statusText) {
+        statusText.textContent = '';
+      }
+      return;
+    }
+
+    const summary = (await response.json()) as ManagerRoutingSummary;
+    input.value = '';
+    this.#renderComposerFeedback(summary);
+    if (statusText) {
+      statusText.textContent = summary.detail;
+    }
+    if (summary.items.length > 0) {
+      this.openThreadId = summary.items[0].threadId;
+    }
+    await Promise.all([this.loadAll(), this.loadManagerStatus()]);
+  }
+
+  #consumeHashToken(): void {
+    try {
+      const hashParams = new URLSearchParams(
+        window.location.hash.replace(/^#/, '')
+      );
+      const hashToken = hashParams.get('accessCode');
+      if (!hashToken) {
+        return;
+      }
+      this.#authToken = hashToken;
+      writeStoredAuthToken(hashToken);
+      history.replaceState(
+        null,
+        '',
+        window.location.pathname + window.location.search
+      );
+    } catch {
+      /* ignore */
     }
   }
 
@@ -1584,10 +968,9 @@ class ManagerApp {
       this.loadAll(),
       this.loadManagerStatus(),
     ]);
-    if (!dataOk && !statusOk) {
-      return;
+    if (dataOk || statusOk) {
+      this.#startPolling();
     }
-    this.#startPolling();
   }
 
   #startPolling(): void {
@@ -1595,10 +978,6 @@ class ManagerApp {
       return;
     }
     this.#pollTimer = window.setInterval(() => {
-      const active = document.activeElement;
-      const isTyping =
-        active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-      if (isTyping && this.managerPendingThreadId === null) return;
       void this.loadAll();
       void this.loadManagerStatus();
     }, 5000);
@@ -1611,28 +990,94 @@ class ManagerApp {
     }
   }
 
+  #wireActions(): void {
+    document.addEventListener('click', (event) => {
+      const target = (event.target as Element | null)?.closest('[data-action]');
+      if (!target) {
+        return;
+      }
+      const action = target.getAttribute('data-action');
+      switch (action) {
+        case 'refresh':
+          void Promise.all([this.loadAll(), this.loadManagerStatus()]);
+          break;
+        case 'toggle-done':
+          this.#showDone = !this.#showDone;
+          this.#renderDoneToggle();
+          this.#renderAll();
+          break;
+        case 'start-manager':
+          void this.startManager();
+          break;
+        case 'unlock-auth':
+          void this.#unlockAuth();
+          break;
+        case 'clear-auth':
+          this.#clearSavedAuth();
+          break;
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      const header = (event.target as Element | null)?.closest(
+        '[data-section-key]'
+      );
+      if (!header) {
+        return;
+      }
+      const key = header.getAttribute('data-section-key');
+      if (!key) {
+        return;
+      }
+      if (key === 'tasks') {
+        this.#taskSection.toggle();
+        return;
+      }
+      if ((STATE_ORDER as string[]).includes(key)) {
+        this.#sections[key as ManagerUiState].toggle();
+      }
+    });
+
+    const composerInput = document.getElementById(
+      'globalComposerInput'
+    ) as HTMLTextAreaElement | null;
+    composerInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void this.sendGlobalMessage();
+      }
+    });
+
+    const composerButton = document.getElementById('globalComposerSendButton');
+    composerButton?.addEventListener('click', () => {
+      void this.sendGlobalMessage();
+    });
+  }
+
   #wireAuthPanel(): void {
     const input = document.getElementById(
       'auth-token-input'
     ) as HTMLInputElement | null;
-    if (!input) return;
-    input.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        void this.#unlockAuth();
-      }
-    });
+    if (!input) {
+      return;
+    }
     if (this.#authToken) {
       input.value = this.#authToken;
       this.#toggleClearAuthButton(true);
     }
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        void this.#unlockAuth();
+      }
+    });
   }
 
   async #unlockAuth(): Promise<void> {
     const input = document.getElementById(
       'auth-token-input'
     ) as HTMLInputElement | null;
-    const submitBtn = document.querySelector<HTMLButtonElement>(
+    const submitButton = document.querySelector<HTMLButtonElement>(
       '[data-action="unlock-auth"]'
     );
     const token = input?.value.trim();
@@ -1641,25 +1086,33 @@ class ManagerApp {
       input?.focus();
       return;
     }
-    submitBtn?.setAttribute('disabled', 'true');
+
     this.#authToken = token;
     writeStoredAuthToken(token);
     this.#toggleClearAuthButton(true);
     this.#setAuthError('');
-    const statusOk = await this.loadManagerStatus();
-    const dataOk = await this.loadAll();
-    submitBtn?.removeAttribute('disabled');
-    if (statusOk || dataOk) {
+    submitButton?.setAttribute('disabled', 'true');
+
+    const [dataOk, statusOk] = await Promise.all([
+      this.loadAll(),
+      this.loadManagerStatus(),
+    ]);
+
+    submitButton?.removeAttribute('disabled');
+    if (dataOk || statusOk) {
       this.#hideAuthPanel();
       this.#startPolling();
       return;
     }
+
     this.#setAuthError('アクセスコードを確認してください');
   }
 
   #clearSavedAuth(): void {
     this.#authToken = null;
     clearStoredAuthToken();
+    this.#toggleClearAuthButton(false);
+    this.#setAuthError('');
     const input = document.getElementById(
       'auth-token-input'
     ) as HTMLInputElement | null;
@@ -1667,8 +1120,6 @@ class ManagerApp {
       input.value = '';
       input.focus();
     }
-    this.#toggleClearAuthButton(false);
-    this.#setAuthError('');
   }
 
   #handleAuthFailure(message: string): void {
@@ -1682,25 +1133,22 @@ class ManagerApp {
     document.getElementById('auth-panel')?.classList.remove('hidden');
     document
       .querySelectorAll<HTMLElement>('[data-auth-content]')
-      .forEach((el) => {
-        el.classList.add('auth-hidden');
+      .forEach((element) => {
+        element.classList.add('auth-hidden');
       });
-    this.#setAuthError(message);
     this.#toggleClearAuthButton(Boolean(readStoredAuthToken()));
-    const input = document.getElementById(
-      'auth-token-input'
-    ) as HTMLInputElement | null;
-    if (input && !input.value) {
-      input.focus();
-    }
+    this.#setAuthError(message);
+    (
+      document.getElementById('auth-token-input') as HTMLInputElement | null
+    )?.focus();
   }
 
   #hideAuthPanel(): void {
     document.getElementById('auth-panel')?.classList.add('hidden');
     document
       .querySelectorAll<HTMLElement>('[data-auth-content]')
-      .forEach((el) => {
-        el.classList.remove('auth-hidden');
+      .forEach((element) => {
+        element.classList.remove('auth-hidden');
       });
     this.#setAuthError('');
   }
@@ -1713,13 +1161,114 @@ class ManagerApp {
   }
 
   #toggleClearAuthButton(visible: boolean): void {
-    const btn = document.getElementById('auth-clear-btn');
-    if (!btn) return;
-    btn.classList.toggle('hidden', !visible);
+    const button = document.getElementById('auth-clear-btn');
+    if (!button) {
+      return;
+    }
+    button.classList.toggle('hidden', !visible);
+  }
+
+  #renderAll(): void {
+    const grouped = new Map<ManagerUiState, ThreadView[]>(
+      STATE_ORDER.map((state) => [state, []])
+    );
+
+    for (const thread of this.allThreads) {
+      grouped.get(thread.uiState)?.push(thread);
+    }
+
+    const onSelect = (threadId: string) => this.openDetail(threadId);
+    for (const state of STATE_ORDER) {
+      const threads = grouped.get(state) ?? [];
+      this.#sections[state].update(threads, this.openThreadId, onSelect);
+    }
+
+    const doneSection = document.getElementById('sec-done');
+    doneSection?.classList.toggle(
+      'hidden',
+      !this.#showDone && (grouped.get('done')?.length ?? 0) === 0
+    );
+    if (!this.#showDone) {
+      doneSection?.classList.add('hidden');
+    }
+
+    this.#taskSection.render(this.allTasks);
+    this.#renderGettingStarted();
+    this.#renderComposerContext();
+
+    const openThread =
+      this.openThreadId === null
+        ? null
+        : (this.allThreads.find((thread) => thread.id === this.openThreadId) ??
+          null);
+    this.#detail.render(openThread);
+  }
+
+  #renderGettingStarted(): void {
+    const hero = document.getElementById('getting-started');
+    if (!hero) {
+      return;
+    }
+    const hasThreads = this.allThreads.length > 0;
+    const hasTasks = this.allTasks.length > 0;
+    hero.classList.toggle('hidden', hasThreads || hasTasks);
+  }
+
+  #renderDoneToggle(): void {
+    const button = document.getElementById(
+      'toggleDoneButton'
+    ) as HTMLButtonElement | null;
+    if (button) {
+      button.textContent = this.#showDone ? '完了を隠す' : '完了も見る';
+    }
+  }
+
+  #renderComposerContext(): void {
+    const context = document.getElementById('composerContext');
+    if (!context) {
+      return;
+    }
+    const thread =
+      this.openThreadId === null
+        ? null
+        : (this.allThreads.find((item) => item.id === this.openThreadId) ??
+          null);
+    if (!thread || thread.uiState === 'done') {
+      context.classList.add('hidden');
+      context.textContent = '';
+      return;
+    }
+    context.classList.remove('hidden');
+    context.textContent = `いま見ている「${thread.title}」を優先して振り分けます。別の話を送りたいときは、左の選択をもう一度押して外せます。`;
+  }
+
+  #renderComposerFeedback(summary: ManagerRoutingSummary): void {
+    const feedback = document.getElementById('composerFeedback');
+    if (!feedback) {
+      return;
+    }
+
+    feedback.innerHTML = '';
+    feedback.classList.remove('hidden');
+
+    const detail = document.createElement('div');
+    detail.textContent = summary.detail;
+    feedback.appendChild(detail);
+
+    if (summary.items.length > 0) {
+      const list = document.createElement('div');
+      list.className = 'composer-feedback-list';
+      for (const item of summary.items) {
+        const label =
+          item.outcome === 'routing-confirmation'
+            ? `確認: ${item.title}`
+            : item.title;
+        list.appendChild(makeFeedbackChip(label));
+      }
+      feedback.appendChild(list);
+    }
   }
 }
-
-// ── Bootstrap ──────────────────────────────────────────────────────────────
 
 export { ManagerApp };
 

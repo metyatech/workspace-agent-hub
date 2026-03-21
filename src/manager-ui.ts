@@ -14,10 +14,17 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   getBuiltinManagerStatus,
+  readQueue,
+  readSession,
   sendToBuiltinManager,
+  sendGlobalToBuiltinManager,
   startBuiltinManager,
 } from './manager-backend.js';
 import { readActiveTasks } from './manager-tasks.js';
+import {
+  deriveManagerThreadViews,
+  readManagerThreadMeta,
+} from './manager-thread-state.js';
 import { isWebUiAuthorized, type WebUiAuthConfig } from './web-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -175,7 +182,21 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/threads' && input.method === 'GET') {
-    sendJson(input.res, await listThreads(input.workspaceRoot));
+    const [threads, session, queue, meta] = await Promise.all([
+      listThreads(input.workspaceRoot),
+      readSession(input.workspaceRoot),
+      readQueue(input.workspaceRoot),
+      readManagerThreadMeta(input.workspaceRoot),
+    ]);
+    sendJson(
+      input.res,
+      deriveManagerThreadViews({
+        threads,
+        session,
+        queue,
+        meta,
+      })
+    );
     return true;
   }
 
@@ -290,6 +311,25 @@ export async function handleManagerUiRequest(input: {
       queued: true,
       detail: 'メッセージをマネージャーキューに追加しました',
     });
+    return true;
+  }
+
+  if (localPath === '/api/manager/global-send' && input.method === 'POST') {
+    const body = await parseBody(input.req);
+    if (typeof body.content !== 'string' || !body.content.trim()) {
+      sendError(input.res, 'content is required');
+      return true;
+    }
+    sendJson(
+      input.res,
+      await sendGlobalToBuiltinManager(input.workspaceRoot, body.content, {
+        contextThreadId:
+          typeof body.contextThreadId === 'string' &&
+          body.contextThreadId.trim()
+            ? body.contextThreadId.trim()
+            : null,
+      })
+    );
     return true;
   }
 

@@ -286,7 +286,7 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
   await expect(
     page.getByRole('heading', { name: 'マネージャー' })
   ).toBeVisible();
-  await expect(page.getByRole('button', { name: '+ 新しいトピック' })).toBeVisible();
+  await expect(page.getByLabel('Manager への送信内容')).toBeVisible();
   await expect
     .poll(async () =>
       page.evaluate(
