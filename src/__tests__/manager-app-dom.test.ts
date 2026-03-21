@@ -426,6 +426,11 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('AA を進める');
     expect(
+      document
+        .querySelector<HTMLElement>('#thread-detail')
+        ?.closest<HTMLElement>('.thread-row')?.dataset.threadId
+    ).toBe('thread-1');
+    expect(
       document.querySelector<HTMLElement>('#composerContext')!.textContent
     ).toContain('AA を進める');
 
@@ -436,8 +441,80 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('BB を進める');
     expect(
+      document
+        .querySelector<HTMLElement>('#thread-detail')
+        ?.closest<HTMLElement>('.thread-row')?.dataset.threadId
+    ).toBe('thread-2');
+    expect(
       document.querySelector<HTMLElement>('#composerContext')!.textContent
     ).toContain('BB を進める');
+  });
+
+  it('opens thread detail inline inside the selected row', async () => {
+    const validToken = 'inline-detail-token';
+    const thread = makeThreadView('thread-inline', 'その場で開く確認');
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.classList.contains('hidden')).toBe(false);
+    expect(detail.closest<HTMLElement>('.thread-row')?.dataset.threadId).toBe(
+      'thread-inline'
+    );
+    expect(
+      document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
+    ).toContain('詳細を閉じる');
+    expect(
+      document.querySelector<HTMLElement>('#composerContext')?.textContent
+    ).not.toContain('左の選択');
   });
 
   it('keeps done topics hidden by default and shows them when toggled', async () => {

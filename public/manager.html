@@ -262,9 +262,6 @@
         max-width: 1120px;
         margin: 0 auto;
         padding: 18px;
-        display: grid;
-        grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
-        gap: 18px;
       }
 
       .stack {
@@ -402,6 +399,10 @@
         background: rgba(12, 33, 24, 0.98);
       }
 
+      .thread-row.thread-row-open {
+        padding-bottom: 12px;
+      }
+
       .thread-row-top {
         display: flex;
         gap: 8px;
@@ -422,6 +423,18 @@
       .thread-age {
         font-size: 0.66rem;
         color: var(--text-muted);
+      }
+
+      .thread-open-indicator {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 9px;
+        font-size: 0.64rem;
+        font-weight: 700;
+        color: var(--text-muted);
+        background: rgba(6, 15, 11, 0.9);
+        border: 1px solid rgba(165, 211, 187, 0.1);
       }
 
       .thread-preview {
@@ -458,6 +471,13 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
+      }
+
+      .thread-row .detail-card {
+        margin-top: 12px;
+        min-height: 0;
+        border-radius: 18px;
+        background: rgba(6, 17, 13, 0.96);
       }
 
       .detail-empty {
@@ -732,10 +752,6 @@
       }
 
       @media (max-width: 920px) {
-        main {
-          grid-template-columns: 1fr;
-        }
-
         .intro-steps {
           grid-template-columns: 1fr;
         }
@@ -985,9 +1001,9 @@
       </div>
 
       <div class="stack">
-        <section id="thread-detail" class="card detail-card">
+        <section id="thread-detail" class="card detail-card hidden">
           <div class="detail-empty">
-            左の一覧から話題を開くと、ここでやり取りの流れと確認ボタンを見られます。
+            左の一覧から話題を開くと、その場でやり取りの流れと確認ボタンを見られます。
           </div>
         </section>
       </div>

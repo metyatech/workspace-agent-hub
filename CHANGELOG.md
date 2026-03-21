@@ -19,6 +19,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   documented as the sole Manager UI with an explicit browser auth state matrix
 - Changed `Open Manager` to reuse the current browser origin and move into the
   native `/manager/` page in the same tab instead of relying on a separate tab
+- Changed Manager topic details to expand inline in the selected row instead
+  of jumping to a separate bottom detail panel
 - Hardened the smartphone/Tailscale onboarding path so a detected HTTPS
   tailnet `HTTP 502` now keeps QR/default pairing on the verified direct
   tailnet URL and surfaces deterministic HTTPS recovery guidance

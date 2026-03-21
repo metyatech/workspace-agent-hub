@@ -335,6 +335,8 @@ Important behavior:
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - Users send from one global composer; they do not need to create or pick a
   topic before sending.
+- Opening a topic now expands its detail inline in the same list position
+  instead of jumping to a separate detail panel at the bottom of the page.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
 - Topics are only marked done explicitly; the AI may move them into

@@ -322,6 +322,10 @@ class ThreadSectionController {
     this.#chevron = document.getElementById(`chevron-${key}`);
   }
 
+  getRow(threadId: string): HTMLElement | null {
+    return this.#rows.get(threadId) ?? null;
+  }
+
   setCollapsed(collapsed: boolean): void {
     this.#collapsed = collapsed;
     if (this.#body) {
@@ -421,6 +425,7 @@ class ThreadSectionController {
     row.dataset.threadId = thread.id;
     if (openThreadId === thread.id) {
       row.classList.add('selected');
+      row.classList.add('thread-row-open');
     }
 
     const top = document.createElement('div');
@@ -439,12 +444,18 @@ class ThreadSectionController {
     age.dataset.rowAge = '';
     age.textContent = formatAge(thread.updatedAt);
 
+    const detailToggle = document.createElement('span');
+    detailToggle.className = 'thread-open-indicator';
+    detailToggle.dataset.rowToggle = '';
+    detailToggle.textContent =
+      openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
+
     const preview = document.createElement('div');
     preview.className = 'thread-preview';
     preview.dataset.rowPreview = '';
     preview.textContent = thread.previewText || 'まだやり取りはありません';
 
-    top.append(badge, title, age);
+    top.append(badge, title, age, detailToggle);
     row.append(top, preview);
 
     if (thread.routingHint) {
@@ -467,6 +478,7 @@ class ThreadSectionController {
     openThreadId: string | null
   ): void {
     row.classList.toggle('selected', openThreadId === thread.id);
+    row.classList.toggle('thread-row-open', openThreadId === thread.id);
 
     const badge = row.querySelector<HTMLElement>('[data-row-badge]');
     if (badge) {
@@ -485,6 +497,12 @@ class ThreadSectionController {
     const age = row.querySelector<HTMLElement>('[data-row-age]');
     if (age) {
       age.textContent = formatAge(thread.updatedAt);
+    }
+
+    const toggle = row.querySelector<HTMLElement>('[data-row-toggle]');
+    if (toggle) {
+      toggle.textContent =
+        openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
     }
 
     const preview = row.querySelector<HTMLElement>('[data-row-preview]');
@@ -580,6 +598,13 @@ class DetailController {
   constructor(detailEl: HTMLElement, app: ManagerApp) {
     this.#detailEl = detailEl;
     this.#app = app;
+    this.#detailEl.addEventListener('click', (event) => {
+      event.stopPropagation();
+    });
+  }
+
+  get element(): HTMLElement {
+    return this.#detailEl;
   }
 
   #captureScrollAnchor(msgArea: HTMLElement): {
@@ -675,6 +700,7 @@ class DetailController {
 
     this.#currentThreadId = thread.id;
     this.#lastRenderedSignature = nextSignature;
+    this.#detailEl.classList.remove('hidden');
     this.#detailEl.innerHTML = '';
 
     const header = document.createElement('div');
@@ -766,8 +792,9 @@ class DetailController {
   clear(): void {
     this.#currentThreadId = null;
     this.#lastRenderedSignature = null;
+    this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
-      '<div class="detail-empty">左の一覧から話題を開くと、ここで流れを追えます。</div>';
+      '<div class="detail-empty">左の一覧から話題を開くと、その場で流れを追えます。</div>';
   }
 }
 
@@ -976,9 +1003,8 @@ class ManagerApp {
     }
     this.#renderAll();
     if (thread) {
-      document
-        .getElementById('thread-detail')
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const openRow = this.#sections[thread.uiState].getRow(thread.id);
+      openRow?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }
 
@@ -1338,6 +1364,12 @@ class ManagerApp {
         : (this.allThreads.find((thread) => thread.id === this.openThreadId) ??
           null);
     this.#detail.render(openThread);
+    if (openThread) {
+      const openRow = this.#sections[openThread.uiState].getRow(openThread.id);
+      if (openRow && this.#detail.element.parentElement !== openRow) {
+        openRow.appendChild(this.#detail.element);
+      }
+    }
   }
 
   #renderGettingStarted(): void {
@@ -1375,7 +1407,7 @@ class ManagerApp {
       return;
     }
     context.classList.remove('hidden');
-    context.textContent = `いま見ている「${thread.title}」を優先して振り分けます。別の話を送りたいときは、左の選択をもう一度押して外せます。`;
+    context.textContent = `いま見ている「${thread.title}」を優先して振り分けます。別の話を送りたいときは、この話題をもう一度押すと外せます。`;
   }
 
   #renderComposerFeedback(summary: ManagerRoutingSummary): void {
