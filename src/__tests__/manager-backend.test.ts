@@ -47,6 +47,7 @@ import {
   parseManagerReplyPayload,
   parseManagerRoutingPlan,
   parseCodexOutput,
+  pickThreadUserMessage,
   readQueue,
   readSession,
   resolveCodexCommand,
@@ -181,6 +182,13 @@ describe('manager backend codex integration', () => {
 
   it('parses manager reply and routing JSON payloads', () => {
     expect(
+      parseManagerReplyPayload('{"status":"active","reply":"着手しました"}')
+    ).toEqual({
+      status: 'active',
+      reply: '着手しました',
+    });
+
+    expect(
       parseManagerReplyPayload('{"status":"review","reply":"確認してください"}')
     ).toEqual({
       status: 'review',
@@ -194,12 +202,14 @@ describe('manager backend codex integration', () => {
             {
               kind: 'attach-existing',
               threadId: 'thread-1',
+              originalText: 'CCの件ってどうなってる？',
               content: 'CC の件どうなってる？',
               reason: '既存の CC に続けます',
             },
             {
               kind: 'create-new',
               title: 'AA を進める',
+              originalText: 'AAして',
               content: 'AA して',
             },
           ],
@@ -210,16 +220,45 @@ describe('manager backend codex integration', () => {
         {
           kind: 'attach-existing',
           threadId: 'thread-1',
+          originalText: 'CCの件ってどうなってる？',
           content: 'CC の件どうなってる？',
           reason: '既存の CC に続けます',
         },
         {
           kind: 'create-new',
           title: 'AA を進める',
+          originalText: 'AAして',
           content: 'AA して',
         },
       ],
     });
+  });
+
+  it('prefers verbatim routed text and falls back to the full original input for single-intent messages', () => {
+    expect(
+      pickThreadUserMessage(
+        'AAして、BBして。あとCCの件ってどうなってる？',
+        {
+          kind: 'attach-existing',
+          threadId: 'thread-cc',
+          originalText: 'CCの件ってどうなってる？',
+          content: 'CC の件どうなってる？',
+        },
+        3
+      )
+    ).toBe('CCの件ってどうなってる？');
+
+    expect(
+      pickThreadUserMessage(
+        'Agent CLI settings を他の PC にも共有したい',
+        {
+          kind: 'create-new',
+          title: 'Agent CLI settings sync across PCs',
+          content: '他の PC でも同じ設定共有を進める',
+        },
+        1
+      )
+    ).toBe('Agent CLI settings を他の PC にも共有したい');
   });
 
   it('parses codex JSON output and extracts thread continuity id + final reply', () => {
@@ -288,6 +327,7 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-idle');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('idle reply');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 
   it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {
@@ -431,8 +471,10 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).toHaveBeenCalledTimes(2);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-one');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('reply one');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
     expect(addMessageMock.mock.calls[1]?.[1]).toBe('thread-two');
     expect(addMessageMock.mock.calls[1]?.[2]).toBe('reply two');
+    expect(addMessageMock.mock.calls[1]?.[4]).toBe('review');
   });
 
   it('resets the saved codex thread id after an invalid resume failure', async () => {

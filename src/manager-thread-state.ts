@@ -137,6 +137,12 @@ function deriveUiState(input: {
     return 'ai-finished-awaiting-user-confirmation';
   }
 
+  if (input.thread.status === 'active') {
+    return input.isWorking || lastSender(input.thread) === 'ai'
+      ? 'ai-working'
+      : 'queued';
+  }
+
   if (input.isWorking) {
     return 'ai-working';
   }

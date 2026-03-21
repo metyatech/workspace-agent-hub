@@ -20,7 +20,7 @@ The user's real goal is not "manage threads". The real goal is:
    needs user attention
 
 Thread-first sending fails this goal because it forces the human to decide the
- topic before sending and makes fragmented work harder to capture quickly.
+topic before sending and makes fragmented work harder to capture quickly.
 
 ## Project contract
 
@@ -89,6 +89,10 @@ Thread-first sending fails this goal because it forces the human to decide the
 - The human always sends from one global composer
 - The composer must not appear to belong to a specific topic
 - The composer should stay easy to reach on phone and desktop
+- When a routed topic can be matched back to an exact excerpt from the user's
+  freeform message, the stored user-side topic message should keep that
+  original wording instead of being immediately rewritten into AI-normalized
+  prose
 - Preferred shape:
   - collapsed low-height docked composer when idle
   - expands into a larger writing surface on interaction
@@ -150,6 +154,10 @@ separate AI completion from user closure.
 4. `queued`
 5. `ai-working`
 6. `done` (hidden by default, shown only on demand)
+
+`ai-finished-awaiting-user-confirmation` is only for cases where AI has already
+produced something the human can now inspect. Intake acknowledgements or
+"started working" updates belong in `ai-working` until a real result is ready.
 
 ### Closure rules
 
@@ -222,7 +230,7 @@ This feedback is not the main record; the main record remains the topic list.
    natural-language approval.
 9. The primary mobile and desktop flows avoid horizontal scrolling.
 10. The user can understand the next action from the screen itself without
-   needing chat guidance.
+    needing chat guidance.
 
 ## Implementation sequence
 

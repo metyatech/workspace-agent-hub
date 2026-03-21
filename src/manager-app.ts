@@ -96,7 +96,7 @@ const STATE_ORDER: ManagerUiState[] = [
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
   'user-reply-needed': 'あなたの返信待ち',
-  'ai-finished-awaiting-user-confirmation': '確認待ち',
+  'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: '未着手',
   'ai-working': '作業中',
   done: '完了',
@@ -106,7 +106,7 @@ const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認が必要な話題はありません',
   'user-reply-needed': 'あなたの返信が必要な話題はありません',
   'ai-finished-awaiting-user-confirmation':
-    'AI から確認をお願いしている話題はありません',
+    'あなたに確認してほしい返答はありません',
   queued: 'まだ着手していない話題はありません',
   'ai-working': 'AI が作業している話題はありません',
   done: '完了済みの話題はありません',

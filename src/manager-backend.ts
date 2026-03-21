@@ -43,9 +43,10 @@ export const MANAGER_MODEL = 'gpt-5.4';
 export const MANAGER_REASONING_EFFORT = 'xhigh';
 
 /**
- * Status applied to successful manager replies.
- * Must be 'active' so replies land in the 返事が来ています bucket (status=active + last sender=ai).
- * Error replies stay 'needs-reply' to indicate user action is required.
+ * Status applied to successful manager replies when the reply is plain text
+ * rather than explicit manager JSON. This is a rare fallback path; keep it in
+ * the review bucket so we do not hide a complete result indefinitely when the
+ * model fails to emit the expected JSON envelope.
  */
 export const MANAGER_REPLY_STATUS = 'review' as const;
 
@@ -57,11 +58,13 @@ const MANAGER_SYSTEM_PROMPT =
   'You are a manager AI assistant for this software workspace. ' +
   'Help coordinate work across multiple threads. ' +
   'When given a thread message, provide a brief, actionable response (2-4 sentences). ' +
-  'Keep context across messages; reference prior discussion when relevant.';
+  'Keep context across messages; reference prior discussion when relevant. ' +
+  'Do not claim work is ready for review unless it is actually complete enough for the user to verify.';
 
 const MANAGER_REPLY_JSON_RULES =
   'Return only strict JSON with keys {"status","reply"}. ' +
-  'Use status "review" when you believe the answer or work result is ready for the user to review. ' +
+  'Use status "active" when you have accepted the request and work is still in progress, or when you are giving an interim update with no user action required yet. ' +
+  'Use status "review" only when the answer or work result is actually ready for the user to review. ' +
   'Use status "needs-reply" only when you truly need user input before you can continue. ' +
   'Do not wrap JSON in markdown fences.';
 
@@ -70,12 +73,13 @@ const MANAGER_ROUTING_JSON_RULES =
   'Each action must have kind "attach-existing", "create-new", "routing-confirmation", or "resolve-existing". ' +
   'For "attach-existing" and "resolve-existing", include threadId and content. ' +
   'For "create-new", include title and content. ' +
+  'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
   'Split confident intents immediately and leave only the ambiguous parts for confirmation. ' +
   'Do not wrap JSON in markdown fences.';
 
 export interface ManagerReplyPayload {
-  status: Extract<ThreadStatus, 'review' | 'needs-reply'>;
+  status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
   reply: string;
 }
 
@@ -87,6 +91,7 @@ export interface ManagerRoutingAction {
     | 'resolve-existing';
   threadId?: string;
   title?: string;
+  originalText?: string;
   content: string;
   reason?: string;
   question?: string;
@@ -621,7 +626,9 @@ export function parseManagerReplyPayload(
   try {
     const parsed = JSON.parse(normalized) as Partial<ManagerReplyPayload>;
     const status =
-      parsed.status === 'needs-reply' || parsed.status === 'review'
+      parsed.status === 'active' ||
+      parsed.status === 'needs-reply' ||
+      parsed.status === 'review'
         ? parsed.status
         : null;
     const reply =
@@ -672,6 +679,10 @@ export function parseManagerRoutingPlan(
               : undefined,
           title:
             typeof action.title === 'string' ? action.title.trim() : undefined,
+          originalText:
+            typeof action.originalText === 'string'
+              ? action.originalText.trim()
+              : undefined,
           content,
           reason:
             typeof action.reason === 'string'
@@ -692,6 +703,36 @@ export function parseManagerRoutingPlan(
   } catch {
     return null;
   }
+}
+
+function normalizeForRoutingMatch(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+export function pickThreadUserMessage(
+  fullInput: string,
+  action: ManagerRoutingAction,
+  totalActions: number
+): string {
+  const normalizedFull = normalizeForRoutingMatch(fullInput);
+  const originalText = action.originalText?.trim();
+  if (
+    originalText &&
+    normalizedFull.includes(normalizeForRoutingMatch(originalText))
+  ) {
+    return originalText;
+  }
+
+  const content = action.content.trim();
+  if (content && normalizedFull.includes(normalizeForRoutingMatch(content))) {
+    return content;
+  }
+
+  if (totalActions === 1) {
+    return fullInput.trim();
+  }
+
+  return content;
 }
 
 async function runCodexTurn(input: {
@@ -1085,6 +1126,11 @@ export async function sendGlobalToBuiltinManager(
     let ambiguousCount = 0;
 
     for (const action of plan.actions) {
+      const userMessage = pickThreadUserMessage(
+        content,
+        action,
+        plan.actions.length
+      );
       switch (action.kind) {
         case 'attach-existing': {
           if (!action.threadId) {
@@ -1095,15 +1141,11 @@ export async function sendGlobalToBuiltinManager(
           await addMessage(
             resolvedDir,
             action.threadId,
-            action.content,
+            userMessage,
             'user',
             'waiting'
           );
-          await sendToBuiltinManager(
-            resolvedDir,
-            action.threadId,
-            action.content
-          );
+          await sendToBuiltinManager(resolvedDir, action.threadId, userMessage);
           const existingThread = await getThread(dir, action.threadId);
           items.push({
             threadId: action.threadId,
@@ -1123,7 +1165,7 @@ export async function sendGlobalToBuiltinManager(
           await addMessage(
             resolvedDir,
             createdThread.id,
-            action.content,
+            userMessage,
             'user',
             'waiting'
           );
@@ -1131,7 +1173,7 @@ export async function sendGlobalToBuiltinManager(
           await sendToBuiltinManager(
             resolvedDir,
             createdThread.id,
-            action.content
+            userMessage
           );
           items.push({
             threadId: createdThread.id,
@@ -1151,7 +1193,7 @@ export async function sendGlobalToBuiltinManager(
           await addMessage(
             resolvedDir,
             confirmationThread.id,
-            action.content,
+            userMessage,
             'user',
             'active'
           );
@@ -1192,7 +1234,7 @@ export async function sendGlobalToBuiltinManager(
           await addMessage(
             resolvedDir,
             action.threadId,
-            action.content,
+            userMessage,
             'user',
             'active'
           );

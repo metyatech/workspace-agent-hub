@@ -338,6 +338,10 @@ Important behavior:
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - Users send from one global composer; they do not need to create or pick a
   topic before sending.
+- When Manager splits a freeform message into topics, it now preserves the
+  user's original wording as the stored user-side thread message whenever it
+  can match an exact excerpt, instead of immediately replacing it with an
+  AI-paraphrased rewrite.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many topics currently sit in each urgency bucket.
@@ -345,6 +349,9 @@ Important behavior:
   instead of jumping to a separate detail panel at the bottom of the page.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
+- `AI working` is now reserved for topics where the Manager explicitly marked
+  the latest AI update as still in progress; only genuinely ready results
+  should move into the user's confirmation bucket.
 - Topics are only marked done explicitly; the AI may move them into
   confirmation/reply-needed states but does not auto-close them silently.
 - The built-in manager backend runs on Codex CLI (`gpt-5.4` with

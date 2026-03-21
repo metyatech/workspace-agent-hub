@@ -21,6 +21,12 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Added a prominent Manager activity summary so users can immediately tell
   whether AI is actively processing, idle, or waiting on them, along with the
   current per-bucket topic counts
+- Preserved the user's original routed wording in Manager topics whenever an
+  exact excerpt can be matched from the freeform input, instead of immediately
+  replacing it with an AI paraphrase
+- Changed built-in Manager reply semantics so in-progress AI updates stay in
+  the working bucket and only genuinely ready results move into the user's
+  confirmation bucket
 - Expanded the README Manager verification notes so `workspace-agent-hub` is
   documented as the sole Manager UI with an explicit browser auth state matrix
 - Changed `Open Manager` to reuse the current browser origin and move into the
