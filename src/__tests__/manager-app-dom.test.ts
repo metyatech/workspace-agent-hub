@@ -92,6 +92,55 @@ function createManagerFetch(validToken: string) {
   });
 }
 
+function createManagerFetchWithData(input: {
+  validToken: string;
+  threads: Array<ReturnType<typeof makeThreadView>>;
+  tasks?: unknown[];
+  status?: {
+    running: boolean;
+    configured: boolean;
+    builtinBackend: boolean;
+    detail: string;
+  };
+}) {
+  return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    const headers = new Headers(init?.headers ?? {});
+    const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+    if (providedToken !== input.validToken) {
+      return new Response(
+        JSON.stringify({ error: 'Access code required', authRequired: true }),
+        { status: 401 }
+      );
+    }
+
+    if (isRoute(url, '/threads')) {
+      return new Response(JSON.stringify(input.threads), { status: 200 });
+    }
+
+    if (isRoute(url, '/tasks')) {
+      return new Response(JSON.stringify(input.tasks ?? []), { status: 200 });
+    }
+
+    if (isRoute(url, '/manager/status')) {
+      return new Response(
+        JSON.stringify(
+          input.status ?? {
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動 — メッセージ送信で自動起動します',
+          }
+        ),
+        { status: 200 }
+      );
+    }
+
+    return new Response('{}', { status: 200 });
+  });
+}
+
 async function loadManagerApp(
   fetchMock: typeof fetch,
   options?: {
@@ -856,5 +905,56 @@ describe('manager-app DOM auth state matrix', () => {
     const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
     expect(secondMsgArea).not.toBe(firstMsgArea);
     expect(secondMsgArea.scrollTop).toBe(280);
+  });
+});
+
+describe('manager-app activity summary', () => {
+  it('shows a clear busy summary and state counts when work is in progress', async () => {
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'activity-token',
+      threads: [
+        makeThreadView('reply-needed', '返信待ち', {
+          status: 'needs-reply',
+          uiState: 'user-reply-needed',
+          previewText: '[ai] 返信をください',
+          lastSender: 'ai',
+        }),
+        makeThreadView('review-ready', '確認待ち', {
+          status: 'review',
+          uiState: 'ai-finished-awaiting-user-confirmation',
+          previewText: '[ai] 確認してください',
+          lastSender: 'ai',
+        }),
+      ],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (PID 1234)',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'activity-token');
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('AI が返答や振り分けを進めています');
+    expect(
+      document.querySelector<HTMLElement>('#activity-detail')!.textContent
+    ).toContain('順番に処理しています');
+
+    const chips = Array.from(
+      document.querySelectorAll<HTMLElement>('.activity-chip')
+    ).map((element) => element.textContent ?? '');
+
+    expect(chips).toContain('返信待ち 1');
+    expect(chips).toContain('AIから返答 1');
+    expect(chips).toContain('未着手 0');
+    expect(chips).toContain('作業中 0');
   });
 });

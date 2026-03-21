@@ -338,6 +338,9 @@ Important behavior:
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - Users send from one global composer; they do not need to create or pick a
   topic before sending.
+- The Manager page now surfaces a prominent live status summary so it is easy
+  to tell whether AI is actively processing, idle, or waiting on the user, and
+  how many topics currently sit in each urgency bucket.
 - Opening a topic now expands its detail inline in the same list position
   instead of jumping to a separate detail panel at the bottom of the page.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI

@@ -193,6 +193,61 @@
         color: var(--text-muted);
       }
 
+      .activity-card {
+        display: grid;
+        gap: 10px;
+        background: linear-gradient(
+          180deg,
+          rgba(8, 47, 33, 0.94),
+          rgba(6, 27, 20, 0.94)
+        );
+        border: 1px solid rgba(74, 222, 128, 0.14);
+      }
+
+      .activity-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        width: fit-content;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(20, 83, 45, 0.52);
+        color: #bbf7d0;
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .activity-primary {
+        font-size: 1.02rem;
+        font-weight: 800;
+        color: var(--text-main);
+      }
+
+      .activity-detail {
+        font-size: 0.82rem;
+        color: var(--text-muted);
+      }
+
+      .activity-counts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .activity-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(15, 23, 42, 0.3);
+        color: var(--text-subtle);
+        font-size: 0.74rem;
+        font-weight: 700;
+      }
+
       #auth-panel {
         max-width: 840px;
         margin: 20px auto 0;
@@ -879,6 +934,18 @@
 
     <main data-auth-content>
       <div class="stack">
+        <section id="activity-summary" class="card activity-card">
+          <div class="activity-eyebrow">いまの状況</div>
+          <div id="activity-primary" class="activity-primary">
+            状態を確認しています…
+          </div>
+          <div id="activity-detail" class="activity-detail">
+            少し待つと、AI
+            が作業中か待機中か、いま確認すべき話題があるかをここに表示します。
+          </div>
+          <div id="activity-counts" class="activity-counts"></div>
+        </section>
+
         <section id="getting-started" class="card intro-card hidden">
           <div class="intro-pill">最初の使い方</div>
           <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>

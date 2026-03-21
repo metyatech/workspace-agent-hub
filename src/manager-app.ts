@@ -810,6 +810,7 @@ class ManagerApp {
   #pollTimer: number | null = null;
   #showDone = false;
   #sending = false;
+  #managerStatus: ManagerStatusPayload | null = null;
   #composerDock: HTMLElement | null = null;
   #composerResizeObserver: ResizeObserver | null = null;
 
@@ -927,6 +928,7 @@ class ManagerApp {
     }
 
     this.#renderAll();
+    this.#renderActivitySummary();
     return true;
   }
 
@@ -937,6 +939,7 @@ class ManagerApp {
     }
 
     const payload = (await response.json()) as ManagerStatusPayload;
+    this.#managerStatus = payload;
     const dot = document.getElementById(
       'manager-status-dot'
     ) as HTMLElement | null;
@@ -959,6 +962,7 @@ class ManagerApp {
           : `待機中です${payload.detail ? ` — ${payload.detail}` : ''}`;
       }
       startButton?.classList.add('hidden');
+      this.#renderActivitySummary();
       return true;
     }
 
@@ -972,6 +976,7 @@ class ManagerApp {
           payload.detail || 'まだ始まっていません。送ると自動で動きます。';
       }
       startButton?.classList.remove('hidden');
+      this.#renderActivitySummary();
       return true;
     }
 
@@ -983,6 +988,7 @@ class ManagerApp {
       text.textContent = payload.detail || 'Manager を使えません。';
     }
     startButton?.classList.add('hidden');
+    this.#renderActivitySummary();
     return true;
   }
 
@@ -1356,6 +1362,7 @@ class ManagerApp {
 
     this.#taskSection.render(this.allTasks);
     this.#renderGettingStarted();
+    this.#renderActivitySummary();
     this.#renderComposerContext();
 
     const openThread =
@@ -1380,6 +1387,101 @@ class ManagerApp {
     const hasThreads = this.allThreads.length > 0;
     const hasTasks = this.allTasks.length > 0;
     hero.classList.toggle('hidden', hasThreads || hasTasks);
+  }
+
+  #renderActivitySummary(): void {
+    const primary = document.getElementById('activity-primary');
+    const detail = document.getElementById('activity-detail');
+    const countsRoot = document.getElementById('activity-counts');
+    if (!primary || !detail || !countsRoot) {
+      return;
+    }
+
+    const counts = Object.fromEntries(
+      STATE_ORDER.map((state) => [
+        state,
+        this.allThreads.filter((thread) => thread.uiState === state).length,
+      ])
+    ) as Record<ManagerUiState, number>;
+
+    const busy = this.#managerStatus?.detail?.includes('処理中') ?? false;
+    const running = this.#managerStatus?.running ?? false;
+    const configured = this.#managerStatus?.configured ?? false;
+
+    if (busy) {
+      primary.textContent = 'AI が返答や振り分けを進めています';
+    } else if (counts['routing-confirmation-needed'] > 0) {
+      primary.textContent = '振り分け確認が必要な話題があります';
+    } else if (counts['user-reply-needed'] > 0) {
+      primary.textContent = 'あなたの返信待ちがあります';
+    } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
+      primary.textContent = 'AI から返答が来ています';
+    } else if (counts['queued'] > 0) {
+      primary.textContent = 'まだ着手していない話題があります';
+    } else if (counts['ai-working'] > 0) {
+      primary.textContent = 'AI が作業中です';
+    } else if (running) {
+      primary.textContent = 'いまは待機中です';
+    } else if (configured) {
+      primary.textContent = 'まだ始まっていません';
+    } else {
+      primary.textContent = 'Manager を使えません';
+    }
+
+    if (busy) {
+      detail.textContent =
+        '順番に処理しています。返答が来た話題は上の一覧へ自動で上がります。';
+    } else if (running) {
+      detail.textContent =
+        'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
+    } else if (configured) {
+      detail.textContent =
+        'まだ始まっていません。下の送信欄から投げれば自動で起動します。';
+    } else if (counts['user-reply-needed'] > 0) {
+      detail.textContent =
+        '上から順に開けば、いま返した方がいい話題から見られます。';
+    } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
+      detail.textContent =
+        'AI が返答済みです。確認したいものから順に開いてください。';
+    } else {
+      detail.textContent =
+        '送った内容は topic ごとに分かれて、ここで今の状況が見えるようになります。';
+    }
+
+    countsRoot.innerHTML = '';
+    const chipSpecs: Array<{ label: string; value: number }> = [
+      {
+        label: '振り分け確認',
+        value: counts['routing-confirmation-needed'],
+      },
+      {
+        label: '返信待ち',
+        value: counts['user-reply-needed'],
+      },
+      {
+        label: 'AIから返答',
+        value: counts['ai-finished-awaiting-user-confirmation'],
+      },
+      {
+        label: '未着手',
+        value: counts['queued'],
+      },
+      {
+        label: '作業中',
+        value: counts['ai-working'],
+      },
+      {
+        label: '完了',
+        value: counts['done'],
+      },
+    ];
+
+    for (const spec of chipSpecs) {
+      const chip = document.createElement('span');
+      chip.className = 'activity-chip';
+      chip.textContent = `${spec.label} ${spec.value}`;
+      countsRoot.appendChild(chip);
+    }
   }
 
   #renderDoneToggle(): void {

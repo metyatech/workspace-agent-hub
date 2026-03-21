@@ -18,6 +18,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Retired the old `AI Agent Sessions` shortcut as a normal user-facing
   entrypoint and made the browser Hub shortcut installer remove any leftover
   legacy shortcut from Windows
+- Added a prominent Manager activity summary so users can immediately tell
+  whether AI is actively processing, idle, or waiting on them, along with the
+  current per-bucket topic counts
 - Expanded the README Manager verification notes so `workspace-agent-hub` is
   documented as the sole Manager UI with an explicit browser auth state matrix
 - Changed `Open Manager` to reuse the current browser origin and move into the
