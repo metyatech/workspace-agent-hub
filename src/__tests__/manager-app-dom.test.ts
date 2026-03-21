@@ -507,4 +507,90 @@ describe('manager-app DOM auth state matrix', () => {
     expect(doneSection.classList.contains('hidden')).toBe(false);
     expect(doneSection.textContent).toContain('終わった話題');
   });
+
+  it('reserves bottom scroll space from the live composer dock height', async () => {
+    const fetchMock = createManagerFetch('reserve-token');
+    let resizeObserverCallback:
+      | ((entries: ResizeObserverEntry[], observer: ResizeObserver) => void)
+      | null = null;
+    let composerHeight = 312;
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(
+          callback: (
+            entries: ResizeObserverEntry[],
+            observer: ResizeObserver
+          ) => void
+        ) {
+          resizeObserverCallback = callback;
+        }
+
+        observe(): void {}
+
+        disconnect(): void {}
+
+        unobserve(): void {}
+      }
+    );
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'reserve-token');
+        const elementPrototype = (
+          window as unknown as { HTMLElement: typeof HTMLElement }
+        ).HTMLElement.prototype;
+        Object.defineProperty(elementPrototype, 'getBoundingClientRect', {
+          configurable: true,
+          value: function getBoundingClientRect() {
+            if ((this as HTMLElement).id === 'global-composer-dock') {
+              return {
+                width: 800,
+                height: composerHeight,
+                top: 0,
+                left: 0,
+                right: 800,
+                bottom: composerHeight,
+                x: 0,
+                y: 0,
+                toJSON() {
+                  return this;
+                },
+              };
+            }
+            return {
+              width: 0,
+              height: 0,
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              x: 0,
+              y: 0,
+              toJSON() {
+                return this;
+              },
+            };
+          },
+        });
+      },
+    });
+
+    expect(
+      document.documentElement.style.getPropertyValue('--composer-dock-reserve')
+    ).toBe('312px');
+
+    composerHeight = 268;
+    (
+      resizeObserverCallback as
+        | ((entries: ResizeObserverEntry[], observer: ResizeObserver) => void)
+        | null
+    )?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+
+    expect(
+      document.documentElement.style.getPropertyValue('--composer-dock-reserve')
+    ).toBe('268px');
+  });
 });

@@ -692,6 +692,8 @@ class ManagerApp {
   #pollTimer: number | null = null;
   #showDone = false;
   #sending = false;
+  #composerDock: HTMLElement | null = null;
+  #composerResizeObserver: ResizeObserver | null = null;
 
   constructor() {
     this.#sections = {
@@ -715,6 +717,8 @@ class ManagerApp {
 
   init(): void {
     this.#consumeHashToken();
+    this.#composerDock = document.getElementById('global-composer-dock');
+    this.#wireComposerDockReserve();
     const dirLabel = document.getElementById('dir-label');
     if (dirLabel) {
       dirLabel.textContent = GUI_DIR;
@@ -989,6 +993,29 @@ class ManagerApp {
     }
   }
 
+  #wireComposerDockReserve(): void {
+    const sync = () => this.#syncComposerDockReserve();
+    sync();
+    window.addEventListener('resize', sync);
+    if (typeof ResizeObserver !== 'undefined' && this.#composerDock) {
+      this.#composerResizeObserver = new ResizeObserver(() => {
+        this.#syncComposerDockReserve();
+      });
+      this.#composerResizeObserver.observe(this.#composerDock);
+    }
+  }
+
+  #syncComposerDockReserve(): void {
+    const fallback = 220;
+    const dock = this.#composerDock;
+    const reserve = dock ? Math.max(dock.getBoundingClientRect().height, 0) : 0;
+    const resolvedReserve = reserve > 0 ? reserve : fallback;
+    document.documentElement.style.setProperty(
+      '--composer-dock-reserve',
+      `${Math.ceil(resolvedReserve)}px`
+    );
+  }
+
   #startPolling(): void {
     if (this.#pollTimer !== null) {
       return;
@@ -1152,6 +1179,7 @@ class ManagerApp {
       .forEach((element) => {
         element.classList.add('auth-hidden');
       });
+    this.#syncComposerDockReserve();
     this.#toggleClearAuthButton(Boolean(readStoredAuthToken()));
     this.#setAuthError(message);
     (
@@ -1166,6 +1194,7 @@ class ManagerApp {
       .forEach((element) => {
         element.classList.remove('auth-hidden');
       });
+    this.#syncComposerDockReserve();
     this.#setAuthError('');
   }
 
