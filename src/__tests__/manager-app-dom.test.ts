@@ -312,6 +312,7 @@ describe('manager-app DOM auth state matrix', () => {
     const validToken = 'manager-token';
     let threadsCalls = 0;
     const createdThread = makeThreadView('thread-1', 'AA を進める');
+    const secondThread = makeThreadView('thread-2', 'BB を進める');
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -337,7 +338,9 @@ describe('manager-app DOM auth state matrix', () => {
           if (threadsCalls < 2) {
             return new Response(JSON.stringify([]), { status: 200 });
           }
-          return new Response(JSON.stringify([createdThread]), { status: 200 });
+          return new Response(JSON.stringify([createdThread, secondThread]), {
+            status: 200,
+          });
         }
 
         if (isRoute(url, '/tasks')) {
@@ -371,10 +374,16 @@ describe('manager-app DOM auth state matrix', () => {
                   outcome: 'created-new',
                   reason: '新しい話題を作りました',
                 },
+                {
+                  threadId: 'thread-2',
+                  title: 'BB を進める',
+                  outcome: 'created-new',
+                  reason: '新しい話題を作りました',
+                },
               ],
-              routedCount: 1,
+              routedCount: 2,
               ambiguousCount: 0,
-              detail: '1件を処理しました',
+              detail: '2件を処理しました',
             }),
             { status: 200 }
           );
@@ -403,13 +412,32 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(
       document.querySelector<HTMLElement>('#composerFeedback')!.textContent
-    ).toContain('1件を処理しました');
+    ).toContain('2件を処理しました');
+    const feedbackButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '#composerFeedback .composer-chip'
+      )
+    );
+    expect(feedbackButtons.map((button) => button.textContent)).toEqual([
+      'AA を進める',
+      'BB を進める',
+    ]);
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('AA を進める');
     expect(
       document.querySelector<HTMLElement>('#composerContext')!.textContent
     ).toContain('AA を進める');
+
+    feedbackButtons[1]!.click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('BB を進める');
+    expect(
+      document.querySelector<HTMLElement>('#composerContext')!.textContent
+    ).toContain('BB を進める');
   });
 
   it('keeps done topics hidden by default and shows them when toggled', async () => {

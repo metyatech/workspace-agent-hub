@@ -258,10 +258,22 @@ function makeBubble(message: Msg): HTMLDivElement {
   return bubble;
 }
 
-function makeFeedbackChip(label: string): HTMLSpanElement {
-  const chip = document.createElement('span');
+function makeFeedbackChip(
+  label: string,
+  onClick?: () => void
+): HTMLButtonElement | HTMLSpanElement {
+  if (!onClick) {
+    const chip = document.createElement('span');
+    chip.className = 'composer-chip';
+    chip.textContent = label;
+    return chip;
+  }
+
+  const chip = document.createElement('button');
   chip.className = 'composer-chip';
   chip.textContent = label;
+  chip.type = 'button';
+  chip.addEventListener('click', onClick);
   return chip;
 }
 
@@ -857,6 +869,10 @@ class ManagerApp {
       this.closeDetail();
       return;
     }
+    this.#focusThread(threadId);
+  }
+
+  #focusThread(threadId: string): void {
     this.openThreadId = threadId;
     const thread = this.allThreads.find((item) => item.id === threadId) ?? null;
     if (thread?.uiState === 'done') {
@@ -932,14 +948,14 @@ class ManagerApp {
 
     const summary = (await response.json()) as ManagerRoutingSummary;
     input.value = '';
-    this.#renderComposerFeedback(summary);
     if (statusText) {
       statusText.textContent = summary.detail;
     }
-    if (summary.items.length > 0) {
-      this.openThreadId = summary.items[0].threadId;
-    }
     await Promise.all([this.loadAll(), this.loadManagerStatus()]);
+    if (summary.items.length > 0) {
+      this.#focusThread(summary.items[0].threadId);
+    }
+    this.#renderComposerFeedback(summary);
   }
 
   #consumeHashToken(): void {
@@ -1263,7 +1279,11 @@ class ManagerApp {
           item.outcome === 'routing-confirmation'
             ? `確認: ${item.title}`
             : item.title;
-        list.appendChild(makeFeedbackChip(label));
+        list.appendChild(
+          makeFeedbackChip(label, () => {
+            this.#focusThread(item.threadId);
+          })
+        );
       }
       feedback.appendChild(list);
     }
