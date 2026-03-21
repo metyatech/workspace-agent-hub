@@ -154,6 +154,12 @@ if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
     exit 1
 }
 
+$shortcutInstallOutput = & (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1')
+if (($shortcutInstallOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected the shortcut installer to create Workspace Agent Hub shortcuts and remove stale AI Agent Sessions shortcuts.'
+    exit 1
+}
+
 & (Join-Path $PSScriptRoot 'test-ensure-web-ui-running.ps1')
 
 $tls12 = [Net.SecurityProtocolType]::Tls12

@@ -12,10 +12,31 @@ if (-not (Test-Path -Path $ensureScriptPath)) {
 
 $shellPath = (Get-Command 'powershell.exe' -ErrorAction Stop).Source
 
-$desktopPath = [Environment]::GetFolderPath('Desktop')
-$programsPath = [Environment]::GetFolderPath('Programs')
-$startupPath = [Environment]::GetFolderPath('Startup')
+function Get-ShortcutFolderPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$EnvironmentVariableName,
+        [Parameter(Mandatory = $true)]
+        [string]$SpecialFolderName
+    )
+
+    $override = [Environment]::GetEnvironmentVariable($EnvironmentVariableName, 'Process')
+    if ([string]::IsNullOrWhiteSpace($override)) {
+        return [Environment]::GetFolderPath($SpecialFolderName)
+    }
+
+    return $override
+}
+
+$desktopPath = Get-ShortcutFolderPath -EnvironmentVariableName 'WORKSPACE_AGENT_HUB_SHORTCUTS_DESKTOP_PATH' -SpecialFolderName 'Desktop'
+$programsPath = Get-ShortcutFolderPath -EnvironmentVariableName 'WORKSPACE_AGENT_HUB_SHORTCUTS_PROGRAMS_PATH' -SpecialFolderName 'Programs'
+$startupPath = Get-ShortcutFolderPath -EnvironmentVariableName 'WORKSPACE_AGENT_HUB_SHORTCUTS_STARTUP_PATH' -SpecialFolderName 'Startup'
 $shell = New-Object -ComObject WScript.Shell
+
+$legacyShortcutPaths = @(
+    (Join-Path $desktopPath 'AI Agent Sessions.lnk'),
+    (Join-Path $programsPath 'AI Agent Sessions.lnk')
+)
 
 $shortcutDefinitions = @(
     @{
@@ -48,4 +69,11 @@ foreach ($definition in $shortcutDefinitions) {
     $shortcut.WindowStyle = $definition.WindowStyle
     $shortcut.Save()
     Write-Output "Shortcut updated: $($definition.Path)"
+}
+
+foreach ($legacyPath in $legacyShortcutPaths) {
+    if (Test-Path -Path $legacyPath) {
+        Remove-Item -Path $legacyPath -Force
+        Write-Output "Removed legacy shortcut: $legacyPath"
+    }
 }

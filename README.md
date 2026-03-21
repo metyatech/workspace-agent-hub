@@ -52,23 +52,24 @@ It provides:
    ./scripts/install-wsl-mobile-menu-hook.sh
    ```
 
-5. Optionally create Windows shortcuts for the launcher:
-
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-agent-session-launcher-shortcuts.ps1
-   ```
-
-6. Optionally install the always-on browser UI shortcuts:
+5. Optionally install the always-on browser UI shortcuts:
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-web-ui-shortcuts.ps1
    ```
 
+   This is the canonical day-to-day entrypoint. The installer also removes the
+   old `AI Agent Sessions` shortcut if it still exists on this PC.
+
 ## Usage
 
-### Windows launcher
+### Low-level session launcher
 
-Open the GUI:
+The raw session launcher remains available for maintenance or direct tmux-backed
+session work, but it is no longer the recommended daily entrypoint. Use the
+browser Hub from the Desktop or Start Menu first.
+
+Open the low-level launcher directly:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent-session-launcher.ps1
@@ -146,6 +147,8 @@ The shortcut installer creates:
 - `Workspace Agent Hub Background` in the Windows Startup folder, which keeps
   the web UI available after sign-in so the phone can reconnect anytime while
   the PC is on
+- It also removes any stale `AI Agent Sessions` shortcut so the browser Hub is
+  the only normal Windows entrypoint
 
 Use the direct wrapper if you still want to launch it manually once:
 
