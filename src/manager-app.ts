@@ -237,6 +237,7 @@ function makeBubble(message: Msg): HTMLDivElement {
   const bubble = document.createElement('div');
   const ai = message.sender === 'ai';
   bubble.className = `bubble ${ai ? 'bubble-ai' : 'bubble-user'}`;
+  bubble.dataset.messageKey = `${message.sender}|${message.at ?? ''}|${message.content}`;
 
   const meta = document.createElement('div');
   meta.className = 'bubble-meta';
@@ -581,6 +582,61 @@ class DetailController {
     this.#app = app;
   }
 
+  #captureScrollAnchor(msgArea: HTMLElement): {
+    messageKey: string | null;
+    offsetWithin: number;
+  } | null {
+    const bubbles = Array.from(
+      msgArea.querySelectorAll<HTMLElement>('.bubble')
+    );
+    if (bubbles.length === 0) {
+      return null;
+    }
+
+    const currentScrollTop = msgArea.scrollTop;
+    const anchor =
+      bubbles.find(
+        (bubble) => bubble.offsetTop + bubble.offsetHeight > currentScrollTop
+      ) ??
+      bubbles[bubbles.length - 1] ??
+      null;
+    if (!anchor) {
+      return null;
+    }
+
+    return {
+      messageKey: anchor.dataset.messageKey ?? null,
+      offsetWithin: currentScrollTop - anchor.offsetTop,
+    };
+  }
+
+  #restoreScrollPosition(
+    msgArea: HTMLElement,
+    previousScrollTop: number | null,
+    anchor: { messageKey: string | null; offsetWithin: number } | null
+  ): void {
+    if (anchor?.messageKey) {
+      const escapedKey =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(anchor.messageKey)
+          : anchor.messageKey.replace(/["\\]/g, '\\$&');
+      const nextAnchor = msgArea.querySelector<HTMLElement>(
+        `.bubble[data-message-key="${escapedKey}"]`
+      );
+      if (nextAnchor) {
+        msgArea.scrollTop = Math.max(
+          0,
+          nextAnchor.offsetTop + anchor.offsetWithin
+        );
+        return;
+      }
+    }
+
+    if (previousScrollTop !== null) {
+      msgArea.scrollTop = previousScrollTop;
+    }
+  }
+
   render(thread: ThreadView | null): void {
     if (!thread) {
       this.clear();
@@ -611,6 +667,10 @@ class DetailController {
     const previousScrollTop =
       this.#currentThreadId === thread.id && previousMsgArea
         ? previousMsgArea.scrollTop
+        : null;
+    const previousAnchor =
+      this.#currentThreadId === thread.id && previousMsgArea
+        ? this.#captureScrollAnchor(previousMsgArea)
         : null;
 
     this.#currentThreadId = thread.id;
@@ -700,9 +760,7 @@ class DetailController {
     body.appendChild(msgArea);
     this.#detailEl.appendChild(body);
 
-    if (previousScrollTop !== null) {
-      msgArea.scrollTop = previousScrollTop;
-    }
+    this.#restoreScrollPosition(msgArea, previousScrollTop, previousAnchor);
   }
 
   clear(): void {

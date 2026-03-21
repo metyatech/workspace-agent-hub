@@ -667,4 +667,117 @@ describe('manager-app DOM auth state matrix', () => {
     expect(secondMsgArea).toBe(firstMsgArea);
     expect(secondMsgArea.scrollTop).toBe(180);
   });
+
+  it('keeps the same reading position when refresh inserts new messages above it', async () => {
+    const validToken = 'good-token';
+    let threadsRequestCount = 0;
+    const baseMessages = Array.from({ length: 8 }, (_, index) => ({
+      sender: (index % 2 === 0 ? 'user' : 'ai') as 'user' | 'ai',
+      content: `message-${index}`,
+      at: `2026-03-21T00:00:0${index}.000Z`,
+    }));
+    const insertedMessage = {
+      sender: 'ai' as const,
+      content: 'new-top-message',
+      at: '2026-03-21T00:00:09.000Z',
+    };
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const messages =
+            threadsRequestCount >= 2
+              ? [insertedMessage, ...baseMessages]
+              : baseMessages;
+          const thread = makeThreadView('thread-1', '長文トピック', {
+            messages,
+            previewText: `[ai] ${messages[messages.length - 1]?.content ?? ''}`,
+          });
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        const domWindow = window as Window & typeof globalThis;
+        window.localStorage.setItem(authStorageKey, validToken);
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            const parent = element.parentElement;
+            if (
+              element.classList.contains('bubble') &&
+              parent?.classList.contains('msg-area')
+            ) {
+              return Array.from(parent.children).indexOf(element) * 100;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('bubble')) {
+              return 100;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    firstMsgArea.scrollTop = 180;
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    expect(secondMsgArea).not.toBe(firstMsgArea);
+    expect(secondMsgArea.scrollTop).toBe(280);
+  });
 });
