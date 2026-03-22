@@ -1352,23 +1352,6 @@ class ManagerApp {
       this.#renderAll();
       this.focusComposer();
     });
-
-    const currentFocusTarget = document.getElementById(
-      'current-focus-target-btn'
-    ) as HTMLButtonElement | null;
-    currentFocusTarget?.addEventListener('click', () => {
-      this.focusComposerForThread(this.openThreadId);
-      this.#renderAll();
-    });
-
-    const currentFocusClear = document.getElementById(
-      'current-focus-clear-btn'
-    ) as HTMLButtonElement | null;
-    currentFocusClear?.addEventListener('click', () => {
-      this.#setComposerTarget(null);
-      this.#renderAll();
-      this.focusComposer();
-    });
   }
 
   #wireAuthPanel(): void {
@@ -1592,9 +1575,6 @@ class ManagerApp {
     const badgeRoot = document.getElementById('current-focus-badge');
     const meta = document.getElementById('current-focus-meta');
     const move = document.getElementById('current-focus-move');
-    const targetButton = document.getElementById(
-      'current-focus-target-btn'
-    ) as HTMLButtonElement | null;
     if (!empty || !body || !title || !badgeRoot || !meta || !move) {
       return;
     }
@@ -1631,17 +1611,6 @@ class ManagerApp {
     } else {
       move.classList.add('hidden');
       move.textContent = '';
-    }
-
-    const targeted = this.#composerTargetThreadId === thread.id;
-    if (targetButton) {
-      targetButton.textContent =
-        thread.uiState === 'done'
-          ? '完了した task です'
-          : targeted
-            ? 'この task に送る設定中'
-            : 'この task に送る';
-      targetButton.disabled = targeted || thread.uiState === 'done';
     }
   }
 

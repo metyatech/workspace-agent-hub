@@ -563,7 +563,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(document.querySelector('#current-focus-clear-btn')).toBeNull();
     expect(
       document.querySelectorAll('.current-focus-summary .btn').length
-    ).toBe(1);
+    ).toBe(0);
     expect(
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('詳細を閉じる');
@@ -817,7 +817,9 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('送信先: 全体');
 
     document
-      .querySelector<HTMLButtonElement>('#current-focus-target-btn')!
+      .querySelector<HTMLButtonElement>(
+        '#thread-detail .detail-actions .btn-secondary'
+      )!
       .click();
     await flushAsync(2);
 
