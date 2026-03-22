@@ -15,6 +15,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Refreshed both the Hub and native Manager pages with a more modern dark
+  glass design system, updated typography, richer status hierarchy, and more
+  consistent desktop/mobile visual treatment
 - Reworked the native Manager information hierarchy around a stable `current
 task` card, a `what to read first` lane, and an explicit global-vs-task send
   target so state changes and follow-up sends are easier to track
