@@ -559,6 +559,11 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#current-focus-title')!.textContent
     ).toContain('現在の task');
+    expect(document.querySelector('#current-focus-note')).toBeNull();
+    expect(document.querySelector('#current-focus-clear-btn')).toBeNull();
+    expect(
+      document.querySelectorAll('.current-focus-summary .btn').length
+    ).toBe(1);
     expect(
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('詳細を閉じる');

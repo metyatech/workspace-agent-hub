@@ -325,6 +325,45 @@
         line-height: 1.6;
       }
 
+      .current-focus-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .current-focus-summary {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 16px;
+        background: rgba(124, 227, 172, 0.05);
+        border: 1px solid rgba(124, 227, 172, 0.1);
+      }
+
+      .current-focus-summary-top {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+
+      .current-focus-title-row {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .current-focus-title {
+        font-size: 0.86rem;
+        font-weight: 700;
+        line-height: 1.45;
+      }
+
+      .current-focus-meta {
+        font-size: 0.74rem;
+        line-height: 1.55;
+      }
+
       .focus-list {
         display: flex;
         flex-direction: column;
@@ -1128,35 +1167,38 @@
             <div id="priority-lane-list" class="focus-list"></div>
           </section>
 
-          <section id="current-focus" class="card focus-card">
+          <section
+            id="current-focus"
+            class="card focus-card current-focus-card"
+          >
             <div class="focus-eyebrow">いま見ている task</div>
             <div id="current-focus-empty" class="focus-empty">
               まだ選んでいません。左の一覧か「まず見る」から 1
               件開くと、ここに固定表示します。
             </div>
-            <div id="current-focus-body" class="hidden">
-              <div class="focus-title-row">
-                <div id="current-focus-title" class="focus-title"></div>
-                <div id="current-focus-badge"></div>
-              </div>
-              <div id="current-focus-meta" class="focus-meta"></div>
-              <div id="current-focus-move" class="focus-move hidden"></div>
-              <div id="current-focus-note" class="focus-note"></div>
-              <div class="focus-actions">
-                <button
-                  id="current-focus-target-btn"
-                  class="btn btn-secondary"
-                  style="width: auto"
-                >
-                  この task に送る
-                </button>
-                <button
-                  id="current-focus-clear-btn"
-                  class="btn btn-ghost"
-                  style="width: auto"
-                >
-                  全体に戻す
-                </button>
+            <div id="current-focus-body" class="hidden current-focus-body">
+              <div class="current-focus-summary">
+                <div class="current-focus-summary-top">
+                  <div class="focus-title-row current-focus-title-row">
+                    <div
+                      id="current-focus-title"
+                      class="focus-title current-focus-title"
+                    ></div>
+                  </div>
+                  <div id="current-focus-badge"></div>
+                  <button
+                    id="current-focus-target-btn"
+                    class="btn btn-secondary"
+                    style="width: auto"
+                  >
+                    この task に送る
+                  </button>
+                </div>
+                <div
+                  id="current-focus-meta"
+                  class="focus-meta current-focus-meta"
+                ></div>
+                <div id="current-focus-move" class="focus-move hidden"></div>
               </div>
               <section id="thread-detail" class="card detail-card hidden">
                 <div class="detail-empty">

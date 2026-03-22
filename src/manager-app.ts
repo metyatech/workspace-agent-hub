@@ -1591,15 +1591,11 @@ class ManagerApp {
     const title = document.getElementById('current-focus-title');
     const badgeRoot = document.getElementById('current-focus-badge');
     const meta = document.getElementById('current-focus-meta');
-    const note = document.getElementById('current-focus-note');
     const move = document.getElementById('current-focus-move');
     const targetButton = document.getElementById(
       'current-focus-target-btn'
     ) as HTMLButtonElement | null;
-    const clearButton = document.getElementById(
-      'current-focus-clear-btn'
-    ) as HTMLButtonElement | null;
-    if (!empty || !body || !title || !badgeRoot || !meta || !note || !move) {
+    if (!empty || !body || !title || !badgeRoot || !meta || !move) {
       return;
     }
 
@@ -1629,10 +1625,6 @@ class ManagerApp {
     }
     meta.textContent = metaParts.join(' / ');
 
-    note.textContent =
-      describeThreadState(thread) ??
-      'この task の状況はここに固定表示します。状態が変わっても見失いにくくなります。';
-
     if (this.#openThreadMovementNotice) {
       move.classList.remove('hidden');
       move.textContent = this.#openThreadMovementNotice;
@@ -1650,9 +1642,6 @@ class ManagerApp {
             ? 'この task に送る設定中'
             : 'この task に送る';
       targetButton.disabled = targeted || thread.uiState === 'done';
-    }
-    if (clearButton) {
-      clearButton.classList.toggle('hidden', !this.#composerTargetThreadId);
     }
   }
 
