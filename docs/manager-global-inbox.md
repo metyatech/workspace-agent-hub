@@ -46,12 +46,14 @@ topic before sending and makes fragmented work harder to capture quickly.
 ### AI surface
 
 - Built-in Manager backend
-- Topic routing, ambiguity handling, status suggestion, and reply generation
+- Topic routing, ambiguity handling, status suggestion, and actual task execution
 
 ### Sync direction and trigger
 
 - Human submits one freeform message
 - Manager backend splits it into one or more topic actions
+- Actionable topic items are executed by the built-in worker layer, not left as
+  acknowledgement-only replies
 - Topic list and per-topic detail update from the canonical store
 - Polling/reload keeps PC and smartphone aligned to the same state
 
@@ -179,7 +181,7 @@ The Manager screen must make these points obvious without external explanation:
 2. `話題の整理はAIがやる`
 3. `今すぐ自分が返すべきものはどれか`
 4. `AIが終えたので確認すべきものはどれか`
-5. `現時点では、ここで動く built-in Manager は topic 整理と返信が中心で、repo 修正の自動実行まではしない`
+5. `ここで動く built-in Manager は、topic 整理のあとに実際の作業まで進める`
 
 ### Primary layout direction
 

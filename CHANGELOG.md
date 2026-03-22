@@ -39,6 +39,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Switched the built-in Manager backend runtime from Claude CLI to Codex CLI
   (`gpt-5.4` + `model_reasoning_effort="xhigh"`), while preserving serialized
   queue processing and persisted cross-turn continuity via Codex thread resume
+- Changed the built-in Manager from a routing-only inbox helper into a routing
+  plus execution layer, so each routed topic now runs real Codex work in its
+  own persisted worker continuation instead of stopping at acknowledgement-only
+  replies
 
 ## [0.2.1] - 2026-03-16
 

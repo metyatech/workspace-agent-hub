@@ -39,7 +39,8 @@ import {
   buildCodexSpawnOptions,
   buildCodexSpawnSpec,
   buildCodexArgs,
-  buildCodexPrompt,
+  buildManagerReplyPrompt,
+  buildWorkerExecutionPrompt,
   getBuiltinManagerStatus,
   isSessionInvalidError,
   MANAGER_MODEL,
@@ -54,6 +55,7 @@ import {
   sendToBuiltinManager,
   shouldUseShellForCodexCommand,
 } from '../manager-backend.js';
+import { readManagerThreadMeta } from '../manager-thread-state.js';
 
 interface FakeProc extends EventEmitter {
   pid: number;
@@ -106,7 +108,20 @@ beforeEach(async () => {
   resolveThreadMock.mockReset();
   addMessageMock.mockResolvedValue(undefined);
   createThreadMock.mockResolvedValue(undefined);
-  getThreadMock.mockResolvedValue(undefined);
+  getThreadMock.mockImplementation(async (_dir: string, threadId: string) => ({
+    id: threadId,
+    title: `Thread ${threadId}`,
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messages: [
+      {
+        sender: 'user',
+        content: `Existing context for ${threadId}`,
+        at: new Date().toISOString(),
+      },
+    ],
+  }));
   listThreadsMock.mockResolvedValue([]);
   reopenThreadMock.mockResolvedValue(undefined);
   resolveThreadMock.mockResolvedValue(undefined);
@@ -168,9 +183,38 @@ describe('manager backend codex integration', () => {
     );
   });
 
-  it('builds prompts that preserve system context only on first turn', () => {
-    const first = buildCodexPrompt('Fix this', 'thread-a', 'D:\\ghws', true);
-    const follow = buildCodexPrompt('Next', 'thread-a', 'D:\\ghws', false);
+  it('builds router and worker prompts that preserve system context only on first turn', () => {
+    const first = buildManagerReplyPrompt(
+      'Fix this',
+      'thread-a',
+      'D:\\ghws',
+      true
+    );
+    const follow = buildManagerReplyPrompt(
+      'Next',
+      'thread-a',
+      'D:\\ghws',
+      false
+    );
+    const workerFirst = buildWorkerExecutionPrompt({
+      content: 'Implement the task',
+      resolvedDir: 'D:\\ghws',
+      isFirstTurn: true,
+      thread: {
+        id: 'thread-a',
+        title: 'Implement task',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'Please implement the task.',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    });
 
     expect(first).toContain('You are a manager AI assistant');
     expect(first).toContain('Workspace: D:\\ghws');
@@ -178,6 +222,9 @@ describe('manager backend codex integration', () => {
     expect(follow).toContain('[Thread: thread-a]');
     expect(follow).toContain('Return only strict JSON');
     expect(follow).toContain('Next');
+    expect(workerFirst).toContain('built-in execution worker');
+    expect(workerFirst).toContain('[Topic: Implement task]');
+    expect(workerFirst).toContain('Please implement the task.');
   });
 
   it('parses manager reply and routing JSON payloads', () => {
@@ -304,7 +351,10 @@ describe('manager backend codex integration', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     expect(proc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('[Thread: thread-idle]\nidle message')
+      expect.stringContaining('idle message')
+    );
+    expect(proc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('[Topic: Thread thread-idle]')
     );
     expect(proc.stdin.end).toHaveBeenCalledTimes(1);
 
@@ -416,7 +466,7 @@ describe('manager backend codex integration', () => {
     });
   });
 
-  it('keeps one in-flight codex turn and serializes queued follow-up messages', async () => {
+  it('keeps one in-flight codex turn and serializes queued messages without leaking worker continuity across different topics', async () => {
     const firstProc = makeProc(7001);
     const secondProc = makeProc(7002);
     spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
@@ -442,15 +492,14 @@ describe('manager backend codex integration', () => {
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
     const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
-    expect(secondArgs).toEqual(
-      expect.arrayContaining(['exec', 'resume', 'codex-thread-1'])
-    );
+    expect(secondArgs).toContain('exec');
+    expect(secondArgs).not.toContain('resume');
 
     secondProc.stdout.emit(
       'data',
       Buffer.from(
         [
-          '{"type":"thread.started","thread_id":"codex-thread-1"}',
+          '{"type":"thread.started","thread_id":"codex-thread-2"}',
           '{"type":"item.completed","item":{"type":"agent_message","text":"reply two"}}',
         ].join('\n')
       )
@@ -460,10 +509,12 @@ describe('manager backend codex integration', () => {
     await waitFor(async () => {
       const session = await readSession(tempDir);
       const queue = await readQueue(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
       return (
         session.status === 'idle' &&
         session.currentQueueId === null &&
-        session.sessionId === 'codex-thread-1' &&
+        meta['thread-one']?.workerSessionId === 'codex-thread-1' &&
+        meta['thread-two']?.workerSessionId === 'codex-thread-2' &&
         queue.length === 0
       );
     });
@@ -477,10 +528,49 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[1]?.[4]).toBe('review');
   });
 
-  it('resets the saved codex thread id after an invalid resume failure', async () => {
+  it('reuses the saved worker continuity for follow-up messages on the same topic', async () => {
+    const firstProc = makeProc(7201);
+    const secondProc = makeProc(7202);
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-follow-up', 'first message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    firstProc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-follow-up"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"reply one"}}',
+        ].join('\n')
+      )
+    );
+    firstProc.emit('close', 0);
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        meta['thread-follow-up']?.workerSessionId === 'codex-thread-follow-up'
+      );
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-follow-up', 'second message');
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+
+    const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+    expect(secondArgs).toEqual(
+      expect.arrayContaining(['exec', 'resume', 'codex-thread-follow-up'])
+    );
+  });
+
+  it('retries once with a fresh worker session after an invalid resume failure', async () => {
     const firstProc = makeProc(8101);
     const failingProc = makeProc(8102);
-    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(failingProc);
+    const recoveryProc = makeProc(8103);
+    spawnMock
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(failingProc)
+      .mockReturnValueOnce(recoveryProc);
 
     await sendToBuiltinManager(tempDir, 'thread-one', 'first message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
@@ -498,12 +588,14 @@ describe('manager backend codex integration', () => {
 
     await waitFor(async () => {
       const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
       return (
-        session.status === 'idle' && session.sessionId === 'codex-thread-stale'
+        session.status === 'idle' &&
+        meta['thread-one']?.workerSessionId === 'codex-thread-stale'
       );
     });
 
-    await sendToBuiltinManager(tempDir, 'thread-two', 'follow-up');
+    await sendToBuiltinManager(tempDir, 'thread-one', 'follow-up');
     await waitFor(() => spawnMock.mock.calls.length === 2);
     failingProc.stderr.emit(
       'data',
@@ -511,15 +603,33 @@ describe('manager backend codex integration', () => {
     );
     failingProc.emit('close', 1);
 
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    const retryArgs = spawnMock.mock.calls[2]?.[1] as string[];
+    expect(retryArgs).toContain('exec');
+    expect(retryArgs).not.toContain('resume');
+
+    recoveryProc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-recovered"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"recovered reply"}}',
+        ].join('\n')
+      )
+    );
+    recoveryProc.emit('close', 0);
+
     await waitFor(async () => {
       const session = await readSession(tempDir);
-      return session.status === 'idle' && session.sessionId === null;
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        session.status === 'idle' &&
+        meta['thread-one']?.workerSessionId === 'codex-thread-recovered'
+      );
     });
 
     expect(addMessageMock).toHaveBeenCalledTimes(2);
-    expect(addMessageMock.mock.calls[1]?.[2]).toContain(
-      'codex CLI exited with code 1'
-    );
+    expect(addMessageMock.mock.calls[1]?.[2]).toContain('recovered reply');
   });
 
   it('reports a parse error instead of silently dropping a successful turn with no usable reply', async () => {

@@ -98,7 +98,7 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   'user-reply-needed': 'あなたの返信待ち',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: '未着手',
-  'ai-working': 'AI応答中',
+  'ai-working': 'AI作業中',
   done: '完了',
 };
 
@@ -108,7 +108,7 @@ const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
   queued: 'まだ着手していない話題はありません',
-  'ai-working': 'AI が返信処理中の話題はありません',
+  'ai-working': 'AI が作業中の話題はありません',
   done: '完了済みの話題はありません',
 };
 
@@ -292,7 +292,7 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
   if (thread.uiState === 'ai-working') {
-    return 'いま AI がこの話題への返信を処理中です。応答が返ると自動で上の優先度へ移動します。';
+    return 'いま AI がこの話題の作業を実行中です。結果が返ると自動で上の優先度へ移動します。';
   }
   if (thread.uiState === 'queued') {
     return 'この話題はまだ未着手です。AI が順番に取りかかります。';
@@ -1409,7 +1409,7 @@ class ManagerApp {
     const configured = this.#managerStatus?.configured ?? false;
 
     if (busy) {
-      primary.textContent = 'AI が返答や振り分けを進めています';
+      primary.textContent = 'AI が作業や振り分けを進めています';
     } else if (counts['routing-confirmation-needed'] > 0) {
       primary.textContent = '振り分け確認が必要な話題があります';
     } else if (counts['user-reply-needed'] > 0) {
@@ -1419,7 +1419,7 @@ class ManagerApp {
     } else if (counts['queued'] > 0) {
       primary.textContent = 'まだ着手していない話題があります';
     } else if (counts['ai-working'] > 0) {
-      primary.textContent = 'AI が返信処理中です';
+      primary.textContent = 'AI が作業中です';
     } else if (running) {
       primary.textContent = 'いまは待機中です';
     } else if (configured) {
@@ -1430,7 +1430,7 @@ class ManagerApp {
 
     if (busy) {
       detail.textContent =
-        '順番に処理しています。返答が来た話題は上の一覧へ自動で上がります。';
+        '順番に作業しています。結果が返った話題は上の一覧へ自動で上がります。';
     } else if (running) {
       detail.textContent =
         'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
@@ -1467,7 +1467,7 @@ class ManagerApp {
         value: counts['queued'],
       },
       {
-        label: 'AI応答中',
+        label: 'AI作業中',
         value: counts['ai-working'],
       },
       {

@@ -943,10 +943,10 @@ describe('manager-app activity summary', () => {
 
     expect(
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
-    ).toContain('AI が返答や振り分けを進めています');
+    ).toContain('AI が作業や振り分けを進めています');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('順番に処理しています');
+    ).toContain('順番に作業しています');
 
     const chips = Array.from(
       document.querySelectorAll<HTMLElement>('.activity-chip')
@@ -955,6 +955,6 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('返信待ち 1');
     expect(chips).toContain('AIから返答 1');
     expect(chips).toContain('未着手 0');
-    expect(chips).toContain('AI応答中 0');
+    expect(chips).toContain('AI作業中 0');
   });
 });

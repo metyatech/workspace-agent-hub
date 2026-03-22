@@ -19,6 +19,8 @@ export interface ManagerThreadMeta {
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
   lastRoutingAt?: string | null;
+  workerSessionId?: string | null;
+  workerLastStartedAt?: string | null;
 }
 
 export interface ManagerThreadView extends Thread {

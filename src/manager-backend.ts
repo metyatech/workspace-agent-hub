@@ -1,14 +1,16 @@
 /**
  * Built-in Manager backend for Workspace Agent Hub.
  *
- * Uses the Codex CLI directly (`codex exec ...`) to handle manager conversations.
+ * Uses the Codex CLI directly (`codex exec ...`) for both message routing and
+ * per-topic task execution.
  * Maintains per-workspace state in two workspace-local files (not committed):
  *
- *   .workspace-agent-hub-manager.json        — session state (idle/busy, session ID, PID)
+ *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, routing session ID, PID)
  *   .workspace-agent-hub-manager-queue.jsonl — persistent message queue
  *
  * Key design rules:
- *  - One Codex thread per workspace, resumed via `codex exec resume <sessionId>`
+ *  - One Codex routing thread per workspace for freeform inbox triage
+ *  - One Codex execution thread per Manager topic, persisted in thread meta
  *  - Messages are processed serially; concurrent arrivals are queued and flushed in order
  *  - On server restart, a stale PID is detected and the queue resumes automatically
  *  - No external npm dependencies — only the `codex` CLI in PATH is required
@@ -32,6 +34,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  readManagerThreadMeta,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
 
@@ -54,18 +57,30 @@ export const MANAGER_REPLY_STATUS = 'review' as const;
  * System context embedded in the first message of a new session.
  * Follow-up messages use --resume and omit this prefix.
  */
-const MANAGER_SYSTEM_PROMPT =
+const MANAGER_ROUTER_SYSTEM_PROMPT =
   'You are a manager AI assistant for this software workspace. ' +
   'Help coordinate work across multiple threads. ' +
-  'When given a thread message, provide a brief, actionable response (2-4 sentences). ' +
   'Keep context across messages; reference prior discussion when relevant. ' +
-  'Do not claim work is ready for review unless it is actually complete enough for the user to verify.';
+  'Route requests into the right topic, ask for clarification only when routing is truly ambiguous, and never paraphrase the stored user wording when an exact excerpt can be preserved.';
 
 const MANAGER_REPLY_JSON_RULES =
   'Return only strict JSON with keys {"status","reply"}. ' +
-  'Use status "active" when you have accepted the request and work is still in progress, or when you are giving an interim update with no user action required yet. ' +
   'Use status "review" only when the answer or work result is actually ready for the user to review. ' +
   'Use status "needs-reply" only when you truly need user input before you can continue. ' +
+  'Prefer "review" or "needs-reply"; do not use "active" unless you cannot finish this turn yet still want the topic left explicitly in progress. ' +
+  'Do not wrap JSON in markdown fences.';
+
+const MANAGER_WORKER_SYSTEM_PROMPT =
+  'You are the built-in execution worker for Workspace Agent Hub. ' +
+  'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
+  'Do not stop at acknowledgement-only replies. ' +
+  'Return concise user-facing progress/result text, but only after you have genuinely attempted the work.';
+
+const MANAGER_WORKER_JSON_RULES =
+  'Return only strict JSON with keys {"status","reply"}. ' +
+  'Use status "review" when you completed the actionable work you can do now and the user can review the result. ' +
+  'Use status "needs-reply" only when a real blocker or missing user decision prevents further progress. ' +
+  'Do not use "active" for mere acknowledgements; keep working until you can return "review" or "needs-reply". ' +
   'Do not wrap JSON in markdown fences.';
 
 const MANAGER_ROUTING_JSON_RULES =
@@ -123,7 +138,7 @@ export interface ManagerSession {
   workspaceKey: string;
   /** idle: ready to process; busy: currently running; not-started: never initialised */
   status: 'idle' | 'busy' | 'not-started';
-  /** Codex thread ID used with `codex exec resume` for conversation continuity */
+  /** Legacy workspace-level worker continuity; new execution turns use per-thread meta. */
   sessionId: string | null;
   /** Separate Codex thread ID for freeform global routing decisions. */
   routingSessionId: string | null;
@@ -452,7 +467,7 @@ export function buildCodexSpawnSpec(
  * First turn: include system context + workspace path.
  * Subsequent turns: just the message (codex retains context via exec resume).
  */
-export function buildCodexPrompt(
+export function buildManagerReplyPrompt(
   content: string,
   threadId: string,
   resolvedDir: string,
@@ -461,7 +476,47 @@ export function buildCodexPrompt(
   if (!isFirstTurn) {
     return `[Thread: ${threadId}]\n${MANAGER_REPLY_JSON_RULES}\n\n${content}`;
   }
-  return `${MANAGER_SYSTEM_PROMPT}\n${MANAGER_REPLY_JSON_RULES}\n\nWorkspace: ${resolvedDir}\n\n[Thread: ${threadId}]\n${content}`;
+  return `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${MANAGER_REPLY_JSON_RULES}\n\nWorkspace: ${resolvedDir}\n\n[Thread: ${threadId}]\n${content}`;
+}
+
+function formatThreadHistory(thread: Thread): string {
+  if (thread.messages.length === 0) {
+    return 'No previous messages in this topic.';
+  }
+
+  return thread.messages
+    .slice(-12)
+    .map((message) => {
+      const sender = message.sender === 'ai' ? 'AI' : 'User';
+      return `${sender}: ${message.content}`;
+    })
+    .join('\n\n');
+}
+
+export function buildWorkerExecutionPrompt(input: {
+  content: string;
+  thread: Thread;
+  resolvedDir: string;
+  isFirstTurn: boolean;
+}): string {
+  if (!input.isFirstTurn) {
+    return [
+      `[Topic: ${input.thread.title}]`,
+      MANAGER_WORKER_JSON_RULES,
+      input.content,
+    ].join('\n\n');
+  }
+
+  return [
+    MANAGER_WORKER_SYSTEM_PROMPT,
+    MANAGER_WORKER_JSON_RULES,
+    `Workspace: ${input.resolvedDir}`,
+    `[Topic: ${input.thread.title}]`,
+    'Topic history:',
+    formatThreadHistory(input.thread),
+    'New user request:',
+    input.content,
+  ].join('\n\n');
 }
 
 function buildRoutingPrompt(input: {
@@ -510,7 +565,7 @@ function buildRoutingPrompt(input: {
     return body;
   }
 
-  return `${MANAGER_SYSTEM_PROMPT}\n${body}`;
+  return `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${body}`;
 }
 
 function stripMarkdownCodeFence(text: string): string {
@@ -831,6 +886,26 @@ async function ensureThreadReadyForUserMessage(
   }
 }
 
+async function readWorkerSessionId(
+  dir: string,
+  threadId: string
+): Promise<string | null> {
+  const meta = await readManagerThreadMeta(dir);
+  return meta[threadId]?.workerSessionId?.trim() || null;
+}
+
+async function writeWorkerSessionId(
+  dir: string,
+  threadId: string,
+  workerSessionId: string | null
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => ({
+    ...(current ?? {}),
+    workerSessionId,
+    workerLastStartedAt: new Date().toISOString(),
+  }));
+}
+
 /**
  * Process the next unprocessed queue entry for the given workspace.
  * No-op if already in flight or nothing is queued.
@@ -876,13 +951,32 @@ export async function processNextQueued(
       lastMessageAt: new Date().toISOString(),
     });
 
-    const isFirstTurn = freshSession.sessionId === null;
-    const prompt = buildCodexPrompt(
-      next.content,
-      next.threadId,
+    const thread = await getThread(resolvedDir, next.threadId);
+    if (!thread) {
+      await updateQueueLocked(dir, (q) =>
+        q.filter((entry) => entry.id !== next.id)
+      );
+      await writeSession(dir, {
+        ...freshSession,
+        status: 'idle',
+        pid: null,
+        currentQueueId: null,
+      });
+      shouldContinue = true;
+      return;
+    }
+
+    const workerSessionId = await readWorkerSessionId(
       resolvedDir,
-      isFirstTurn
+      next.threadId
     );
+    const isFirstTurn = workerSessionId === null;
+    const prompt = buildWorkerExecutionPrompt({
+      content: next.content,
+      thread,
+      resolvedDir,
+      isFirstTurn,
+    });
 
     let runResult: {
       code: number | null;
@@ -896,12 +990,36 @@ export async function processNextQueued(
         dir,
         resolvedDir,
         prompt,
-        sessionId: freshSession.sessionId,
+        sessionId: workerSessionId,
         onSpawn: async (pid) => {
           const withPid = await readSession(dir);
           await writeSession(dir, { ...withPid, pid });
         },
       });
+
+      const combinedOutput = `${runResult.stdout}\n${runResult.stderr}`;
+      if (
+        runResult.code !== 0 &&
+        workerSessionId &&
+        isSessionInvalidError(combinedOutput)
+      ) {
+        await writeWorkerSessionId(resolvedDir, next.threadId, null);
+        runResult = await runCodexTurn({
+          dir,
+          resolvedDir,
+          prompt: buildWorkerExecutionPrompt({
+            content: next.content,
+            thread,
+            resolvedDir,
+            isFirstTurn: true,
+          }),
+          sessionId: null,
+          onSpawn: async (pid) => {
+            const withPid = await readSession(dir);
+            await writeSession(dir, { ...withPid, pid });
+          },
+        });
+      }
     } catch (error) {
       console.error(
         '[manager-backend] spawn error:',
@@ -947,7 +1065,6 @@ export async function processNextQueued(
         q.filter((entry) => entry.id !== next.id)
       );
       try {
-        await clearManagerThreadMeta(resolvedDir, next.threadId);
         await addMessage(
           resolvedDir,
           next.threadId,
@@ -958,10 +1075,15 @@ export async function processNextQueued(
       } catch {
         /* thread may have been deleted */
       }
+      await writeWorkerSessionId(
+        resolvedDir,
+        next.threadId,
+        runResult.parsed.sessionId ?? workerSessionId
+      );
       await writeSession(dir, {
         ...currentSession,
         status: 'idle',
-        sessionId: runResult.parsed.sessionId ?? currentSession.sessionId,
+        sessionId: currentSession.sessionId,
         pid: null,
         currentQueueId: null,
       });
@@ -974,7 +1096,6 @@ export async function processNextQueued(
         q.filter((entry) => entry.id !== next.id)
       );
       try {
-        await clearManagerThreadMeta(resolvedDir, next.threadId);
         await addMessage(
           resolvedDir,
           next.threadId,
@@ -985,10 +1106,15 @@ export async function processNextQueued(
       } catch {
         /* thread may have been deleted */
       }
+      await writeWorkerSessionId(
+        resolvedDir,
+        next.threadId,
+        runResult.parsed.sessionId ?? workerSessionId
+      );
       await writeSession(dir, {
         ...currentSession,
         status: 'idle',
-        sessionId: runResult.parsed.sessionId ?? currentSession.sessionId,
+        sessionId: currentSession.sessionId,
         pid: null,
         currentQueueId: null,
       });
@@ -1009,12 +1135,13 @@ export async function processNextQueued(
     await updateQueueLocked(dir, (q) =>
       q.filter((entry) => entry.id !== next.id)
     );
+    if (isSessionInvalidError(combinedOutput)) {
+      await writeWorkerSessionId(resolvedDir, next.threadId, null);
+    }
     await writeSession(dir, {
       ...currentSession,
       status: 'idle',
-      sessionId: isSessionInvalidError(combinedOutput)
-        ? null
-        : (runResult.parsed.sessionId ?? currentSession.sessionId),
+      sessionId: currentSession.sessionId,
       pid: null,
       currentQueueId: null,
     });
@@ -1151,7 +1278,9 @@ export async function sendGlobalToBuiltinManager(
             threadId: action.threadId,
             title: existingThread?.title ?? action.threadId,
             outcome: 'attached-existing',
-            reason: action.reason ?? '既存の話題の続きとして扱いました。',
+            reason:
+              action.reason ??
+              '既存の話題の続きとして扱い、このまま実行に回しました。',
           });
           routedCount += 1;
           break;
@@ -1179,7 +1308,8 @@ export async function sendGlobalToBuiltinManager(
             threadId: createdThread.id,
             title: createdThread.title,
             outcome: 'created-new',
-            reason: action.reason ?? '新しい話題を作って受け付けました。',
+            reason:
+              action.reason ?? '新しい話題を作って、そのまま実行に回しました。',
           });
           routedCount += 1;
           break;
@@ -1255,7 +1385,7 @@ export async function sendGlobalToBuiltinManager(
 
     const detailParts: string[] = [];
     if (routedCount > 0) {
-      detailParts.push(`${routedCount}件を処理しました`);
+      detailParts.push(`${routedCount}件を実行キューに回しました`);
     }
     if (ambiguousCount > 0) {
       detailParts.push(`${ambiguousCount}件は確認待ちにしました`);
