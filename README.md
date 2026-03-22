@@ -323,11 +323,11 @@ How it works:
 3. The browser moves into Hub's native `/manager/` page on the same origin and in the same tab.
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
-5. The user writes into one fixed global composer instead of creating topics by
+5. The user writes into one fixed global composer instead of creating tasks by
    hand.
-6. The built-in manager backend splits each message across existing topics,
-   new topics, or routing-confirmation items, then executes each routed topic
-   in order and writes the resulting updates back into the topic.
+6. The built-in manager backend splits each message across existing tasks,
+   new tasks, or routing-confirmation items, then executes each routed task
+   in order and writes the resulting updates back into the task.
 7. The built-in manager backend starts inside Hub when needed and keeps
    handling inbox messages for that workspace.
 
@@ -337,26 +337,30 @@ Important behavior:
 - There is no separate `manager-gui` process or second GUI server anymore.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - Users send from one global composer; they do not need to create or pick a
-  topic before sending.
-- When Manager splits a freeform message into topics, it now preserves the
+  task before sending.
+- When Manager splits a freeform message into tasks, it now preserves the
   user's original wording as the stored user-side thread message whenever it
   can match an exact excerpt, instead of immediately replacing it with an
   AI-paraphrased rewrite.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
-  how many topics currently sit in each urgency bucket.
+  how many tasks currently sit in each urgency bucket.
+- The Manager page now keeps a stable `いま見ている task` card and a `まず見る`
+  priority lane near the top, so a task remains easy to follow even when it
+  moves between urgency buckets.
 - The current built-in Manager routes with one global Codex routing thread, then
-  executes each actionable topic with its own persisted Codex worker
+  executes each actionable task with its own persisted Codex worker
   continuation so routed requests do real repository work instead of stopping at
   inbox acknowledgements.
-- Opening a topic now expands its detail inline in the same list position
-  instead of jumping to a separate detail panel at the bottom of the page.
+- The global composer now shows an explicit send target: either the whole inbox
+  or a selected `@task`, so follow-up messages to one task are visually
+  obvious before sending.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
-- `AI working` is reserved for topics that are genuinely in flight in the
+- `AI working` is reserved for tasks that are genuinely in flight in the
   built-in execution queue; only genuinely ready results should move into the
   user's confirmation bucket.
-- Topics are only marked done explicitly; the AI may move them into
+- Tasks are only marked done explicitly; the AI may move them into
   confirmation/reply-needed states but does not auto-close them silently.
 - The built-in manager backend runs on Codex CLI (`gpt-5.4` with
   `model_reasoning_effort="xhigh"`).

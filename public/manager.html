@@ -248,6 +248,133 @@
         font-weight: 700;
       }
 
+      .context-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .focus-card {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .focus-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(124, 227, 172, 0.1);
+        color: var(--accent);
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
+      .focus-title-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .focus-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.98rem;
+        font-weight: 800;
+        line-height: 1.35;
+      }
+
+      .focus-meta {
+        color: var(--text-muted);
+        font-size: 0.76rem;
+        line-height: 1.6;
+      }
+
+      .focus-note {
+        color: var(--text-soft);
+        background: rgba(124, 227, 172, 0.08);
+        border-radius: 14px;
+        padding: 10px 12px;
+        font-size: 0.76rem;
+        line-height: 1.6;
+      }
+
+      .focus-empty {
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        line-height: 1.7;
+      }
+
+      .focus-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .focus-move {
+        color: #fde68a;
+        background: rgba(120, 53, 15, 0.28);
+        border: 1px solid rgba(251, 191, 36, 0.16);
+        border-radius: 14px;
+        padding: 10px 12px;
+        font-size: 0.76rem;
+        line-height: 1.6;
+      }
+
+      .focus-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .focus-list-item {
+        width: 100%;
+        text-align: left;
+        background: rgba(7, 18, 13, 0.84);
+        border: 1px solid rgba(165, 211, 187, 0.12);
+        border-radius: 16px;
+        padding: 11px 12px;
+        color: inherit;
+      }
+
+      .focus-list-item:hover {
+        background: rgba(11, 27, 20, 0.94);
+        border-color: rgba(124, 227, 172, 0.24);
+      }
+
+      .focus-list-item.current {
+        border-color: rgba(124, 227, 172, 0.34);
+        background: rgba(12, 33, 24, 0.98);
+      }
+
+      .focus-list-item-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .focus-list-item-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.82rem;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .focus-list-item-meta {
+        color: var(--text-muted);
+        font-size: 0.7rem;
+        line-height: 1.55;
+        margin-top: 6px;
+      }
+
       #auth-panel {
         max-width: 840px;
         margin: 20px auto 0;
@@ -492,6 +619,12 @@
         border: 1px solid rgba(165, 211, 187, 0.1);
       }
 
+      .thread-target-indicator {
+        color: #052514;
+        background: linear-gradient(135deg, #8ce8b7 0%, #49ca89 100%);
+        border-color: rgba(124, 227, 172, 0.28);
+      }
+
       .thread-preview {
         color: var(--text-soft);
         font-size: 0.74rem;
@@ -528,11 +661,11 @@
         overflow: hidden;
       }
 
-      .thread-row .detail-card {
-        margin-top: 12px;
+      .focus-card .detail-card {
         min-height: 0;
         border-radius: 18px;
         background: rgba(6, 17, 13, 0.96);
+        box-shadow: none;
       }
 
       .detail-empty {
@@ -747,6 +880,25 @@
         line-height: 1.55;
       }
 
+      .composer-target-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .composer-target-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: rgba(11, 24, 18, 0.92);
+        border: 1px solid rgba(165, 211, 187, 0.12);
+        color: var(--text-soft);
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
       .composer-textarea {
         width: 100%;
         min-height: 48px;
@@ -811,6 +963,10 @@
           grid-template-columns: 1fr;
         }
 
+        .context-grid {
+          grid-template-columns: 1fr;
+        }
+
         .detail-card {
           min-height: 0;
         }
@@ -846,6 +1002,18 @@
 
         .composer-actions .btn {
           width: auto;
+        }
+
+        .focus-list-item-top {
+          align-items: flex-start;
+        }
+
+        .focus-list-item-title,
+        .thread-title {
+          white-space: normal;
+          overflow: visible;
+          text-overflow: clip;
+          word-break: break-word;
         }
       }
     </style>
@@ -886,9 +1054,9 @@
           Manager は、あとで状況を見失わないための受信箱です
         </h2>
         <p id="auth-context-copy" class="auth-copy">
-          ここでは思いついたことをまとめて送れます。話題の分け方は AI
+          ここでは思いついたことをまとめて送れます。どの task にするかは AI
           が整理し、返信が必要なものや確認すべきものが上に並びます。整理した
-          topic は、そのまま実際の作業まで進めます。
+          task は、そのまま実際の作業まで進めます。
         </p>
         <div class="auth-row">
           <input
@@ -941,19 +1109,71 @@
             状態を確認しています…
           </div>
           <div id="activity-detail" class="activity-detail">
-            少し待つと、AI
-            が作業中か待機中か、いま確認すべき話題があるかをここに表示します。
+            少し待つと、AI が作業中か待機中か、いま確認すべき task
+            があるかをここに表示します。
           </div>
           <div id="activity-counts" class="activity-counts"></div>
         </section>
+
+        <div class="context-grid">
+          <section id="priority-lane" class="card focus-card">
+            <div class="focus-eyebrow">まず見る</div>
+            <div class="focus-title-row">
+              <div class="focus-title">優先度が高い task</div>
+            </div>
+            <div id="priority-lane-copy" class="focus-meta">
+              返信待ちや確認待ちを上から順に開けば、いま見るべき task
+              が分かります。
+            </div>
+            <div id="priority-lane-list" class="focus-list"></div>
+          </section>
+
+          <section id="current-focus" class="card focus-card">
+            <div class="focus-eyebrow">いま見ている task</div>
+            <div id="current-focus-empty" class="focus-empty">
+              まだ選んでいません。左の一覧か「まず見る」から 1
+              件開くと、ここに固定表示します。
+            </div>
+            <div id="current-focus-body" class="hidden">
+              <div class="focus-title-row">
+                <div id="current-focus-title" class="focus-title"></div>
+                <div id="current-focus-badge"></div>
+              </div>
+              <div id="current-focus-meta" class="focus-meta"></div>
+              <div id="current-focus-move" class="focus-move hidden"></div>
+              <div id="current-focus-note" class="focus-note"></div>
+              <div class="focus-actions">
+                <button
+                  id="current-focus-target-btn"
+                  class="btn btn-secondary"
+                  style="width: auto"
+                >
+                  この task に送る
+                </button>
+                <button
+                  id="current-focus-clear-btn"
+                  class="btn btn-ghost"
+                  style="width: auto"
+                >
+                  全体に戻す
+                </button>
+              </div>
+              <section id="thread-detail" class="card detail-card hidden">
+                <div class="detail-empty">
+                  task を開くと、ここにやり取りの流れが出ます。
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
 
         <section id="getting-started" class="card intro-card hidden">
           <div class="intro-pill">最初の使い方</div>
           <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
           <p>
-            何の話題かを先に決める必要はありません。AI
-            が既存の話題に振り分けるか、新しい話題を作るか、確認が必要かを整理します。
-            整理した topic は、そのまま built-in Manager
+            何の task かを先に決める必要はありません。AI が既存の task
+            に振り分けるか、新しい task を作るか、確認が必要かを整理します。
+            整理した task は、そのまま built-in Manager
             が実際の作業まで進めます。
           </p>
           <div class="intro-steps">
@@ -961,7 +1181,7 @@
               1. 下の送信欄に、やりたいことをそのまま書く
             </div>
             <div class="intro-step">
-              2. AI が話題ごとに分けて、必要なものを上に並べる
+              2. AI が task ごとに分けて、必要なものを上に並べる
             </div>
             <div class="intro-step">3. 返事が必要なものから順に確認する</div>
           </div>
@@ -1069,25 +1289,29 @@
           <div id="body-tasks" class="section-body"></div>
         </section>
       </div>
-
-      <div class="stack">
-        <section id="thread-detail" class="card detail-card hidden">
-          <div class="detail-empty">
-            左の一覧から話題を開くと、その場でやり取りの流れと確認ボタンを見られます。
-          </div>
-        </section>
-      </div>
     </main>
 
     <div id="global-composer-dock" class="composer-dock" data-auth-content>
       <div class="composer-shell">
         <div class="composer-card">
           <div class="composer-top">
-            <div class="composer-label">まとめて送る</div>
-            <div class="composer-hint">
-              何の話題かを先に決めなくて大丈夫です。AI
-              が既存の話題への追記・新しい話題・確認待ちに分けます。
+            <div id="composerLabel" class="composer-label">AI へ送る</div>
+            <div id="composerHint" class="composer-hint">
+              何の task かを先に決めなくて大丈夫です。AI が既存の task
+              への追記・新しい task・確認待ちに分けます。
             </div>
+          </div>
+          <div id="composerTargetBar" class="composer-target-bar">
+            <span id="composerTargetPill" class="composer-target-pill">
+              送信先: 全体（AI が振り分けます）
+            </span>
+            <button
+              id="composerTargetClearButton"
+              class="btn btn-ghost hidden"
+              style="width: auto"
+            >
+              全体へ戻す
+            </button>
           </div>
           <div id="composerContext" class="composer-context hidden"></div>
           <textarea

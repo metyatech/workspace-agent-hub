@@ -101,6 +101,10 @@ function createManagerFetchWithData(input: {
     configured: boolean;
     builtinBackend: boolean;
     detail: string;
+    pendingCount?: number;
+    currentQueueId?: string | null;
+    currentThreadId?: string | null;
+    currentThreadTitle?: string | null;
   };
 }) {
   return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
@@ -223,7 +227,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('Manager は、あとで状況を見失わないための受信箱です');
     expect(
       document.querySelector<HTMLElement>('#auth-context-copy')!.textContent
-    ).toContain('話題の分け方は AI');
+    ).toContain('どの task にするかは AI');
     expect(
       document
         .querySelector<HTMLElement>('#manager-bar')!
@@ -357,7 +361,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(true);
   });
 
-  it('routes a global composer message and opens the routed topic', async () => {
+  it('routes a global composer message and opens the routed topic in the stable focus panel', async () => {
     const validToken = 'manager-token';
     let threadsCalls = 0;
     const createdThread = makeThreadView('thread-1', 'AA を進める');
@@ -475,13 +479,11 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('AA を進める');
     expect(
-      document
-        .querySelector<HTMLElement>('#thread-detail')
-        ?.closest<HTMLElement>('.thread-row')?.dataset.threadId
-    ).toBe('thread-1');
-    expect(
-      document.querySelector<HTMLElement>('#composerContext')!.textContent
+      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
     ).toContain('AA を進める');
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('送信先: 全体');
 
     feedbackButtons[1]!.click();
     await flushAsync(2);
@@ -490,18 +492,16 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('BB を進める');
     expect(
-      document
-        .querySelector<HTMLElement>('#thread-detail')
-        ?.closest<HTMLElement>('.thread-row')?.dataset.threadId
-    ).toBe('thread-2');
-    expect(
-      document.querySelector<HTMLElement>('#composerContext')!.textContent
+      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
     ).toContain('BB を進める');
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('送信先: 全体');
   });
 
-  it('opens thread detail inline inside the selected row', async () => {
-    const validToken = 'inline-detail-token';
-    const thread = makeThreadView('thread-inline', 'その場で開く確認');
+  it('keeps the opened thread in the stable current-focus panel instead of moving the page target around', async () => {
+    const validToken = 'focus-panel-token';
+    const thread = makeThreadView('thread-inline', '現在の task');
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -555,15 +555,293 @@ describe('manager-app DOM auth state matrix', () => {
 
     const detail = document.querySelector<HTMLElement>('#thread-detail')!;
     expect(detail.classList.contains('hidden')).toBe(false);
-    expect(detail.closest<HTMLElement>('.thread-row')?.dataset.threadId).toBe(
-      'thread-inline'
-    );
+    expect(detail.closest<HTMLElement>('#current-focus-body')).not.toBeNull();
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+    ).toContain('現在の task');
     expect(
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('詳細を閉じる');
+  });
+
+  it('does not scroll away from the stable current-focus area when a priority-lane task is already visible', async () => {
+    const validToken = 'priority-lane-focus-token';
+    const thread = makeThreadView('thread-priority-visible', '優先 task', {
+      uiState: 'user-reply-needed',
+    });
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const currentFocus = document.querySelector<HTMLElement>('#current-focus')!;
+    vi.spyOn(currentFocus, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 24,
+      top: 24,
+      left: 0,
+      right: 900,
+      bottom: 260,
+      width: 900,
+      height: 236,
+      toJSON: () => ({}),
+    });
+
+    const scrollSpy = document.defaultView!.HTMLElement.prototype
+      .scrollIntoView as unknown as ReturnType<typeof vi.fn>;
+    scrollSpy.mockClear();
+
+    document.querySelector<HTMLElement>('.focus-list-item')!.click();
+    await flushAsync(3);
+
     expect(
-      document.querySelector<HTMLElement>('#composerContext')?.textContent
-    ).not.toContain('左の選択');
+      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+    ).toContain('優先 task');
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+
+  it('shows the newest detail message first', async () => {
+    const validToken = 'latest-first-token';
+    const thread = makeThreadView('thread-latest-first', '最新先頭の確認', {
+      messages: [
+        {
+          sender: 'user',
+          content: 'oldest-message',
+          at: '2026-03-21T00:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: 'middle-message',
+          at: '2026-03-21T00:01:00.000Z',
+        },
+        {
+          sender: 'user',
+          content: 'newest-message',
+          at: '2026-03-21T00:02:00.000Z',
+        },
+      ],
+      previewText: '[user] newest-message',
+      lastSender: 'user',
+      updatedAt: '2026-03-21T00:02:00.000Z',
+    });
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const contents = Array.from(
+      document.querySelectorAll<HTMLElement>('.msg-area .bubble-content')
+    ).map((element) => element.textContent);
+
+    expect(contents).toEqual([
+      'newest-message',
+      'middle-message',
+      'oldest-message',
+    ]);
+  });
+
+  it('sends to the selected task when the composer target is set and can return to global routing', async () => {
+    const validToken = 'target-send-token';
+    const thread = makeThreadView('thread-target', '特定 task');
+    const seenBodies: Array<{
+      content: string;
+      contextThreadId: string | null;
+    }> = [];
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          seenBodies.push(JSON.parse(String(init?.body)));
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-target',
+                  title: '特定 task',
+                  outcome: 'attached-existing',
+                  reason: '既存 task に追記しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '1件を処理しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('送信先: 全体');
+
+    document
+      .querySelector<HTMLButtonElement>('#current-focus-target-btn')!
+      .click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('@特定 task');
+
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    composer.value = 'この task を続けて';
+    document
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+      .click();
+    await flushAsync(6);
+
+    expect(seenBodies[0]).toEqual({
+      content: 'この task を続けて',
+      contextThreadId: 'thread-target',
+    });
+
+    document
+      .querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+      .click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('送信先: 全体');
   });
 
   it('keeps done topics hidden by default and shows them when toggled', async () => {
@@ -827,7 +1105,7 @@ describe('manager-app DOM auth state matrix', () => {
           threadsRequestCount += 1;
           const messages =
             threadsRequestCount >= 2
-              ? [insertedMessage, ...baseMessages]
+              ? [...baseMessages, insertedMessage]
               : baseMessages;
           const thread = makeThreadView('thread-1', '長文トピック', {
             messages,
@@ -906,6 +1184,182 @@ describe('manager-app DOM auth state matrix', () => {
     expect(secondMsgArea).not.toBe(firstMsgArea);
     expect(secondMsgArea.scrollTop).toBe(280);
   });
+
+  it('keeps the current task visible and shows its new state when it moves between buckets', async () => {
+    const validToken = 'movement-token';
+    let threadsRequestCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const thread =
+            threadsRequestCount >= 2
+              ? makeThreadView('thread-move', '移動する task', {
+                  status: 'review',
+                  uiState: 'ai-finished-awaiting-user-confirmation',
+                  previewText: '[ai] 確認してください',
+                  lastSender: 'ai',
+                })
+              : makeThreadView('thread-move', '移動する task', {
+                  status: 'active',
+                  uiState: 'ai-working',
+                  previewText: '[user] 進行中',
+                  lastSender: 'user',
+                  isWorking: true,
+                  queueDepth: 1,
+                });
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail:
+                threadsRequestCount >= 2 ? '待機中' : '処理中 (移動する task)',
+              currentThreadId: threadsRequestCount >= 2 ? null : 'thread-move',
+              currentThreadTitle:
+                threadsRequestCount >= 2 ? null : '移動する task',
+              pendingCount: threadsRequestCount >= 2 ? 0 : 1,
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+    ).toContain('移動する task');
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-meta')!.textContent
+    ).toContain('あなたの確認待ち');
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-move')!.textContent
+    ).toContain('AI作業中');
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-move')!.textContent
+    ).toContain('あなたの確認待ち');
+  });
+
+  it('automatically reveals the done section when the current task moves to done', async () => {
+    const validToken = 'done-move-token';
+    let threadsRequestCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const thread =
+            threadsRequestCount >= 2
+              ? makeThreadView('thread-done-move', '完了へ移る task', {
+                  status: 'resolved',
+                  uiState: 'done',
+                  hiddenByDefault: true,
+                })
+              : makeThreadView('thread-done-move', '完了へ移る task', {
+                  status: 'review',
+                  uiState: 'ai-finished-awaiting-user-confirmation',
+                });
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    expect(
+      document
+        .querySelector<HTMLElement>('#sec-done')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLElement>('#current-focus-meta')!.textContent
+    ).toContain('完了');
+  });
 });
 
 describe('manager-app activity summary', () => {
@@ -946,7 +1400,7 @@ describe('manager-app activity summary', () => {
     ).toContain('AI が作業や振り分けを進めています');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('順番に作業しています');
+    ).toContain('いまの task を実行中です');
 
     const chips = Array.from(
       document.querySelectorAll<HTMLElement>('.activity-chip')

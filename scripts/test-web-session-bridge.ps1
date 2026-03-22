@@ -48,8 +48,13 @@ function Invoke-HiddenPowerShell {
     $startInfo.RedirectStandardError = $true
     $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
     $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
-    foreach ($argument in (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments)) {
-        [void]$startInfo.ArgumentList.Add([string]$argument)
+    $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $allArguments) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-QuotedArgumentString -ArgumentList $allArguments
     }
 
     $process = [System.Diagnostics.Process]::new()
@@ -99,9 +104,10 @@ $codexAuthTargetPath = ''
 $previousCodexAuthSource = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE
 $previousCodexAuthTarget = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET
 $previousCodexStartupCommand = $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND
+$utf8Title = [string]::Concat([char]0x30C6, [char]0x30B9, [char]0x30C8)
 
 try {
-    $titlePayloadPath = New-Utf8PayloadFile -Value 'テスト' -Prefix 'title'
+    $titlePayloadPath = New-Utf8PayloadFile -Value $utf8Title -Prefix 'title'
     $started = Invoke-BridgeJson -Arguments @(
         '-Action', 'start',
         '-Type', 'shell',
@@ -114,7 +120,7 @@ try {
     if ([string]$started.Name -ne $resolvedSessionName) {
         throw "Unexpected session name. Expected '$resolvedSessionName', got '$($started.Name)'."
     }
-    if ([string]$started.DisplayTitle -ne 'テスト') {
+    if ([string]$started.DisplayTitle -ne $utf8Title) {
         throw "Expected the started shell session title to preserve UTF-8 text. Got '$([string]$started.DisplayTitle)'."
     }
     if (-not [bool]$started.IsLive) {
@@ -130,7 +136,7 @@ try {
     if ($listed.Count -ne 1) {
         throw 'Expected the newly started shell session to appear exactly once in the web-session inventory.'
     }
-    if ([string]$listed[0].DisplayTitle -ne 'テスト') {
+    if ([string]$listed[0].DisplayTitle -ne $utf8Title) {
         throw "Expected the listed shell session title to preserve UTF-8 text. Got '$([string]$listed[0].DisplayTitle)'."
     }
     if (-not [bool]$listed[0].IsLive) {

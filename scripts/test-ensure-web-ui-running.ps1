@@ -2,7 +2,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $ensureScriptPath = Join-Path $PSScriptRoot 'ensure-web-ui-running.ps1'
-$powerShellPath = (Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue)?.Source
+$preferredPowerShell = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
+$powerShellPath = if ($preferredPowerShell) { $preferredPowerShell.Source } else { $null }
 if (-not $powerShellPath) {
     $powerShellPath = (Get-Command 'powershell.exe' -ErrorAction Stop).Source
 }
@@ -15,6 +16,29 @@ function Get-FreeTcpPort {
     } finally {
         $listener.Stop()
     }
+}
+
+function ConvertTo-QuotedArgumentString {
+    param(
+        [string[]]$ArgumentList = @()
+    )
+
+    $quoted = foreach ($argument in $ArgumentList) {
+        $value = [string]$argument
+        if (-not $value.Length) {
+            '""'
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+
+        $escaped = $value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"' + $escaped + '"'
+    }
+    return ($quoted -join ' ')
 }
 
 function Start-EnsureProcess {
@@ -60,15 +84,16 @@ function Start-EnsureProcess {
 function Wait-ForLaunchMetadata {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TargetStdOutPath,
+        $ProcessInfo,
         [int]$TimeoutMilliseconds = 60000
     )
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     do {
-        if (Test-Path -Path $TargetStdOutPath) {
+        if (Test-Path -Path $ProcessInfo.StdOutPath) {
             try {
-                $raw = Get-Content -Path $TargetStdOutPath -Raw -Encoding utf8
+                $raw = Get-Content -Path $ProcessInfo.StdOutPath -Raw -Encoding utf8
                 if ($raw -and $raw.Trim()) {
                     return ($raw | ConvertFrom-Json)
                 }
@@ -78,7 +103,7 @@ function Wait-ForLaunchMetadata {
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
 
-    throw "Expected ensure-web-ui-running.ps1 to emit launch metadata in $TargetStdOutPath."
+    throw "Expected ensure-web-ui-running.ps1 to emit launch metadata in $($ProcessInfo.StdOutPath)."
 }
 
 function Wait-ForProcessSuccess {
@@ -88,36 +113,21 @@ function Wait-ForProcessSuccess {
         [int]$TimeoutSeconds = 30
     )
 
-    if (-not $ProcessInfo.Process.WaitForExit($TimeoutSeconds * 1000)) {
-        try {
-            Stop-Process -Id $ProcessInfo.Process.Id -Force -ErrorAction Stop
-        } catch {
-        }
-        throw "ensure-web-ui-running.ps1 did not exit within $TimeoutSeconds seconds."
-    }
-
-    if ($ProcessInfo.Process.ExitCode -eq 0) {
+    Start-Sleep -Milliseconds 500
+    if (-not (Test-Path -Path $ProcessInfo.StdErrPath)) {
         return
     }
 
-    $stderrText = if (Test-Path -Path $ProcessInfo.StdErrPath) {
-        (Get-Content -Path $ProcessInfo.StdErrPath -Raw -Encoding utf8).Trim()
-    } else {
-        ''
+    $stderrRaw = Get-Content -Path $ProcessInfo.StdErrPath -Raw -Encoding utf8
+    if ($null -eq $stderrRaw) {
+        $stderrRaw = ''
     }
-    $stdoutText = if (Test-Path -Path $ProcessInfo.StdOutPath) {
-        (Get-Content -Path $ProcessInfo.StdOutPath -Raw -Encoding utf8).Trim()
-    } else {
-        ''
+    $stderrText = $stderrRaw.Trim()
+    if (-not $stderrText) {
+        return
     }
-    $detail = if ($stderrText) {
-        $stderrText
-    } elseif ($stdoutText) {
-        $stdoutText
-    } else {
-        'No output captured.'
-    }
-    throw "ensure-web-ui-running.ps1 failed with exit code $($ProcessInfo.Process.ExitCode). $detail"
+
+    throw "ensure-web-ui-running.ps1 emitted stderr during launch verification. $stderrText"
 }
 
 function Wait-ForApiReady {
@@ -156,7 +166,7 @@ $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = 'https://hub.example.test/connect'
 
 try {
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'first' -TargetDirectory $testDirectory
-    $first = Wait-ForLaunchMetadata -TargetStdOutPath $firstRun.StdOutPath
+    $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
     if (-not $first.ListenUrl) {
@@ -170,7 +180,7 @@ try {
     Wait-ForApiReady -PortNumber $firstPort -Token 'ensure-test-token'
 
     $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'second' -TargetDirectory $testDirectory
-    $second = Wait-ForLaunchMetadata -TargetStdOutPath $secondRun.StdOutPath
+    $second = Wait-ForLaunchMetadata -ProcessInfo $secondRun
     Wait-ForProcessSuccess -ProcessInfo $secondRun
     $secondPort = ([Uri][string]$second.ListenUrl).Port
     Wait-ForApiReady -PortNumber $secondPort -Token 'ensure-test-token'
@@ -195,7 +205,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 "@
 
     $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-healthy' -TargetDirectory $testDirectory
-    $serveHealthy = Wait-ForLaunchMetadata -TargetStdOutPath $serveHealthyRun.StdOutPath
+    $serveHealthy = Wait-ForLaunchMetadata -ProcessInfo $serveHealthyRun
     Wait-ForProcessSuccess -ProcessInfo $serveHealthyRun
     $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
     Wait-ForApiReady -PortNumber $serveHealthyPort -Token 'ensure-test-token'
@@ -210,7 +220,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 '@
 
     $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-mismatch' -TargetDirectory $testDirectory
-    $serveMismatch = Wait-ForLaunchMetadata -TargetStdOutPath $serveMismatchRun.StdOutPath
+    $serveMismatch = Wait-ForLaunchMetadata -ProcessInfo $serveMismatchRun
     Wait-ForProcessSuccess -ProcessInfo $serveMismatchRun
     $serveMismatchPort = ([Uri][string]$serveMismatch.ListenUrl).Port
     Wait-ForApiReady -PortNumber $serveMismatchPort -Token 'ensure-test-token'
@@ -229,7 +239,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     ($corruptedState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
     $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'stale-pid' -TargetDirectory $testDirectory
-    $stalePid = Wait-ForLaunchMetadata -TargetStdOutPath $stalePidRun.StdOutPath
+    $stalePid = Wait-ForLaunchMetadata -ProcessInfo $stalePidRun
     Wait-ForProcessSuccess -ProcessInfo $stalePidRun
     Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token 'ensure-test-token'
 
@@ -238,7 +248,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     }
 
     $thirdRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-next-token' -RunName 'third' -TargetDirectory $testDirectory
-    $third = Wait-ForLaunchMetadata -TargetStdOutPath $thirdRun.StdOutPath
+    $third = Wait-ForLaunchMetadata -ProcessInfo $thirdRun
     Wait-ForProcessSuccess -ProcessInfo $thirdRun
     Wait-ForApiReady -PortNumber ([Uri][string]$third.ListenUrl).Port -Token 'ensure-next-token'
 

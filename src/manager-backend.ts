@@ -1410,10 +1410,22 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   configured: boolean;
   builtinBackend: boolean;
   detail: string;
+  pendingCount: number;
+  currentQueueId: string | null;
+  currentThreadId: string | null;
+  currentThreadTitle: string | null;
 }> {
   const session = await readSession(dir);
   const queue = await readQueue(dir);
   const pending = queue.filter((e) => !e.processed).length;
+  const currentQueueEntry =
+    session.currentQueueId === null
+      ? null
+      : (queue.find((entry) => entry.id === session.currentQueueId) ?? null);
+  const currentThread =
+    currentQueueEntry === null
+      ? null
+      : await getThread(dir, currentQueueEntry.threadId);
 
   if (session.status === 'busy') {
     const alive = session.pid !== null && isPidAlive(session.pid);
@@ -1422,7 +1434,16 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
         running: true,
         configured: true,
         builtinBackend: true,
-        detail: `処理中 (PID ${session.pid})`,
+        detail: currentThread
+          ? `処理中 (${currentThread.title})`
+          : `処理中 (PID ${session.pid})`,
+        pendingCount: Math.max(
+          pending - (currentQueueEntry === null ? 0 : 1),
+          0
+        ),
+        currentQueueId: session.currentQueueId,
+        currentThreadId: currentQueueEntry?.threadId ?? null,
+        currentThreadTitle: currentThread?.title ?? null,
       };
     }
     // Stale PID — reset
@@ -1452,6 +1473,10 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       configured: true,
       builtinBackend: true,
       detail: '未起動 — メッセージ送信で自動起動します',
+      pendingCount: 0,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
     };
   }
 
@@ -1460,6 +1485,10 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
     configured: true,
     builtinBackend: true,
     detail: pending > 0 ? `待機中 (キュー: ${pending}件)` : '待機中',
+    pendingCount: pending,
+    currentQueueId: null,
+    currentThreadId: null,
+    currentThreadTitle: null,
   };
 }
 

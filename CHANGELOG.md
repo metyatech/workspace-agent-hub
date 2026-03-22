@@ -15,13 +15,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Reworked the native Manager information hierarchy around a stable `current
+task` card, a `what to read first` lane, and an explicit global-vs-task send
+  target so state changes and follow-up sends are easier to track
 - Retired the old `AI Agent Sessions` shortcut as a normal user-facing
   entrypoint and made the browser Hub shortcut installer remove any leftover
   legacy shortcut from Windows
 - Added a prominent Manager activity summary so users can immediately tell
   whether AI is actively processing, idle, or waiting on them, along with the
-  current per-bucket topic counts
-- Preserved the user's original routed wording in Manager topics whenever an
+  current per-bucket task counts
+- Preserved the user's original routed wording in Manager tasks whenever an
   exact excerpt can be matched from the freeform input, instead of immediately
   replacing it with an AI paraphrase
 - Changed built-in Manager reply semantics so in-progress AI updates stay in

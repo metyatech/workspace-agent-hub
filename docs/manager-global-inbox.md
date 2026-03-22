@@ -178,18 +178,24 @@ produced something the human can now inspect. Intake acknowledgements or
 The Manager screen must make these points obvious without external explanation:
 
 1. `ここではまとめて送ってよい`
-2. `話題の整理はAIがやる`
+2. `task の整理はAIがやる`
 3. `今すぐ自分が返すべきものはどれか`
 4. `AIが終えたので確認すべきものはどれか`
-5. `ここで動く built-in Manager は、topic 整理のあとに実際の作業まで進める`
+5. `ここで動く built-in Manager は、task 整理のあとに実際の作業まで進める`
 
 ### Primary layout direction
 
 - A single urgency-ordered inbox view
 - One global composer anchored consistently across the screen
-- Topic detail remains available, but the primary mental model is the inbox, not
+- A stable `current task` area near the top so the user does not lose the task
+  they are reading when it moves between urgency buckets
+- A small `what to read first` lane near the top that surfaces the highest
+  urgency tasks without making the user scan every section
+- Task detail remains available, but the primary mental model is the inbox, not
   thread administration
 - Avoid exposing internal thread IDs or infrastructure wording
+- Make the current composer target obvious: either whole-inbox routing or a
+  specific selected task
 
 ### Routing feedback placement
 
@@ -234,6 +240,10 @@ This feedback is not the main record; the main record remains the topic list.
 9. The primary mobile and desktop flows avoid horizontal scrolling.
 10. The user can understand the next action from the screen itself without
     needing chat guidance.
+11. When the user is reading one topic and that topic changes state, the screen
+    keeps that topic visibly anchored so it does not feel lost.
+12. When the user is about to send a follow-up to one topic, the target topic
+    is visually explicit before send.
 
 ## Implementation sequence
 

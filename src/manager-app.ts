@@ -52,6 +52,10 @@ interface ManagerStatusPayload {
   configured: boolean;
   builtinBackend: boolean;
   detail?: string;
+  pendingCount?: number;
+  currentQueueId?: string | null;
+  currentThreadId?: string | null;
+  currentThreadTitle?: string | null;
 }
 
 interface ManagerRoutingSummaryItem {
@@ -103,13 +107,13 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
 };
 
 const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
-  'routing-confirmation-needed': '振り分け確認が必要な話題はありません',
-  'user-reply-needed': 'あなたの返信が必要な話題はありません',
+  'routing-confirmation-needed': '振り分け確認が必要な task はありません',
+  'user-reply-needed': 'あなたの返信が必要な task はありません',
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
-  queued: 'まだ着手していない話題はありません',
-  'ai-working': 'AI が作業中の話題はありません',
-  done: '完了済みの話題はありません',
+  queued: 'まだ着手していない task はありません',
+  'ai-working': 'AI が作業中の task はありません',
+  done: '完了済みの task はありません',
 };
 
 const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
@@ -259,6 +263,10 @@ function makeBubble(message: Msg): HTMLDivElement {
   return bubble;
 }
 
+function messagesForDetail(messages: Msg[]): Msg[] {
+  return [...messages].reverse();
+}
+
 function makeFeedbackChip(
   label: string,
   onClick?: () => void
@@ -282,7 +290,7 @@ function describeThreadState(thread: ThreadView): string | null {
   if (thread.routingConfirmationNeeded) {
     return (
       thread.routingHint ??
-      'この話題だけ、どの話として扱うかをあなたに確認したい状態です。'
+      'この task だけ、どの task として扱うかをあなたに確認したい状態です。'
     );
   }
   if (thread.uiState === 'user-reply-needed') {
@@ -292,15 +300,29 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
   if (thread.uiState === 'ai-working') {
-    return 'いま AI がこの話題の作業を実行中です。結果が返ると自動で上の優先度へ移動します。';
+    return 'いま AI がこの task の作業を実行中です。結果が返ると自動で上の優先度へ移動します。';
   }
   if (thread.uiState === 'queued') {
-    return 'この話題はまだ未着手です。AI が順番に取りかかります。';
+    return 'この task はまだ未着手です。AI が順番に取りかかります。';
   }
   if (thread.uiState === 'done') {
-    return 'この話題は完了として閉じています。必要ならもう一度開けます。';
+    return 'この task は完了として閉じています。必要ならもう一度開けます。';
   }
   return null;
+}
+
+function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
+  if (!status?.running) {
+    return false;
+  }
+  if (status.currentThreadId) {
+    return true;
+  }
+  return status.detail?.includes('処理中') ?? false;
+}
+
+function threadStateLocation(thread: ThreadView): string {
+  return `一覧では「${STATE_LABELS[thread.uiState]}」にあります`;
 }
 
 class ThreadSectionController {
@@ -313,6 +335,7 @@ class ThreadSectionController {
   #orderedIds: string[] = [];
   #lastThreads: ThreadView[] = [];
   #lastOpenThreadId: string | null = null;
+  #lastTargetThreadId: string | null = null;
   #lastSelectHandler: ((id: string) => void) | null = null;
 
   constructor(key: ManagerUiState) {
@@ -342,6 +365,7 @@ class ThreadSectionController {
       this.update(
         this.#lastThreads,
         this.#lastOpenThreadId,
+        this.#lastTargetThreadId,
         this.#lastSelectHandler
       );
     }
@@ -350,10 +374,12 @@ class ThreadSectionController {
   update(
     threads: ThreadView[],
     openThreadId: string | null,
+    targetThreadId: string | null,
     onSelect: ((id: string) => void) | null
   ): void {
     this.#lastThreads = threads;
     this.#lastOpenThreadId = openThreadId;
+    this.#lastTargetThreadId = targetThreadId;
     this.#lastSelectHandler = onSelect;
 
     if (this.#count) {
@@ -394,11 +420,11 @@ class ThreadSectionController {
     for (const thread of threads) {
       const existing = this.#rows.get(thread.id);
       if (existing) {
-        this.#patchRow(existing, thread, openThreadId);
+        this.#patchRow(existing, thread, openThreadId, targetThreadId);
       } else {
         this.#rows.set(
           thread.id,
-          this.#buildRow(thread, openThreadId, onSelect)
+          this.#buildRow(thread, openThreadId, targetThreadId, onSelect)
         );
       }
     }
@@ -418,6 +444,7 @@ class ThreadSectionController {
   #buildRow(
     thread: ThreadView,
     openThreadId: string | null,
+    targetThreadId: string | null,
     onSelect: ((id: string) => void) | null
   ): HTMLDivElement {
     const row = document.createElement('div');
@@ -450,12 +477,18 @@ class ThreadSectionController {
     detailToggle.textContent =
       openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
 
+    const target = document.createElement('span');
+    target.className = 'thread-open-indicator thread-target-indicator';
+    target.dataset.rowTarget = '';
+    target.textContent = '送信先';
+    target.classList.toggle('hidden', targetThreadId !== thread.id);
+
     const preview = document.createElement('div');
     preview.className = 'thread-preview';
     preview.dataset.rowPreview = '';
     preview.textContent = thread.previewText || 'まだやり取りはありません';
 
-    top.append(badge, title, age, detailToggle);
+    top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
 
     if (thread.routingHint) {
@@ -475,7 +508,8 @@ class ThreadSectionController {
   #patchRow(
     row: HTMLElement,
     thread: ThreadView,
-    openThreadId: string | null
+    openThreadId: string | null,
+    targetThreadId: string | null
   ): void {
     row.classList.toggle('selected', openThreadId === thread.id);
     row.classList.toggle('thread-row-open', openThreadId === thread.id);
@@ -504,6 +538,9 @@ class ThreadSectionController {
       toggle.textContent =
         openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
     }
+
+    const target = row.querySelector<HTMLElement>('[data-row-target]');
+    target?.classList.toggle('hidden', targetThreadId !== thread.id);
 
     const preview = row.querySelector<HTMLElement>('[data-row-preview]');
     if (preview && preview.textContent !== thread.previewText) {
@@ -748,8 +785,10 @@ class DetailController {
     const focusComposer = document.createElement('button');
     focusComposer.className = 'btn btn-secondary';
     focusComposer.style.width = 'auto';
-    focusComposer.textContent = 'この続きを送る';
-    focusComposer.addEventListener('click', () => this.#app.focusComposer());
+    focusComposer.textContent = 'この task に送る';
+    focusComposer.addEventListener('click', () =>
+      this.#app.focusComposerForThread(thread.id)
+    );
     actions.appendChild(focusComposer);
 
     const statusButton = document.createElement('button');
@@ -772,14 +811,15 @@ class DetailController {
 
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
-    if (thread.messages.length === 0) {
+    const detailMessages = messagesForDetail(thread.messages);
+    if (detailMessages.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'detail-empty';
       empty.textContent =
         'まだやり取りはありません。下の送信欄から最初のメッセージを送れます。';
       msgArea.appendChild(empty);
     } else {
-      for (const message of thread.messages) {
+      for (const message of detailMessages) {
         msgArea.appendChild(makeBubble(message));
       }
     }
@@ -794,7 +834,7 @@ class DetailController {
     this.#lastRenderedSignature = null;
     this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
-      '<div class="detail-empty">左の一覧から話題を開くと、その場で流れを追えます。</div>';
+      '<div class="detail-empty">task を開くと、ここにやり取りの流れが固定表示されます。</div>';
   }
 }
 
@@ -802,6 +842,8 @@ class ManagerApp {
   allThreads: ThreadView[] = [];
   allTasks: Task[] = [];
   openThreadId: string | null = null;
+  #composerTargetThreadId: string | null = null;
+  #openThreadMovementNotice: string | null = null;
 
   #sections: Record<ManagerUiState, ThreadSectionController>;
   #taskSection: TaskSectionController;
@@ -862,8 +904,18 @@ class ManagerApp {
     input?.focus();
   }
 
+  focusComposerForThread(threadId: string | null): void {
+    this.#setComposerTarget(threadId);
+    this.#renderAll();
+    this.focusComposer();
+  }
+
   closeDetail(): void {
+    if (this.#composerTargetThreadId === this.openThreadId) {
+      this.#composerTargetThreadId = null;
+    }
     this.openThreadId = null;
+    this.#openThreadMovementNotice = null;
     this.#detail.clear();
     this.#renderAll();
   }
@@ -904,6 +956,7 @@ class ManagerApp {
   }
 
   async loadAll(): Promise<boolean> {
+    const previousOpenThread = this.#findThread(this.openThreadId);
     const [threadsRes, tasksRes] = await Promise.all([
       this.apiFetch('/api/threads'),
       this.apiFetch('/api/tasks'),
@@ -924,7 +977,35 @@ class ManagerApp {
       this.openThreadId &&
       !this.allThreads.some((thread) => thread.id === this.openThreadId)
     ) {
+      if (this.#composerTargetThreadId === this.openThreadId) {
+        this.#composerTargetThreadId = null;
+      }
       this.openThreadId = null;
+      this.#openThreadMovementNotice = null;
+    }
+
+    if (
+      this.#composerTargetThreadId &&
+      !this.allThreads.some(
+        (thread) => thread.id === this.#composerTargetThreadId
+      )
+    ) {
+      this.#composerTargetThreadId = null;
+    }
+
+    const nextOpenThread = this.#findThread(this.openThreadId);
+    if (
+      previousOpenThread &&
+      nextOpenThread &&
+      previousOpenThread.uiState !== nextOpenThread.uiState
+    ) {
+      this.#openThreadMovementNotice = `この task は「${STATE_LABELS[previousOpenThread.uiState]}」から「${STATE_LABELS[nextOpenThread.uiState]}」に移動しました。`;
+      if (nextOpenThread.uiState === 'done') {
+        this.#showDone = true;
+        this.#renderDoneToggle();
+      }
+    } else if (!nextOpenThread) {
+      this.#openThreadMovementNotice = null;
     }
 
     this.#renderAll();
@@ -951,15 +1032,24 @@ class ManagerApp {
     ) as HTMLButtonElement | null;
 
     if (payload.running) {
-      const busy = payload.detail?.includes('処理中') ?? false;
+      const busy = managerStatusBusy(payload);
       if (dot) {
         dot.style.background = busy ? '#f59e0b' : '#22c55e';
       }
       if (text) {
         text.style.color = busy ? '#fde68a' : '#86efac';
-        text.textContent = busy
-          ? `AI が作業中です${payload.detail ? ` — ${payload.detail}` : ''}`
-          : `待機中です${payload.detail ? ` — ${payload.detail}` : ''}`;
+        const label = busy
+          ? payload.currentThreadTitle
+            ? `AI が「${payload.currentThreadTitle}」を処理中です`
+            : 'AI が作業中です'
+          : '待機中です';
+        const queueTail =
+          !busy && (payload.pendingCount ?? 0) > 0
+            ? ` — キュー ${payload.pendingCount} 件`
+            : payload.detail
+              ? ` — ${payload.detail}`
+              : '';
+        text.textContent = `${label}${queueTail}`;
       }
       startButton?.classList.add('hidden');
       this.#renderActivitySummary();
@@ -1000,18 +1090,53 @@ class ManagerApp {
     this.#focusThread(threadId);
   }
 
+  #findThread(threadId: string | null): ThreadView | null {
+    if (!threadId) {
+      return null;
+    }
+    return this.allThreads.find((item) => item.id === threadId) ?? null;
+  }
+
   #focusThread(threadId: string): void {
     this.openThreadId = threadId;
+    this.#openThreadMovementNotice = null;
     const thread = this.allThreads.find((item) => item.id === threadId) ?? null;
     if (thread?.uiState === 'done') {
       this.#showDone = true;
       this.#renderDoneToggle();
     }
     this.#renderAll();
-    if (thread) {
-      const openRow = this.#sections[thread.uiState].getRow(thread.id);
-      openRow?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    this.#scrollCurrentFocusIntoViewIfNeeded();
+  }
+
+  #scrollCurrentFocusIntoViewIfNeeded(): void {
+    const currentFocus = document.getElementById('current-focus');
+    if (!currentFocus) {
+      return;
     }
+
+    const rect = currentFocus.getBoundingClientRect();
+    const viewportHeight =
+      window.innerHeight || document.documentElement.clientHeight || 0;
+    if (
+      rect.top >= 0 &&
+      rect.left >= 0 &&
+      rect.bottom <= viewportHeight &&
+      rect.width > 0 &&
+      rect.height > 0
+    ) {
+      return;
+    }
+
+    currentFocus.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  #setComposerTarget(threadId: string | null): void {
+    const nextThread =
+      threadId === null
+        ? null
+        : (this.allThreads.find((item) => item.id === threadId) ?? null);
+    this.#composerTargetThreadId = nextThread?.id ?? null;
   }
 
   async startManager(): Promise<void> {
@@ -1057,7 +1182,7 @@ class ManagerApp {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content,
-        contextThreadId: this.openThreadId,
+        contextThreadId: this.#composerTargetThreadId,
       }),
     });
 
@@ -1218,6 +1343,32 @@ class ManagerApp {
     composerButton?.addEventListener('click', () => {
       void this.sendGlobalMessage();
     });
+
+    const composerTargetClear = document.getElementById(
+      'composerTargetClearButton'
+    ) as HTMLButtonElement | null;
+    composerTargetClear?.addEventListener('click', () => {
+      this.#setComposerTarget(null);
+      this.#renderAll();
+      this.focusComposer();
+    });
+
+    const currentFocusTarget = document.getElementById(
+      'current-focus-target-btn'
+    ) as HTMLButtonElement | null;
+    currentFocusTarget?.addEventListener('click', () => {
+      this.focusComposerForThread(this.openThreadId);
+      this.#renderAll();
+    });
+
+    const currentFocusClear = document.getElementById(
+      'current-focus-clear-btn'
+    ) as HTMLButtonElement | null;
+    currentFocusClear?.addEventListener('click', () => {
+      this.#setComposerTarget(null);
+      this.#renderAll();
+      this.focusComposer();
+    });
   }
 
   #wireAuthPanel(): void {
@@ -1348,7 +1499,12 @@ class ManagerApp {
     const onSelect = (threadId: string) => this.openDetail(threadId);
     for (const state of STATE_ORDER) {
       const threads = grouped.get(state) ?? [];
-      this.#sections[state].update(threads, this.openThreadId, onSelect);
+      this.#sections[state].update(
+        threads,
+        this.openThreadId,
+        this.#composerTargetThreadId,
+        onSelect
+      );
     }
 
     const doneSection = document.getElementById('sec-done');
@@ -1363,6 +1519,9 @@ class ManagerApp {
     this.#taskSection.render(this.allTasks);
     this.#renderGettingStarted();
     this.#renderActivitySummary();
+    this.#renderPriorityLane();
+    this.#renderCurrentFocus();
+    this.#renderComposerTargetBar();
     this.#renderComposerContext();
 
     const openThread =
@@ -1371,12 +1530,164 @@ class ManagerApp {
         : (this.allThreads.find((thread) => thread.id === this.openThreadId) ??
           null);
     this.#detail.render(openThread);
-    if (openThread) {
-      const openRow = this.#sections[openThread.uiState].getRow(openThread.id);
-      if (openRow && this.#detail.element.parentElement !== openRow) {
-        openRow.appendChild(this.#detail.element);
-      }
+  }
+
+  #renderPriorityLane(): void {
+    const list = document.getElementById('priority-lane-list');
+    const copy = document.getElementById('priority-lane-copy');
+    if (!list || !copy) {
+      return;
     }
+
+    list.innerHTML = '';
+    const threads = this.allThreads.filter(
+      (thread) => thread.uiState !== 'done'
+    );
+
+    if (threads.length === 0) {
+      copy.textContent =
+        'まだ見るべき task はありません。下の送信欄からまとめて送ると、ここに優先順で並びます。';
+      const empty = document.createElement('div');
+      empty.className = 'focus-empty';
+      empty.textContent = 'いま優先して見る task はありません。';
+      list.appendChild(empty);
+      return;
+    }
+
+    copy.textContent =
+      'まずは上から順に見れば、返事が必要なものや確認すべきものを見失いにくくなります。';
+
+    for (const thread of threads.slice(0, 4)) {
+      const button = document.createElement('button');
+      button.className = 'focus-list-item btn-ghost';
+      button.type = 'button';
+      button.classList.toggle('current', thread.id === this.openThreadId);
+      button.addEventListener('click', () => {
+        this.#focusThread(thread.id);
+      });
+
+      const top = document.createElement('div');
+      top.className = 'focus-list-item-top';
+      top.append(
+        makeStateBadge(thread.uiState),
+        Object.assign(document.createElement('div'), {
+          className: 'focus-list-item-title',
+          textContent: thread.title,
+        })
+      );
+
+      const meta = document.createElement('div');
+      meta.className = 'focus-list-item-meta';
+      meta.textContent = `${thread.previewText} / ${threadStateLocation(thread)} / 更新 ${formatAge(thread.updatedAt)}`;
+
+      button.append(top, meta);
+      list.appendChild(button);
+    }
+  }
+
+  #renderCurrentFocus(): void {
+    const empty = document.getElementById('current-focus-empty');
+    const body = document.getElementById('current-focus-body');
+    const title = document.getElementById('current-focus-title');
+    const badgeRoot = document.getElementById('current-focus-badge');
+    const meta = document.getElementById('current-focus-meta');
+    const note = document.getElementById('current-focus-note');
+    const move = document.getElementById('current-focus-move');
+    const targetButton = document.getElementById(
+      'current-focus-target-btn'
+    ) as HTMLButtonElement | null;
+    const clearButton = document.getElementById(
+      'current-focus-clear-btn'
+    ) as HTMLButtonElement | null;
+    if (!empty || !body || !title || !badgeRoot || !meta || !note || !move) {
+      return;
+    }
+
+    const thread = this.#findThread(this.openThreadId);
+    if (!thread) {
+      empty.classList.remove('hidden');
+      body.classList.add('hidden');
+      move.classList.add('hidden');
+      move.textContent = '';
+      return;
+    }
+
+    empty.classList.add('hidden');
+    body.classList.remove('hidden');
+    title.textContent = thread.title;
+    badgeRoot.innerHTML = '';
+    badgeRoot.appendChild(makeStateBadge(thread.uiState));
+
+    const metaParts = [threadStateLocation(thread)];
+    if (thread.updatedAt) {
+      metaParts.push(`更新 ${formatAge(thread.updatedAt)}`);
+    }
+    if (thread.isWorking) {
+      metaParts.push('いま実際に処理中です');
+    } else if (thread.queueDepth > 0) {
+      metaParts.push(`キュー ${thread.queueDepth} 件`);
+    }
+    meta.textContent = metaParts.join(' / ');
+
+    note.textContent =
+      describeThreadState(thread) ??
+      'この task の状況はここに固定表示します。状態が変わっても見失いにくくなります。';
+
+    if (this.#openThreadMovementNotice) {
+      move.classList.remove('hidden');
+      move.textContent = this.#openThreadMovementNotice;
+    } else {
+      move.classList.add('hidden');
+      move.textContent = '';
+    }
+
+    const targeted = this.#composerTargetThreadId === thread.id;
+    if (targetButton) {
+      targetButton.textContent =
+        thread.uiState === 'done'
+          ? '完了した task です'
+          : targeted
+            ? 'この task に送る設定中'
+            : 'この task に送る';
+      targetButton.disabled = targeted || thread.uiState === 'done';
+    }
+    if (clearButton) {
+      clearButton.classList.toggle('hidden', !this.#composerTargetThreadId);
+    }
+  }
+
+  #renderComposerTargetBar(): void {
+    const label = document.getElementById('composerLabel');
+    const hint = document.getElementById('composerHint');
+    const pill = document.getElementById('composerTargetPill');
+    const clearButton = document.getElementById(
+      'composerTargetClearButton'
+    ) as HTMLButtonElement | null;
+    if (!pill) {
+      return;
+    }
+    const thread = this.#findThread(this.#composerTargetThreadId);
+    if (!thread) {
+      if (label) {
+        label.textContent = 'AI へ送る';
+      }
+      if (hint) {
+        hint.textContent =
+          '何の task かを先に決めなくて大丈夫です。AI が既存の task への追記・新しい task・確認待ちに分けます。';
+      }
+      pill.textContent = '送信先: 全体（AI が振り分けます）';
+      clearButton?.classList.add('hidden');
+      return;
+    }
+    if (label) {
+      label.textContent = 'この task に送る';
+    }
+    if (hint) {
+      hint.textContent =
+        'いま選んでいる task に優先して送ります。全体へ戻すと、AI がもう一度 task を振り分けます。';
+    }
+    pill.textContent = `送信先: @${thread.title}`;
+    clearButton?.classList.remove('hidden');
   }
 
   #renderGettingStarted(): void {
@@ -1404,20 +1715,24 @@ class ManagerApp {
       ])
     ) as Record<ManagerUiState, number>;
 
-    const busy = this.#managerStatus?.detail?.includes('処理中') ?? false;
+    const busy = managerStatusBusy(this.#managerStatus);
     const running = this.#managerStatus?.running ?? false;
     const configured = this.#managerStatus?.configured ?? false;
+    const currentThreadTitle = this.#managerStatus?.currentThreadTitle ?? null;
+    const pendingCount = this.#managerStatus?.pendingCount ?? 0;
 
     if (busy) {
-      primary.textContent = 'AI が作業や振り分けを進めています';
+      primary.textContent = currentThreadTitle
+        ? `AI が「${currentThreadTitle}」を進めています`
+        : 'AI が作業や振り分けを進めています';
     } else if (counts['routing-confirmation-needed'] > 0) {
-      primary.textContent = '振り分け確認が必要な話題があります';
+      primary.textContent = '振り分け確認が必要な task があります';
     } else if (counts['user-reply-needed'] > 0) {
       primary.textContent = 'あなたの返信待ちがあります';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       primary.textContent = 'AI から返答が来ています';
     } else if (counts['queued'] > 0) {
-      primary.textContent = 'まだ着手していない話題があります';
+      primary.textContent = 'まだ着手していない task があります';
     } else if (counts['ai-working'] > 0) {
       primary.textContent = 'AI が作業中です';
     } else if (running) {
@@ -1430,22 +1745,26 @@ class ManagerApp {
 
     if (busy) {
       detail.textContent =
-        '順番に作業しています。結果が返った話題は上の一覧へ自動で上がります。';
+        pendingCount > 0
+          ? `いまの task が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると一覧の上へ上がります。`
+          : 'いまの task を実行中です。返答できる状態になると一覧の上へ上がります。';
     } else if (running) {
       detail.textContent =
-        'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
+        pendingCount > 0
+          ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
+          : 'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
     } else if (configured) {
       detail.textContent =
         'まだ始まっていません。下の送信欄から投げれば自動で起動します。';
     } else if (counts['user-reply-needed'] > 0) {
       detail.textContent =
-        '上から順に開けば、いま返した方がいい話題から見られます。';
+        '上から順に開けば、いま返した方がいい task から見られます。';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
         'AI が返答済みです。確認したいものから順に開いてください。';
     } else {
       detail.textContent =
-        '送った内容は topic ごとに分かれて、ここで今の状況が見えるようになります。';
+        '送った内容は task ごとに分かれて、ここで今の状況が見えるようになります。';
     }
 
     countsRoot.innerHTML = '';
@@ -1498,18 +1817,14 @@ class ManagerApp {
     if (!context) {
       return;
     }
-    const thread =
-      this.openThreadId === null
-        ? null
-        : (this.allThreads.find((item) => item.id === this.openThreadId) ??
-          null);
-    if (!thread || thread.uiState === 'done') {
-      context.classList.add('hidden');
-      context.textContent = '';
+    const thread = this.#findThread(this.#composerTargetThreadId);
+    context.classList.remove('hidden');
+    if (thread && thread.uiState !== 'done') {
+      context.textContent = `この送信は「${thread.title}」への追記として優先します。別の task に送りたいときは、その task を開いて「この task に送る」か、「全体へ戻す」を押してください。`;
       return;
     }
-    context.classList.remove('hidden');
-    context.textContent = `いま見ている「${thread.title}」を優先して振り分けます。別の話を送りたいときは、この話題をもう一度押すと外せます。`;
+    context.textContent =
+      '送信先をまだ決めていません。ここにまとめて送れば AI が既存 task への追記・新しい task・確認待ちに分けます。特定の task に送りたいときは、その task を開いて「この task に送る」を押してください。';
   }
 
   #renderComposerFeedback(summary: ManagerRoutingSummary): void {
