@@ -294,25 +294,10 @@
         line-height: 1.6;
       }
 
-      .focus-note {
-        color: var(--text-soft);
-        background: rgba(124, 227, 172, 0.08);
-        border-radius: 14px;
-        padding: 10px 12px;
-        font-size: 0.76rem;
-        line-height: 1.6;
-      }
-
       .focus-empty {
         color: var(--text-muted);
         font-size: 0.8rem;
         line-height: 1.7;
-      }
-
-      .focus-actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
       }
 
       .focus-move {
@@ -323,44 +308,6 @@
         padding: 10px 12px;
         font-size: 0.76rem;
         line-height: 1.6;
-      }
-
-      .current-focus-body {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-
-      .current-focus-summary {
-        display: grid;
-        gap: 8px;
-        padding: 12px 14px;
-        border-radius: 16px;
-        background: rgba(124, 227, 172, 0.05);
-        border: 1px solid rgba(124, 227, 172, 0.1);
-      }
-
-      .current-focus-summary-top {
-        display: flex;
-        gap: 10px;
-        align-items: flex-start;
-        flex-wrap: wrap;
-      }
-
-      .current-focus-title-row {
-        flex: 1;
-        min-width: 0;
-      }
-
-      .current-focus-title {
-        font-size: 0.86rem;
-        font-weight: 700;
-        line-height: 1.45;
-      }
-
-      .current-focus-meta {
-        font-size: 0.74rem;
-        line-height: 1.55;
       }
 
       .focus-list {
@@ -623,6 +570,13 @@
         padding-bottom: 12px;
       }
 
+      .thread-inline-detail-host {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 8px;
+      }
+
       .thread-row-top {
         display: flex;
         gap: 8px;
@@ -699,7 +653,8 @@
         overflow: hidden;
       }
 
-      .focus-card .detail-card {
+      .focus-card .detail-card,
+      .thread-row .detail-card {
         min-height: 0;
         border-radius: 18px;
         background: rgba(6, 17, 13, 0.96);
@@ -1153,50 +1108,22 @@
           <div id="activity-counts" class="activity-counts"></div>
         </section>
 
-        <div class="context-grid">
-          <section id="priority-lane" class="card focus-card">
-            <div class="focus-eyebrow">まず見る</div>
-            <div class="focus-title-row">
-              <div class="focus-title">優先度が高い task</div>
-            </div>
-            <div id="priority-lane-copy" class="focus-meta">
-              返信待ちや確認待ちを上から順に開けば、いま見るべき task
-              が分かります。
-            </div>
-            <div id="priority-lane-list" class="focus-list"></div>
-          </section>
+        <section id="priority-lane" class="card focus-card">
+          <div class="focus-eyebrow">まず見る</div>
+          <div class="focus-title-row">
+            <div class="focus-title">優先度が高い task</div>
+          </div>
+          <div id="priority-lane-copy" class="focus-meta">
+            返信待ちや確認待ちを上から順に開けば、その task
+            の場所で詳細が開きます。
+          </div>
+          <div id="priority-lane-list" class="focus-list"></div>
+        </section>
 
-          <section
-            id="current-focus"
-            class="card focus-card current-focus-card"
-          >
-            <div class="focus-eyebrow">いま見ている task</div>
-            <div id="current-focus-empty" class="focus-empty">
-              まだ選んでいません。左の一覧か「まず見る」から 1
-              件開くと、ここに固定表示します。
-            </div>
-            <div id="current-focus-body" class="hidden current-focus-body">
-              <div class="current-focus-summary">
-                <div class="current-focus-summary-top">
-                  <div class="focus-title-row current-focus-title-row">
-                    <div
-                      id="current-focus-title"
-                      class="focus-title current-focus-title"
-                    ></div>
-                  </div>
-                  <div id="current-focus-badge"></div>
-                </div>
-                <div
-                  id="current-focus-meta"
-                  class="focus-meta current-focus-meta"
-                ></div>
-                <div id="current-focus-move" class="focus-move hidden"></div>
-              </div>
-              <section id="thread-detail" class="card detail-card hidden">
-                <div class="detail-empty">
-                  task を開くと、ここにやり取りの流れが出ます。
-                </div>
-              </section>
+        <div id="thread-detail-parking" class="hidden">
+          <section id="thread-detail" class="card detail-card hidden">
+            <div class="detail-empty">
+              task を開くと、ここにやり取りの流れが出ます。
             </div>
           </section>
         </div>

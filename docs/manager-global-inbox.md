@@ -187,10 +187,10 @@ The Manager screen must make these points obvious without external explanation:
 
 - A single urgency-ordered inbox view
 - One global composer anchored consistently across the screen
-- A stable `current task` area near the top so the user does not lose the task
-  they are reading when it moves between urgency buckets
 - A small `what to read first` lane near the top that surfaces the highest
   urgency tasks without making the user scan every section
+- The selected task opens inline in its own row so the user keeps local context
+  instead of jumping to a detached panel
 - Task detail remains available, but the primary mental model is the inbox, not
   thread administration
 - Avoid exposing internal thread IDs or infrastructure wording

@@ -30,8 +30,6 @@ task` card, a `what to read first` lane, and an explicit global-vs-task send
 - Changed built-in Manager reply semantics so in-progress AI updates stay in
   the working bucket and only genuinely ready results move into the user's
   confirmation bucket
-- Compressed the stable `current task` anchor so it acts as a lightweight
-  reading/sending locator instead of visually duplicating the full detail card
 - Expanded the README Manager verification notes so `workspace-agent-hub` is
   documented as the sole Manager UI with an explicit browser auth state matrix
 - Changed `Open Manager` to reuse the current browser origin and move into the

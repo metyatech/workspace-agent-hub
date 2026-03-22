@@ -479,7 +479,9 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('AA を進める');
     expect(
-      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+      document.querySelector<HTMLElement>(
+        '.thread-row.selected [data-row-title]'
+      )!.textContent
     ).toContain('AA を進める');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
@@ -492,14 +494,16 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('BB を進める');
     expect(
-      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+      document.querySelector<HTMLElement>(
+        '.thread-row.selected [data-row-title]'
+      )!.textContent
     ).toContain('BB を進める');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('送信先: 全体');
   });
 
-  it('keeps the opened thread in the stable current-focus panel instead of moving the page target around', async () => {
+  it('opens the selected thread detail inline in that thread row', async () => {
     const validToken = 'focus-panel-token';
     const thread = makeThreadView('thread-inline', '現在の task');
 
@@ -553,23 +557,19 @@ describe('manager-app DOM auth state matrix', () => {
     document.querySelector<HTMLElement>('.thread-row')!.click();
     await flushAsync(3);
 
+    const row = document.querySelector<HTMLElement>('.thread-row.selected')!;
     const detail = document.querySelector<HTMLElement>('#thread-detail')!;
     expect(detail.classList.contains('hidden')).toBe(false);
-    expect(detail.closest<HTMLElement>('#current-focus-body')).not.toBeNull();
     expect(
-      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
-    ).toContain('現在の task');
-    expect(document.querySelector('#current-focus-note')).toBeNull();
-    expect(document.querySelector('#current-focus-clear-btn')).toBeNull();
-    expect(
-      document.querySelectorAll('.current-focus-summary .btn').length
-    ).toBe(0);
+      detail.closest<HTMLElement>('[data-row-detail-host]')
+    ).not.toBeNull();
+    expect(detail.closest<HTMLElement>('.thread-row')).toBe(row);
     expect(
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('詳細を閉じる');
   });
 
-  it('does not scroll away from the stable current-focus area when a priority-lane task is already visible', async () => {
+  it('does not scroll away when the target thread row is already visible', async () => {
     const validToken = 'priority-lane-focus-token';
     const thread = makeThreadView('thread-priority-visible', '優先 task', {
       uiState: 'user-reply-needed',
@@ -622,8 +622,8 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
-    const currentFocus = document.querySelector<HTMLElement>('#current-focus')!;
-    vi.spyOn(currentFocus, 'getBoundingClientRect').mockReturnValue({
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
       x: 0,
       y: 24,
       top: 24,
@@ -643,7 +643,9 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(3);
 
     expect(
-      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+      document.querySelector<HTMLElement>(
+        '.thread-row.selected [data-row-title]'
+      )!.textContent
     ).toContain('優先 task');
     expect(scrollSpy).not.toHaveBeenCalled();
   });
@@ -1192,7 +1194,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(secondMsgArea.scrollTop).toBe(280);
   });
 
-  it('keeps the current task visible and shows its new state when it moves between buckets', async () => {
+  it('keeps the open task inline and shows its new state when it moves between buckets', async () => {
     const validToken = 'movement-token';
     let threadsRequestCount = 0;
 
@@ -1274,16 +1276,20 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(6);
 
     expect(
-      document.querySelector<HTMLElement>('#current-focus-title')!.textContent
+      document.querySelector<HTMLElement>('#thread-detail .detail-title')!
+        .textContent
     ).toContain('移動する task');
     expect(
-      document.querySelector<HTMLElement>('#current-focus-meta')!.textContent
+      document.querySelector<HTMLElement>('#thread-detail .state-badge')!
+        .textContent
     ).toContain('あなたの確認待ち');
     expect(
-      document.querySelector<HTMLElement>('#current-focus-move')!.textContent
+      document.querySelector<HTMLElement>('#thread-detail .focus-move')!
+        .textContent
     ).toContain('AI作業中');
     expect(
-      document.querySelector<HTMLElement>('#current-focus-move')!.textContent
+      document.querySelector<HTMLElement>('#thread-detail .focus-move')!
+        .textContent
     ).toContain('あなたの確認待ち');
   });
 
@@ -1364,7 +1370,8 @@ describe('manager-app DOM auth state matrix', () => {
         .classList.contains('hidden')
     ).toBe(false);
     expect(
-      document.querySelector<HTMLElement>('#current-focus-meta')!.textContent
+      document.querySelector<HTMLElement>('#thread-detail .state-badge')!
+        .textContent
     ).toContain('完了');
   });
 });

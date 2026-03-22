@@ -345,9 +345,9 @@ Important behavior:
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
-- The Manager page now keeps a stable `いま見ている task` card and a `まず見る`
-  priority lane near the top, so a task remains easy to follow even when it
-  moves between urgency buckets.
+- The Manager page keeps a `まず見る` priority lane near the top, and opens the
+  selected task detail inline in that task row so the user can keep context
+  without jumping to a detached panel.
 - The current built-in Manager routes with one global Codex routing thread, then
   executes each actionable task with its own persisted Codex worker
   continuation so routed requests do real repository work instead of stopping at

@@ -499,6 +499,11 @@ class ThreadSectionController {
       row.appendChild(note);
     }
 
+    const detailHost = document.createElement('div');
+    detailHost.className = 'thread-inline-detail-host hidden';
+    detailHost.dataset.rowDetailHost = '';
+    row.appendChild(detailHost);
+
     row.addEventListener('click', () => {
       onSelect?.(thread.id);
     });
@@ -558,6 +563,11 @@ class ThreadSectionController {
       note.textContent = thread.routingHint;
     } else {
       note?.remove();
+    }
+
+    const detailHost = row.querySelector<HTMLElement>('[data-row-detail-host]');
+    if (detailHost) {
+      detailHost.classList.toggle('hidden', openThreadId !== thread.id);
     }
   }
 }
@@ -628,12 +638,14 @@ class TaskSectionController {
 
 class DetailController {
   #detailEl: HTMLElement;
+  #parkingEl: HTMLElement;
   #app: ManagerApp;
   #currentThreadId: string | null = null;
   #lastRenderedSignature: string | null = null;
 
-  constructor(detailEl: HTMLElement, app: ManagerApp) {
+  constructor(detailEl: HTMLElement, parkingEl: HTMLElement, app: ManagerApp) {
     this.#detailEl = detailEl;
+    this.#parkingEl = parkingEl;
     this.#app = app;
     this.#detailEl.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -699,8 +711,12 @@ class DetailController {
     }
   }
 
-  render(thread: ThreadView | null): void {
-    if (!thread) {
+  render(
+    thread: ThreadView | null,
+    hostEl: HTMLElement | null,
+    movementNotice: string | null
+  ): void {
+    if (!thread || !hostEl) {
       this.clear();
       return;
     }
@@ -711,6 +727,7 @@ class DetailController {
       uiState: thread.uiState,
       updatedAt: thread.updatedAt ?? '',
       queueDepth: thread.queueDepth,
+      movementNotice: movementNotice ?? '',
       messages: thread.messages.map((message) => ({
         sender: message.sender,
         content: message.content,
@@ -737,8 +754,18 @@ class DetailController {
 
     this.#currentThreadId = thread.id;
     this.#lastRenderedSignature = nextSignature;
+    if (this.#detailEl.parentElement !== hostEl) {
+      hostEl.appendChild(this.#detailEl);
+    }
     this.#detailEl.classList.remove('hidden');
     this.#detailEl.innerHTML = '';
+
+    if (movementNotice) {
+      const move = document.createElement('div');
+      move.className = 'focus-move';
+      move.textContent = movementNotice;
+      this.#detailEl.appendChild(move);
+    }
 
     const header = document.createElement('div');
     header.className = 'detail-header';
@@ -835,6 +862,9 @@ class DetailController {
     this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
       '<div class="detail-empty">task を開くと、ここにやり取りの流れが固定表示されます。</div>';
+    if (this.#detailEl.parentElement !== this.#parkingEl) {
+      this.#parkingEl.appendChild(this.#detailEl);
+    }
   }
 }
 
@@ -872,6 +902,7 @@ class ManagerApp {
     this.#taskSection = new TaskSectionController();
     this.#detail = new DetailController(
       document.getElementById('thread-detail') as HTMLElement,
+      document.getElementById('thread-detail-parking') as HTMLElement,
       this
     );
   }
@@ -1106,16 +1137,16 @@ class ManagerApp {
       this.#renderDoneToggle();
     }
     this.#renderAll();
-    this.#scrollCurrentFocusIntoViewIfNeeded();
+    this.#scrollOpenThreadIntoViewIfNeeded();
   }
 
-  #scrollCurrentFocusIntoViewIfNeeded(): void {
-    const currentFocus = document.getElementById('current-focus');
-    if (!currentFocus) {
+  #scrollOpenThreadIntoViewIfNeeded(): void {
+    const row = this.#getRowForThread(this.openThreadId);
+    if (!row) {
       return;
     }
 
-    const rect = currentFocus.getBoundingClientRect();
+    const rect = row.getBoundingClientRect();
     const viewportHeight =
       window.innerHeight || document.documentElement.clientHeight || 0;
     if (
@@ -1128,7 +1159,20 @@ class ManagerApp {
       return;
     }
 
-    currentFocus.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  #getRowForThread(threadId: string | null): HTMLElement | null {
+    if (!threadId) {
+      return null;
+    }
+    for (const state of STATE_ORDER) {
+      const row = this.#sections[state].getRow(threadId);
+      if (row) {
+        return row;
+      }
+    }
+    return null;
   }
 
   #setComposerTarget(threadId: string | null): void {
@@ -1503,7 +1547,6 @@ class ManagerApp {
     this.#renderGettingStarted();
     this.#renderActivitySummary();
     this.#renderPriorityLane();
-    this.#renderCurrentFocus();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
 
@@ -1512,7 +1555,13 @@ class ManagerApp {
         ? null
         : (this.allThreads.find((thread) => thread.id === this.openThreadId) ??
           null);
-    this.#detail.render(openThread);
+    const openThreadRow = this.#getRowForThread(this.openThreadId);
+    this.#detail.render(
+      openThread,
+      openThreadRow?.querySelector<HTMLElement>('[data-row-detail-host]') ??
+        null,
+      this.#openThreadMovementNotice
+    );
   }
 
   #renderPriorityLane(): void {
@@ -1538,7 +1587,7 @@ class ManagerApp {
     }
 
     copy.textContent =
-      'まずは上から順に見れば、返事が必要なものや確認すべきものを見失いにくくなります。';
+      'まずは上から順に見れば、返事が必要なものや確認すべきものを見失いにくくなり、開いた詳細もその task の行で追えます。';
 
     for (const thread of threads.slice(0, 4)) {
       const button = document.createElement('button');
@@ -1565,52 +1614,6 @@ class ManagerApp {
 
       button.append(top, meta);
       list.appendChild(button);
-    }
-  }
-
-  #renderCurrentFocus(): void {
-    const empty = document.getElementById('current-focus-empty');
-    const body = document.getElementById('current-focus-body');
-    const title = document.getElementById('current-focus-title');
-    const badgeRoot = document.getElementById('current-focus-badge');
-    const meta = document.getElementById('current-focus-meta');
-    const move = document.getElementById('current-focus-move');
-    if (!empty || !body || !title || !badgeRoot || !meta || !move) {
-      return;
-    }
-
-    const thread = this.#findThread(this.openThreadId);
-    if (!thread) {
-      empty.classList.remove('hidden');
-      body.classList.add('hidden');
-      move.classList.add('hidden');
-      move.textContent = '';
-      return;
-    }
-
-    empty.classList.add('hidden');
-    body.classList.remove('hidden');
-    title.textContent = thread.title;
-    badgeRoot.innerHTML = '';
-    badgeRoot.appendChild(makeStateBadge(thread.uiState));
-
-    const metaParts = [threadStateLocation(thread)];
-    if (thread.updatedAt) {
-      metaParts.push(`更新 ${formatAge(thread.updatedAt)}`);
-    }
-    if (thread.isWorking) {
-      metaParts.push('いま実際に処理中です');
-    } else if (thread.queueDepth > 0) {
-      metaParts.push(`キュー ${thread.queueDepth} 件`);
-    }
-    meta.textContent = metaParts.join(' / ');
-
-    if (this.#openThreadMovementNotice) {
-      move.classList.remove('hidden');
-      move.textContent = this.#openThreadMovementNotice;
-    } else {
-      move.classList.add('hidden');
-      move.textContent = '';
     }
   }
 
