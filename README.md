@@ -392,6 +392,10 @@ Important behavior:
 - The work-item graph keeps zero or more `derived_from` parent work items, and
   the Manager UI surfaces those relations directly instead of relying on
   topic-like folders as the primary mental model.
+- Parent/child work-item links now show unfinished vs done counts directly on
+  the source work item and inside the conversation screen, so the human can see
+  which derived requests are still open without mentally reconstructing one
+  long mixed conversation.
 - When AI refers to another work item, the Manager UI rewrites internal IDs
   into that work item's visible title so the screen never expects the human to
   know backend IDs.

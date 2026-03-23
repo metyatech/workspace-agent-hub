@@ -381,6 +381,14 @@ function buildThreadTitleMap(threads: ThreadView[]): Map<string, string> {
   );
 }
 
+function buildThreadMap(threads: ThreadView[]): Map<string, ThreadView> {
+  return new Map(
+    threads
+      .filter((thread) => thread.id.trim())
+      .map((thread) => [thread.id, thread])
+  );
+}
+
 function humanizeThreadReferenceText(
   text: string,
   threadTitlesById: Map<string, string>
@@ -966,33 +974,108 @@ function summarizeRelationTitles(titles: string[]): string {
   return `${titles.slice(0, 2).join('、')} ほか${titles.length - 2}件`;
 }
 
+function collectRelatedThreads(
+  threadIds: string[],
+  threadsById: Map<string, ThreadView>
+): ThreadView[] {
+  const related: ThreadView[] = [];
+  const seen = new Set<string>();
+  for (const threadId of threadIds) {
+    if (seen.has(threadId)) {
+      continue;
+    }
+    const thread = threadsById.get(threadId);
+    if (!thread) {
+      continue;
+    }
+    seen.add(threadId);
+    related.push(thread);
+  }
+  return related;
+}
+
+function summarizeChildStateBreakdown(threads: ThreadView[]): string | null {
+  if (threads.length === 0) {
+    return null;
+  }
+
+  const doneCount = threads.filter(
+    (thread) => thread.uiState === 'done'
+  ).length;
+  const openCount = threads.length - doneCount;
+  return `未完了 ${openCount} / 完了 ${doneCount}`;
+}
+
 function describeWorkItemRelations(
   thread: ThreadView,
-  threadTitlesById: Map<string, string>
+  threadsById: Map<string, ThreadView>
 ): string | null {
-  const parentTitles = (thread.derivedFromThreadIds ?? [])
-    .map((id) => threadTitlesById.get(id))
-    .filter((value): value is string => Boolean(value));
-  const childTitles = (thread.derivedChildThreadIds ?? [])
-    .map((id) => threadTitlesById.get(id))
-    .filter((value): value is string => Boolean(value));
+  const parentThreads = collectRelatedThreads(
+    thread.derivedFromThreadIds ?? [],
+    threadsById
+  );
+  const childThreads = collectRelatedThreads(
+    thread.derivedChildThreadIds ?? [],
+    threadsById
+  );
   const parts: string[] = [];
-  if (parentTitles.length > 0) {
-    parts.push(`派生元: ${summarizeRelationTitles(parentTitles)}`);
+  if (parentThreads.length > 0) {
+    parts.push(
+      `派生元: ${summarizeRelationTitles(parentThreads.map((item) => item.title))}`
+    );
   }
-  if (childTitles.length > 0) {
-    parts.push(`派生先: ${summarizeRelationTitles(childTitles)}`);
+  if (childThreads.length > 0) {
+    const breakdown = summarizeChildStateBreakdown(childThreads);
+    parts.push(
+      [
+        `派生先: ${summarizeRelationTitles(childThreads.map((item) => item.title))}`,
+        breakdown,
+      ]
+        .filter(Boolean)
+        .join(' / ')
+    );
   }
   return parts.length > 0 ? parts.join(' / ') : null;
 }
 
 function describeWorkItemContext(
   thread: ThreadView,
-  threadTitlesById: Map<string, string>
+  threadsById: Map<string, ThreadView>
 ): string | null {
-  return (
-    describeWorkItemRelations(thread, threadTitlesById) ?? thread.routingHint
+  return describeWorkItemRelations(thread, threadsById) ?? thread.routingHint;
+}
+
+function makeRelatedWorkItemButton(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>,
+  onClick: () => void
+): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = 'detail-related-item btn-ghost';
+  button.type = 'button';
+  button.addEventListener('click', onClick);
+
+  const top = document.createElement('div');
+  top.className = 'detail-related-item-top';
+  top.append(
+    makeStateBadge(thread.uiState),
+    Object.assign(document.createElement('span'), {
+      className: 'detail-related-item-title',
+      textContent: thread.title,
+    })
   );
+
+  const meta = document.createElement('div');
+  meta.className = 'detail-related-item-meta';
+  meta.textContent = [
+    humanizeThreadReferenceText(thread.previewText, threadTitlesById),
+    thread.uiState === 'done' ? '完了済み' : '未完了',
+  ]
+    .filter(Boolean)
+    .join(' / ');
+
+  button.append(top, meta);
+  return button;
 }
 
 function composerActionLabel(thread: ThreadView): string {
@@ -1021,6 +1104,7 @@ class ThreadSectionController {
   #lastTargetThreadId: string | null = null;
   #lastSelectHandler: ((id: string) => void) | null = null;
   #lastThreadTitlesById = new Map<string, string>();
+  #lastThreadsById = new Map<string, ThreadView>();
 
   constructor(key: ManagerUiState) {
     this.#key = key;
@@ -1051,7 +1135,8 @@ class ThreadSectionController {
         this.#lastOpenThreadId,
         this.#lastTargetThreadId,
         this.#lastSelectHandler,
-        this.#lastThreadTitlesById
+        this.#lastThreadTitlesById,
+        this.#lastThreadsById
       );
     }
   }
@@ -1061,13 +1146,15 @@ class ThreadSectionController {
     openThreadId: string | null,
     targetThreadId: string | null,
     onSelect: ((id: string) => void) | null,
-    threadTitlesById: Map<string, string>
+    threadTitlesById: Map<string, string>,
+    threadsById: Map<string, ThreadView>
   ): void {
     this.#lastThreads = threads;
     this.#lastOpenThreadId = openThreadId;
     this.#lastTargetThreadId = targetThreadId;
     this.#lastSelectHandler = onSelect;
     this.#lastThreadTitlesById = threadTitlesById;
+    this.#lastThreadsById = threadsById;
 
     if (this.#count) {
       this.#count.textContent = threads.length > 0 ? `(${threads.length})` : '';
@@ -1112,7 +1199,8 @@ class ThreadSectionController {
           thread,
           openThreadId,
           targetThreadId,
-          threadTitlesById
+          threadTitlesById,
+          threadsById
         );
       } else {
         this.#rows.set(
@@ -1122,7 +1210,8 @@ class ThreadSectionController {
             openThreadId,
             targetThreadId,
             onSelect,
-            threadTitlesById
+            threadTitlesById,
+            threadsById
           )
         );
       }
@@ -1145,7 +1234,8 @@ class ThreadSectionController {
     openThreadId: string | null,
     targetThreadId: string | null,
     onSelect: ((id: string) => void) | null,
-    threadTitlesById: Map<string, string>
+    threadTitlesById: Map<string, string>,
+    threadsById: Map<string, ThreadView>
   ): HTMLDivElement {
     const row = document.createElement('div');
     row.className = 'thread-row';
@@ -1193,7 +1283,7 @@ class ThreadSectionController {
     top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
 
-    const noteText = describeWorkItemContext(thread, threadTitlesById);
+    const noteText = describeWorkItemContext(thread, threadsById);
     if (noteText) {
       const note = document.createElement('div');
       note.className = 'thread-note';
@@ -1216,7 +1306,8 @@ class ThreadSectionController {
     thread: ThreadView,
     openThreadId: string | null,
     targetThreadId: string | null,
-    threadTitlesById: Map<string, string>
+    threadTitlesById: Map<string, string>,
+    threadsById: Map<string, ThreadView>
   ): void {
     row.classList.toggle('selected', openThreadId === thread.id);
     row.classList.toggle('thread-row-open', openThreadId === thread.id);
@@ -1257,7 +1348,7 @@ class ThreadSectionController {
     }
 
     let note = row.querySelector<HTMLElement>('[data-row-note]');
-    const noteText = describeWorkItemContext(thread, threadTitlesById);
+    const noteText = describeWorkItemContext(thread, threadsById);
     if (noteText) {
       if (!note) {
         note = document.createElement('div');
@@ -1430,7 +1521,8 @@ class DetailController {
   render(
     thread: ThreadView | null,
     movementNotice: string | null,
-    threadTitlesById: Map<string, string>
+    threadTitlesById: Map<string, string>,
+    threadsById: Map<string, ThreadView>
   ): void {
     if (!thread) {
       this.clear();
@@ -1505,7 +1597,7 @@ class DetailController {
     const body = document.createElement('div');
     body.className = 'detail-body';
 
-    const contextNote = describeWorkItemContext(thread, threadTitlesById);
+    const contextNote = describeWorkItemContext(thread, threadsById);
     if (contextNote) {
       const note = document.createElement('div');
       note.className = 'detail-note';
@@ -1522,6 +1614,63 @@ class DetailController {
       note.className = 'detail-note';
       note.textContent = noteText;
       body.appendChild(note);
+    }
+
+    const parentThreads = collectRelatedThreads(
+      thread.derivedFromThreadIds ?? [],
+      threadsById
+    );
+    const childThreads = collectRelatedThreads(
+      thread.derivedChildThreadIds ?? [],
+      threadsById
+    );
+    if (parentThreads.length > 0 || childThreads.length > 0) {
+      const related = document.createElement('section');
+      related.className = 'detail-related';
+
+      const heading = document.createElement('div');
+      heading.className = 'detail-related-heading';
+      heading.textContent = '関連 work item';
+      related.appendChild(heading);
+
+      const groups: Array<{ label: string; items: ThreadView[] }> = [];
+      if (parentThreads.length > 0) {
+        groups.push({ label: '派生元', items: parentThreads });
+      }
+      if (childThreads.length > 0) {
+        groups.push({ label: '派生先', items: childThreads });
+      }
+
+      for (const group of groups) {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'detail-related-group';
+
+        const label = document.createElement('div');
+        label.className = 'detail-related-label';
+        if (group.label === '派生先') {
+          const breakdown = summarizeChildStateBreakdown(group.items);
+          label.textContent = breakdown
+            ? `${group.label} (${breakdown})`
+            : group.label;
+        } else {
+          label.textContent = group.label;
+        }
+        groupEl.appendChild(label);
+
+        const list = document.createElement('div');
+        list.className = 'detail-related-list';
+        for (const relatedThread of group.items) {
+          list.appendChild(
+            makeRelatedWorkItemButton(relatedThread, threadTitlesById, () =>
+              this.#app.focusThread(relatedThread.id)
+            )
+          );
+        }
+        groupEl.appendChild(list);
+        related.appendChild(groupEl);
+      }
+
+      body.appendChild(related);
     }
 
     const actions = document.createElement('div');
@@ -1701,6 +1850,10 @@ class ManagerApp {
     this.#setComposerTarget(threadId);
     this.#renderAll();
     this.focusComposer();
+  }
+
+  focusThread(threadId: string): void {
+    this.#focusThread(threadId);
   }
 
   #composerInput(): HTMLTextAreaElement | null {
@@ -2687,6 +2840,7 @@ class ManagerApp {
       STATE_ORDER.map((state) => [state, []])
     );
     const threadTitlesById = buildThreadTitleMap(this.allThreads);
+    const threadsById = buildThreadMap(this.allThreads);
 
     for (const thread of this.allThreads) {
       grouped.get(thread.uiState)?.push(thread);
@@ -2700,7 +2854,8 @@ class ManagerApp {
         this.openThreadId,
         this.#composerTargetThreadId,
         onSelect,
-        threadTitlesById
+        threadTitlesById,
+        threadsById
       );
     }
 
@@ -2741,7 +2896,8 @@ class ManagerApp {
     this.#detail.render(
       openThread,
       this.#openThreadMovementNotice,
-      threadTitlesById
+      threadTitlesById,
+      threadsById
     );
   }
 

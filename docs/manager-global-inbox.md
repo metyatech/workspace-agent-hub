@@ -70,6 +70,8 @@ work item before sending and makes fragmented work harder to capture quickly.
 - Global composer result summary near the composer, not detached elsewhere
 - Work-item list with explicit urgency buckets
 - Per-work-item detail for deep reading and follow-up
+- Related-work-item summaries that show which derived requests are still open
+  vs already done
 - Rich message detail rendering for multiline text, inline images, and readable
   AI formatting
 

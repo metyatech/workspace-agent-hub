@@ -2329,6 +2329,81 @@ describe('manager-app DOM auth state matrix', () => {
         .textContent
     ).toContain('完了');
   });
+
+  it('shows related work items with open/done counts and lets the user open them from the detail view', async () => {
+    const validToken = 'related-work-items-token';
+    const parentThread = makeThreadView('thread-parent', '親作業', {
+      status: 'active',
+      uiState: 'queued',
+      previewText: '[user] 親作業です',
+      lastSender: 'user',
+      derivedChildThreadIds: ['thread-child-open', 'thread-child-done'],
+    });
+    const openChildThread = makeThreadView(
+      'thread-child-open',
+      '未完了の派生',
+      {
+        status: 'active',
+        uiState: 'queued',
+        previewText: '[user] まだ続きがあります',
+        lastSender: 'user',
+        derivedFromThreadIds: ['thread-parent'],
+      }
+    );
+    const doneChildThread = makeThreadView('thread-child-done', '完了の派生', {
+      status: 'resolved',
+      uiState: 'done',
+      hiddenByDefault: true,
+      previewText: '[ai] 完了しています',
+      lastSender: 'ai',
+      derivedFromThreadIds: ['thread-parent'],
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [parentThread, openChildThread, doneChildThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const parentRow = Array.from(
+      document.querySelectorAll<HTMLElement>('.thread-row')
+    ).find((row) => row.textContent?.includes('親作業'))!;
+    expect(
+      parentRow.querySelector<HTMLElement>('[data-row-note]')?.textContent
+    ).toContain('未完了 1 / 完了 1');
+
+    parentRow.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('関連 work item');
+    expect(detail.textContent).toContain('派生先 (未完了 1 / 完了 1)');
+    expect(detail.textContent).toContain('未完了の派生');
+    expect(detail.textContent).toContain('完了の派生');
+
+    const relatedButton = Array.from(
+      detail.querySelectorAll<HTMLButtonElement>('.detail-related-item')
+    ).find((button) => button.textContent?.includes('未完了の派生'))!;
+    relatedButton.click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail .detail-title')!
+        .textContent
+    ).toContain('未完了の派生');
+  });
 });
 
 describe('manager-app activity summary', () => {
