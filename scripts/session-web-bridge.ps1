@@ -25,6 +25,7 @@ $OutputEncoding = $utf8Encoding
 $launcherScriptPath = Join-Path $PSScriptRoot 'agent-session-launcher.ps1'
 $wslBridgeScriptPath = Join-Path $PSScriptRoot 'wsl-session-bridge.sh'
 $wslTmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
+$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
 
 if (-not (Test-Path -Path $launcherScriptPath)) {
     throw "Missing script: $launcherScriptPath"
@@ -36,6 +37,34 @@ if (-not (Test-Path -Path $wslBridgeScriptPath)) {
 
 if (-not (Test-Path -Path $wslTmuxScriptPath)) {
     throw "Missing script: $wslTmuxScriptPath"
+}
+
+function Ensure-SessionLiveRootDirectory {
+    if (-not (Test-Path -Path $sessionLiveRootPath)) {
+        [void](New-Item -ItemType Directory -Path $sessionLiveRootPath -Force)
+    }
+}
+
+function Write-Utf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Value, $utf8Encoding)
+}
+
+function Write-SessionLiveEventStamp {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName
+    )
+
+    Ensure-SessionLiveRootDirectory
+    $stampPath = Join-Path $sessionLiveRootPath ($TargetSessionName + '.event')
+    Write-Utf8File -Path $stampPath -Value ((Get-Date).ToUniversalTime().ToString('o'))
 }
 
 function Read-Utf8PayloadValue {
@@ -93,8 +122,12 @@ function Invoke-HiddenConsoleCommand {
     $startInfo.RedirectStandardError = $true
     $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
     $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
-    foreach ($argument in $ArgumentList) {
-        [void]$startInfo.ArgumentList.Add([string]$argument)
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $ArgumentList) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-QuotedArgumentString -ArgumentList $ArgumentList
     }
 
     $process = [System.Diagnostics.Process]::new()
@@ -293,7 +326,7 @@ function Send-Utf8TextToSession {
 
     $tempFile = Join-Path $env:TEMP ("workspace-agent-hub-startup-" + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        Set-Content -Path $tempFile -Value $PayloadText -NoNewline -Encoding utf8
+        Write-Utf8File -Path $tempFile -Value $PayloadText
         $wslPayloadPath = Convert-WindowsPathToWslPath -WindowsPath $tempFile
         [void](Invoke-WslBridge -BridgeArguments @('send', $TargetSessionName, $wslPayloadPath, 'submit'))
     } finally {
@@ -368,6 +401,7 @@ if ($Action -eq 'start') {
         ))
         Send-Utf8TextToSession -TargetSessionName $resolvedName -PayloadText (Get-WebStartupCommand -SessionType $Type)
     }
+    Write-SessionLiveEventStamp -TargetSessionName $resolvedName
 
     if ($Json) {
         $session | ConvertTo-Json -Depth 6
@@ -478,10 +512,11 @@ if ($Action -eq 'send') {
 
     $tempFile = Join-Path $env:TEMP ("workspace-agent-hub-send-" + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        Set-Content -Path $tempFile -Value $Text -NoNewline -Encoding utf8
+        Write-Utf8File -Path $tempFile -Value $Text
         $wslPayloadPath = Convert-WindowsPathToWslPath -WindowsPath $tempFile
         $submitMode = if ($Submit) { 'submit' } else { 'paste-only' }
         [void](Invoke-WslBridge -BridgeArguments @('send', $SessionName, $wslPayloadPath, $submitMode))
+        Write-SessionLiveEventStamp -TargetSessionName $SessionName
 
         $result = [pscustomobject]@{
             SessionName = $SessionName
@@ -507,6 +542,7 @@ if ($Action -eq 'interrupt') {
     }
 
     [void](Invoke-WslBridge -BridgeArguments @('interrupt', $SessionName))
+    Write-SessionLiveEventStamp -TargetSessionName $SessionName
     $result = [pscustomobject]@{
         SessionName = $SessionName
         Interrupted = $true

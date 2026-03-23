@@ -781,6 +781,21 @@ function Invoke-AttachSessionByName {
     }
 }
 
+function Ensure-ManagedSessionLiveUpdates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDistro
+    )
+
+    Invoke-TmuxScript -Parameters @{
+        Action = 'ensure-live-updates'
+        Distro = $TargetDistro
+        SessionName = $TargetSessionName
+    } | Out-Null
+}
+
 function Get-ExistingSessions {
     param(
         [Parameter(Mandatory = $true)]

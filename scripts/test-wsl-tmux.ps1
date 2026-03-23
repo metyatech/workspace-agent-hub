@@ -6,6 +6,9 @@ $codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
 $socketName = 'workspace-agent-hub-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $sessionLabel = 'isolated-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $sessionName = "shell-$sessionLabel"
+$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$liveTranscriptPath = Join-Path $sessionLiveRootPath ($sessionName + '.log')
+$liveEventPath = Join-Path $sessionLiveRootPath ($sessionName + '.event')
 
 function Invoke-TmuxScript {
     param(
@@ -58,6 +61,13 @@ function Invoke-SyncCodexAuthJson {
 }
 
 try {
+    if (Test-Path -Path $liveTranscriptPath) {
+        [IO.File]::Delete($liveTranscriptPath)
+    }
+    if (Test-Path -Path $liveEventPath) {
+        [IO.File]::Delete($liveEventPath)
+    }
+
     $initialSessions = @(Invoke-TmuxJson -Arguments @(
         '-Action', 'list',
         '-Distro', 'Ubuntu',
@@ -88,6 +98,23 @@ try {
     }
     if ([string]$afterEnsure[0].Name -ne $sessionName) {
         throw "Expected the isolated tmux socket to contain '$sessionName'."
+    }
+    if (-not (Test-Path -Path $liveTranscriptPath)) {
+        throw 'Expected ensure to provision the authoritative transcript log file.'
+    }
+
+    [void](@(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' send-keys -t '$sessionName' -l 'echo live-bridge-pass' && tmux -L '$socketName' send-keys -t '$sessionName' Enter"))
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Expected to send output into the isolated tmux session.'
+    }
+    Start-Sleep -Milliseconds 700
+    $liveTranscript = if (Test-Path -Path $liveTranscriptPath) {
+        Get-Content -Path $liveTranscriptPath -Raw -Encoding utf8
+    } else {
+        ''
+    }
+    if ($liveTranscript -notmatch 'live-bridge-pass') {
+        throw "Expected the authoritative transcript log to capture tmux pane output. Got: $liveTranscript"
     }
 
     [void](Invoke-TmuxScript -Arguments @(
@@ -205,6 +232,12 @@ try {
 
     Write-Output 'PASS'
 } finally {
+    if (Test-Path -Path $liveTranscriptPath) {
+        [IO.File]::Delete($liveTranscriptPath)
+    }
+    if (Test-Path -Path $liveEventPath) {
+        [IO.File]::Delete($liveEventPath)
+    }
     try {
         [void](Invoke-TmuxScript -Arguments @(
             '-Action', 'kill',

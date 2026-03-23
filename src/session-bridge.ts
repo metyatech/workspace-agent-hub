@@ -3,11 +3,12 @@ import { promisify } from 'node:util';
 import { readdirSync, statSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type {
   DirectorySuggestion,
+  HubLiveUpdateWatchConfig,
   SessionMutationResult,
   SessionRecord,
   SessionTranscript,
@@ -27,6 +28,18 @@ const DEFAULT_BRIDGE_SCRIPT = join(
 );
 const DEFAULT_POWERSHELL_COMMAND =
   process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
+const DEFAULT_AGENT_HANDOFF_ROOT = join(
+  process.env.USERPROFILE ?? homedir(),
+  'agent-handoff'
+);
+const DEFAULT_SESSION_CATALOG_PATH = join(
+  DEFAULT_AGENT_HANDOFF_ROOT,
+  'session-catalog.json'
+);
+const DEFAULT_SESSION_LIVE_DIR_PATH = join(
+  DEFAULT_AGENT_HANDOFF_ROOT,
+  'session-live'
+);
 
 function normalizeJson<T>(stdout: string): T {
   const trimmed = stdout.trim();
@@ -54,6 +67,7 @@ function makeAutoLabel(): string {
 
 export interface SessionBridge {
   getWorkspaceRoot(): string;
+  getHubLiveUpdateWatchConfig?(): HubLiveUpdateWatchConfig | null;
   listSessions(includeArchived?: boolean): Promise<SessionRecord[]>;
   startSession(input: {
     type: SessionType;
@@ -107,6 +121,14 @@ export class PowerShellSessionBridge implements SessionBridge {
 
   getWorkspaceRoot(): string {
     return this.#workspaceRoot;
+  }
+
+  getHubLiveUpdateWatchConfig(): HubLiveUpdateWatchConfig {
+    return {
+      watchRootPath: DEFAULT_AGENT_HANDOFF_ROOT,
+      sessionCatalogPath: DEFAULT_SESSION_CATALOG_PATH,
+      sessionLiveDirPath: DEFAULT_SESSION_LIVE_DIR_PATH,
+    };
   }
 
   async #runBridge(

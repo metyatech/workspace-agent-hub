@@ -445,7 +445,9 @@ Important behavior:
   still running.
 - The Hub session browser now uses the same live snapshot model (`/api/live`)
   as its primary update path for session list ordering and selected-session
-  transcript output, instead of browser interval polling loops.
+  transcript output, driven by authoritative session-catalog/session-live file
+  changes from the bridge path instead of browser polling or a server-side
+  reconciliation interval.
 - Manager messages are serialized: one queued message is processed at a time,
   and messages received during an in-flight turn continue automatically with
   the same priority-aware ordering.

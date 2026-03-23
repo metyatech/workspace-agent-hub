@@ -901,14 +901,8 @@ export async function createWebUiServer(
             bridge.getWorkspaceRoot(),
             () => {
               void emitLatestSnapshot();
-            }
-          );
-
-          const reconciliationInterval = setInterval(
-            () => {
-              void emitLatestSnapshot();
             },
-            selectedSessionName ? 1000 : 2500
+            bridge.getHubLiveUpdateWatchConfig?.() ?? null
           );
 
           const heartbeat = setInterval(() => {
@@ -935,7 +929,6 @@ export async function createWebUiServer(
             }
             closed = true;
             clearInterval(heartbeat);
-            clearInterval(reconciliationInterval);
             unsubscribe();
             if (!res.writableEnded) {
               res.end();

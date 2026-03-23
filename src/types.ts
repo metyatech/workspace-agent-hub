@@ -38,6 +38,12 @@ export interface HubLiveSnapshotPayload {
   selectedSessionMissing: boolean;
 }
 
+export interface HubLiveUpdateWatchConfig {
+  watchRootPath: string;
+  sessionCatalogPath: string;
+  sessionLiveDirPath: string;
+}
+
 export interface SessionMutationResult {
   SessionName?: string;
   Deleted?: boolean;

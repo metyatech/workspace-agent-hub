@@ -8,6 +8,9 @@ $codexSessionLabel = 'web-codex-' + ([guid]::NewGuid().ToString('N').Substring(0
 $resolvedCodexSessionName = "codex-$codexSessionLabel"
 $preferredPowerShell = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
 $powerShellPath = if ($preferredPowerShell) { $preferredPowerShell.Source } else { (Get-Command 'powershell.exe' -ErrorAction Stop).Source }
+$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$shellEventPath = Join-Path $sessionLiveRootPath ($resolvedSessionName + '.event')
+$shellTranscriptPath = Join-Path $sessionLiveRootPath ($resolvedSessionName + '.log')
 
 function ConvertTo-QuotedArgumentString {
     param(
@@ -94,7 +97,7 @@ function New-Utf8PayloadFile {
     )
 
     $tempPath = Join-Path $env:TEMP ("workspace-agent-hub-$Prefix-" + [guid]::NewGuid().ToString('N') + '.txt')
-    Set-Content -Path $tempPath -Value $Value -NoNewline -Encoding utf8
+    [System.IO.File]::WriteAllText($tempPath, $Value, [System.Text.UTF8Encoding]::new($false))
     return $tempPath
 }
 
@@ -107,6 +110,13 @@ $previousCodexStartupCommand = $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND
 $utf8Title = [string]::Concat([char]0x30C6, [char]0x30B9, [char]0x30C8)
 
 try {
+    if (Test-Path -Path $shellEventPath) {
+        [IO.File]::Delete($shellEventPath)
+    }
+    if (Test-Path -Path $shellTranscriptPath) {
+        [IO.File]::Delete($shellTranscriptPath)
+    }
+
     $titlePayloadPath = New-Utf8PayloadFile -Value $utf8Title -Prefix 'title'
     $started = Invoke-BridgeJson -Arguments @(
         '-Action', 'start',
@@ -142,6 +152,11 @@ try {
     if (-not [bool]$listed[0].IsLive) {
         throw 'Expected the newly started shell session to be live in the web-session inventory.'
     }
+    $eventBeforeSend = if (Test-Path -Path $shellEventPath) {
+        Get-Content -Path $shellEventPath -Raw -Encoding utf8
+    } else {
+        ''
+    }
 
     [void](Invoke-BridgeJson -Arguments @(
         '-Action', 'send',
@@ -150,6 +165,15 @@ try {
         '-Submit',
         '-Json'
     ))
+
+    Start-Sleep -Milliseconds 200
+    if (-not (Test-Path -Path $shellEventPath)) {
+        throw 'Expected send to update the authoritative session event stamp.'
+    }
+    $eventAfterSend = Get-Content -Path $shellEventPath -Raw -Encoding utf8
+    if ($eventAfterSend -eq $eventBeforeSend) {
+        throw 'Expected send to refresh the authoritative session event stamp.'
+    }
 
     Start-Sleep -Milliseconds 500
 
@@ -162,6 +186,9 @@ try {
 
     if ([string]$output.Transcript -notmatch 'web-ui-bridge-pass') {
         throw 'Expected transcript to include the sent shell output.'
+    }
+    if ((Get-Content -Path $shellTranscriptPath -Raw -Encoding utf8) -notmatch 'web-ui-bridge-pass') {
+        throw 'Expected the authoritative shell transcript log to include the sent output.'
     }
 
     [void](Invoke-BridgeJson -Arguments @(
@@ -268,5 +295,11 @@ try {
     try {
         [void](Invoke-HiddenPowerShell -ScriptPath $bridgeScriptPath -Arguments @('-Action', 'delete', '-SessionName', $resolvedCodexSessionName, '-Json'))
     } catch {
+    }
+    if (Test-Path -Path $shellEventPath) {
+        [IO.File]::Delete($shellEventPath)
+    }
+    if (Test-Path -Path $shellTranscriptPath) {
+        [IO.File]::Delete($shellTranscriptPath)
     }
 }

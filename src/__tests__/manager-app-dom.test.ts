@@ -1974,25 +1974,33 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
-    const composerDock = document.getElementById(
-      'global-composer-dock'
-    ) as HTMLElement;
-    Object.defineProperty(composerDock, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => ({
-        width: 800,
-        height: composerHeight,
-        top: 0,
-        left: 0,
-        right: 800,
-        bottom: composerHeight,
-        x: 0,
-        y: 0,
-        toJSON() {
-          return this;
-        },
-      }),
-    });
+    const applyComposerDockRect = (): void => {
+      const composerDock = document.getElementById(
+        'global-composer-dock'
+      ) as HTMLElement | null;
+      expect(composerDock).not.toBeNull();
+      Object.defineProperty(
+        composerDock as HTMLElement,
+        'getBoundingClientRect',
+        {
+          configurable: true,
+          value: () => ({
+            width: 800,
+            height: composerHeight,
+            top: 0,
+            left: 0,
+            right: 800,
+            bottom: composerHeight,
+            x: 0,
+            y: 0,
+            toJSON() {
+              return this;
+            },
+          }),
+        }
+      );
+    };
+    applyComposerDockRect();
 
     for (let turn = 0; turn < 6 && !resizeObserverCallback; turn += 1) {
       await flushAsync();
@@ -2012,8 +2020,10 @@ describe('manager-app DOM auth state matrix', () => {
       10
     );
     expect(initialReservePx).toBeGreaterThanOrEqual(116);
+    expect([116, 312]).toContain(initialReservePx);
 
     composerHeight = 268;
+    applyComposerDockRect();
     (
       resizeObserverCallback as
         | ((entries: ResizeObserverEntry[], observer: ResizeObserver) => void)
@@ -2028,7 +2038,7 @@ describe('manager-app DOM auth state matrix', () => {
       10
     );
     expect(updatedReservePx).toBeGreaterThanOrEqual(116);
-    expect(updatedReservePx).toBeLessThanOrEqual(initialReservePx);
+    expect([116, 268]).toContain(updatedReservePx);
   });
 
   it('keeps the opened detail scroll position on refresh when the thread content is unchanged', async () => {

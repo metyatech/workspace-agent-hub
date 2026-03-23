@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('ensure', 'attach', 'attach-hidden', 'list', 'kill')]
+    [ValidateSet('ensure', 'attach', 'attach-hidden', 'ensure-live-updates', 'list', 'kill')]
     [string]$Action = 'ensure',
 
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
@@ -28,21 +28,137 @@ $startupOnAttachScriptWindowsPath = Join-Path $PSScriptRoot 'wsl-startup-on-atta
 if (-not (Test-Path -Path $startupOnAttachScriptWindowsPath)) {
     throw "Missing helper script: $startupOnAttachScriptWindowsPath"
 }
+$sessionLivePipeScriptWindowsPath = Join-Path $PSScriptRoot 'wsl-session-live-pipe.sh'
+if (-not (Test-Path -Path $sessionLivePipeScriptWindowsPath)) {
+    throw "Missing helper script: $sessionLivePipeScriptWindowsPath"
+}
+
+$sessionLiveRootWindowsPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+
+function ConvertTo-QuotedArgumentString {
+    param(
+        [string[]]$ArgumentList = @()
+    )
+
+    $quoted = foreach ($argument in $ArgumentList) {
+        $value = [string]$argument
+        if (-not $value.Length) {
+            '""'
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+
+        $escaped = $value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"' + $escaped + '"'
+    }
+
+    return ($quoted -join ' ')
+}
+
+function Ensure-WindowsUtf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $parentPath = [System.IO.Path]::GetDirectoryName($Path)
+    if ($parentPath) {
+        [void][System.IO.Directory]::CreateDirectory($parentPath)
+    }
+    if (-not [System.IO.File]::Exists($Path)) {
+        [System.IO.File]::WriteAllText($Path, '', [System.Text.UTF8Encoding]::new($false))
+    }
+}
 
 function Invoke-WslCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
-        [switch]$AllowNonZeroExit
+        [switch]$AllowNonZeroExit,
+        [int]$Retries = 0,
+        [int]$RetryDelayMilliseconds = 200
     )
 
-    & wsl.exe @Arguments
-    $exitCode = $LASTEXITCODE
-    if (-not $AllowNonZeroExit -and $exitCode -ne 0) {
-        throw "wsl.exe failed with exit code $exitCode. Args: $($Arguments -join ' ')"
+    $attempt = 0
+    do {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = 'wsl.exe'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+        if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+            foreach ($argument in $Arguments) {
+                [void]$startInfo.ArgumentList.Add([string]$argument)
+            }
+        } else {
+            $startInfo.Arguments = ConvertTo-QuotedArgumentString -ArgumentList $Arguments
+        }
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $stdoutText = $process.StandardOutput.ReadToEnd()
+        $stderrText = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+        if ($AllowNonZeroExit -or $exitCode -eq 0) {
+            return $exitCode
+        }
+        if ($attempt -ge $Retries) {
+            $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+            if ($detail) {
+                throw "wsl.exe failed with exit code $exitCode. Args: $($Arguments -join ' ') $detail"
+            }
+            throw "wsl.exe failed with exit code $exitCode. Args: $($Arguments -join ' ')"
+        }
+        Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        $attempt += 1
+    } while ($true)
+}
+
+function Convert-ToBashSingleQuotedLiteral {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $singleQuote = [string][char]39
+    $escaped = $Value -replace "'", ($singleQuote + '"' + $singleQuote + '"' + $singleQuote)
+    return ($singleQuote + $escaped + $singleQuote)
+}
+
+function Convert-WindowsPathToWslPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowsPath
+    )
+
+    if ($WindowsPath -match '^(?<drive>[A-Za-z]):(?<rest>\\.*)?$') {
+        $driveLetter = $Matches['drive'].ToLowerInvariant()
+        $rest = if ($Matches['rest']) { ($Matches['rest'] -replace '\\', '/') } else { '' }
+        return "/mnt/$driveLetter$rest"
     }
 
-    return $exitCode
+    $normalizedPath = $WindowsPath -replace '\\', '/'
+    $attempt = 0
+    do {
+        $result = & wsl.exe -d $Distro -- wslpath -a -u $normalizedPath
+        if ($LASTEXITCODE -eq 0) {
+            return (($result | Out-String).Trim())
+        }
+        if ($attempt -ge 2) {
+            throw "Unable to convert Windows path to WSL path: $WindowsPath"
+        }
+        Start-Sleep -Milliseconds 200
+        $attempt += 1
+    } while ($true)
 }
 
 function Start-WslStartupOnAttach {
@@ -181,28 +297,132 @@ function Split-TypedSessionName {
     }
 }
 
-[void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @('-V')))
-
 function Set-TmuxServerOption {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$TmuxArguments
     )
 
-    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments $TmuxArguments))
+    [void](Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments $TmuxArguments) -Retries 5 -RetryDelayMilliseconds 300)
 }
 
 function Ensure-TmuxServerDefaults {
-    Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'mouse', 'on')
-    Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'history-limit', '200000')
+    try {
+        Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'mouse', 'on')
+    } catch {
+        # Headless bootstrap should not fail solely because tmux convenience defaults are temporarily unavailable.
+    }
+    try {
+        Set-TmuxServerOption -TmuxArguments @('set-option', '-g', 'history-limit', '200000')
+    } catch {
+        # Headless bootstrap should not fail solely because tmux convenience defaults are temporarily unavailable.
+    }
+}
+
+function Test-TmuxSessionExists {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName
+    )
+
+    $tmuxShellCommand = Get-TmuxShellCommand
+    $quotedSessionName = Convert-ToBashSingleQuotedLiteral -Value $TargetSessionName
+    $commandText = @'
+if {0} has-session -t {1} >/dev/null 2>&1; then
+    exit 0
+fi
+exit 1
+'@ -f $tmuxShellCommand, $quotedSessionName
+
+    $exitCode = Invoke-WslCommand -Arguments @(
+        '-d', $Distro, '--',
+        'bash', '-lc', $commandText
+    ) -AllowNonZeroExit
+    return ($exitCode -eq 0)
+}
+
+function Wait-ForTmuxSessionReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName,
+        [int]$Retries = 10,
+        [int]$RetryDelayMilliseconds = 200
+    )
+
+    for ($attempt = 0; $attempt -le $Retries; $attempt += 1) {
+        if (Test-TmuxSessionExists -TargetSessionName $TargetSessionName) {
+            return
+        }
+        if ($attempt -ge $Retries) {
+            throw "tmux session '$TargetSessionName' did not become ready in distro '$Distro'."
+        }
+        Start-Sleep -Milliseconds $RetryDelayMilliseconds
+    }
+}
+
+function Ensure-TmuxSessionLiveUpdates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName
+    )
+
+    $transcriptPathWindows = Join-Path $sessionLiveRootWindowsPath ($TargetSessionName + '.log')
+    $eventPathWindows = Join-Path $sessionLiveRootWindowsPath ($TargetSessionName + '.event')
+    Ensure-WindowsUtf8File -Path $transcriptPathWindows
+    Ensure-WindowsUtf8File -Path $eventPathWindows
+    $tmuxShellCommand = Get-TmuxShellCommand
+    $quotedSessionName = Convert-ToBashSingleQuotedLiteral -Value $TargetSessionName
+    $transcriptPathWsl = Convert-WindowsPathToWslPath -WindowsPath $transcriptPathWindows
+    $eventPathWsl = Convert-WindowsPathToWslPath -WindowsPath $eventPathWindows
+    $quotedTranscriptPath = Convert-ToBashSingleQuotedLiteral -Value $transcriptPathWsl
+    $quotedEventPath = Convert-ToBashSingleQuotedLiteral -Value $eventPathWsl
+    $pipeHelperWslPath = Convert-WindowsPathToWslPath -WindowsPath $sessionLivePipeScriptWindowsPath
+    $quotedPipeHelperPath = Convert-ToBashSingleQuotedLiteral -Value $pipeHelperWslPath
+    $pipeCommand = "bash $quotedPipeHelperPath $quotedTranscriptPath $quotedEventPath"
+    $clearPipeCommand = "$tmuxShellCommand pipe-pane -t $quotedSessionName >/dev/null 2>&1 || true"
+    $openPipeCommand = @'
+{0} pipe-pane -o -t {1} "{2}" >/dev/null 2>&1 || true
+'@ -f $tmuxShellCommand, $quotedSessionName, $pipeCommand
+
+    [void](Invoke-WslCommand -Arguments @(
+        '-d', $Distro, '--',
+        'bash', '-lc', $clearPipeCommand
+    ) -AllowNonZeroExit -Retries 4 -RetryDelayMilliseconds 300)
+    [void](Invoke-WslCommand -Arguments @(
+        '-d', $Distro, '--',
+        'bash', '-lc', $openPipeCommand
+    ) -AllowNonZeroExit -Retries 4 -RetryDelayMilliseconds 300)
 }
 
 if ($Action -eq 'list') {
     $tmuxShellCommand = Get-TmuxShellCommand
-    $rawList = & wsl.exe -d $Distro -- bash -lc "if $tmuxShellCommand list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}' 2>/dev/null; then true; else true; fi"
-    if ($LASTEXITCODE -ne 0) {
+    $listCommand = "if $tmuxShellCommand list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}' 2>/dev/null; then true; else true; fi"
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'wsl.exe'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $listArguments = @('-d', $Distro, '--', 'bash', '-lc', $listCommand)
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $listArguments) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-QuotedArgumentString -ArgumentList $listArguments
+    }
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdoutText = $process.StandardOutput.ReadToEnd()
+    $stderrText = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
         throw "Failed to list tmux sessions in distro '$Distro'."
     }
+    $rawList = if ($stdoutText) { @($stdoutText -split "`r?`n") | Where-Object { $_ -ne '' } } else { @() }
 
     $items = @()
     foreach ($line in @($rawList)) {
@@ -269,13 +489,7 @@ if ($Action -eq 'kill') {
 }
 
 $tmuxShellCommand = Get-TmuxShellCommand
-$sessionCheckOutput = & wsl.exe -d $Distro -- bash -lc "if $tmuxShellCommand has-session -t '$resolvedSessionName' >/dev/null 2>&1; then echo exists; else echo missing; fi"
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to check tmux session status for '$resolvedSessionName' in distro '$Distro'."
-}
-
-$sessionCheckState = ($sessionCheckOutput | Select-Object -Last 1).ToString().Trim()
-$sessionExists = ($sessionCheckState -eq 'exists')
+$sessionExists = Test-TmuxSessionExists -TargetSessionName $resolvedSessionName
 
 if (-not $sessionExists -and $Action -eq 'attach') {
     throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."
@@ -285,8 +499,19 @@ if (-not $sessionExists -and $Action -eq 'attach-hidden') {
     throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."
 }
 
+if ($Action -eq 'ensure-live-updates') {
+    if (-not $sessionExists) {
+        throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."
+    }
+    Ensure-TmuxServerDefaults
+    Ensure-TmuxSessionLiveUpdates -TargetSessionName $resolvedSessionName
+    Write-Output "Configured live updates for tmux session '$resolvedSessionName' in distro '$Distro'."
+    exit 0
+}
+
 if ($Action -eq 'attach-hidden') {
     Ensure-TmuxServerDefaults
+    Ensure-TmuxSessionLiveUpdates -TargetSessionName $resolvedSessionName
     Start-HiddenTmuxAttachClient -TargetDistro $Distro -TargetSessionName $resolvedSessionName -TargetWindowWidth $WindowWidth -TargetWindowHeight $WindowHeight
     Write-Output "Started hidden tmux attach client for '$resolvedSessionName' in distro '$Distro'."
     exit 0
@@ -302,8 +527,22 @@ if (-not $sessionExists) {
         $createArgs += @('-c', $WorkingDirectory)
     }
 
-    [void](Invoke-WslCommand -Arguments $createArgs)
+    $createFailure = $null
+    try {
+        [void](Invoke-WslCommand -Arguments $createArgs -Retries 5 -RetryDelayMilliseconds 300)
+    } catch {
+        $createFailure = $_
+    }
+    try {
+        Wait-ForTmuxSessionReady -TargetSessionName $resolvedSessionName -Retries 20 -RetryDelayMilliseconds 500
+    } catch {
+        if ($createFailure) {
+            throw $createFailure
+        }
+        throw
+    }
     Ensure-TmuxServerDefaults
+    Ensure-TmuxSessionLiveUpdates -TargetSessionName $resolvedSessionName
 
     if ($StartupCommand -and -not $Detach) {
         Start-WslStartupOnAttach -TargetDistro $Distro -TargetSessionName $resolvedSessionName -TargetStartupCommand $StartupCommand
@@ -324,6 +563,7 @@ if (-not $sessionExists) {
     Write-Output "Created tmux session '$resolvedSessionName' in distro '$Distro'."
 } else {
     Ensure-TmuxServerDefaults
+    Ensure-TmuxSessionLiveUpdates -TargetSessionName $resolvedSessionName
     Write-Output "Reusing existing tmux session '$resolvedSessionName' in distro '$Distro'."
 }
 

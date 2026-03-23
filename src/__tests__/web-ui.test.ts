@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -15,6 +15,7 @@ import {
 import type { SessionBridge } from '../session-bridge.js';
 import type {
   DirectorySuggestion,
+  HubLiveUpdateWatchConfig,
   SessionMutationResult,
   SessionRecord,
   SessionTranscript,
@@ -50,7 +51,10 @@ function makeSession(
 }
 
 class FakeBridge implements SessionBridge {
-  constructor(private readonly workspaceRoot = 'D:\\ghws') {}
+  constructor(
+    private readonly workspaceRoot = 'D:\\ghws',
+    private readonly liveWatchConfig: HubLiveUpdateWatchConfig | null = null
+  ) {}
 
   sessions: SessionRecord[] = [
     makeSession('shell-existing', { DisplayTitle: 'Existing Session' }),
@@ -69,6 +73,10 @@ class FakeBridge implements SessionBridge {
 
   getWorkspaceRoot(): string {
     return this.workspaceRoot;
+  }
+
+  getHubLiveUpdateWatchConfig(): HubLiveUpdateWatchConfig | null {
+    return this.liveWatchConfig;
   }
 
   async listSessions(): Promise<SessionRecord[]> {
@@ -422,6 +430,101 @@ To enable, visit:
     expect(snapshot.selectedTranscript?.Transcript).toContain(
       'hello from transcript'
     );
+  });
+
+  it('pushes a new Hub snapshot when the authoritative session-live files change', async () => {
+    const handoffRoot = await createTempWorkspace();
+    const sessionLiveDirPath = join(handoffRoot, 'session-live');
+    const sessionCatalogPath = join(handoffRoot, 'session-catalog.json');
+    await mkdir(sessionLiveDirPath, { recursive: true });
+    await writeFile(sessionCatalogPath, '[]', 'utf8');
+    await writeFile(join(sessionLiveDirPath, 'shell-existing.log'), '', 'utf8');
+
+    const bridge = new FakeBridge('D:\\ghws', {
+      watchRootPath: handoffRoot,
+      sessionCatalogPath,
+      sessionLiveDirPath,
+    });
+    const { server, port } = await createWebUiServer({
+      bridge,
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const headers = { 'X-Workspace-Agent-Hub-Token': 'secret-token' };
+    const liveResponse = await fetch(
+      `http://127.0.0.1:${port}/api/live?includeArchived=true&selectedSession=shell-existing&lines=500`,
+      { headers }
+    );
+
+    expect(liveResponse.status).toBe(200);
+    const reader = liveResponse.body?.getReader();
+    expect(reader).toBeTruthy();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const snapshots: Array<{
+      kind: string;
+      selectedTranscript: SessionTranscript | null;
+    }> = [];
+
+    async function readSnapshot(): Promise<{
+      kind: string;
+      selectedTranscript: SessionTranscript | null;
+    }> {
+      while (true) {
+        const { done, value } = await reader!.read();
+        if (done) {
+          throw new Error(
+            'Live stream closed before the next snapshot arrived.'
+          );
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          const parsed = JSON.parse(trimmed) as {
+            kind: string;
+            selectedTranscript: SessionTranscript | null;
+          };
+          if (parsed.kind !== 'snapshot') {
+            continue;
+          }
+          snapshots.push(parsed);
+          return parsed;
+        }
+      }
+    }
+
+    const initialSnapshot = await readSnapshot();
+    expect(initialSnapshot.selectedTranscript?.Transcript).toContain(
+      'hello from transcript'
+    );
+
+    bridge.transcripts.set('shell-existing', {
+      SessionName: 'shell-existing',
+      WorkingDirectoryWsl: '/mnt/d/ghws',
+      Transcript: 'updated from authoritative event source',
+      CapturedAtUtc: new Date().toISOString(),
+    });
+    await appendFile(
+      join(sessionLiveDirPath, 'shell-existing.log'),
+      'updated\n',
+      'utf8'
+    );
+
+    const updatedSnapshot = await readSnapshot();
+    expect(updatedSnapshot.selectedTranscript?.Transcript).toContain(
+      'updated from authoritative event source'
+    );
+
+    await reader!.cancel();
   });
 
   it('injects the preferred connect URL into the browser bootstrap config', async () => {
