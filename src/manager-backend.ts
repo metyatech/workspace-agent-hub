@@ -1147,6 +1147,52 @@ async function writeWorkerSessionId(
   }));
 }
 
+function parseMessageTimestamp(
+  value: string | null | undefined
+): number | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function hasSupersedingAiReply(thread: Thread, entries: QueueEntry[]): boolean {
+  if (entries.length === 0 || thread.messages.length === 0) {
+    return false;
+  }
+
+  const latestCreatedAt = Math.max(
+    ...entries
+      .map((entry) => parseMessageTimestamp(entry.createdAt))
+      .filter((value): value is number => value !== null)
+  );
+  if (!Number.isFinite(latestCreatedAt)) {
+    return false;
+  }
+
+  const lastMessage = thread.messages.at(-1);
+  if (lastMessage?.sender !== 'ai') {
+    return false;
+  }
+
+  const latestUserAfterQueuedAt = Math.max(
+    ...thread.messages
+      .filter((message) => message.sender === 'user')
+      .map((message) => parseMessageTimestamp(message.at))
+      .filter(
+        (value): value is number => value !== null && value > latestCreatedAt
+      ),
+    Number.NEGATIVE_INFINITY
+  );
+  if (!Number.isFinite(latestUserAfterQueuedAt)) {
+    return false;
+  }
+
+  const lastAiAt = parseMessageTimestamp(lastMessage.at);
+  return lastAiAt !== null && lastAiAt > latestUserAfterQueuedAt;
+}
+
 /**
  * Process the next unprocessed queue entry for the given workspace.
  * No-op if already in flight or nothing is queued.
@@ -1214,6 +1260,21 @@ export async function processNextQueued(
       );
       await writeSession(dir, {
         ...busySession,
+        status: 'idle',
+        pid: null,
+        currentQueueId: null,
+      });
+      shouldContinue = true;
+      return;
+    }
+
+    if (hasSupersedingAiReply(thread, nextEntries)) {
+      await updateQueueLocked(dir, (q) =>
+        q.filter((entry) => !nextBatchIds.has(entry.id))
+      );
+      const current = await readSession(dir);
+      await writeSession(dir, {
+        ...current,
         status: 'idle',
         pid: null,
         currentQueueId: null,

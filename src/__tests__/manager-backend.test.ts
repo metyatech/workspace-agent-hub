@@ -913,6 +913,58 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 
+  it('drops a stale queued entry when the thread already has a newer AI reply', async () => {
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title: `Thread ${threadId}`,
+        status: 'review',
+        createdAt: '2026-03-23T04:00:00.000Z',
+        updatedAt: '2026-03-23T07:34:03.799Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'old request',
+            at: '2026-03-23T04:20:57.737Z',
+          },
+          {
+            sender: 'user',
+            content: 'newer duplicate request',
+            at: '2026-03-23T07:34:03.704Z',
+          },
+          {
+            sender: 'ai',
+            content: 'already handled elsewhere',
+            at: '2026-03-23T07:34:03.799Z',
+          },
+        ],
+      })
+    );
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_stale',
+        threadId: 'thread-stale',
+        content: 'old request',
+        createdAt: '2026-03-23T04:20:57.738Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.running).toBe(true);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(addMessageMock).not.toHaveBeenCalled();
+  });
+
   it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {
     expect(
       buildCodexSpawnSpec(
