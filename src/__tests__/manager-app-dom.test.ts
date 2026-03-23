@@ -54,8 +54,30 @@ function makeThreadView(
     derivedChildThreadIds: [],
     queueDepth: 0,
     isWorking: false,
+    assigneeKind: null,
+    assigneeLabel: null,
+    workerLiveOutput: null,
+    workerLiveAt: null,
     ...overrides,
   };
+}
+
+function makeNdjsonResponse(payloads: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const payload of payloads) {
+        controller.enqueue(encoder.encode(JSON.stringify(payload) + '\n'));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+    },
+  });
 }
 
 function createManagerFetch(validToken: string) {
@@ -89,6 +111,23 @@ function createManagerFetch(validToken: string) {
         }),
         { status: 200 }
       );
+    }
+
+    if (isRoute(url, '/live')) {
+      return makeNdjsonResponse([
+        {
+          kind: 'snapshot',
+          emittedAt: '2026-03-21T00:00:00.000Z',
+          threads: [],
+          tasks: [],
+          status: {
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動 — メッセージ送信で自動起動します',
+          },
+        },
+      ]);
     }
 
     return new Response('{}', { status: 200 });
@@ -158,6 +197,23 @@ function createManagerFetchWithData(input: {
       );
     }
 
+    if (isRoute(url, '/live')) {
+      return makeNdjsonResponse([
+        {
+          kind: 'snapshot',
+          emittedAt: '2026-03-21T00:00:00.000Z',
+          threads: input.threads,
+          tasks: input.tasks ?? [],
+          status: input.status ?? {
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動 — メッセージ送信で自動起動します',
+          },
+        },
+      ]);
+    }
+
     return new Response('{}', { status: 200 });
   });
 }
@@ -199,11 +255,19 @@ async function loadManagerApp(
   });
 
   Object.defineProperty(dom.window, 'setInterval', {
-    value: vi.fn(() => 1),
+    value: vi.fn(dom.window.setInterval.bind(dom.window)),
     configurable: true,
   });
   Object.defineProperty(dom.window, 'clearInterval', {
-    value: vi.fn(),
+    value: vi.fn(dom.window.clearInterval.bind(dom.window)),
+    configurable: true,
+  });
+  Object.defineProperty(dom.window, 'setTimeout', {
+    value: vi.fn(dom.window.setTimeout.bind(dom.window)),
+    configurable: true,
+  });
+  Object.defineProperty(dom.window, 'clearTimeout', {
+    value: vi.fn(dom.window.clearTimeout.bind(dom.window)),
     configurable: true,
   });
   Object.defineProperty(dom.window.HTMLElement.prototype, 'scrollIntoView', {
@@ -2454,5 +2518,83 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('AIから返答 1');
     expect(chips).toContain('AI の順番待ち 0');
     expect(chips).toContain('AI作業中 0');
+  });
+});
+
+describe('manager-app live updates', () => {
+  it('uses the live snapshot stream instead of interval polling', async () => {
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'live-stream-token',
+      threads: [],
+    });
+
+    await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'live-stream-token');
+      },
+    });
+
+    expect(
+      window.setInterval as unknown as ReturnType<typeof vi.fn>
+    ).not.toHaveBeenCalled();
+    expect(
+      fetchMock.mock.calls.some(([input]) => isRoute(String(input), '/live'))
+    ).toBe(true);
+  });
+
+  it('renders the in-flight worker output as the latest AI bubble in detail view', async () => {
+    const workingThread = makeThreadView('thread-live', 'リアルタイム出力', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 実装してください',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex gpt-5.4 (xhigh)',
+      workerLiveOutput: 'いま `src/manager-backend.ts` を見ています。',
+      workerLiveAt: '2026-03-23T08:00:00.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '実装してください',
+          at: '2026-03-23T07:59:00.000Z',
+        },
+      ],
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'live-output-token',
+      threads: [workingThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (リアルタイム出力)',
+        currentThreadId: 'thread-live',
+        currentThreadTitle: 'リアルタイム出力',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'live-output-token');
+      },
+    });
+
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    row.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('担当: Codex gpt-5.4 (xhigh)');
+    expect(detail.textContent).toContain(
+      'いま src/manager-backend.ts を見ています。'
+    );
+    expect(
+      detail.querySelector<HTMLElement>('.bubble-live .bubble-sender')
+        ?.textContent
+    ).toContain('AI');
   });
 });

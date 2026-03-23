@@ -55,6 +55,7 @@ import {
   normalizeManagerQueueEntry,
   type ManagerQueuePriority,
 } from './manager-queue-priority.js';
+import { notifyManagerUpdate } from './manager-live-updates.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -198,6 +199,11 @@ export interface QueueEntryAttachment {
   path: string;
 }
 
+interface CodexProgressState {
+  sessionId: string | null;
+  latestText: string | null;
+}
+
 /** Derive a stable 16-char hex key from an absolute workspace path. */
 export function workspaceKey(dir: string): string {
   return createHash('sha256')
@@ -283,6 +289,7 @@ export async function writeSession(
   await withWriteLock(key, () =>
     atomicWrite(filePath, JSON.stringify(session, null, 2))
   );
+  notifyManagerUpdate(dir);
 }
 
 export async function readQueue(dir: string): Promise<QueueEntry[]> {
@@ -315,6 +322,7 @@ export async function writeQueue(
   await withWriteLock(key, () =>
     atomicWrite(filePath, content ? content + '\n' : '')
   );
+  notifyManagerUpdate(dir);
 }
 
 /** Append one message to the queue file and return its generated ID. */
@@ -343,6 +351,7 @@ export async function enqueueMessage(
   await withWriteLock(key, () =>
     appendFile(queueFilePath(dir), JSON.stringify(entry) + '\n', 'utf-8')
   );
+  notifyManagerUpdate(dir);
   return id;
 }
 
@@ -362,6 +371,7 @@ async function updateQueueLocked(
     const content = updated.map((e) => JSON.stringify(e)).join('\n');
     await atomicWrite(queueFilePath(dir), content ? content + '\n' : '');
   });
+  notifyManagerUpdate(dir);
 }
 
 function queueEntryImagePaths(entry: QueueEntry | null): string[] {
@@ -811,6 +821,56 @@ export function parseCodexOutput(stdout: string): {
   return { text: latestText, sessionId };
 }
 
+function parseCodexProgressLine(line: string): CodexProgressState {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return { sessionId: null, latestText: null };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (
+      parsed['type'] === 'thread.started' &&
+      typeof parsed['thread_id'] === 'string'
+    ) {
+      return {
+        sessionId: parsed['thread_id'] as string,
+        latestText: 'AI が担当 worker を起動しました。内容を整理しています…',
+      };
+    }
+
+    if (parsed['type'] !== 'item.completed') {
+      return { sessionId: null, latestText: null };
+    }
+
+    const item = parsed['item'];
+    if (!item || typeof item !== 'object') {
+      return { sessionId: null, latestText: null };
+    }
+
+    const typedItem = item as Record<string, unknown>;
+    const itemType = typedItem['type'];
+    if (
+      itemType === 'agent_message' ||
+      itemType === 'assistant_message' ||
+      itemType === 'message'
+    ) {
+      const fragments = collectTextFragments(typedItem);
+      return {
+        sessionId: null,
+        latestText: fragments.length > 0 ? fragments.join('\n').trim() : null,
+      };
+    }
+
+    return {
+      sessionId: null,
+      latestText: 'AI が作業を進めています…',
+    };
+  } catch {
+    return { sessionId: null, latestText: null };
+  }
+}
+
 export function parseManagerReplyPayload(
   text: string
 ): ManagerReplyPayload | null {
@@ -1033,6 +1093,7 @@ async function runCodexTurn(input: {
   sessionId: string | null;
   imagePaths?: string[];
   onSpawn?: (pid: number | null) => void | Promise<void>;
+  onProgress?: (state: CodexProgressState) => void | Promise<void>;
 }): Promise<{
   code: number | null;
   stdout: string;
@@ -1051,12 +1112,68 @@ async function runCodexTurn(input: {
 
   let stdout = '';
   let stderr = '';
+  let pendingStdout = '';
+  let latestProgressText: string | null = null;
+  let latestProgressSessionId: string | null = input.sessionId;
+  let progressChain = Promise.resolve();
+
+  const enqueueProgress = (state: CodexProgressState): void => {
+    progressChain = progressChain
+      .then(async () => {
+        await input.onProgress?.(state);
+      })
+      .catch(() => {
+        /* ignore progress callback failures */
+      });
+  };
+
+  const handleProgressLine = (line: string): void => {
+    const progress = parseCodexProgressLine(line);
+    if (progress.sessionId) {
+      latestProgressSessionId = progress.sessionId;
+    }
+    if (progress.latestText) {
+      latestProgressText = progress.latestText;
+      enqueueProgress({
+        sessionId: latestProgressSessionId,
+        latestText: latestProgressText,
+      });
+    }
+  };
 
   proc.stdout?.on('data', (chunk: Buffer) => {
-    stdout += chunk.toString();
+    const text = chunk.toString();
+    stdout += text;
+    pendingStdout += text;
+
+    const lines = pendingStdout.split(/\r?\n/);
+    pendingStdout = lines.pop() ?? '';
+
+    for (const line of lines) {
+      handleProgressLine(line);
+    }
+
+    const pendingTrimmed = pendingStdout.trim();
+    if (!pendingTrimmed) {
+      return;
+    }
+    try {
+      JSON.parse(pendingTrimmed);
+      handleProgressLine(pendingTrimmed);
+      pendingStdout = '';
+    } catch {
+      /* keep waiting for the rest of the line */
+    }
   });
   proc.stderr?.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
+    if (!latestProgressText) {
+      latestProgressText = 'AI が作業を進めています…';
+      enqueueProgress({
+        sessionId: latestProgressSessionId,
+        latestText: latestProgressText,
+      });
+    }
   });
   proc.stdin?.on('error', () => {
     /* ignore prompt pipe teardown races */
@@ -1074,6 +1191,12 @@ async function runCodexTurn(input: {
       });
     }
   );
+
+  if (pendingStdout.trim()) {
+    handleProgressLine(pendingStdout);
+  }
+
+  await progressChain;
 
   return {
     code: exitCode,
@@ -1144,6 +1267,33 @@ async function writeWorkerSessionId(
     ...(current ?? {}),
     workerSessionId,
     workerLastStartedAt: new Date().toISOString(),
+  }));
+}
+
+async function updateWorkerLiveOutput(input: {
+  dir: string;
+  threadId: string;
+  text: string | null;
+  assigneeKind?: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeLabel?: string | null;
+  workerSessionId?: string | null;
+}): Promise<void> {
+  await updateManagerThreadMeta(input.dir, input.threadId, (current) => ({
+    ...(current ?? {}),
+    workerSessionId: input.workerSessionId ?? current?.workerSessionId ?? null,
+    workerLastStartedAt:
+      current?.workerLastStartedAt ?? new Date().toISOString(),
+    assigneeKind:
+      input.assigneeKind === undefined
+        ? (current?.assigneeKind ?? 'worker')
+        : input.assigneeKind,
+    assigneeLabel:
+      input.assigneeLabel === undefined
+        ? (current?.assigneeLabel ??
+          `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
+        : input.assigneeLabel,
+    workerLiveOutput: input.text,
+    workerLiveAt: input.text ? new Date().toISOString() : null,
   }));
 }
 
@@ -1296,6 +1446,16 @@ export async function processNextQueued(
       resolvedDir,
       isFirstTurn,
     });
+    let lastLiveOutput = 'AI が作業を始めました。内容を整理しています…';
+
+    await updateWorkerLiveOutput({
+      dir: resolvedDir,
+      threadId: next.threadId,
+      text: lastLiveOutput,
+      assigneeKind: 'worker',
+      assigneeLabel: `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
+      workerSessionId,
+    });
 
     let runResult: {
       code: number | null;
@@ -1314,6 +1474,22 @@ export async function processNextQueued(
         onSpawn: async (pid) => {
           const withPid = await readSession(dir);
           await writeSession(dir, { ...withPid, pid });
+        },
+        onProgress: async (progress) => {
+          const nextText =
+            progress.latestText?.trim() || 'AI が作業を進めています…';
+          if (nextText === lastLiveOutput) {
+            return;
+          }
+          lastLiveOutput = nextText;
+          await updateWorkerLiveOutput({
+            dir: resolvedDir,
+            threadId: next.threadId,
+            text: nextText,
+            assigneeKind: 'worker',
+            assigneeLabel: `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
+            workerSessionId: progress.sessionId ?? workerSessionId,
+          });
         },
       });
 
@@ -1338,6 +1514,22 @@ export async function processNextQueued(
           onSpawn: async (pid) => {
             const withPid = await readSession(dir);
             await writeSession(dir, { ...withPid, pid });
+          },
+          onProgress: async (progress) => {
+            const nextText =
+              progress.latestText?.trim() || 'AI が作業を進めています…';
+            if (nextText === lastLiveOutput) {
+              return;
+            }
+            lastLiveOutput = nextText;
+            await updateWorkerLiveOutput({
+              dir: resolvedDir,
+              threadId: next.threadId,
+              text: nextText,
+              assigneeKind: 'worker',
+              assigneeLabel: `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
+              workerSessionId: progress.sessionId ?? null,
+            });
           },
         });
       }
@@ -1368,6 +1560,11 @@ export async function processNextQueued(
       }
 
       const current = await readSession(dir);
+      await updateWorkerLiveOutput({
+        dir: resolvedDir,
+        threadId: next.threadId,
+        text: null,
+      });
       await writeSession(dir, {
         ...current,
         status: 'idle',
@@ -1401,6 +1598,12 @@ export async function processNextQueued(
         next.threadId,
         runResult.parsed.sessionId ?? workerSessionId
       );
+      await updateWorkerLiveOutput({
+        dir: resolvedDir,
+        threadId: next.threadId,
+        text: null,
+        workerSessionId: runResult.parsed.sessionId ?? workerSessionId,
+      });
       await writeSession(dir, {
         ...currentSession,
         status: 'idle',
@@ -1432,6 +1635,12 @@ export async function processNextQueued(
         next.threadId,
         runResult.parsed.sessionId ?? workerSessionId
       );
+      await updateWorkerLiveOutput({
+        dir: resolvedDir,
+        threadId: next.threadId,
+        text: null,
+        workerSessionId: runResult.parsed.sessionId ?? workerSessionId,
+      });
       await writeSession(dir, {
         ...currentSession,
         status: 'idle',
@@ -1459,6 +1668,14 @@ export async function processNextQueued(
     if (isSessionInvalidError(combinedOutput)) {
       await writeWorkerSessionId(resolvedDir, next.threadId, null);
     }
+    await updateWorkerLiveOutput({
+      dir: resolvedDir,
+      threadId: next.threadId,
+      text: null,
+      workerSessionId: isSessionInvalidError(combinedOutput)
+        ? null
+        : (runResult.parsed.sessionId ?? workerSessionId),
+    });
     await writeSession(dir, {
       ...currentSession,
       status: 'idle',

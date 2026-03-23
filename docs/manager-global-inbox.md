@@ -55,7 +55,8 @@ work item before sending and makes fragmented work harder to capture quickly.
 - Actionable work items are executed by the built-in worker layer, not left as
   acknowledgement-only replies
 - Work-item list and per-work-item detail update from the canonical store
-- Polling/reload keeps PC and smartphone aligned to the same state
+- The browser receives pushed snapshot updates from Hub's live Manager stream
+  instead of relying on periodic client polling
 
 ### Conflict policy
 
@@ -140,6 +141,19 @@ The user should be able to say things like:
 
 The AI should interpret those messages and update work-item linkage/state
 without requiring explicit manual work-item-management UI first.
+
+## Assignee and live-output model
+
+Each work item should expose who is currently responsible for it.
+
+- `manager`
+- `worker`
+- `sub-agent`
+
+When a worker is actively running, the open work-item conversation should show
+its latest live output at the bottom of the message list as a provisional AI
+message so the human can see what is happening without waiting for a final
+reply.
 
 ## Work-item state model
 

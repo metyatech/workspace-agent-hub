@@ -21,6 +21,7 @@ interface Msg {
   sender: 'ai' | 'user';
   content: string;
   at?: string;
+  live?: boolean;
 }
 
 type ManagerUiState =
@@ -47,6 +48,12 @@ interface ThreadView {
   derivedChildThreadIds: string[];
   queueDepth: number;
   isWorking: boolean;
+  assigneeKind: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeLabel: string | null;
+  workerLiveOutput: string | null;
+  workerLiveAt: string | null;
+  queueOrder?: number | null;
+  queuePriority?: string | null;
 }
 
 interface Task {
@@ -72,6 +79,14 @@ interface ManagerStatusPayload {
   currentQueueId?: string | null;
   currentThreadId?: string | null;
   currentThreadTitle?: string | null;
+}
+
+interface ManagerLiveSnapshotPayload {
+  kind: 'snapshot';
+  emittedAt: string;
+  threads: ThreadView[];
+  tasks: Task[];
+  status: ManagerStatusPayload;
 }
 
 interface ManagerRoutingSummaryItem {
@@ -855,6 +870,9 @@ function makeBubble(
   const bubble = document.createElement('div');
   const ai = message.sender === 'ai';
   bubble.className = `bubble ${ai ? 'bubble-ai' : 'bubble-user'}`;
+  if (message.live) {
+    bubble.classList.add('bubble-live');
+  }
   bubble.dataset.messageKey = `${message.sender}|${message.at ?? ''}|${hashMessageContent(message.content)}`;
   bubble.dataset.chatSide = ai ? 'left' : 'right';
   bubble.dataset.sender = message.sender;
@@ -868,7 +886,11 @@ function makeBubble(
 
   const timestamp = document.createElement('span');
   timestamp.className = 'bubble-ts';
-  timestamp.textContent = formatDate(message.at);
+  timestamp.textContent = message.live
+    ? message.at
+      ? `更新中 / ${formatDate(message.at)}`
+      : '更新中'
+    : formatDate(message.at);
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
@@ -883,8 +905,35 @@ function makeBubble(
   return bubble;
 }
 
-function messagesForDetail(messages: Msg[]): Msg[] {
-  return [...messages];
+function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
+  if (!thread.isWorking && !thread.workerLiveOutput) {
+    return null;
+  }
+
+  const content = thread.workerLiveOutput?.trim() || 'AI が作業を進めています…';
+  const lastPersisted = thread.messages.at(-1);
+  if (
+    lastPersisted?.sender === 'ai' &&
+    lastPersisted.content.trim() === content.trim()
+  ) {
+    return null;
+  }
+
+  return {
+    sender: 'ai',
+    content,
+    at: thread.workerLiveAt ?? thread.updatedAt,
+    live: true,
+  };
+}
+
+function messagesForDetail(thread: ThreadView): Msg[] {
+  const messages = [...thread.messages];
+  const liveMessage = buildLiveWorkerMessage(thread);
+  if (liveMessage) {
+    messages.push(liveMessage);
+  }
+  return messages;
 }
 
 function makeFeedbackChip(
@@ -1536,6 +1585,9 @@ class DetailController {
       uiState: thread.uiState,
       updatedAt: thread.updatedAt ?? '',
       queueDepth: thread.queueDepth,
+      assigneeLabel: thread.assigneeLabel ?? '',
+      workerLiveOutput: thread.workerLiveOutput ?? '',
+      workerLiveAt: thread.workerLiveAt ?? '',
       movementNotice: movementNotice ?? '',
       messages: thread.messages.map((message) => ({
         sender: message.sender,
@@ -1589,6 +1641,7 @@ class DetailController {
     meta.textContent = [
       thread.updatedAt ? `更新: ${formatDate(thread.updatedAt)}` : '',
       thread.queueDepth > 0 ? `キュー: ${thread.queueDepth}` : '',
+      thread.assigneeLabel ? `担当: ${thread.assigneeLabel}` : '',
     ]
       .filter(Boolean)
       .join(' / ');
@@ -1705,7 +1758,7 @@ class DetailController {
 
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
-    const detailMessages = messagesForDetail(thread.messages);
+    const detailMessages = messagesForDetail(thread);
     if (detailMessages.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'detail-empty';
@@ -1748,7 +1801,8 @@ class ManagerApp {
   #taskSection: TaskSectionController;
   #detail: DetailController;
   #authToken = readStoredAuthToken();
-  #pollTimer: number | null = null;
+  #liveStreamAbort: AbortController | null = null;
+  #liveReconnectTimer: number | null = null;
   #showDone = false;
   #sending = false;
   #managerStatus: ManagerStatusPayload | null = null;
@@ -2154,7 +2208,6 @@ class ManagerApp {
   }
 
   async loadAll(): Promise<boolean> {
-    const previousOpenThread = this.#findThread(this.openThreadId);
     const [threadsRes, tasksRes] = await Promise.all([
       this.apiFetch('/api/threads'),
       this.apiFetch('/api/tasks'),
@@ -2164,12 +2217,31 @@ class ManagerApp {
       return false;
     }
 
-    if (threadsRes.ok) {
-      this.allThreads = (await threadsRes.json()) as ThreadView[];
+    const nextThreads = threadsRes.ok
+      ? ((await threadsRes.json()) as ThreadView[])
+      : this.allThreads;
+    const nextTasks = tasksRes.ok
+      ? ((await tasksRes.json()) as Task[])
+      : this.allTasks;
+
+    this.#applyThreadAndTaskSnapshot(nextThreads, nextTasks);
+    return true;
+  }
+
+  async loadManagerStatus(): Promise<boolean> {
+    const response = await this.apiFetch('/api/manager/status');
+    if (!response || !response.ok) {
+      return false;
     }
-    if (tasksRes.ok) {
-      this.allTasks = (await tasksRes.json()) as Task[];
-    }
+
+    this.#applyManagerStatus((await response.json()) as ManagerStatusPayload);
+    return true;
+  }
+
+  #applyThreadAndTaskSnapshot(threads: ThreadView[], tasks: Task[]): void {
+    const previousOpenThread = this.#findThread(this.openThreadId);
+    this.allThreads = threads;
+    this.allTasks = tasks;
 
     if (
       this.openThreadId &&
@@ -2218,16 +2290,9 @@ class ManagerApp {
 
     this.#renderAll();
     this.#renderActivitySummary();
-    return true;
   }
 
-  async loadManagerStatus(): Promise<boolean> {
-    const response = await this.apiFetch('/api/manager/status');
-    if (!response || !response.ok) {
-      return false;
-    }
-
-    const payload = (await response.json()) as ManagerStatusPayload;
+  #applyManagerStatus(payload: ManagerStatusPayload): void {
     this.#managerStatus = payload;
     const dot = document.getElementById(
       'manager-status-dot'
@@ -2261,7 +2326,7 @@ class ManagerApp {
       }
       startButton?.classList.add('hidden');
       this.#renderActivitySummary();
-      return true;
+      return;
     }
 
     if (payload.configured) {
@@ -2275,7 +2340,7 @@ class ManagerApp {
       }
       startButton?.classList.remove('hidden');
       this.#renderActivitySummary();
-      return true;
+      return;
     }
 
     if (dot) {
@@ -2287,7 +2352,111 @@ class ManagerApp {
     }
     startButton?.classList.add('hidden');
     this.#renderActivitySummary();
-    return true;
+  }
+
+  #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): void {
+    this.#applyThreadAndTaskSnapshot(snapshot.threads, snapshot.tasks);
+    this.#applyManagerStatus(snapshot.status);
+  }
+
+  #startLiveStream(): void {
+    this.#stopLiveStream();
+    if (!this.#authToken) {
+      return;
+    }
+    const controller = new AbortController();
+    this.#liveStreamAbort = controller;
+
+    void this.#consumeLiveStream(controller.signal);
+  }
+
+  #stopLiveStream(): void {
+    if (this.#liveReconnectTimer !== null) {
+      window.clearTimeout(this.#liveReconnectTimer);
+      this.#liveReconnectTimer = null;
+    }
+    if (this.#liveStreamAbort) {
+      this.#liveStreamAbort.abort();
+      this.#liveStreamAbort = null;
+    }
+  }
+
+  #scheduleLiveReconnect(delayMs = 1000): void {
+    if (
+      this.#liveReconnectTimer !== null ||
+      !this.#authToken ||
+      typeof window === 'undefined'
+    ) {
+      return;
+    }
+    this.#liveReconnectTimer = window.setTimeout(() => {
+      this.#liveReconnectTimer = null;
+      this.#startLiveStream();
+    }, delayMs);
+  }
+
+  async #consumeLiveStream(signal: AbortSignal): Promise<void> {
+    try {
+      const response = await apiFetchWithToken(this.#authToken, '/api/live', {
+        signal,
+      });
+      const contentType = response.headers.get('content-type') ?? '';
+      if (
+        !response.ok ||
+        !response.body ||
+        !contentType.includes('application/x-ndjson')
+      ) {
+        this.#scheduleLiveReconnect();
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          try {
+            const payload = JSON.parse(trimmed) as
+              | ManagerLiveSnapshotPayload
+              | { kind?: string };
+            if (payload.kind === 'snapshot') {
+              this.#applyLiveSnapshot(payload as ManagerLiveSnapshotPayload);
+            }
+          } catch {
+            /* ignore malformed live payloads */
+          }
+        }
+      }
+      if (!signal.aborted) {
+        this.#scheduleLiveReconnect();
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        return;
+      }
+      if (error instanceof AuthRequiredError) {
+        this.#handleAuthFailure('アクセスコードを入力してください');
+        return;
+      }
+      this.#scheduleLiveReconnect();
+    } finally {
+      if (this.#liveStreamAbort?.signal === signal) {
+        this.#liveStreamAbort = null;
+      }
+    }
   }
 
   openDetail(threadId: string): void {
@@ -2497,7 +2666,7 @@ class ManagerApp {
       this.loadManagerStatus(),
     ]);
     if (dataOk || statusOk) {
-      this.#startPolling();
+      this.#startLiveStream();
     }
   }
 
@@ -2522,23 +2691,6 @@ class ManagerApp {
       '--composer-dock-reserve',
       `${Math.ceil(resolvedReserve)}px`
     );
-  }
-
-  #startPolling(): void {
-    if (this.#pollTimer !== null) {
-      return;
-    }
-    this.#pollTimer = window.setInterval(() => {
-      void this.loadAll();
-      void this.loadManagerStatus();
-    }, 5000);
-  }
-
-  #stopPolling(): void {
-    if (this.#pollTimer !== null) {
-      window.clearInterval(this.#pollTimer);
-      this.#pollTimer = null;
-    }
   }
 
   #wireActions(): void {
@@ -2766,7 +2918,7 @@ class ManagerApp {
     submitButton?.removeAttribute('disabled');
     if (dataOk || statusOk) {
       this.#hideAuthPanel();
-      this.#startPolling();
+      this.#startLiveStream();
       return;
     }
 
@@ -2775,6 +2927,7 @@ class ManagerApp {
 
   #clearSavedAuth(): void {
     this.#authToken = null;
+    this.#stopLiveStream();
     clearStoredAuthToken();
     this.#toggleClearAuthButton(false);
     this.#setAuthError('');
@@ -2790,7 +2943,7 @@ class ManagerApp {
   #handleAuthFailure(message: string): void {
     this.#authToken = null;
     clearStoredAuthToken();
-    this.#stopPolling();
+    this.#stopLiveStream();
     this.#showAuthPanel(message);
   }
 

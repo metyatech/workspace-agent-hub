@@ -9,6 +9,7 @@ import {
   type ManagerQueuePriority,
 } from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
+import { notifyManagerUpdate } from './manager-live-updates.js';
 
 export const MANAGER_THREAD_META_FILE =
   '.workspace-agent-hub-manager-thread-meta.json';
@@ -28,6 +29,10 @@ export interface ManagerThreadMeta {
   lastRoutingAt?: string | null;
   workerSessionId?: string | null;
   workerLastStartedAt?: string | null;
+  assigneeKind?: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeLabel?: string | null;
+  workerLiveOutput?: string | null;
+  workerLiveAt?: string | null;
 }
 
 export interface ManagerThreadView extends Thread {
@@ -43,9 +48,15 @@ export interface ManagerThreadView extends Thread {
   isWorking: boolean;
   queueOrder: number | null;
   queuePriority: ManagerQueuePriority | null;
+  assigneeKind: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeLabel: string | null;
+  workerLiveOutput: string | null;
+  workerLiveAt: string | null;
 }
 
 type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
+
+const metaWriteLocks = new Map<string, Promise<void>>();
 
 function atomicTmpPath(filePath: string): string {
   return `${filePath}.tmp`;
@@ -57,14 +68,31 @@ async function atomicWrite(filePath: string, content: string): Promise<void> {
   await rename(tmp, filePath);
 }
 
-export function managerThreadMetaFilePath(dir: string): string {
-  return join(resolvePath(dir), MANAGER_THREAD_META_FILE);
+async function withMetaWriteLock<T>(
+  dir: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const key = resolvePath(dir);
+  const previous = metaWriteLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolvePromise) => {
+    release = resolvePromise;
+  });
+  metaWriteLocks.set(key, gate);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (metaWriteLocks.get(key) === gate) {
+      metaWriteLocks.delete(key);
+    }
+  }
 }
 
-export async function readManagerThreadMeta(
-  dir: string
+async function readManagerThreadMetaFile(
+  filePath: string
 ): Promise<ManagerThreadMetaMap> {
-  const filePath = managerThreadMetaFilePath(dir);
   if (!existsSync(filePath)) {
     return {};
   }
@@ -84,12 +112,25 @@ export async function readManagerThreadMeta(
   }
 }
 
+export function managerThreadMetaFilePath(dir: string): string {
+  return join(resolvePath(dir), MANAGER_THREAD_META_FILE);
+}
+
+export async function readManagerThreadMeta(
+  dir: string
+): Promise<ManagerThreadMetaMap> {
+  return readManagerThreadMetaFile(managerThreadMetaFilePath(dir));
+}
+
 export async function writeManagerThreadMeta(
   dir: string,
   meta: ManagerThreadMetaMap
 ): Promise<void> {
   const filePath = managerThreadMetaFilePath(dir);
-  await atomicWrite(filePath, JSON.stringify(meta, null, 2));
+  await withMetaWriteLock(dir, () =>
+    atomicWrite(filePath, JSON.stringify(meta, null, 2))
+  );
+  notifyManagerUpdate(dir);
 }
 
 export async function updateManagerThreadMeta(
@@ -97,14 +138,18 @@ export async function updateManagerThreadMeta(
   threadId: string,
   updater: (current: ManagerThreadMeta | null) => ManagerThreadMeta | null
 ): Promise<void> {
-  const current = await readManagerThreadMeta(dir);
-  const nextEntry = updater(current[threadId] ?? null);
-  if (nextEntry) {
-    current[threadId] = nextEntry;
-  } else {
-    delete current[threadId];
-  }
-  await writeManagerThreadMeta(dir, current);
+  const filePath = managerThreadMetaFilePath(dir);
+  await withMetaWriteLock(dir, async () => {
+    const current = await readManagerThreadMetaFile(filePath);
+    const nextEntry = updater(current[threadId] ?? null);
+    if (nextEntry) {
+      current[threadId] = nextEntry;
+    } else {
+      delete current[threadId];
+    }
+    await atomicWrite(filePath, JSON.stringify(current, null, 2));
+  });
+  notifyManagerUpdate(dir);
 }
 
 export async function clearManagerThreadMeta(
@@ -308,6 +353,10 @@ export function deriveManagerThreadViews(input: {
       isWorking,
       queueOrder: queueOrderByThread.get(thread.id) ?? null,
       queuePriority: queuePriorityByThread.get(thread.id) ?? null,
+      assigneeKind: meta?.assigneeKind ?? null,
+      assigneeLabel: meta?.assigneeLabel ?? null,
+      workerLiveOutput: meta?.workerLiveOutput ?? null,
+      workerLiveAt: meta?.workerLiveAt ?? null,
     } satisfies ManagerThreadView;
   });
 

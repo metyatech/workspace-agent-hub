@@ -1113,6 +1113,54 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[1]?.[4]).toBe('review');
   });
 
+  it('stores live worker output in thread meta while a worker turn is running', async () => {
+    const proc = makeProc(7050);
+    spawnMock.mockReturnValueOnce(proc);
+
+    await sendToBuiltinManager(tempDir, 'thread-live', 'live message');
+
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        session.status === 'busy' &&
+        meta['thread-live']?.workerLiveOutput ===
+          'AI が作業を始めました。内容を整理しています…'
+      );
+    });
+
+    proc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-live"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"いま live 出力を流しています"}}',
+        ].join('\n')
+      )
+    );
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        meta['thread-live']?.workerLiveOutput === 'いま live 出力を流しています'
+      );
+    });
+
+    proc.emit('close', 0);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        meta['thread-live']?.workerLiveOutput === null &&
+        meta['thread-live']?.assigneeLabel?.includes('Codex gpt-5.4') === true
+      );
+    });
+  });
+
   it('dispatches a queued question ahead of older normal backlog after the current turn completes', async () => {
     const firstProc = makeProc(7101);
     const secondProc = makeProc(7102);

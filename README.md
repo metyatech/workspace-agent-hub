@@ -337,6 +337,10 @@ The Manager UX design and behavior for the single global composer plus
 AI-managed work-item graph routing is documented in
 [docs/manager-global-inbox.md](docs/manager-global-inbox.md).
 
+The broader target architecture for the Manager-as-orchestrator model is
+documented in
+[docs/manager-orchestrator-architecture.md](docs/manager-orchestrator-architecture.md).
+
 How it works:
 
 1. Open the normal Hub page from the PC or smartphone.
@@ -426,6 +430,10 @@ Important behavior:
   confirmation/reply-needed states but does not auto-close them silently.
 - The built-in manager backend runs on Codex CLI (`gpt-5.4` with
   `model_reasoning_effort="xhigh"`).
+- The native Manager page now updates over a pushed live snapshot stream instead
+  of periodic client polling, and the bottom of the open work-item
+  conversation can show the worker's provisional live output while a result is
+  still running.
 - Manager messages are serialized: one queued message is processed at a time,
   and messages received during an in-flight turn continue automatically with
   the same priority-aware ordering.

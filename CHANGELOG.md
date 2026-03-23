@@ -12,6 +12,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   fresh/resumed/stale access-code states
 - Added Playwright coverage for opening Manager from Hub on both desktop and
   mobile-width browser paths
+- Added a Manager orchestrator architecture document that defines the work-item
+  graph, assignee model, push-update transport, and target manager/system/worker
+  responsibility split
 
 ### Changed
 
@@ -49,6 +52,9 @@ task` card, a `what to read first` lane, and an explicit global-vs-task send
   plus execution layer, so each routed topic now runs real Codex work in its
   own persisted worker continuation instead of stopping at acknowledgement-only
   replies
+- Replaced periodic client polling on the native Manager page with a pushed live
+  snapshot stream, and surfaced the latest in-flight worker output as the
+  newest provisional AI bubble at the bottom of the open work-item conversation
 
 ## [0.2.1] - 2026-03-16
 

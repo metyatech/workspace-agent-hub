@@ -26,6 +26,10 @@ import {
   deriveManagerThreadViews,
   readManagerThreadMeta,
 } from './manager-thread-state.js';
+import {
+  notifyManagerUpdate,
+  subscribeManagerUpdates,
+} from './manager-live-updates.js';
 import { isWebUiAuthorized, type WebUiAuthConfig } from './web-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -101,6 +105,14 @@ function sendError(res: ServerResponse, message: string, status = 400): void {
   sendJson(res, { error: message }, status);
 }
 
+interface ManagerLiveSnapshot {
+  kind: 'snapshot';
+  emittedAt: string;
+  threads: ReturnType<typeof deriveManagerThreadViews>;
+  tasks: Awaited<ReturnType<typeof readActiveTasks>>;
+  status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>;
+}
+
 function sendUnauthorized(res: ServerResponse): void {
   sendJson(
     res,
@@ -137,6 +149,32 @@ function normalizeManagerPath(pathname: string): string {
   }
   const suffix = pathname.slice('/manager'.length);
   return suffix.startsWith('/') ? suffix : `/${suffix}`;
+}
+
+async function buildManagerLiveSnapshot(
+  workspaceRoot: string
+): Promise<ManagerLiveSnapshot> {
+  const [threads, session, queue, meta, tasks, status] = await Promise.all([
+    listThreads(workspaceRoot),
+    readSession(workspaceRoot),
+    readQueue(workspaceRoot),
+    readManagerThreadMeta(workspaceRoot),
+    readActiveTasks(workspaceRoot),
+    getBuiltinManagerStatus(workspaceRoot),
+  ]);
+
+  return {
+    kind: 'snapshot',
+    emittedAt: new Date().toISOString(),
+    threads: deriveManagerThreadViews({
+      threads,
+      session,
+      queue,
+      meta,
+    }),
+    tasks,
+    status,
+  };
 }
 
 export function isManagerUiPath(pathname: string): boolean {
@@ -218,6 +256,68 @@ export async function handleManagerUiRequest(input: {
     return true;
   }
 
+  if (localPath === '/api/live' && input.method === 'GET') {
+    input.res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let closed = false;
+    let writeChain = Promise.resolve();
+
+    const enqueuePayload = (payload: unknown): void => {
+      writeChain = writeChain
+        .then(async () => {
+          if (closed || input.res.writableEnded) {
+            return;
+          }
+          input.res.write(JSON.stringify(payload) + '\n');
+        })
+        .catch(() => {
+          /* ignore stream write failures */
+        });
+    };
+
+    enqueuePayload(await buildManagerLiveSnapshot(input.workspaceRoot));
+
+    const unsubscribe = subscribeManagerUpdates(input.workspaceRoot, () => {
+      void buildManagerLiveSnapshot(input.workspaceRoot)
+        .then((snapshot) => {
+          enqueuePayload(snapshot);
+        })
+        .catch(() => {
+          /* ignore snapshot rebuild failures */
+        });
+    });
+
+    const heartbeat = setInterval(() => {
+      enqueuePayload({
+        kind: 'ping',
+        emittedAt: new Date().toISOString(),
+      });
+    }, 20000);
+
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      if (!input.res.writableEnded) {
+        input.res.end();
+      }
+    };
+
+    input.req.on('close', cleanup);
+    input.req.on('error', cleanup);
+    input.res.on('close', cleanup);
+    input.res.on('error', cleanup);
+    return true;
+  }
+
   if (localPath === '/api/tasks' && input.method === 'GET') {
     sendJson(input.res, await readActiveTasks(input.workspaceRoot));
     return true;
@@ -225,6 +325,7 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/threads/purge' && input.method === 'POST') {
     const purged = await purgeThreads(input.workspaceRoot);
+    notifyManagerUpdate(input.workspaceRoot);
     sendJson(input.res, { count: purged.length, ids: purged.map((t) => t.id) });
     return true;
   }
@@ -235,11 +336,12 @@ export async function handleManagerUiRequest(input: {
       sendError(input.res, 'title is required');
       return true;
     }
-    sendJson(
-      input.res,
-      await createThread(input.workspaceRoot, body.title.trim()),
-      201
+    const createdThread = await createThread(
+      input.workspaceRoot,
+      body.title.trim()
     );
+    notifyManagerUpdate(input.workspaceRoot);
+    sendJson(input.res, createdThread, 201);
     return true;
   }
 
@@ -268,34 +370,37 @@ export async function handleManagerUiRequest(input: {
       VALID_THREAD_STATUSES.has(body.status as ThreadStatus)
         ? (body.status as ThreadStatus)
         : undefined;
-    sendJson(
-      input.res,
-      await addMessage(
-        input.workspaceRoot,
-        messageMatch[1],
-        body.content,
-        sender,
-        status
-      )
+    const message = await addMessage(
+      input.workspaceRoot,
+      messageMatch[1],
+      body.content,
+      sender,
+      status
     );
+    notifyManagerUpdate(input.workspaceRoot);
+    sendJson(input.res, message);
     return true;
   }
 
   const resolveMatch = localPath.match(/^\/api\/threads\/([^/]+)\/resolve$/);
   if (resolveMatch && input.method === 'PUT') {
-    sendJson(
-      input.res,
-      await resolveThread(input.workspaceRoot, resolveMatch[1])
+    const resolvedThread = await resolveThread(
+      input.workspaceRoot,
+      resolveMatch[1]
     );
+    notifyManagerUpdate(input.workspaceRoot);
+    sendJson(input.res, resolvedThread);
     return true;
   }
 
   const reopenMatch = localPath.match(/^\/api\/threads\/([^/]+)\/reopen$/);
   if (reopenMatch && input.method === 'PUT') {
-    sendJson(
-      input.res,
-      await reopenThread(input.workspaceRoot, reopenMatch[1])
+    const reopenedThread = await reopenThread(
+      input.workspaceRoot,
+      reopenMatch[1]
     );
+    notifyManagerUpdate(input.workspaceRoot);
+    sendJson(input.res, reopenedThread);
     return true;
   }
 
