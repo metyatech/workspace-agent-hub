@@ -239,20 +239,24 @@ describe('manager-app DOM auth state matrix', () => {
       /\.bubble-content \{\s+font-size: 0\.8rem;\s+color: #163123;\s+white-space: normal;/
     );
     expect(managerHtml).toMatch(
-      /\.bubble-content p,\s+\.composer-preview-body p\s+\{\s+margin: 0 0 0\.54em;/
+      /\.bubble-content p\s+\{\s+margin: 0 0 0\.54em;/
     );
     expect(managerHtml).toMatch(
-      /\.bubble-content ul,\s+\.bubble-content ol,\s+\.composer-preview-body ul,\s+\.composer-preview-body ol\s+\{\s+margin: 0 0 0\.68em;\s+padding-left: 1\.25em;/
+      /\.bubble-content ul,\s+\.bubble-content ol\s+\{\s+margin: 0 0 0\.68em;\s+padding-left: 1\.25em;/
     );
     expect(managerHtml).toMatch(
-      /\.bubble-content li \+ li,\s+\.composer-preview-body li \+ li\s+\{\s+margin-top: 0\.12em;/
+      /\.bubble-content li \+ li\s+\{\s+margin-top: 0\.12em;/
     );
     expect(managerHtml).toMatch(
-      /\.bubble-content blockquote,\s+\.composer-preview-body blockquote\s+\{\s+margin: 0 0 0\.68em;/
+      /\.bubble-content blockquote\s+\{\s+margin: 0 0 0\.68em;/
     );
-    expect(managerHtml).toMatch(
-      /\.composer-preview-body \{\s+font-size: 0\.8rem;\s+color: #163123;\s+white-space: normal;/
-    );
+    expect(managerHtml).not.toContain('送信プレビュー');
+  });
+
+  it('keeps always-visible manager chrome minimal', () => {
+    expect(managerHtml).not.toContain('id="dir-label"');
+    expect(managerHtml).not.toContain('↻ 更新');
+    expect(managerHtml).toContain('残っている作業メモ');
   });
 
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {
@@ -929,6 +933,119 @@ describe('manager-app DOM auth state matrix', () => {
     expect(sides).toEqual(['right', 'left', 'right']);
   });
 
+  it('opens a topic with the message area scrolled to the latest message even when layout settles one tick later', async () => {
+    const validToken = 'delayed-bottom-scroll-token';
+    const thread = makeThreadView('thread-delayed-bottom', '下端スクロール', {
+      messages: [
+        {
+          sender: 'user',
+          content: '一つ前のメッセージ',
+          at: '2026-03-21T00:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '一番下のメッセージ',
+          at: '2026-03-21T00:01:00.000Z',
+        },
+      ],
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [thread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+        const reads = new WeakMap<object, number>();
+        const elementPrototype = (
+          window as unknown as { HTMLElement: typeof HTMLElement }
+        ).HTMLElement.prototype;
+        Object.defineProperty(elementPrototype, 'scrollHeight', {
+          configurable: true,
+          get(this: HTMLElement) {
+            if (!this.classList.contains('msg-area')) {
+              return 0;
+            }
+            const nextRead = (reads.get(this) ?? 0) + 1;
+            reads.set(this, nextRead);
+            return nextRead === 1 ? 0 : 640;
+          },
+        });
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(6);
+
+    expect(document.querySelector<HTMLElement>('.msg-area')!.scrollTop).toBe(
+      640
+    );
+  });
+
+  it('returns from a topic screen to the inbox when browser history goes back', async () => {
+    const validToken = 'history-back-to-inbox-token';
+    const thread = makeThreadView('thread-history', '履歴確認');
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [thread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(4);
+
+    expect(document.defaultView!.history.state).toMatchObject({
+      kind: 'workspace-agent-hub-manager',
+      screen: 'thread',
+      threadId: 'thread-history',
+    });
+    expect(
+      document
+        .querySelector<HTMLElement>('#manager-inbox-screen')!
+        .classList.contains('hidden')
+    ).toBe(true);
+
+    document.defaultView!.history.back();
+    await flushAsync(6);
+
+    expect(document.defaultView!.history.state).toMatchObject({
+      kind: 'workspace-agent-hub-manager',
+      screen: 'inbox',
+    });
+    expect(
+      document
+        .querySelector<HTMLElement>('#manager-inbox-screen')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(
+      document
+        .querySelector<HTMLElement>('#thread-screen')!
+        .classList.contains('hidden')
+    ).toBe(true);
+  });
+
   it('renders markdown replies and inline user images in the detail bubbles', async () => {
     const validToken = 'rich-message-token';
     const thread = makeThreadView('thread-rich', '装飾付き task', {
@@ -1587,7 +1704,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(textarea.placeholder).not.toContain('\\n');
   });
 
-  it('pastes clipboard images into the composer at the cursor and shows a rendered preview', async () => {
+  it('pastes clipboard images into the composer at the cursor without a separate preview pane', async () => {
     const fetchMock = createManagerFetch('composer-paste-token');
 
     const document = await loadManagerApp(fetchMock, {
@@ -1629,12 +1746,7 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#composerAttachmentList')!
         .textContent
     ).toContain('capture.png');
-    expect(
-      document
-        .querySelector<HTMLElement>('#composerPreviewWrap')!
-        .classList.contains('hidden')
-    ).toBe(false);
-    expect(document.querySelector('#composerPreviewBody img')).not.toBeNull();
+    expect(document.querySelector('#composerPreviewWrap')).toBeNull();
   });
 
   it('drops images into the composer at the current cursor position', async () => {

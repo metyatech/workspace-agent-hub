@@ -84,9 +84,7 @@ async function openManager(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Manager を開く' }).click();
 
   await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
-  await expect(
-    page.getByRole('heading', { name: 'マネージャー' })
-  ).toBeVisible();
+  await expect(page.locator('h1.manager-bar-title')).toBeVisible();
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -307,10 +305,10 @@ test('opens Manager from Hub in the same tab on desktop', async ({ page }) => {
   await page.getByRole('button', { name: 'Manager を開く' }).click();
 
   await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
+  await expect(page.locator('h1.manager-bar-title')).toBeVisible();
   await expect(
-    page.getByRole('heading', { name: 'マネージャー' })
-  ).toBeVisible();
-  await expect(page.locator('#dir-label')).not.toHaveText('');
+    page.getByRole('button', { name: '↻ 更新', exact: true })
+  ).toHaveCount(0);
   await expect(
     page.getByRole('heading', { name: 'この画面を開くコードを入力' })
   ).toHaveCount(0);
@@ -336,10 +334,10 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
   await page.getByRole('button', { name: 'Manager を開く' }).click();
 
   await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
+  await expect(page.locator('h1.manager-bar-title')).toBeVisible();
   await expect(
-    page.getByRole('heading', { name: 'マネージャー' })
-  ).toBeVisible();
-  await expect(page.locator('#dir-label')).not.toHaveText('');
+    page.getByRole('button', { name: '↻ 更新', exact: true })
+  ).toHaveCount(0);
   const openComposerButton = page.getByRole('button', {
     name: '送信欄を開く',
     exact: true,
@@ -389,7 +387,9 @@ test('keeps the unlocked Manager inbox accessible on desktop and mobile', async 
   ]) {
     await page.setViewportSize(viewport);
     await openManager(page);
-    await expect(page.locator('#dir-label')).not.toHaveText('');
+    await expect(
+      page.getByRole('button', { name: '↻ 更新', exact: true })
+    ).toHaveCount(0);
     await expectNoAccessibilityViolations(page);
   }
 });

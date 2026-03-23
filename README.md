@@ -58,10 +58,11 @@ It provides:
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-web-ui-shortcuts.ps1
    ```
 
-   This installs a Startup shortcut that now launches the browser UI in
-   `-PhoneReady` mode automatically after Windows sign-in, so the same Hub and
-   Manager can be reopened from a smartphone without using Remote Desktop while
-   the PC stays on.
+   This installs a Startup shortcut that launches a small phone-ready watchdog
+   after Windows sign-in. The watchdog keeps the same Hub and Manager reachable
+   from a smartphone without using Remote Desktop while the PC stays on and the
+   Windows user session remains signed in, and it recreates the web UI
+   automatically if that background process exits.
 
    This is the canonical day-to-day entrypoint. The installer also removes the
    old `AI Agent Sessions` shortcut if it still exists on this PC.
@@ -152,13 +153,21 @@ available for phone access:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1 -PhoneReady
 ```
 
+Keep a self-healing phone-ready watchdog running in the background for the
+current signed-in Windows session:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/keep-web-ui-phone-ready.ps1
+```
+
 The shortcut installer creates:
 
 - `Workspace Agent Hub` on the Desktop and Start Menu, which opens the browser
   UI directly
-- `Workspace Agent Hub Background` in the Windows Startup folder, which keeps
-  the web UI running in `-PhoneReady` mode after sign-in so the phone can
-  reconnect anytime while the PC is on
+- `Workspace Agent Hub Background` in the Windows Startup folder, which starts
+  the phone-ready watchdog after sign-in so the phone can reconnect anytime
+  while the PC is on, the user session stays signed in, and the Hub process can
+  self-heal if it stops
 - It also removes any stale `AI Agent Sessions` shortcut so the browser Hub is
   the only normal Windows entrypoint
 
@@ -352,10 +361,11 @@ Important behavior:
 - Users send from one global dock; they do not need to create or pick a task
   before sending, and the larger text area only opens when they choose to
   write.
-- When Manager splits a freeform message into tasks, follow-ups on existing
-  topics keep the user's original wording when possible, while brand-new topics
-  store the closest standalone wording that still makes sense when read in that
-  topic by itself.
+- When Manager splits a freeform message into tasks, the default granularity is
+  one new user turn per topic. Follow-ups to existing topics are normally
+  stored as new derived topics with parent context embedded into the stored
+  user message, while only direct replies to an outstanding confirmation stay
+  inside the same topic.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
@@ -364,8 +374,9 @@ Important behavior:
   `AI作業中` remain in the inbox buckets instead of cluttering the read-next
   lane.
 - Opening a topic now moves into a dedicated conversation screen with the
-  message history in chat order and the newest message at the bottom, so the
-  user can read and continue that topic in one place.
+  message history in chat order and the newest message at the bottom, scrolls
+  that conversation to the latest message when the topic opens, and lets the
+  browser back button return to the Manager list before leaving Hub.
 - The current built-in Manager routes each global send with a fresh Codex
   routing turn so old router-chat context does not blur distinct tasks, then
   executes each actionable task with its own persisted Codex worker
@@ -384,8 +395,9 @@ Important behavior:
 - ANSI-colored CLI output inside Manager replies is rendered as styled text, so
   git diffs and other terminal-colored snippets stay readable instead of
   exposing raw escape sequences.
-- The composer now shows a rendered preview before send, so image placement and
-  Markdown structure are visible before the message is queued.
+- The composer keeps the draft simple: image placement stays inline in the text
+  box and attachment chips, without adding a second rendered preview card above
+  the send button.
 - Pressing `Send` now moves the just-sent draft into a separate sending/recent
   lane immediately, so the composer itself clears at once and is ready for the
   next draft instead of mixing in-flight content with new edits.

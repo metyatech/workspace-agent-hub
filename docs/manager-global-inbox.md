@@ -97,6 +97,10 @@ topic before sending and makes fragmented work harder to capture quickly.
   freeform message, the stored user-side topic message should keep that
   original wording instead of being immediately rewritten into AI-normalized
   prose
+- Default granularity is one new user turn per topic. When the user is
+  following up on an earlier topic, create a new derived topic with enough
+  parent context embedded into the stored user message so that the derived
+  topic still makes sense on its own
 - For brand-new topics, the stored user-side message should still be readable
   on its own inside that topic: keep the user's wording as much as possible,
   but add the smallest missing context when the raw excerpt would otherwise be
@@ -116,7 +120,9 @@ Given a freeform message such as:
 the Manager should:
 
 1. split the message into candidate intents
-2. attach each intent to an existing topic or create a new topic
+2. create a new topic for each resulting user-turn task, and if an intent is a
+   follow-up to an existing topic, usually create a derived topic instead of
+   appending directly to the old topic
 3. ask for confirmation only for the ambiguous intent(s)
 4. write replies back into the resulting topic(s), not only as one top-level
    combined answer
@@ -213,6 +219,9 @@ The Manager screen must make these points obvious without external explanation:
   expanding detail inline inside the inbox
 - Task detail remains available, but the primary mental model is the inbox, not
   thread administration
+- When a topic screen opens, the conversation should land at the latest message
+  immediately, and the browser Back action should return to the topic list
+  before leaving Hub
 - Avoid exposing internal thread IDs or infrastructure wording; if stored AI
   text contains an internal ID anyway, render it back to the human as the
   corresponding topic title instead of showing the raw ID
@@ -230,7 +239,9 @@ Routing feedback should appear near the global composer, because that is where
 the user's attention is immediately after sending. The just-sent draft should
 move into a separate sending/recent lane right away so the composer itself can
 reset immediately for the next draft instead of mixing in-flight content with
-new edits.
+new edits. Keep the draft surface itself simple; do not add a second rendered
+preview card unless it clearly improves comprehension more than it adds visual
+weight.
 
 It should be compact, for example:
 

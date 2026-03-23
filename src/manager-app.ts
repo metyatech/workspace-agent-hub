@@ -55,6 +55,12 @@ interface Task {
   createdAt?: string;
 }
 
+interface ManagerHistoryState {
+  kind: 'workspace-agent-hub-manager';
+  screen: 'inbox' | 'thread';
+  threadId?: string;
+}
+
 interface ManagerStatusPayload {
   running: boolean;
   configured: boolean;
@@ -166,6 +172,7 @@ const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
 const MANAGER_AUTH_STORAGE_KEY =
   window.MANAGER_AUTH_STORAGE_KEY || `workspace-agent-hub.token:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
+const MANAGER_HISTORY_KIND = 'workspace-agent-hub-manager';
 
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
@@ -186,13 +193,13 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
 };
 
 const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
-  'routing-confirmation-needed': '振り分け確認が必要な task はありません',
-  'user-reply-needed': 'あなたの返信が必要な task はありません',
+  'routing-confirmation-needed': '振り分け確認が必要な topic はありません',
+  'user-reply-needed': 'あなたの返信が必要な topic はありません',
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
   queued: 'AI の順番待ちはありません',
-  'ai-working': 'AI が作業中の task はありません',
-  done: '完了済みの task はありません',
+  'ai-working': 'AI が作業中の topic はありません',
+  done: '完了済みの topic はありません',
 };
 
 const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
@@ -227,6 +234,52 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     border: 'rgba(107, 114, 128, 0.28)',
   },
 };
+
+const TASK_STAGE_LABELS: Record<string, string> = {
+  pending: 'これから',
+  'in-progress': '進行中',
+  committed: 'commit 済み',
+  released: '公開済み',
+  done: '完了',
+};
+
+function readManagerHistoryState(): ManagerHistoryState | null {
+  const state = window.history.state as Partial<ManagerHistoryState> | null;
+  if (!state || state.kind !== MANAGER_HISTORY_KIND) {
+    return null;
+  }
+  if (state.screen === 'inbox') {
+    return { kind: MANAGER_HISTORY_KIND, screen: 'inbox' };
+  }
+  if (state.screen === 'thread' && typeof state.threadId === 'string') {
+    return {
+      kind: MANAGER_HISTORY_KIND,
+      screen: 'thread',
+      threadId: state.threadId,
+    };
+  }
+  return null;
+}
+
+function inboxHistoryState(): ManagerHistoryState {
+  return {
+    kind: MANAGER_HISTORY_KIND,
+    screen: 'inbox',
+  };
+}
+
+function threadHistoryState(threadId: string): ManagerHistoryState {
+  return {
+    kind: MANAGER_HISTORY_KIND,
+    screen: 'thread',
+    threadId,
+  };
+}
+
+function humanizeTaskStage(stage?: string): string {
+  const key = stage?.trim();
+  return key ? (TASK_STAGE_LABELS[key] ?? key) : '未整理';
+}
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -875,6 +928,9 @@ function describeThreadState(thread: ThreadView): string | null {
       'この task だけ、どの task として扱うかをあなたに確認したい状態です。'
     );
   }
+  if (thread.routingHint) {
+    return thread.routingHint;
+  }
   if (thread.uiState === 'user-reply-needed') {
     return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
   }
@@ -1210,10 +1266,15 @@ class TaskSectionController {
     }
 
     this.#body.innerHTML = '';
+    const copy = document.createElement('div');
+    copy.className = 'task-copy';
+    copy.textContent =
+      'topic の会話とは別に、このリポジトリ全体でまだ終わっていない作業メモを出します。いま自分が返す一覧ではありません。';
+    this.#body.appendChild(copy);
     if (tasks.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'section-empty';
-      empty.textContent = '進行中のタスクはありません';
+      empty.textContent = 'いま残っている作業メモはありません';
       this.#body.appendChild(empty);
       return;
     }
@@ -1230,14 +1291,14 @@ class TaskSectionController {
 
       const stage = document.createElement('span');
       stage.className = 'state-badge';
-      stage.textContent = task.stage || 'unknown';
+      stage.textContent = humanizeTaskStage(task.stage);
       stage.style.background = 'rgba(30, 64, 175, 0.18)';
       stage.style.color = '#bfdbfe';
       stage.style.borderColor = 'rgba(96, 165, 250, 0.32)';
 
       const desc = document.createElement('div');
       desc.className = 'task-desc';
-      desc.textContent = task.description || task.id;
+      desc.textContent = task.description || '説明がまだ付いていない作業メモ';
 
       const age = document.createElement('div');
       age.className = 'task-age';
@@ -1320,6 +1381,16 @@ class DetailController {
     if (previousScrollTop !== null) {
       msgArea.scrollTop = previousScrollTop;
     }
+  }
+
+  #revealLatestMessage(msgArea: HTMLElement): void {
+    const sync = () => {
+      msgArea.scrollTop = msgArea.scrollHeight;
+    };
+
+    sync();
+    const view = msgArea.ownerDocument.defaultView;
+    view?.setTimeout(sync, 0);
   }
 
   render(
@@ -1456,7 +1527,7 @@ class DetailController {
     this.#detailEl.appendChild(body);
 
     if (!sameThread) {
-      msgArea.scrollTop = msgArea.scrollHeight;
+      this.#revealLatestMessage(msgArea);
       return;
     }
 
@@ -1468,7 +1539,7 @@ class DetailController {
     this.#lastRenderedSignature = null;
     this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
-      '<div class="detail-empty">task を開くと、ここにその topic の会話が表示されます。</div>';
+      '<div class="detail-empty">topic を開くと、ここにその会話が表示されます。</div>';
   }
 }
 
@@ -1495,6 +1566,7 @@ class ManagerApp {
   #composerImageDragDepth = 0;
   #composerFeedbackEntries: ComposerFeedbackEntry[] = [];
   #composerFeedbackSerial = 0;
+  #pendingHistoryComposerTargetRestore = false;
 
   constructor() {
     this.#sections = {
@@ -1520,11 +1592,8 @@ class ManagerApp {
     this.#consumeHashToken();
     this.#composerDock = document.getElementById('global-composer-dock');
     this.#wireComposerDockReserve();
-    const dirLabel = document.getElementById('dir-label');
-    if (dirLabel) {
-      dirLabel.textContent = GUI_DIR;
-    }
     this.#wireActions();
+    this.#wireHistory();
     this.#wireAuthPanel();
     this.#renderDoneToggle();
     this.#renderComposerExpansionState();
@@ -1537,6 +1606,42 @@ class ManagerApp {
 
     this.#hideAuthPanel();
     void this.#bootAfterAuth();
+  }
+
+  #wireHistory(): void {
+    const currentState = readManagerHistoryState();
+    if (currentState?.screen === 'thread' && currentState.threadId) {
+      this.openThreadId = currentState.threadId;
+      this.#pendingHistoryComposerTargetRestore = true;
+    } else {
+      window.history.replaceState(
+        inboxHistoryState(),
+        '',
+        window.location.pathname + window.location.search + window.location.hash
+      );
+    }
+
+    window.addEventListener('popstate', () => {
+      this.#applyHistoryState(readManagerHistoryState());
+    });
+  }
+
+  #setHistoryState(state: ManagerHistoryState, mode: 'push' | 'replace'): void {
+    const url =
+      window.location.pathname + window.location.search + window.location.hash;
+    if (mode === 'push') {
+      window.history.pushState(state, '', url);
+      return;
+    }
+    window.history.replaceState(state, '', url);
+  }
+
+  #applyHistoryState(state: ManagerHistoryState | null): void {
+    if (state?.screen === 'thread' && state.threadId) {
+      this.#showThread(state.threadId, 'none');
+      return;
+    }
+    this.#hideThread('none');
   }
 
   focusComposer(): void {
@@ -1616,7 +1721,6 @@ class ManagerApp {
   #syncComposerDraftUi(): void {
     const markdown = this.#composerInput()?.value.replace(/\r\n?/g, '\n') ?? '';
     this.#renderComposerAttachmentList(markdown);
-    this.#renderComposerPreview(markdown);
   }
 
   #renderComposerAttachmentList(markdown: string): void {
@@ -1643,26 +1747,6 @@ class ManagerApp {
       });
       list.appendChild(chip);
     }
-  }
-
-  #renderComposerPreview(markdown: string): void {
-    const previewWrap = document.getElementById('composerPreviewWrap');
-    const previewBody = document.getElementById('composerPreviewBody');
-    if (!previewWrap || !previewBody) {
-      return;
-    }
-
-    if (!markdown.trim()) {
-      previewWrap.classList.add('hidden');
-      previewBody.replaceChildren();
-      return;
-    }
-
-    previewWrap.classList.remove('hidden');
-    renderMessageMarkdown(
-      previewBody,
-      this.#serializedComposerContent(markdown)
-    );
   }
 
   #removeComposerAttachment(attachmentId: string): void {
@@ -1790,13 +1874,49 @@ class ManagerApp {
     input.focus();
   }
 
-  closeDetail(): void {
+  #hideThread(historyMode: 'back' | 'replace' | 'none'): void {
+    if (historyMode === 'back') {
+      const state = readManagerHistoryState();
+      if (state?.screen === 'thread') {
+        window.history.back();
+        return;
+      }
+    }
     if (this.#composerTargetThreadId === this.openThreadId) {
       this.#composerTargetThreadId = null;
     }
     this.openThreadId = null;
     this.#openThreadMovementNotice = null;
+    this.#pendingHistoryComposerTargetRestore = false;
     this.#detail.clear();
+    if (historyMode === 'replace') {
+      this.#setHistoryState(inboxHistoryState(), 'replace');
+    }
+    this.#renderAll();
+  }
+
+  closeDetail(): void {
+    this.#hideThread('back');
+  }
+
+  #showThread(
+    threadId: string,
+    historyMode: 'push' | 'replace' | 'none'
+  ): void {
+    this.openThreadId = threadId;
+    this.#openThreadMovementNotice = null;
+    this.#pendingHistoryComposerTargetRestore = false;
+    const thread = this.allThreads.find((item) => item.id === threadId) ?? null;
+    if (thread?.uiState === 'done') {
+      this.#showDone = true;
+      this.#setComposerTarget(null);
+    } else {
+      this.#setComposerTarget(threadId);
+    }
+    if (historyMode !== 'none') {
+      this.#setHistoryState(threadHistoryState(threadId), historyMode);
+    }
+    this.#renderDoneToggle();
     this.#renderAll();
   }
 
@@ -1857,11 +1977,7 @@ class ManagerApp {
       this.openThreadId &&
       !this.allThreads.some((thread) => thread.id === this.openThreadId)
     ) {
-      if (this.#composerTargetThreadId === this.openThreadId) {
-        this.#composerTargetThreadId = null;
-      }
-      this.openThreadId = null;
-      this.#openThreadMovementNotice = null;
+      this.#hideThread('replace');
     }
 
     if (
@@ -1871,6 +1987,17 @@ class ManagerApp {
       )
     ) {
       this.#composerTargetThreadId = null;
+    }
+
+    const currentOpenThread = this.#findThread(this.openThreadId);
+    if (
+      currentOpenThread &&
+      currentOpenThread.uiState !== 'done' &&
+      this.#composerTargetThreadId === null &&
+      this.#pendingHistoryComposerTargetRestore
+    ) {
+      this.#setComposerTarget(currentOpenThread.id);
+      this.#pendingHistoryComposerTargetRestore = false;
     }
 
     const nextOpenThread = this.#findThread(this.openThreadId);
@@ -1981,17 +2108,8 @@ class ManagerApp {
   }
 
   #focusThread(threadId: string): void {
-    this.openThreadId = threadId;
-    this.#openThreadMovementNotice = null;
-    const thread = this.allThreads.find((item) => item.id === threadId) ?? null;
-    if (thread?.uiState === 'done') {
-      this.#showDone = true;
-      this.#renderDoneToggle();
-      this.#setComposerTarget(null);
-    } else {
-      this.#setComposerTarget(threadId);
-    }
-    this.#renderAll();
+    const historyMode = this.openThreadId === null ? 'push' : 'replace';
+    this.#showThread(threadId, historyMode);
   }
 
   #setComposerTarget(threadId: string | null): void {
@@ -2549,6 +2667,7 @@ class ManagerApp {
     if (!this.#showDone) {
       doneSection?.classList.add('hidden');
     }
+    this.#renderDoneToggle();
 
     this.#taskSection.render(this.allTasks);
     this.#renderGettingStarted();
@@ -2817,7 +2936,13 @@ class ManagerApp {
       'toggleDoneButton'
     ) as HTMLButtonElement | null;
     if (button) {
-      button.textContent = this.#showDone ? '完了を隠す' : '完了も見る';
+      const hasDoneThreads = this.allThreads.some(
+        (thread) => thread.uiState === 'done'
+      );
+      button.classList.toggle('hidden', !this.#showDone && !hasDoneThreads);
+      button.textContent = this.#showDone
+        ? '完了した topic を隠す'
+        : '完了した topic を見る';
     }
   }
 

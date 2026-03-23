@@ -231,6 +231,14 @@
         flex-wrap: wrap;
       }
 
+      .manager-bar-title {
+        margin: 0;
+        font-size: 0.92rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--text);
+      }
+
       .status-dot {
         width: 9px;
         height: 9px;
@@ -989,31 +997,25 @@
         margin-bottom: 0;
       }
 
-      .bubble-content p,
-      .composer-preview-body p {
+      .bubble-content p {
         margin: 0 0 0.54em;
       }
 
       .bubble-content ul,
-      .bubble-content ol,
-      .composer-preview-body ul,
-      .composer-preview-body ol {
+      .bubble-content ol {
         margin: 0 0 0.68em;
         padding-left: 1.25em;
       }
 
-      .bubble-content li + li,
-      .composer-preview-body li + li {
+      .bubble-content li + li {
         margin-top: 0.12em;
       }
 
-      .bubble-content a,
-      .composer-preview-body a {
+      .bubble-content a {
         color: #1660b8;
       }
 
-      .bubble-content img,
-      .composer-preview-body img {
+      .bubble-content img {
         display: block;
         max-width: min(100%, 360px);
         width: auto;
@@ -1024,8 +1026,7 @@
         box-shadow: 0 10px 24px rgba(24, 49, 35, 0.12);
       }
 
-      .bubble-content pre,
-      .composer-preview-body pre {
+      .bubble-content pre {
         margin: 0 0 0.68em;
         padding: 11px 12px;
         border-radius: 14px;
@@ -1034,34 +1035,29 @@
         overflow-x: auto;
       }
 
-      .bubble-content code,
-      .composer-preview-body code {
+      .bubble-content code {
         font-family: 'Fira Code', 'Consolas', monospace;
         font-size: 0.74rem;
       }
 
-      .bubble-content .ansi-segment,
-      .composer-preview-body .ansi-segment {
+      .bubble-content .ansi-segment {
         border-radius: 0.28em;
       }
 
-      .bubble-content :not(pre) > code,
-      .composer-preview-body :not(pre) > code {
+      .bubble-content :not(pre) > code {
         padding: 0.1em 0.35em;
         border-radius: 8px;
         background: rgba(15, 23, 42, 0.08);
       }
 
-      .bubble-content blockquote,
-      .composer-preview-body blockquote {
+      .bubble-content blockquote {
         margin: 0 0 0.68em;
         padding: 0.08em 0 0.08em 0.75em;
         border-left: 3px solid rgba(6, 199, 85, 0.3);
         color: var(--text-soft);
       }
 
-      .bubble-content table,
-      .composer-preview-body table {
+      .bubble-content table {
         width: 100%;
         border-collapse: collapse;
         margin: 0 0 0.68em;
@@ -1069,9 +1065,7 @@
       }
 
       .bubble-content th,
-      .bubble-content td,
-      .composer-preview-body th,
-      .composer-preview-body td {
+      .bubble-content td {
         border: 1px solid rgba(122, 158, 125, 0.16);
         padding: 7px 8px;
         text-align: left;
@@ -1101,6 +1095,13 @@
 
       .task-row + .task-row {
         margin-top: 8px;
+      }
+
+      .task-copy {
+        color: #456886;
+        font-size: 0.74rem;
+        line-height: 1.65;
+        margin-bottom: 10px;
       }
 
       .task-desc {
@@ -1302,31 +1303,6 @@
         gap: 8px;
       }
 
-      .composer-preview {
-        border-radius: 18px;
-        border: 1px solid rgba(122, 158, 125, 0.16);
-        background: rgba(255, 255, 255, 0.92);
-        padding: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-
-      .composer-preview-title {
-        font-size: 0.72rem;
-        font-weight: 800;
-        color: var(--accent-strong);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .composer-preview-body {
-        font-size: 0.8rem;
-        color: #163123;
-        white-space: normal;
-        word-break: break-word;
-      }
-
       .composer-feedback {
         color: var(--text-soft);
         background: rgba(255, 255, 255, 0.94);
@@ -1401,6 +1377,13 @@
         margin-top: 8px;
       }
 
+      .manager-secondary-actions {
+        display: flex;
+        justify-content: flex-start;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
       .composer-chip {
         padding: 6px 10px;
         border-radius: 999px;
@@ -1432,7 +1415,6 @@
           --composer-dock-reserve: 100px;
         }
 
-        .app-header-inner,
         .manager-bar-inner,
         main,
         .composer-dock {
@@ -1454,14 +1436,6 @@
         .btn {
           width: auto;
           justify-content: center;
-        }
-
-        .app-header-inner {
-          gap: 10px;
-        }
-
-        .app-header-inner .btn {
-          width: auto;
         }
 
         .composer-rail {
@@ -1510,32 +1484,6 @@
     </style>
   </head>
   <body>
-    <header class="app-header">
-      <div class="app-header-inner">
-        <a
-          href="/"
-          class="btn btn-ghost"
-          style="text-decoration: none; width: auto"
-          >← Hub</a
-        >
-        <div class="app-title-wrap">
-          <h1 class="app-title">マネージャー</h1>
-          <div id="dir-label" class="app-subtitle"></div>
-        </div>
-        <button data-action="refresh" class="btn btn-ghost" style="width: auto">
-          ↻ 更新
-        </button>
-        <button
-          id="toggleDoneButton"
-          data-action="toggle-done"
-          class="btn btn-ghost"
-          style="width: auto"
-        >
-          完了も見る
-        </button>
-      </div>
-    </header>
-
     <main
       id="auth-panel"
       class="hidden"
@@ -1546,9 +1494,9 @@
         <div id="auth-context-kicker" class="auth-kicker">
           Hub の次に使う画面
         </div>
-        <h2 id="auth-context-title" class="auth-title">
+        <h1 id="auth-context-title" class="auth-title">
           Manager は、あとで状況を見失わないための受信箱です
-        </h2>
+        </h1>
         <p id="auth-context-copy" class="auth-copy">
           ここでは思いついたことをまとめて送れます。どの task にするかは AI
           が整理し、返信が必要なものや確認すべきものが上に並びます。整理した
@@ -1586,6 +1534,7 @@
 
     <section id="manager-bar" data-auth-content aria-label="Manager status">
       <div class="manager-bar-inner">
+        <h1 class="manager-bar-title">マネージャー</h1>
         <span id="manager-status-dot" class="status-dot"></span>
         <span id="manager-status-text">マネージャー状態を確認中...</span>
         <button
@@ -1729,6 +1678,24 @@
             <div id="body-ai-working" class="section-body"></div>
           </section>
 
+          <div id="manager-secondary-actions" class="manager-secondary-actions">
+            <button
+              data-action="refresh"
+              class="btn btn-ghost"
+              style="width: auto"
+            >
+              今すぐ読み直す
+            </button>
+            <button
+              id="toggleDoneButton"
+              data-action="toggle-done"
+              class="btn btn-ghost hidden"
+              style="width: auto"
+            >
+              完了した topic を見る
+            </button>
+          </div>
+
           <section
             class="card section-card hidden"
             id="sec-done"
@@ -1746,7 +1713,7 @@
           <section class="card section-card tasks-card" id="sec-tasks">
             <div class="section-header" data-section-key="tasks">
               <span class="section-dot" style="background: #60a5fa"></span>
-              <span class="section-title">タスク（進行中）</span>
+              <span class="section-title">残っている作業メモ</span>
               <span id="count-tasks" class="section-count"></span>
               <span id="chevron-tasks" class="section-chevron">▲</span>
             </div>
@@ -1758,7 +1725,7 @@
       <section
         id="thread-screen"
         class="thread-screen hidden"
-        aria-label="選択した task の会話"
+        aria-label="選択した topic の会話"
       >
         <div class="thread-screen-top">
           <button
@@ -1766,7 +1733,7 @@
             class="btn btn-ghost"
             style="width: auto"
           >
-            ← 一覧へ戻る
+            ← topic 一覧へ戻る
           </button>
           <div class="thread-screen-copy">
             <div class="thread-screen-eyebrow">Topic</div>
@@ -1777,7 +1744,7 @@
         </div>
         <section id="thread-detail" class="card detail-card hidden">
           <div class="detail-empty">
-            task を開くと、ここにその topic の会話が出ます。
+            topic を開くと、ここにその会話が出ます。
           </div>
         </section>
       </section>
@@ -1856,10 +1823,6 @@
             id="composerAttachmentList"
             class="composer-attachment-list hidden"
           ></div>
-          <div id="composerPreviewWrap" class="composer-preview hidden">
-            <div class="composer-preview-title">送信プレビュー</div>
-            <div id="composerPreviewBody" class="composer-preview-body"></div>
-          </div>
           <div class="composer-actions">
             <button id="globalComposerSendButton" class="btn btn-primary">
               AI に送る
