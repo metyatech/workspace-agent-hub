@@ -2,8 +2,8 @@
 
 ## Architecture summary
 
-Workspace Agent Hub Manager is moving from a single serial inbox worker toward a
-real manager/orchestrator model.
+Workspace Agent Hub Manager now uses a work-item-graph orchestrator model
+instead of a single serial inbox worker.
 
 The target behavior is:
 
@@ -197,19 +197,26 @@ Already implemented in this line:
 - manager-vs-worker dispatch decisions per queued batch
 - direct manager answers for manager-assigned items
 - scope-aware worker-agent parallel dispatch using repo-relative write scopes
-- live worker output persisted in thread meta and rendered as the latest AI
-  bubble at the bottom of the open work-item conversation
+- explicit worker-agent lifecycle metadata (`workerAgentId`,
+  `workerRuntimeState`, `workerRuntimeDetail`, `workerWriteScopes`)
+- scope-blocked runtime visibility when a queued worker is waiting on an
+  overlapping write scope
+- manager-driven supersede/cancel application for descendant replacement,
+  surfaced as `cancelled-as-superseded`
+- live worker output persisted as a growing log in thread meta and rendered at
+  the bottom of the open work-item conversation
 
 Not yet complete:
 
-- richer worker-agent lifecycle and UI controls
-- supersede/cancel decisions carried out by the Manager
 - broader manager policy tuning for when to answer directly vs dispatch
+- finer-grained automatic write-scope refinement beyond the current
+  repo-relative/module-level lock model
+- richer operator controls for pausing, retrying, or manually reassigning
+  worker agents from the UI
 
-## Rollout sequence
+## Next implementation opportunities
 
 1. Keep the work-item graph and live-stream browser model stable
-2. Add explicit assignee/worker lifecycle controls
-3. Harden worker-agent dispatch with richer lifecycle and visibility
-4. Add supersede/cancel decisions for descendant conflicts
-5. Expose richer assignee state and worker logs in the Manager UI
+2. Refine Manager routing policy for direct answers vs worker dispatch
+3. Improve automatic write-scope refinement and conflict explanation
+4. Add richer operator controls for long-running worker agents

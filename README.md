@@ -457,20 +457,27 @@ Important behavior:
   `model_reasoning_effort="xhigh"`).
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
-  conversation can show the worker's provisional live output while a result is
-  still running.
+  conversation now shows a growing live worker log while a result is still
+  running.
 - The Hub session browser now uses the same live snapshot model (`/api/live`)
   as its primary update path for session list ordering and selected-session
   transcript output, driven by authoritative session-catalog/session-live file
   changes from the bridge path instead of browser polling or a server-side
   reconciliation interval.
-- Manager messages are serialized: one queued message is processed at a time,
-  and messages received during an in-flight turn continue automatically with
-  the same priority-aware ordering.
+- The built-in Manager now behaves as an orchestrator: each queued work item is
+  assigned either to the Manager itself or to a worker agent, manager-direct
+  answers use a separate lane from worker execution, and worker agents can run
+  in parallel when their declared write scopes do not overlap.
+- If a worker cannot start because another running work item owns an
+  overlapping write scope, the work item stays visible with an explicit
+  scope-blocked runtime reason until that conflict clears.
+- If the Manager decides a newer descendant work item fully supersedes an older
+  running descendant, the older work item is stopped and shown as
+  `cancelled-as-superseded` instead of silently disappearing.
 - Manager continuity is persisted in two layers:
-  - one routing-thread Codex session for global inbox triage
-  - one worker Codex session per work item for actual task execution across turns
-    and server restarts
+  - one stateless routing Codex turn per freeform inbox send for triage
+  - one worker Codex session per work item for actual task execution across
+    turns and server restarts
 - Thread storage remains compatible with `thread-inbox` data files, but the
   higher-level Manager work-item graph now belongs to `workspace-agent-hub`.
 - The CLI now exposes `workspace-agent-hub work-items --json` so automation and

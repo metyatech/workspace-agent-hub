@@ -56,6 +56,13 @@ function makeThreadView(
     isWorking: false,
     assigneeKind: null,
     assigneeLabel: null,
+    workerAgentId: null,
+    workerRuntimeState: null,
+    workerRuntimeDetail: null,
+    workerWriteScopes: [],
+    workerBlockedByThreadIds: [],
+    supersededByThreadId: null,
+    workerLiveLog: [],
     workerLiveOutput: null,
     workerLiveAt: null,
     ...overrides,
@@ -2231,6 +2238,178 @@ describe('manager-app DOM auth state matrix', () => {
     expect(secondMsgArea.scrollTop).toBe(180);
   });
 
+  it('keeps the live worker log pinned to the bottom when it grows while the user is already at the bottom', async () => {
+    const validToken = 'live-bottom-token';
+    let threadsRequestCount = 0;
+    const baseMessages = Array.from({ length: 4 }, (_, index) => ({
+      sender: (index % 2 === 0 ? 'user' : 'ai') as 'user' | 'ai',
+      content: `message-${index}`,
+      at: `2026-03-21T00:00:0${index}.000Z`,
+    }));
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const workerLiveLog =
+            threadsRequestCount >= 2
+              ? [
+                  {
+                    at: '2026-03-21T00:01:00.000Z',
+                    text: 'AI が担当 worker を起動しました。内容を整理しています…',
+                    kind: 'status' as const,
+                  },
+                  {
+                    at: '2026-03-21T00:01:10.000Z',
+                    text: '2行目の live 出力が追加されました。',
+                    kind: 'output' as const,
+                  },
+                ]
+              : [
+                  {
+                    at: '2026-03-21T00:01:00.000Z',
+                    text: 'AI が担当 worker を起動しました。内容を整理しています…',
+                    kind: 'status' as const,
+                  },
+                ];
+          const thread = makeThreadView('thread-live-grow', '進捗ログ', {
+            status: 'active',
+            uiState: 'ai-working',
+            isWorking: true,
+            lastSender: 'user',
+            messages: baseMessages,
+            workerAgentId: 'assign_live_grow',
+            workerRuntimeState: 'worker-running',
+            workerLiveLog,
+            workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
+            workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
+          });
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '処理中 (進捗ログ)',
+              currentThreadId: 'thread-live-grow',
+              currentThreadTitle: '進捗ログ',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        const domWindow = window as Window & typeof globalThis;
+        window.localStorage.setItem(authStorageKey, validToken);
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('bubble-live')) {
+              return element.textContent?.includes('2行目の live 出力')
+                ? 160
+                : 100;
+            }
+            if (element.classList.contains('bubble')) {
+              return 100;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'clientHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            const parent = element.parentElement;
+            if (
+              element.classList.contains('bubble') &&
+              parent?.classList.contains('msg-area')
+            ) {
+              return Array.from(parent.children)
+                .slice(0, Array.from(parent.children).indexOf(element))
+                .reduce(
+                  (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                  0
+                );
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'scrollHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('msg-area')) {
+              return Array.from(element.children).reduce(
+                (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                0
+              );
+            }
+            return 0;
+          },
+        });
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    firstMsgArea.scrollTop = 200;
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
+    expect(secondMsgArea).not.toBe(firstMsgArea);
+    expect(secondMsgArea.scrollTop).toBe(secondMsgArea.scrollHeight);
+    expect(secondMsgArea.textContent).toContain(
+      '2行目の live 出力が追加されました。'
+    );
+  });
+
   it('keeps the open task inline and shows its new state when it moves between buckets', async () => {
     const validToken = 'movement-token';
     let threadsRequestCount = 0;
@@ -2619,6 +2798,22 @@ describe('manager-app live updates', () => {
       previewText: '[user] 実装してください',
       assigneeKind: 'worker',
       assigneeLabel: 'Codex gpt-5.4 (xhigh)',
+      workerAgentId: 'assign_thread-live',
+      workerRuntimeState: 'worker-running',
+      workerRuntimeDetail: '担当 worker agent がこの作業項目を実行中です。',
+      workerWriteScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      workerLiveLog: [
+        {
+          at: '2026-03-23T07:59:30.000Z',
+          text: 'AI が担当 worker を起動しました。内容を整理しています…',
+          kind: 'status',
+        },
+        {
+          at: '2026-03-23T08:00:00.000Z',
+          text: 'いま `src/manager-backend.ts` を見ています。',
+          kind: 'output',
+        },
+      ],
       workerLiveOutput: 'いま `src/manager-backend.ts` を見ています。',
       workerLiveAt: '2026-03-23T08:00:00.000Z',
       messages: [
@@ -2656,6 +2851,14 @@ describe('manager-app live updates', () => {
 
     const detail = document.querySelector<HTMLElement>('#thread-detail')!;
     expect(detail.textContent).toContain('担当: Codex gpt-5.4 (xhigh)');
+    expect(detail.textContent).toContain('担当 worker: assign_thread-live');
+    expect(detail.textContent).toContain('実行状態: Worker agent 実行中');
+    expect(detail.textContent).toContain(
+      '書き込み範囲: workspace-agent-hub/src/manager-backend.ts'
+    );
+    expect(detail.textContent).toContain(
+      'AI が担当 worker を起動しました。内容を整理しています…'
+    );
     expect(detail.textContent).toContain(
       'いま src/manager-backend.ts を見ています。'
     );
@@ -2663,5 +2866,56 @@ describe('manager-app live updates', () => {
       detail.querySelector<HTMLElement>('.bubble-live .bubble-sender')
         ?.textContent
     ).toContain('AI');
+  });
+
+  it('shows superseded work items in their own visible bucket with the cancel reason', async () => {
+    const supersededThread = makeThreadView('thread-superseded', '古い作業', {
+      status: 'active',
+      uiState: 'cancelled-as-superseded',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+      workerAgentId: 'assign_superseded',
+      workerRuntimeState: 'cancelled-as-superseded',
+      workerRuntimeDetail:
+        '「新しい作業」で全面的に置き換わるため、この worker agent を停止しました。',
+      supersededByThreadId: 'thread-new',
+      messages: [
+        {
+          sender: 'ai',
+          content:
+            'この作業項目は、新しく派生した「新しい作業」の内容で既存成果が置き換わると判断したため、途中の担当 worker を止めました。',
+          at: '2026-03-23T08:00:00.000Z',
+        },
+      ],
+    });
+    const newThread = makeThreadView('thread-new', '新しい作業');
+
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'superseded-token',
+      threads: [supersededThread, newThread],
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'superseded-token');
+      },
+    });
+
+    expect(
+      document.querySelector('#sec-cancelled-as-superseded')
+    ).not.toBeNull();
+    expect(
+      document.querySelector('#body-cancelled-as-superseded')!.textContent
+    ).toContain('古い作業');
+
+    document
+      .querySelector<HTMLElement>('#body-cancelled-as-superseded .thread-row')!
+      .click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('置き換わるため、この worker agent を停止しました');
   });
 });

@@ -49,6 +49,7 @@ import {
   parseManagerRoutingPlan,
   parseCodexOutput,
   pickThreadUserMessage,
+  processNextQueued,
   readQueue,
   readSession,
   resolveCodexCommand,
@@ -62,7 +63,10 @@ import {
   parseManagerMessage,
   serializeManagerMessage,
 } from '../manager-message.js';
-import { readManagerThreadMeta } from '../manager-thread-state.js';
+import {
+  readManagerThreadMeta,
+  writeManagerThreadMeta,
+} from '../manager-thread-state.js';
 
 interface FakeProc extends EventEmitter {
   pid: number;
@@ -1247,6 +1251,8 @@ describe('manager backend codex integration', () => {
       const meta = await readManagerThreadMeta(tempDir);
       return (
         session.status === 'busy' &&
+        meta['thread-live']?.workerRuntimeState === 'worker-running' &&
+        meta['thread-live']?.workerAgentId?.startsWith('assign_q_') === true &&
         meta['thread-live']?.workerLiveOutput ===
           'AI が担当 worker を起動しました。内容を整理しています…'
       );
@@ -1265,6 +1271,7 @@ describe('manager backend codex integration', () => {
     await waitFor(async () => {
       const meta = await readManagerThreadMeta(tempDir);
       return (
+        (meta['thread-live']?.workerLiveLog?.length ?? 0) >= 2 &&
         meta['thread-live']?.workerLiveOutput === 'いま live 出力を流しています'
       );
     });
@@ -1278,10 +1285,200 @@ describe('manager backend codex integration', () => {
       return (
         queue.length === 0 &&
         session.status === 'idle' &&
+        meta['thread-live']?.workerRuntimeState === null &&
         meta['thread-live']?.workerLiveOutput === null &&
         meta['thread-live']?.assigneeLabel?.includes('Worker agent gpt-5.4') ===
           true
       );
+    });
+  });
+
+  it('marks a queued work item as scope-blocked until the conflicting worker finishes', async () => {
+    const firstProc = makeProc(7060);
+    const secondProc = makeProc(7061);
+    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-running', 'first message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    await sendToBuiltinManager(tempDir, 'thread-blocked', 'second message');
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return meta['thread-blocked']?.workerRuntimeState === 'blocked-by-scope';
+    });
+
+    let meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-blocked']?.workerRuntimeDetail).toContain(
+      '書き込み範囲が重なるため待機'
+    );
+    expect(meta['thread-blocked']?.workerBlockedByThreadIds).toContain(
+      'thread-running'
+    );
+    expect(meta['thread-blocked']?.workerWriteScopes).toEqual(['*']);
+
+    completeCodexTurn(firstProc, {
+      sessionId: 'codex-thread-first',
+      text: '{"status":"review","reply":"first done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await waitFor(async () => {
+      const latestMeta = await readManagerThreadMeta(tempDir);
+      return (
+        latestMeta['thread-blocked']?.workerRuntimeState === 'worker-running'
+      );
+    });
+
+    meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-blocked']?.workerBlockedByThreadIds ?? []).toEqual([]);
+
+    completeCodexTurn(secondProc, {
+      sessionId: 'codex-thread-second',
+      text: '{"status":"review","reply":"second done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+  });
+
+  it('records a cancelled-as-superseded runtime state when Manager preempts an older descendant worker', async () => {
+    const dispatchProc = makeProc(7070);
+    const newWorkerProc = makeProc(7071);
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(newWorkerProc);
+
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-old',
+        title: '古い派生作業',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'old descendant',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+      {
+        id: 'thread-new',
+        title: '新しい派生作業',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'new descendant',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    ]);
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title:
+          threadId === 'thread-old'
+            ? '古い派生作業'
+            : threadId === 'thread-new'
+              ? '新しい派生作業'
+              : `Thread ${threadId}`,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: `Existing context for ${threadId}`,
+            at: new Date().toISOString(),
+          },
+        ],
+      })
+    );
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      activeAssignments: [
+        {
+          id: 'assign-old',
+          threadId: 'thread-old',
+          queueEntryIds: ['q_old'],
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+          pid: null,
+          startedAt: new Date().toISOString(),
+          lastProgressAt: new Date().toISOString(),
+        },
+      ],
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-old': {
+        derivedFromThreadIds: ['thread-root'],
+        assigneeKind: 'worker',
+        assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+      },
+      'thread-new': {
+        derivedFromThreadIds: ['thread-root'],
+      },
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_new',
+        threadId: 'thread-new',
+        content: 'replace the old descendant',
+        dispatchMode: 'manager-evaluate',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const processPromise = processNextQueued(tempDir, tempDir);
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-thread-supersede',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+        supersedesThreadIds: ['thread-old'],
+        reason: 'new descendant fully replaces old output',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await processPromise;
+
+    let meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-old']?.workerRuntimeState).toBe(
+      'cancelled-as-superseded'
+    );
+    expect(meta['thread-old']?.supersededByThreadId).toBe('thread-new');
+    expect(meta['thread-old']?.workerRuntimeDetail).toContain('新しい派生作業');
+    expect(
+      addMessageMock.mock.calls.some((call) => call[1] === 'thread-old')
+    ).toBe(true);
+
+    completeCodexTurn(newWorkerProc, {
+      sessionId: 'worker-thread-new',
+      text: '{"status":"review","reply":"new descendant done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const latestSession = await readSession(tempDir);
+      return queue.length === 0 && latestSession.status === 'idle';
     });
   });
 

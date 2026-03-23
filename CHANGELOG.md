@@ -55,6 +55,11 @@ task` card, a `what to read first` lane, and an explicit global-vs-task send
 - Replaced periodic client polling on the native Manager page with a pushed live
   snapshot stream, and surfaced the latest in-flight worker output as the
   newest provisional AI bubble at the bottom of the open work-item conversation
+- Promoted the built-in Manager from a serial queue worker into a scope-aware
+  work-item orchestrator: manager-direct answers and worker-agent execution now
+  use separate lanes, non-overlapping worker scopes can run in parallel, and
+  Manager now surfaces explicit `blocked-by-scope` / `cancelled-as-superseded`
+  runtime states with a growing live worker log in each open work-item
 
 ## [0.2.1] - 2026-03-16
 

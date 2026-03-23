@@ -22,6 +22,7 @@ interface Msg {
   content: string;
   at?: string;
   live?: boolean;
+  key?: string;
 }
 
 type ManagerUiState =
@@ -30,7 +31,20 @@ type ManagerUiState =
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
   | 'ai-working'
+  | 'cancelled-as-superseded'
   | 'done';
+
+type ManagerWorkerRuntimeState =
+  | 'manager-answering'
+  | 'worker-running'
+  | 'blocked-by-scope'
+  | 'cancelled-as-superseded';
+
+interface WorkerLiveEntry {
+  at: string;
+  text: string;
+  kind: 'status' | 'output' | 'error';
+}
 
 interface ThreadView {
   id: string;
@@ -50,6 +64,13 @@ interface ThreadView {
   isWorking: boolean;
   assigneeKind: 'manager' | 'worker' | null;
   assigneeLabel: string | null;
+  workerAgentId: string | null;
+  workerRuntimeState: ManagerWorkerRuntimeState | null;
+  workerRuntimeDetail: string | null;
+  workerWriteScopes: string[];
+  workerBlockedByThreadIds: string[];
+  supersededByThreadId: string | null;
+  workerLiveLog: WorkerLiveEntry[];
   workerLiveOutput: string | null;
   workerLiveAt: string | null;
   queueOrder?: number | null;
@@ -200,6 +221,7 @@ const STATE_ORDER: ManagerUiState[] = [
   'ai-finished-awaiting-user-confirmation',
   'queued',
   'ai-working',
+  'cancelled-as-superseded',
   'done',
 ];
 
@@ -209,6 +231,7 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: 'AI の順番待ち',
   'ai-working': 'AI作業中',
+  'cancelled-as-superseded': '置き換えで停止',
   done: '完了',
 };
 
@@ -219,6 +242,7 @@ const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
     'あなたに確認してほしい返答はありません',
   queued: 'AI の順番待ちはありません',
   'ai-working': 'AI が作業中の作業項目はありません',
+  'cancelled-as-superseded': '置き換えで停止した作業項目はありません',
   done: '完了済みの作業項目はありません',
 };
 
@@ -247,6 +271,11 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     bg: 'rgba(20, 83, 45, 0.84)',
     color: '#bbf7d0',
     border: 'rgba(34, 197, 94, 0.34)',
+  },
+  'cancelled-as-superseded': {
+    bg: 'rgba(68, 64, 60, 0.84)',
+    color: '#fde68a',
+    border: 'rgba(245, 158, 11, 0.26)',
   },
   done: {
     bg: 'rgba(31, 41, 55, 0.84)',
@@ -876,7 +905,9 @@ function makeBubble(
   if (message.live) {
     bubble.classList.add('bubble-live');
   }
-  bubble.dataset.messageKey = `${message.sender}|${message.at ?? ''}|${hashMessageContent(message.content)}`;
+  bubble.dataset.messageKey =
+    message.key ??
+    `${message.sender}|${message.at ?? ''}|${hashMessageContent(message.content)}`;
   bubble.dataset.chatSide = ai ? 'left' : 'right';
   bubble.dataset.sender = message.sender;
 
@@ -909,11 +940,18 @@ function makeBubble(
 }
 
 function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
-  if (!thread.isWorking && !thread.workerLiveOutput) {
+  if (!thread.isWorking && thread.workerLiveLog.length === 0) {
     return null;
   }
 
-  const content = thread.workerLiveOutput?.trim() || 'AI が作業を進めています…';
+  const content =
+    thread.workerLiveLog
+      .map((entry) => entry.text.trim())
+      .filter(Boolean)
+      .join('\n\n')
+      .trim() ||
+    thread.workerLiveOutput?.trim() ||
+    'AI が作業を進めています…';
   const lastPersisted = thread.messages.at(-1);
   if (
     lastPersisted?.sender === 'ai' &&
@@ -927,6 +965,7 @@ function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
     content,
     at: thread.workerLiveAt ?? thread.updatedAt,
     live: true,
+    key: `live:${thread.id}`,
   };
 }
 
@@ -984,6 +1023,30 @@ function makeFeedbackStateBadge(
 }
 
 function describeThreadState(thread: ThreadView): string | null {
+  if (thread.workerRuntimeState === 'cancelled-as-superseded') {
+    return (
+      thread.workerRuntimeDetail ??
+      'より新しい派生作業で全面的に置き換わるため、この作業項目の worker agent は停止しました。'
+    );
+  }
+  if (thread.workerRuntimeState === 'blocked-by-scope') {
+    return (
+      thread.workerRuntimeDetail ??
+      '別の worker agent と書き込み範囲が重なるため、いまは待機しています。'
+    );
+  }
+  if (thread.workerRuntimeState === 'manager-answering') {
+    return (
+      thread.workerRuntimeDetail ??
+      'Manager がこの作業項目を直接処理しています。'
+    );
+  }
+  if (thread.workerRuntimeState === 'worker-running') {
+    return (
+      thread.workerRuntimeDetail ??
+      '担当 worker agent がこの作業項目を実行中です。'
+    );
+  }
   if (thread.routingConfirmationNeeded) {
     return 'この work item だけ、どの work item として扱うかをあなたに確認したい状態です。';
   }
@@ -1104,7 +1167,26 @@ function describeWorkItemContext(
   thread: ThreadView,
   threadsById: Map<string, ThreadView>
 ): string | null {
-  return describeWorkItemRelations(thread, threadsById) ?? thread.routingHint;
+  const parts = [
+    describeWorkItemRelations(thread, threadsById),
+    thread.routingHint,
+  ].filter((value): value is string => Boolean(value?.trim()));
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function workerRuntimeLabel(thread: ThreadView): string | null {
+  switch (thread.workerRuntimeState) {
+    case 'manager-answering':
+      return 'Manager が直接処理中';
+    case 'worker-running':
+      return 'Worker agent 実行中';
+    case 'blocked-by-scope':
+      return '書き込み範囲の競合で待機中';
+    case 'cancelled-as-superseded':
+      return '置き換えで停止';
+    default:
+      return null;
+  }
 }
 
 function makeRelatedWorkItemButton(
@@ -1570,6 +1652,19 @@ class DetailController {
     }
   }
 
+  #isNearBottom(msgArea: HTMLElement, threshold = 48): boolean {
+    const viewportHeight = msgArea.clientHeight || msgArea.offsetHeight;
+    if (viewportHeight <= 0) {
+      return false;
+    }
+    if (msgArea.scrollHeight <= viewportHeight) {
+      return false;
+    }
+    const remaining =
+      msgArea.scrollHeight - (msgArea.scrollTop + viewportHeight);
+    return remaining <= threshold;
+  }
+
   #revealLatestMessage(msgArea: HTMLElement): void {
     const sync = () => {
       msgArea.scrollTop = msgArea.scrollHeight;
@@ -1599,6 +1694,17 @@ class DetailController {
       updatedAt: thread.updatedAt ?? '',
       queueDepth: thread.queueDepth,
       assigneeLabel: thread.assigneeLabel ?? '',
+      workerAgentId: thread.workerAgentId ?? '',
+      workerRuntimeState: thread.workerRuntimeState ?? '',
+      workerRuntimeDetail: thread.workerRuntimeDetail ?? '',
+      workerWriteScopes: thread.workerWriteScopes,
+      workerBlockedByThreadIds: thread.workerBlockedByThreadIds,
+      supersededByThreadId: thread.supersededByThreadId ?? '',
+      workerLiveLog: thread.workerLiveLog.map((entry) => ({
+        at: entry.at,
+        text: entry.text,
+        kind: entry.kind,
+      })),
       workerLiveOutput: thread.workerLiveOutput ?? '',
       workerLiveAt: thread.workerLiveAt ?? '',
       movementNotice: movementNotice ?? '',
@@ -1618,6 +1724,10 @@ class DetailController {
     const previousMsgArea =
       this.#detailEl.querySelector<HTMLElement>('.msg-area');
     const sameThread = previousThreadId === thread.id;
+    const preserveBottom =
+      sameThread && previousMsgArea
+        ? this.#isNearBottom(previousMsgArea)
+        : false;
     const previousScrollTop =
       sameThread && previousMsgArea ? previousMsgArea.scrollTop : null;
     const previousAnchor =
@@ -1655,6 +1765,10 @@ class DetailController {
       thread.updatedAt ? `更新: ${formatDate(thread.updatedAt)}` : '',
       thread.queueDepth > 0 ? `キュー: ${thread.queueDepth}` : '',
       thread.assigneeLabel ? `担当: ${thread.assigneeLabel}` : '',
+      thread.workerAgentId ? `担当 worker: ${thread.workerAgentId}` : '',
+      workerRuntimeLabel(thread)
+        ? `実行状態: ${workerRuntimeLabel(thread)}`
+        : '',
     ]
       .filter(Boolean)
       .join(' / ');
@@ -1672,6 +1786,13 @@ class DetailController {
         threadTitlesById
       );
       body.appendChild(note);
+    }
+
+    if (thread.workerWriteScopes.length > 0) {
+      const scopeNote = document.createElement('div');
+      scopeNote.className = 'detail-note';
+      scopeNote.textContent = `書き込み範囲: ${thread.workerWriteScopes.join(', ')}`;
+      body.appendChild(scopeNote);
     }
 
     const noteText = describeThreadState(thread);
@@ -1791,6 +1912,11 @@ class DetailController {
       return;
     }
 
+    if (preserveBottom) {
+      this.#revealLatestMessage(msgArea);
+      return;
+    }
+
     this.#restoreScrollPosition(msgArea, previousScrollTop, previousAnchor);
   }
 
@@ -1840,6 +1966,9 @@ class ManagerApp {
       ),
       queued: new ThreadSectionController('queued'),
       'ai-working': new ThreadSectionController('ai-working'),
+      'cancelled-as-superseded': new ThreadSectionController(
+        'cancelled-as-superseded'
+      ),
       done: new ThreadSectionController('done'),
     };
     this.#taskSection = new TaskSectionController();
@@ -3316,6 +3445,10 @@ class ManagerApp {
       {
         label: 'AI作業中',
         value: counts['ai-working'],
+      },
+      {
+        label: '置き換え停止',
+        value: counts['cancelled-as-superseded'],
       },
       {
         label: '完了',

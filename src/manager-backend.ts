@@ -1,8 +1,8 @@
 /**
  * Built-in Manager backend for Workspace Agent Hub.
  *
- * Uses the Codex CLI directly (`codex exec ...`) for both message routing and
- * per-topic task execution.
+ * Uses the Codex CLI directly (`codex exec ...`) for Manager routing and
+ * per-work-item worker-agent execution.
  * Maintains per-workspace state in two workspace-local files (not committed):
  *
  *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, legacy routing field, PID)
@@ -10,9 +10,10 @@
  *
  * Key design rules:
  *  - One stateless Codex routing turn per freeform inbox send
- *  - One Codex execution thread per Manager topic, persisted in thread meta
- *  - Messages are processed serially; queued work is priority-aware rather than
- *    strict FIFO when the user asks a question or explicitly requests priority
+ *  - One Codex worker-agent session per Manager work item, persisted in thread meta
+ *  - Manager-assigned replies and worker-agent tasks share one persistent queue
+ *  - Worker-agent assignments can run in parallel when their repo-relative
+ *    write scopes do not overlap
  *  - On server restart, a stale PID is detected and the queue resumes automatically
  *  - No external npm dependencies — only the `codex` CLI in PATH is required
  *  - Requires: Codex CLI (`npm install -g @openai/codex`)
@@ -35,6 +36,8 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  type ManagerWorkerLiveEntry,
+  type ManagerWorkerRuntimeState,
   readManagerThreadMeta,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
@@ -214,6 +217,7 @@ export type ManagerHealth = 'ok' | 'stalled' | 'error';
 const MANAGER_STALLED_PROGRESS_THRESHOLD_MS = 3 * 60 * 1000;
 const MANAGER_RECONCILE_GRACE_MS = 15 * 1000;
 const MAX_PARALLEL_WORKER_AGENTS = 3;
+const MAX_PARALLEL_MANAGER_ASSIGNMENTS = 1;
 const UNIVERSAL_WRITE_SCOPE = '*';
 
 export interface QueueEntry {
@@ -237,6 +241,7 @@ export interface QueueEntryAttachment {
 interface CodexProgressState {
   sessionId: string | null;
   latestText: string | null;
+  liveEntries: ManagerWorkerLiveEntry[];
 }
 
 /** Derive a stable 16-char hex key from an absolute workspace path. */
@@ -769,7 +774,15 @@ async function reconcileActiveAssignments(
       dir,
       assignment.threadId,
       null,
-      assignment.assigneeLabel
+      assignment.assigneeLabel,
+      {
+        workerAgentId: assignment.id,
+        runtimeState: null,
+        runtimeDetail: null,
+        workerWriteScopes: assignment.writeScopes,
+        workerBlockedByThreadIds: [],
+        supersededByThreadId: null,
+      }
     );
   }
 
@@ -1055,8 +1068,9 @@ function buildDispatchPrompt(input: {
   return [
     MANAGER_ROUTER_SYSTEM_PROMPT,
     'Return only strict JSON with keys {"assignee","status","reply","writeScopes","supersedesThreadIds","reason"}.',
-    'Use assignee "manager" only when you can fully answer now without repository mutation, command execution, long investigation, or a separate worker.',
-    'Use assignee "worker" for anything that needs repository inspection, command execution, code changes, tests, or substantial investigation.',
+    'Use assignee "manager" only when you can fully answer now without repository mutation, command execution, long investigation, or a separate worker agent.',
+    'Use assignee "manager" for lightweight questions or clarifications you can answer immediately from the current work-item context and your own reasoning.',
+    'Use assignee "worker" for anything that needs repository inspection, command execution, code changes, tests, substantial investigation, or a heavier question that should be delegated.',
     'When assignee is "manager", include status and reply.',
     'When assignee is "worker", include writeScopes as a short array of repo-relative write areas. Use an empty array only for truly read-only work.',
     'Only include supersedesThreadIds when the new work item is a descendant whose result would completely invalidate an already-running descendant task listed below.',
@@ -1284,7 +1298,7 @@ export function parseCodexOutput(stdout: string): {
 function parseCodexProgressLine(line: string): CodexProgressState {
   const trimmed = line.trim();
   if (!trimmed) {
-    return { sessionId: null, latestText: null };
+    return { sessionId: null, latestText: null, liveEntries: [] };
   }
 
   try {
@@ -1293,19 +1307,28 @@ function parseCodexProgressLine(line: string): CodexProgressState {
       parsed['type'] === 'thread.started' &&
       typeof parsed['thread_id'] === 'string'
     ) {
+      const latestText =
+        'AI が担当 worker を起動しました。内容を整理しています…';
       return {
         sessionId: parsed['thread_id'] as string,
-        latestText: 'AI が担当 worker を起動しました。内容を整理しています…',
+        latestText,
+        liveEntries: [
+          {
+            at: new Date().toISOString(),
+            text: latestText,
+            kind: 'status',
+          },
+        ],
       };
     }
 
     if (parsed['type'] !== 'item.completed') {
-      return { sessionId: null, latestText: null };
+      return { sessionId: null, latestText: null, liveEntries: [] };
     }
 
     const item = parsed['item'];
     if (!item || typeof item !== 'object') {
-      return { sessionId: null, latestText: null };
+      return { sessionId: null, latestText: null, liveEntries: [] };
     }
 
     const typedItem = item as Record<string, unknown>;
@@ -1316,18 +1339,40 @@ function parseCodexProgressLine(line: string): CodexProgressState {
       itemType === 'message'
     ) {
       const fragments = collectTextFragments(typedItem);
+      const combined =
+        fragments.length > 0 ? fragments.join('\n').trim() : null;
+      const parsedReply = combined ? parseManagerReplyPayload(combined) : null;
+      const latestText = parsedReply?.reply ?? combined;
       return {
         sessionId: null,
-        latestText: fragments.length > 0 ? fragments.join('\n').trim() : null,
+        latestText,
+        liveEntries:
+          latestText === null
+            ? []
+            : [
+                {
+                  at: new Date().toISOString(),
+                  text: latestText,
+                  kind: 'output',
+                },
+              ],
       };
     }
 
+    const genericText = 'AI が作業を進めています…';
     return {
       sessionId: null,
-      latestText: 'AI が作業を進めています…',
+      latestText: genericText,
+      liveEntries: [
+        {
+          at: new Date().toISOString(),
+          text: genericText,
+          kind: 'status',
+        },
+      ],
     };
   } catch {
-    return { sessionId: null, latestText: null };
+    return { sessionId: null, latestText: null, liveEntries: [] };
   }
 }
 
@@ -1597,6 +1642,7 @@ async function runCodexTurn(input: {
       enqueueProgress({
         sessionId: latestProgressSessionId,
         latestText: latestProgressText,
+        liveEntries: progress.liveEntries,
       });
     }
   };
@@ -1632,6 +1678,13 @@ async function runCodexTurn(input: {
       enqueueProgress({
         sessionId: latestProgressSessionId,
         latestText: latestProgressText,
+        liveEntries: [
+          {
+            at: new Date().toISOString(),
+            text: latestProgressText,
+            kind: 'status',
+          },
+        ],
       });
     }
   });
@@ -1731,45 +1784,233 @@ async function writeWorkerSessionId(
   }));
 }
 
-async function updateWorkerLiveOutput(input: {
+const MAX_WORKER_LIVE_LOG_ENTRIES = 120;
+const MAX_WORKER_LIVE_LOG_CHARS = 24_000;
+
+function normalizeWorkerLiveLogValue(
+  value: ManagerWorkerLiveEntry[] | null | undefined
+): ManagerWorkerLiveEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry?.text?.trim() || !entry?.at?.trim()) {
+      return [];
+    }
+    return [
+      {
+        at: entry.at.trim(),
+        text: entry.text.trim(),
+        kind:
+          entry.kind === 'status' ||
+          entry.kind === 'output' ||
+          entry.kind === 'error'
+            ? entry.kind
+            : 'output',
+      } satisfies ManagerWorkerLiveEntry,
+    ];
+  });
+}
+
+function pruneWorkerLiveLog(
+  entries: ManagerWorkerLiveEntry[]
+): ManagerWorkerLiveEntry[] {
+  const next = [...entries];
+  let totalChars = next.reduce((sum, entry) => sum + entry.text.length, 0);
+  while (
+    next.length > MAX_WORKER_LIVE_LOG_ENTRIES ||
+    totalChars > MAX_WORKER_LIVE_LOG_CHARS
+  ) {
+    const removed = next.shift();
+    totalChars -= removed?.text.length ?? 0;
+  }
+  return next;
+}
+
+function latestWorkerLiveState(entries: ManagerWorkerLiveEntry[]): {
+  workerLiveOutput: string | null;
+  workerLiveAt: string | null;
+} {
+  const latest = entries[entries.length - 1] ?? null;
+  return {
+    workerLiveOutput: latest?.text ?? null,
+    workerLiveAt: latest?.at ?? null,
+  };
+}
+
+async function setWorkerRuntimeState(input: {
   dir: string;
   threadId: string;
-  text: string | null;
   assigneeKind?: 'manager' | 'worker' | null;
   assigneeLabel?: string | null;
   workerSessionId?: string | null;
+  workerAgentId?: string | null;
+  runtimeState?: ManagerWorkerRuntimeState | null;
+  runtimeDetail?: string | null;
+  workerWriteScopes?: string[] | null;
+  workerBlockedByThreadIds?: string[] | null;
+  supersededByThreadId?: string | null;
+  clearWorkerLiveLog?: boolean;
 }): Promise<void> {
-  await updateManagerThreadMeta(input.dir, input.threadId, (current) => ({
-    ...(current ?? {}),
-    workerSessionId: input.workerSessionId ?? current?.workerSessionId ?? null,
-    workerLastStartedAt:
-      current?.workerLastStartedAt ?? new Date().toISOString(),
-    assigneeKind:
-      input.assigneeKind === undefined
-        ? (current?.assigneeKind ?? 'worker')
-        : input.assigneeKind,
-    assigneeLabel:
-      input.assigneeLabel === undefined
-        ? (current?.assigneeLabel ??
-          `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
-        : input.assigneeLabel,
-    workerLiveOutput: input.text,
-    workerLiveAt: input.text ? new Date().toISOString() : null,
-  }));
+  await updateManagerThreadMeta(input.dir, input.threadId, (current) => {
+    const currentLog = input.clearWorkerLiveLog
+      ? []
+      : normalizeWorkerLiveLogValue(current?.workerLiveLog);
+    return {
+      ...(current ?? {}),
+      workerSessionId:
+        input.workerSessionId ?? current?.workerSessionId ?? null,
+      workerLastStartedAt:
+        current?.workerLastStartedAt ?? new Date().toISOString(),
+      assigneeKind:
+        input.assigneeKind === undefined
+          ? (current?.assigneeKind ?? 'worker')
+          : input.assigneeKind,
+      assigneeLabel:
+        input.assigneeLabel === undefined
+          ? (current?.assigneeLabel ??
+            `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
+          : input.assigneeLabel,
+      workerAgentId:
+        input.workerAgentId === undefined
+          ? (current?.workerAgentId ?? null)
+          : input.workerAgentId,
+      workerRuntimeState:
+        input.runtimeState === undefined
+          ? (current?.workerRuntimeState ?? null)
+          : input.runtimeState,
+      workerRuntimeDetail:
+        input.runtimeDetail === undefined
+          ? (current?.workerRuntimeDetail ?? null)
+          : input.runtimeDetail,
+      workerWriteScopes:
+        input.workerWriteScopes === undefined
+          ? (current?.workerWriteScopes ?? [])
+          : (input.workerWriteScopes ?? []),
+      workerBlockedByThreadIds:
+        input.workerBlockedByThreadIds === undefined
+          ? (current?.workerBlockedByThreadIds ?? [])
+          : (input.workerBlockedByThreadIds ?? []),
+      supersededByThreadId:
+        input.supersededByThreadId === undefined
+          ? (current?.supersededByThreadId ?? null)
+          : input.supersededByThreadId,
+      workerLiveLog: currentLog.length > 0 ? currentLog : null,
+      ...latestWorkerLiveState(currentLog),
+    };
+  });
+}
+
+async function appendWorkerLiveOutput(input: {
+  dir: string;
+  threadId: string;
+  text: string;
+  kind?: ManagerWorkerLiveEntry['kind'];
+  assigneeKind?: 'manager' | 'worker' | null;
+  assigneeLabel?: string | null;
+  workerSessionId?: string | null;
+  workerAgentId?: string | null;
+  runtimeState?: ManagerWorkerRuntimeState | null;
+  runtimeDetail?: string | null;
+  workerWriteScopes?: string[] | null;
+  workerBlockedByThreadIds?: string[] | null;
+  supersededByThreadId?: string | null;
+}): Promise<void> {
+  const trimmed = input.text.trim();
+  if (!trimmed) {
+    return;
+  }
+  await updateManagerThreadMeta(input.dir, input.threadId, (current) => {
+    const currentLog = normalizeWorkerLiveLogValue(current?.workerLiveLog);
+    const latest = currentLog[currentLog.length - 1] ?? null;
+    const timestamp = new Date().toISOString();
+    const nextLog =
+      latest?.text === trimmed && latest.kind === (input.kind ?? 'output')
+        ? currentLog.map((entry, index) =>
+            index === currentLog.length - 1
+              ? { ...entry, at: timestamp }
+              : entry
+          )
+        : pruneWorkerLiveLog([
+            ...currentLog,
+            {
+              at: timestamp,
+              text: trimmed,
+              kind: input.kind ?? 'output',
+            } satisfies ManagerWorkerLiveEntry,
+          ]);
+    return {
+      ...(current ?? {}),
+      workerSessionId:
+        input.workerSessionId ?? current?.workerSessionId ?? null,
+      workerLastStartedAt:
+        current?.workerLastStartedAt ?? new Date().toISOString(),
+      assigneeKind:
+        input.assigneeKind === undefined
+          ? (current?.assigneeKind ?? 'worker')
+          : input.assigneeKind,
+      assigneeLabel:
+        input.assigneeLabel === undefined
+          ? (current?.assigneeLabel ??
+            `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
+          : input.assigneeLabel,
+      workerAgentId:
+        input.workerAgentId === undefined
+          ? (current?.workerAgentId ?? null)
+          : input.workerAgentId,
+      workerRuntimeState:
+        input.runtimeState === undefined
+          ? (current?.workerRuntimeState ?? null)
+          : input.runtimeState,
+      workerRuntimeDetail:
+        input.runtimeDetail === undefined
+          ? (current?.workerRuntimeDetail ?? null)
+          : input.runtimeDetail,
+      workerWriteScopes:
+        input.workerWriteScopes === undefined
+          ? (current?.workerWriteScopes ?? [])
+          : (input.workerWriteScopes ?? []),
+      workerBlockedByThreadIds:
+        input.workerBlockedByThreadIds === undefined
+          ? (current?.workerBlockedByThreadIds ?? [])
+          : (input.workerBlockedByThreadIds ?? []),
+      supersededByThreadId:
+        input.supersededByThreadId === undefined
+          ? (current?.supersededByThreadId ?? null)
+          : input.supersededByThreadId,
+      workerLiveLog: nextLog,
+      ...latestWorkerLiveState(nextLog),
+    };
+  });
 }
 
 async function clearWorkerLiveOutput(
   dir: string,
   threadId: string,
   assigneeKind: 'manager' | 'worker' | null = null,
-  assigneeLabel: string | null = null
+  assigneeLabel: string | null = null,
+  options?: {
+    workerAgentId?: string | null;
+    runtimeState?: ManagerWorkerRuntimeState | null;
+    runtimeDetail?: string | null;
+    workerWriteScopes?: string[] | null;
+    workerBlockedByThreadIds?: string[] | null;
+    supersededByThreadId?: string | null;
+  }
 ): Promise<void> {
-  await updateWorkerLiveOutput({
+  await setWorkerRuntimeState({
     dir,
     threadId,
-    text: null,
     assigneeKind,
     assigneeLabel,
+    workerAgentId: options?.workerAgentId,
+    runtimeState: options?.runtimeState,
+    runtimeDetail: options?.runtimeDetail,
+    workerWriteScopes: options?.workerWriteScopes,
+    workerBlockedByThreadIds: options?.workerBlockedByThreadIds,
+    supersededByThreadId: options?.supersededByThreadId,
+    clearWorkerLiveLog: true,
   });
 }
 
@@ -1907,9 +2148,33 @@ async function decideDispatchForBatch(input: {
   return parsed;
 }
 
+function defaultAssigneeLabel(kind: 'manager' | 'worker'): string {
+  return kind === 'manager'
+    ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
+    : `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`;
+}
+
+function blockingScopeDetail(input: {
+  blockingAssignments: ManagerActiveAssignment[];
+  threadById: Map<string, Thread>;
+}): string {
+  const labels = input.blockingAssignments.map((assignment) => {
+    const thread = input.threadById.get(assignment.threadId);
+    return thread?.title ?? assignment.threadId;
+  });
+  const list =
+    labels.length <= 2
+      ? labels.join('、')
+      : `${labels.slice(0, 2).join('、')} ほか${labels.length - 2}件`;
+  return list
+    ? `別の worker agent と書き込み範囲が重なるため待機しています (${list})。`
+    : '別の worker agent と書き込み範囲が重なるため待機しています。';
+}
+
 async function stopSupersededAssignments(input: {
   dir: string;
-  threadId: string;
+  supersedingThreadId: string;
+  supersedingThreadTitle: string;
   supersededAssignments: ManagerActiveAssignment[];
 }): Promise<void> {
   for (const assignment of input.supersededAssignments) {
@@ -1928,16 +2193,23 @@ async function stopSupersededAssignments(input: {
     await clearWorkerLiveOutput(
       input.dir,
       assignment.threadId,
-      null,
-      assignment.assigneeLabel
+      assignment.assigneeKind,
+      assignment.assigneeLabel,
+      {
+        workerAgentId: assignment.id,
+        runtimeState: 'cancelled-as-superseded',
+        runtimeDetail: `「${input.supersedingThreadTitle}」の新しい派生作業で全面的に置き換わるため、この worker agent を停止しました。`,
+        workerWriteScopes: assignment.writeScopes,
+        supersededByThreadId: input.supersedingThreadId,
+      }
     );
     try {
       await addMessage(
         input.dir,
         assignment.threadId,
-        `この作業項目は、新しく派生した「${input.threadId}」の内容で既存成果が置き換わると判断したため、途中の担当 worker を止めました。`,
+        `この作業項目は、新しく派生した「${input.supersedingThreadTitle}」の内容で既存成果が置き換わると判断したため、途中の担当 worker を止めました。`,
         'ai',
-        'review'
+        'active'
       );
     } catch {
       /* thread may have been deleted */
@@ -1959,18 +2231,45 @@ async function runQueuedAssignment(input: {
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
   let workerSessionId = await readWorkerSessionId(resolvedDir, thread.id);
+  const runtimeState: ManagerWorkerRuntimeState =
+    assignment.assigneeKind === 'manager'
+      ? 'manager-answering'
+      : 'worker-running';
+  const runtimeDetail =
+    assignment.assigneeKind === 'manager'
+      ? 'Manager がこの作業項目を直接処理しています。'
+      : '担当 worker agent がこの作業項目を実行中です。';
   let lastLiveOutput =
     assignment.assigneeKind === 'manager'
       ? 'AI が内容を整理して返答を準備しています…'
       : 'AI が担当 worker を起動しました。内容を整理しています…';
 
-  await updateWorkerLiveOutput({
+  await setWorkerRuntimeState({
     dir: resolvedDir,
     threadId: thread.id,
-    text: lastLiveOutput,
     assigneeKind: assignment.assigneeKind,
     assigneeLabel: assignment.assigneeLabel,
     workerSessionId,
+    workerAgentId: assignment.id,
+    runtimeState,
+    runtimeDetail,
+    workerWriteScopes: assignment.writeScopes,
+    workerBlockedByThreadIds: [],
+    supersededByThreadId: null,
+    clearWorkerLiveLog: true,
+  });
+  await appendWorkerLiveOutput({
+    dir: resolvedDir,
+    threadId: thread.id,
+    text: lastLiveOutput,
+    kind: 'status',
+    assigneeKind: assignment.assigneeKind,
+    assigneeLabel: assignment.assigneeLabel,
+    workerSessionId,
+    workerAgentId: assignment.id,
+    runtimeState,
+    runtimeDetail,
+    workerWriteScopes: assignment.writeScopes,
   });
 
   const runTurn = async (
@@ -2007,18 +2306,37 @@ async function runQueuedAssignment(input: {
       onProgress: async (progress) => {
         const nextText =
           progress.latestText?.trim() || 'AI が作業を進めています…';
-        if (nextText === lastLiveOutput) {
+        const progressEntries =
+          progress.liveEntries.length > 0
+            ? progress.liveEntries
+            : [
+                {
+                  at: new Date().toISOString(),
+                  text: nextText,
+                  kind: 'output' as const,
+                },
+              ];
+        const latestProgressEntry =
+          progressEntries[progressEntries.length - 1] ?? null;
+        if (latestProgressEntry?.text === lastLiveOutput) {
           return;
         }
-        lastLiveOutput = nextText;
-        await updateWorkerLiveOutput({
-          dir: resolvedDir,
-          threadId: thread.id,
-          text: nextText,
-          assigneeKind: assignment.assigneeKind,
-          assigneeLabel: assignment.assigneeLabel,
-          workerSessionId: progress.sessionId ?? currentSessionId,
-        });
+        lastLiveOutput = latestProgressEntry?.text ?? nextText;
+        for (const entry of progressEntries) {
+          await appendWorkerLiveOutput({
+            dir: resolvedDir,
+            threadId: thread.id,
+            text: entry.text,
+            kind: entry.kind,
+            assigneeKind: assignment.assigneeKind,
+            assigneeLabel: assignment.assigneeLabel,
+            workerSessionId: progress.sessionId ?? currentSessionId,
+            workerAgentId: assignment.id,
+            runtimeState,
+            runtimeDetail,
+            workerWriteScopes: assignment.writeScopes,
+          });
+        }
         await patchAssignment(dir, assignment.id, (current) => ({
           ...current,
           lastProgressAt: new Date().toISOString(),
@@ -2075,14 +2393,20 @@ async function runQueuedAssignment(input: {
         thread.id,
         runResult.parsed.sessionId ?? workerSessionId
       );
-      await updateWorkerLiveOutput({
-        dir: resolvedDir,
-        threadId: thread.id,
-        text: null,
-        assigneeKind: assignment.assigneeKind,
-        assigneeLabel: assignment.assigneeLabel,
-        workerSessionId: runResult.parsed.sessionId ?? workerSessionId,
-      });
+      await clearWorkerLiveOutput(
+        resolvedDir,
+        thread.id,
+        assignment.assigneeKind,
+        assignment.assigneeLabel,
+        {
+          workerAgentId: assignment.id,
+          runtimeState: null,
+          runtimeDetail: null,
+          workerWriteScopes: assignment.writeScopes,
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+        }
+      );
       await removeAssignment(dir, assignment.id);
       void processNextQueued(dir, resolvedDir);
       return;
@@ -2104,16 +2428,20 @@ async function runQueuedAssignment(input: {
     if (isSessionInvalidError(combinedOutput)) {
       await writeWorkerSessionId(resolvedDir, thread.id, null);
     }
-    await updateWorkerLiveOutput({
-      dir: resolvedDir,
-      threadId: thread.id,
-      text: null,
-      assigneeKind: assignment.assigneeKind,
-      assigneeLabel: assignment.assigneeLabel,
-      workerSessionId: isSessionInvalidError(combinedOutput)
-        ? null
-        : (runResult.parsed.sessionId ?? workerSessionId),
-    });
+    await clearWorkerLiveOutput(
+      resolvedDir,
+      thread.id,
+      assignment.assigneeKind,
+      assignment.assigneeLabel,
+      {
+        workerAgentId: assignment.id,
+        runtimeState: null,
+        runtimeDetail: null,
+        workerWriteScopes: assignment.writeScopes,
+        workerBlockedByThreadIds: [],
+        supersededByThreadId: null,
+      }
+    );
     await removeAssignment(dir, assignment.id);
     void processNextQueued(dir, resolvedDir);
   } catch (error) {
@@ -2141,7 +2469,15 @@ async function runQueuedAssignment(input: {
       resolvedDir,
       thread.id,
       assignment.assigneeKind,
-      assignment.assigneeLabel
+      assignment.assigneeLabel,
+      {
+        workerAgentId: assignment.id,
+        runtimeState: null,
+        runtimeDetail: null,
+        workerWriteScopes: assignment.writeScopes,
+        workerBlockedByThreadIds: [],
+        supersededByThreadId: null,
+      }
     );
     await removeAssignment(dir, assignment.id);
     void processNextQueued(dir, resolvedDir);
@@ -2180,10 +2516,14 @@ export async function processNextQueued(
     const childrenIndex = buildThreadChildrenIndex(meta);
     const threads = await listThreads(resolvedDir);
     const threadById = new Map(threads.map((thread) => [thread.id, thread]));
-    let availableSlots = Math.max(
-      0,
-      MAX_PARALLEL_WORKER_AGENTS - session.activeAssignments.length
-    );
+    let activeWorkerAssignments = session.activeAssignments.filter(
+      (assignment: ManagerActiveAssignment) =>
+        assignment.assigneeKind === 'worker'
+    ).length;
+    let activeManagerAssignments = session.activeAssignments.filter(
+      (assignment: ManagerActiveAssignment) =>
+        assignment.assigneeKind === 'manager'
+    ).length;
     let reservedWorkerScopes = session.activeAssignments
       .filter(
         (assignment: ManagerActiveAssignment) =>
@@ -2194,10 +2534,6 @@ export async function processNextQueued(
     const startedEntryIds = new Set<string>();
 
     for (const batch of dispatchPlan) {
-      if (availableSlots <= 0) {
-        break;
-      }
-
       const nextEntries = batch.entries;
       const next = nextEntries[0];
       if (!next) {
@@ -2218,6 +2554,13 @@ export async function processNextQueued(
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
         );
+        await clearWorkerLiveOutput(resolvedDir, next.threadId, null, null, {
+          runtimeState: null,
+          runtimeDetail: null,
+          workerWriteScopes: [],
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+        });
         continue;
       }
 
@@ -2256,14 +2599,19 @@ export async function processNextQueued(
       if (supersededAssignments.length > 0) {
         await stopSupersededAssignments({
           dir: resolvedDir,
-          threadId: thread.title,
+          supersedingThreadId: thread.id,
+          supersedingThreadTitle: thread.title,
           supersededAssignments,
         });
         session = await readSession(dir);
-        availableSlots = Math.max(
-          0,
-          MAX_PARALLEL_WORKER_AGENTS - session.activeAssignments.length
-        );
+        activeWorkerAssignments = session.activeAssignments.filter(
+          (assignment: ManagerActiveAssignment) =>
+            assignment.assigneeKind === 'worker'
+        ).length;
+        activeManagerAssignments = session.activeAssignments.filter(
+          (assignment: ManagerActiveAssignment) =>
+            assignment.assigneeKind === 'manager'
+        ).length;
         reservedWorkerScopes = session.activeAssignments
           .filter(
             (assignment: ManagerActiveAssignment) =>
@@ -2279,9 +2627,44 @@ export async function processNextQueued(
           ? normalizeWriteScopes(dispatch.writeScopes)
           : [];
       if (
+        dispatch.assignee === 'manager' &&
+        activeManagerAssignments >= MAX_PARALLEL_MANAGER_ASSIGNMENTS
+      ) {
+        continue;
+      }
+      if (
+        dispatch.assignee === 'worker' &&
+        activeWorkerAssignments >= MAX_PARALLEL_WORKER_AGENTS
+      ) {
+        continue;
+      }
+      if (
         dispatch.assignee === 'worker' &&
         scopeLocksOverlap(assignmentWriteScopes, reservedWorkerScopes)
       ) {
+        const blockingAssignments = session.activeAssignments.filter(
+          (assignment: ManagerActiveAssignment) =>
+            assignment.assigneeKind === 'worker' &&
+            scopeLocksOverlap(assignmentWriteScopes, assignment.writeScopes)
+        );
+        await setWorkerRuntimeState({
+          dir: resolvedDir,
+          threadId: next.threadId,
+          assigneeKind: 'worker',
+          assigneeLabel: defaultAssigneeLabel('worker'),
+          workerAgentId: null,
+          runtimeState: 'blocked-by-scope',
+          runtimeDetail: blockingScopeDetail({
+            blockingAssignments,
+            threadById,
+          }),
+          workerWriteScopes: assignmentWriteScopes,
+          workerBlockedByThreadIds: blockingAssignments.map(
+            (assignment) => assignment.threadId
+          ),
+          supersededByThreadId: null,
+          clearWorkerLiveLog: true,
+        });
         continue;
       }
 
@@ -2303,10 +2686,7 @@ export async function processNextQueued(
         threadId: next.threadId,
         queueEntryIds: batchIds,
         assigneeKind: dispatch.assignee,
-        assigneeLabel:
-          dispatch.assignee === 'manager'
-            ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
-            : `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
+        assigneeLabel: defaultAssigneeLabel(dispatch.assignee),
         writeScopes: assignmentWriteScopes,
         pid: null,
         startedAt: new Date().toISOString(),
@@ -2326,8 +2706,10 @@ export async function processNextQueued(
           ...reservedWorkerScopes,
           ...assignmentWriteScopes,
         ];
+        activeWorkerAssignments += 1;
+      } else {
+        activeManagerAssignments += 1;
       }
-      availableSlots -= 1;
       session = await readSession(dir);
       void runQueuedAssignment({
         dir,

@@ -19,7 +19,20 @@ export type ManagerUiState =
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
   | 'ai-working'
+  | 'cancelled-as-superseded'
   | 'done';
+
+export type ManagerWorkerRuntimeState =
+  | 'manager-answering'
+  | 'worker-running'
+  | 'blocked-by-scope'
+  | 'cancelled-as-superseded';
+
+export interface ManagerWorkerLiveEntry {
+  at: string;
+  text: string;
+  kind: 'status' | 'output' | 'error';
+}
 
 export interface ManagerThreadMeta {
   routingConfirmationNeeded?: boolean;
@@ -30,6 +43,13 @@ export interface ManagerThreadMeta {
   workerLastStartedAt?: string | null;
   assigneeKind?: 'manager' | 'worker' | null;
   assigneeLabel?: string | null;
+  workerAgentId?: string | null;
+  workerRuntimeState?: ManagerWorkerRuntimeState | null;
+  workerRuntimeDetail?: string | null;
+  workerWriteScopes?: string[] | null;
+  workerBlockedByThreadIds?: string[] | null;
+  supersededByThreadId?: string | null;
+  workerLiveLog?: ManagerWorkerLiveEntry[] | null;
   workerLiveOutput?: string | null;
   workerLiveAt?: string | null;
 }
@@ -49,6 +69,13 @@ export interface ManagerThreadView extends Thread {
   queuePriority: ManagerQueuePriority | null;
   assigneeKind: 'manager' | 'worker' | null;
   assigneeLabel: string | null;
+  workerAgentId: string | null;
+  workerRuntimeState: ManagerWorkerRuntimeState | null;
+  workerRuntimeDetail: string | null;
+  workerWriteScopes: string[];
+  workerBlockedByThreadIds: string[];
+  supersededByThreadId: string | null;
+  workerLiveLog: ManagerWorkerLiveEntry[];
   workerLiveOutput: string | null;
   workerLiveAt: string | null;
 }
@@ -187,6 +214,48 @@ function normalizeDerivedFromThreadIds(
   );
 }
 
+function normalizeWorkerRuntimeState(
+  value: unknown
+): ManagerWorkerRuntimeState | null {
+  if (
+    value === 'manager-answering' ||
+    value === 'worker-running' ||
+    value === 'blocked-by-scope' ||
+    value === 'cancelled-as-superseded'
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+
+    const record = entry as Record<string, unknown>;
+    const at = typeof record['at'] === 'string' ? record['at'].trim() : '';
+    const text =
+      typeof record['text'] === 'string' ? record['text'].trim() : '';
+    const kind =
+      record['kind'] === 'status' ||
+      record['kind'] === 'output' ||
+      record['kind'] === 'error'
+        ? record['kind']
+        : 'output';
+    if (!at || !text) {
+      return [];
+    }
+
+    return [{ at, text, kind } satisfies ManagerWorkerLiveEntry];
+  });
+}
+
 function deriveUiState(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
@@ -199,6 +268,10 @@ function deriveUiState(input: {
 
   if (input.meta?.routingConfirmationNeeded) {
     return 'routing-confirmation-needed';
+  }
+
+  if (input.meta?.workerRuntimeState === 'cancelled-as-superseded') {
+    return 'cancelled-as-superseded';
   }
 
   if (input.thread.status === 'needs-reply') {
@@ -240,7 +313,8 @@ function compareByPriority(
     'ai-finished-awaiting-user-confirmation': 2,
     queued: 3,
     'ai-working': 4,
-    done: 5,
+    'cancelled-as-superseded': 5,
+    done: 6,
   };
 
   const leftPriority = priority[left.uiState];
@@ -342,8 +416,30 @@ export function deriveManagerThreadViews(input: {
       queuePriority: queuePriorityByThread.get(thread.id) ?? null,
       assigneeKind: meta?.assigneeKind ?? null,
       assigneeLabel: meta?.assigneeLabel ?? null,
-      workerLiveOutput: meta?.workerLiveOutput ?? null,
-      workerLiveAt: meta?.workerLiveAt ?? null,
+      workerAgentId:
+        typeof meta?.workerAgentId === 'string'
+          ? meta.workerAgentId.trim() || null
+          : null,
+      workerRuntimeState: normalizeWorkerRuntimeState(meta?.workerRuntimeState),
+      workerRuntimeDetail:
+        typeof meta?.workerRuntimeDetail === 'string'
+          ? meta.workerRuntimeDetail.trim() || null
+          : null,
+      workerWriteScopes: normalizeDerivedFromThreadIds(meta?.workerWriteScopes),
+      workerBlockedByThreadIds: normalizeDerivedFromThreadIds(
+        meta?.workerBlockedByThreadIds
+      ),
+      supersededByThreadId:
+        typeof meta?.supersededByThreadId === 'string'
+          ? meta.supersededByThreadId.trim() || null
+          : null,
+      workerLiveLog: normalizeWorkerLiveLog(meta?.workerLiveLog),
+      workerLiveOutput:
+        typeof meta?.workerLiveOutput === 'string'
+          ? meta.workerLiveOutput
+          : null,
+      workerLiveAt:
+        typeof meta?.workerLiveAt === 'string' ? meta.workerLiveAt : null,
     } satisfies ManagerThreadView;
   });
 

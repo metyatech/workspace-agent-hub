@@ -46,7 +46,8 @@ work item before sending and makes fragmented work harder to capture quickly.
 ### AI surface
 
 - Built-in Manager backend
-- Work-item routing, ambiguity handling, status suggestion, and actual task execution
+- Work-item routing, ambiguity handling, status suggestion, assignee
+  decisions, and actual task execution
 
 ### Sync direction and trigger
 
@@ -65,6 +66,10 @@ work item before sending and makes fragmented work harder to capture quickly.
   creates a highest-priority confirmation item for the ambiguous part only
 - If the user later corrects routing in natural language, the AI updates work-item
   linkage and status instead of requiring manual drag/drop or retagging
+- If two runnable work items have overlapping write scopes, the later one stays
+  blocked until the conflicting worker finishes
+- The Manager may stop an older descendant worker only when a newer descendant
+  work item would fully supersede and invalidate that older result
 
 ### Validation surfaces
 
@@ -149,9 +154,18 @@ Each work item should expose who is currently responsible for it.
 - `manager`
 - `worker`
   When a worker is actively running, the open work-item conversation should show
-  its latest live output at the bottom of the message list as a provisional AI
-  message so the human can see what is happening without waiting for a final
+  its growing live output log at the bottom of the message list as provisional
+  AI content so the human can see what is happening without waiting for a final
   reply.
+
+The work-item detail should also expose the worker identity/runtime surface:
+
+- current assignee label
+- worker agent ID
+- runtime state
+- runtime detail
+- declared write scopes
+- blocked/superseded reason when applicable
 
 ## Work-item state model
 
@@ -173,7 +187,9 @@ separate AI completion from user closure.
    - Accepted but not started by AI yet
 5. `ai-working`
    - AI is actively processing
-6. `done`
+6. `cancelled-as-superseded`
+   - a newer descendant work item replaced an older still-running descendant
+7. `done`
    - Explicitly closed by the user, or closed from a clear natural-language
      approval such as `その件OK`
 
@@ -184,11 +200,14 @@ separate AI completion from user closure.
 3. `ai-finished-awaiting-user-confirmation`
 4. `queued`
 5. `ai-working`
-6. `done` (hidden by default, shown only on demand)
+6. `cancelled-as-superseded`
+7. `done` (hidden by default, shown only on demand)
 
 `ai-finished-awaiting-user-confirmation` is only for cases where AI has already
 produced something the human can now inspect. Intake acknowledgements or
 "started working" updates belong in `ai-working` until a real result is ready.
+`cancelled-as-superseded` stays visible long enough to explain why an older
+worker stopped, rather than disappearing without context.
 
 Within `queued`, the default is FIFO by arrival time, but two user intents can
 legitimately jump ahead:
