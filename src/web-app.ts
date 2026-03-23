@@ -130,6 +130,8 @@ const notificationStatus = document.querySelector<HTMLSpanElement>(
 )!;
 const lockDeviceButton =
   document.querySelector<HTMLButtonElement>('#lockDeviceButton')!;
+const deviceLockHint =
+  document.querySelector<HTMLDivElement>('#deviceLockHint')!;
 const pairingHint =
   document.querySelector<HTMLParagraphElement>('#pairingHint')!;
 const pairingUrlInput =
@@ -649,7 +651,9 @@ async function updatePairingQr(link: string): Promise<void> {
     }
     pairingQrImage.src = pairingQr.dataUrl;
     pairingQrImage.hidden = false;
-    pairingQrStatus.textContent = 'スマホではまずこれを読み取ってください。';
+    pairingQrStatus.textContent = config.authRequired
+      ? '初回共有が必要なときは、この QR も使えます。'
+      : 'URL を共有したいときだけ、この QR を使います。';
   } catch {
     pairingQrImage.hidden = true;
     pairingQrImage.removeAttribute('src');
@@ -668,16 +672,31 @@ function setPairingUiState(): void {
 
   pairingUrlInput.value = oneTapLink;
   pairingCodeInput.value = accessCode || '不要';
+  deviceLockHint.textContent = config.authRequired
+    ? 'ロックすると、このブラウザに保存したアクセスコードとキャッシュを消します。'
+    : 'ロックすると、このブラウザに保存した接続情報とキャッシュを消します。';
 
-  if (preferredConnectSource === 'tailscale-serve') {
+  if (!config.authRequired && preferredConnectSource === 'tailscale-serve') {
     pairingHint.textContent =
-      'まずこの QR をスマホで読み取ってください。Tailscale Serve で HTTPS 化されているので、そのまま開き、ホーム画面にも追加しやすい経路です。';
+      '同じ Tailscale 内のスマホでは、この HTTPS URL をそのまま開けます。ホーム画面に追加しておけば、PC 側で QR やコードを見なくても入り直せます。';
+  } else if (
+    !config.authRequired &&
+    preferredConnectSource === 'tailscale-direct'
+  ) {
+    pairingHint.textContent =
+      '同じ Tailscale 内のスマホでは、この URL をそのまま開けます。HTTPS 化したいときだけ下の Tailscale Serve 設定を使ってください。';
+  } else if (!config.authRequired && preferredConnectSource === 'public-url') {
+    pairingHint.textContent =
+      'この URL をそのままスマホで開けます。QR は最初に共有したいときだけ使えば十分です。';
+  } else if (preferredConnectSource === 'tailscale-serve') {
+    pairingHint.textContent =
+      'この URL をスマホで開きます。Tailscale Serve で HTTPS 化されているので、初回だけ QR か共有リンクで渡せば、以後はそのまま開けます。';
   } else if (preferredConnectSource === 'public-url') {
     pairingHint.textContent =
-      'まずこの QR をスマホで読み取ってください。共有やリンク貼り付けは、QR が使えないときだけで十分です。';
+      'この URL をスマホで開きます。初回だけ QR か共有リンクで渡せば十分です。';
   } else if (preferredConnectSource === 'tailscale-direct') {
     pairingHint.textContent =
-      'まずこの QR をスマホで読み取ってください。Tailscale 直結でそのまま開けます。HTTPS ではないので、ホーム画面追加まで欲しいときは下の HTTPS 化コマンドが有効です。';
+      'この URL をスマホで開きます。Tailscale 直結でそのまま開けます。HTTPS ではないので、ホーム画面追加まで欲しいときは下の HTTPS 化コマンドが有効です。';
   } else if (
     /^(127\.0\.0\.1|localhost|0\.0\.0\.0)$/i.test(new URL(baseUrl).hostname)
   ) {
@@ -685,7 +704,7 @@ function setPairingUiState(): void {
       'いま見えている URL はこの PC 向けです。スマホで開くには -PhoneReady か --public-url でスマホ向け URL を用意してください。';
   } else {
     pairingHint.textContent =
-      'まずこの QR をスマホで読み取ってください。リンク共有は QR が使えないときの予備です。';
+      'この URL をスマホで開きます。QR は共有したいときだけ使ってください。';
   }
 
   sharePairingButton.textContent = canSharePairingDetails()
@@ -836,9 +855,15 @@ function lockCurrentDevice(): void {
   renderSessions(sessions);
   renderSelectedSession();
   setNotificationUiState();
-  setAuthOverlayVisible(true);
+  if (config.authRequired) {
+    setAuthOverlayVisible(true);
+  } else {
+    setAuthOverlayVisible(false);
+    void loadDirectorySuggestions();
+    void refreshSessions();
+  }
   setPairingUiState();
-  showToast('この端末に保存していたコードとキャッシュを消しました。');
+  showToast('この端末に保存していた接続情報とキャッシュを消しました。');
 }
 
 async function toggleNotifications(): Promise<void> {
@@ -2099,7 +2124,9 @@ enableNotificationsButton.addEventListener(
 lockDeviceButton.addEventListener('click', () => {
   if (
     !window.confirm(
-      'この端末に保存したアクセスコードとキャッシュを消して、再入力を必須にします。よろしいですか？'
+      config.authRequired
+        ? 'この端末に保存したアクセスコードとキャッシュを消して、再入力を必須にします。よろしいですか？'
+        : 'この端末に保存した接続情報とキャッシュを消します。よろしいですか？'
     )
   ) {
     return;

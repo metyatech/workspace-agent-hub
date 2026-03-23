@@ -146,8 +146,8 @@ Keep the browser UI server running in the background without opening a browser:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1
 ```
 
-Keep the background instance smartphone-ready so the reconnect URL/QR stays
-available for phone access:
+Keep the background instance smartphone-ready so the same Tailscale URL stays
+available for phone access without reopening the PC UI:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1 -PhoneReady
@@ -171,6 +171,15 @@ The shortcut installer creates:
 - It also removes any stale `AI Agent Sessions` shortcut so the browser Hub is
   the only normal Windows entrypoint
 
+With that background path, the normal smartphone assumption is now:
+
+- the PC is on
+- the phone is on the same Tailscale tailnet
+
+The default phone-ready route no longer depends on reading a fresh QR code or
+access code from the PC. Open the same Tailscale URL or home-screen shortcut on
+the phone and Hub/Manager should load directly.
+
 Use the direct wrapper if you still want to launch it manually once:
 
 Start the local browser UI with an auto-generated access code:
@@ -182,12 +191,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1
 Start it in the recommended smartphone-ready mode so the script configures
 Tailscale Serve and emits an installable HTTPS tailnet URL. If automatic HTTPS
 setup does not complete on this machine, it falls back to a Tailscale-direct
-URL instead of hanging. The opened PC page is preloaded so the smartphone QR is
-ready immediately. If Tailscale Serve has not been enabled on the tailnet yet,
+URL instead of hanging. In this mode the PowerShell wrapper now defaults to no
+extra app-level access code, so a Tailscale-connected phone can open the same
+tailnet URL directly. If Tailscale Serve has not been enabled on the tailnet yet,
 the command now points you at the stable Tailscale DNS settings page and keeps
 the direct tailnet URL available until you enable HTTPS Certificates there and
 rerun the same command. If the HTTPS tailnet endpoint currently responds with
-`HTTP 502`, Hub now keeps the QR/default smartphone path on the verified
+`HTTP 502`, Hub now keeps the default smartphone path on the verified
 Tailscale-direct URL and shows HTTPS recovery guidance as a secondary step:
 
 ```powershell
@@ -225,7 +235,7 @@ Start it with an explicit Tailscale Serve-backed HTTPS URL by using the CLI
 flag directly:
 
 ```powershell
-workspace-agent-hub web-ui --tailscale-serve --auth-token auto --no-open-browser
+workspace-agent-hub web-ui --tailscale-serve --auth-token none --no-open-browser
 ```
 
 Start it through the CLI directly:
@@ -249,12 +259,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Js
 
 Wrapper-specific parameters that differ from the CLI:
 
-| Parameter            | Description                                                                   | Example                                                                                                   |
-| -------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `-ListenHost <host>` | PowerShell-safe equivalent of the CLI `--host` option.                        | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0`        |
-| `-PhoneReady`        | PowerShell shortcut for `--tailscale-serve` plus the normal wrapper defaults. | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady -NoOpenBrowser` |
-| `-JsonOutput`        | PowerShell wrapper switch for CLI `--json`.                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser` |
-| `-NoOpenBrowser`     | PowerShell wrapper switch for CLI `--no-open-browser`.                        | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -NoOpenBrowser`             |
+| Parameter            | Description                                                                                                                                                                              | Example                                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `-ListenHost <host>` | PowerShell-safe equivalent of the CLI `--host` option.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0`        |
+| `-PhoneReady`        | PowerShell shortcut for `--tailscale-serve` plus the normal wrapper defaults. When no `-AuthToken` is given, this mode trusts the Tailscale path and disables the extra app access code. | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady -NoOpenBrowser` |
+| `-JsonOutput`        | PowerShell wrapper switch for CLI `--json`.                                                                                                                                              | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser` |
+| `-NoOpenBrowser`     | PowerShell wrapper switch for CLI `--no-open-browser`.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -NoOpenBrowser`             |
 
 #### CLI parameters
 
@@ -266,31 +276,34 @@ Wrapper-specific parameters that differ from the CLI:
 | `--port <port>`        | Preferred port. If already taken, the server walks upward to the next free port.                                                                                  | `workspace-agent-hub web-ui --port 3360`                                   |
 | `--public-url <url>`   | Phone-facing URL used for reconnect links and QR pairing. Point this at Tailscale Serve or another trusted HTTPS reverse proxy when using the PWA from a phone.   | `workspace-agent-hub web-ui --public-url https://agent-hub.example.ts.net` |
 | `--tailscale-serve`    | Configure Tailscale Serve for this run and prefer the resulting HTTPS tailnet URL. Useful for the normal smartphone/PWA path when the PC is already on Tailscale. | `workspace-agent-hub web-ui --tailscale-serve`                             |
-| `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` only on a trusted local machine.                                                          | `workspace-agent-hub web-ui --auth-token auto`                             |
+| `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` when the Tailscale path itself is the trust boundary and you want direct phone access.    | `workspace-agent-hub web-ui --auth-token none`                             |
 | `--json`               | Print a single JSON object describing the live web UI endpoint, connect URL, access code, and pairing link.                                                       | `workspace-agent-hub web-ui --json --no-open-browser`                      |
 | `--no-open-browser`    | Start the server without opening the default desktop browser.                                                                                                     | `workspace-agent-hub web-ui --no-open-browser`                             |
 
 End-to-end example:
 
 ```powershell
-workspace-agent-hub web-ui --host 0.0.0.0 --port 3360 --auth-token auto --no-open-browser
+workspace-agent-hub web-ui --host 0.0.0.0 --port 3360 --auth-token none --no-open-browser
 ```
 
 First-use flow:
 
 1. Start the web UI on the PC.
-2. Let the local PC page open and show the pairing card.
-3. Scan the pairing QR from the phone. Treat the printed link and copy/share controls as fallback only when scanning is not available.
-4. If the terminal or secure-launch card tells you to open the Tailscale DNS settings page, open it once on the PC, enable HTTPS Certificates there, and rerun the same `-PhoneReady` command to upgrade the path to HTTPS.
-5. If the page is served over HTTPS, use the install card to add it to the home screen.
-6. Start or reopen a session, then use the transcript and prompt box from the same page.
-7. If needed, enable browser notifications or use the device-lock button to clear the saved access code on that browser.
-8. Use the session search box, browser-local favorites, the remembered last-session card, and saved prompt drafts to jump back into the same work quickly on that device.
+2. On the phone, open the emitted Tailscale URL directly. If HTTPS/Tailscale Serve is already active, add that page to the home screen once.
+3. If the terminal or secure-launch card tells you to open the Tailscale DNS settings page, open it once on the PC, enable HTTPS Certificates there, and rerun the same `-PhoneReady` command to upgrade the path to HTTPS.
+4. Only when you intentionally enabled an extra access code do you need the local PC page QR/link for the first handoff.
+5. Start or reopen a session, then use the transcript and prompt box from the same page.
+6. If needed, enable browser notifications or use the device-lock button to clear the saved browser-side state on that device.
+7. Use the session search box, browser-local favorites, the remembered last-session card, and saved prompt drafts to jump back into the same work quickly on that device.
 
 #### Browser/mobile handoff state matrix
 
-The browser app carries auth state in `localStorage`. The claimed primary paths
-and their token-source precedence rules are:
+The default `-PhoneReady` / background Tailscale path now uses `--auth-token none`,
+so there is no app-level access-code handoff at all. The matrix below applies
+only when you intentionally keep the extra access-code layer enabled.
+
+In that protected mode, the browser app carries auth state in `localStorage`.
+The claimed primary paths and their token-source precedence rules are:
 
 | State               | localStorage token       | URL hash `#accessCode=`  | Auth source                       | QR / app result                                    |
 | ------------------- | ------------------------ | ------------------------ | --------------------------------- | -------------------------------------------------- |
@@ -329,9 +342,9 @@ Installable/PWA note:
 - The browser remembers the last reopened session on that device, preserves
   unsent prompt drafts per session, and marks sessions with unseen output based
   on browser-local seen activity.
-- When `--public-url` is provided, the browser app treats the QR as the primary
-  smartphone entry path, while the share action and one-tap reconnect link stay
-  available as fallback.
+- When `--public-url` is provided, the browser app uses that URL as the primary
+  smartphone entry path. QR and share actions stay available only as optional
+  first-time handoff helpers.
 - When `--tailscale-serve` or `-PhoneReady` hits a tailnet where Serve is not
   enabled yet, the launcher points you at the stable Tailscale DNS settings
   page and the browser UI shows the same next step so you can finish HTTPS
@@ -368,7 +381,9 @@ How it works:
 
 Important behavior:
 
-- The same Hub access code protects the smartphone/desktop Manager path.
+- When Hub is running with an access code, the same protection also covers the
+  smartphone/desktop Manager path. On the default phone-ready Tailscale route,
+  Manager opens directly from the same trusted Hub origin.
 - There is no separate `manager-gui` process or second GUI server anymore.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - Users send from one global dock; they do not need to create or pick a task
@@ -462,8 +477,10 @@ Important behavior:
 
 #### Manager browser auth state matrix
 
-The Manager page carries the same browser-local access-code behavior as the Hub
-page. The claimed primary states are:
+The default phone-ready Tailscale route opens Manager directly without an
+app-level access code. The matrix below applies only when you intentionally run
+Hub in the protected access-code mode; in that case, the Manager page carries
+the same browser-local access-code behavior as the Hub page.
 
 | State               | localStorage token   | URL hash `#accessCode=` | Auth source                       | Manager result                                               |
 | ------------------- | -------------------- | ----------------------- | --------------------------------- | ------------------------------------------------------------ |

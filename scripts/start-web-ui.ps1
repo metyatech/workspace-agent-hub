@@ -40,6 +40,8 @@ try {
         $AuthToken
     } elseif ($env:WORKSPACE_AGENT_HUB_WEB_UI_AUTH_TOKEN) {
         $env:WORKSPACE_AGENT_HUB_WEB_UI_AUTH_TOKEN
+    } elseif ($PhoneReady) {
+        'none'
     } else {
         'auto'
     }

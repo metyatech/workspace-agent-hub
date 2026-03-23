@@ -1150,7 +1150,9 @@ export async function startWebUi(
       `Preferred connect URL (${launchInfo.preferredConnectUrlSource}): ${launchInfo.preferredConnectUrl}`
     );
     console.log(
-      'Phone onboarding: scan the QR on the opened PC page first. Copy/share the link only if scanning is not available.'
+      launchInfo.authRequired
+        ? 'Phone entry: open the preferred connect URL on the phone. For the first protected handoff, use the local page QR or one-tap link once, then save it on the phone.'
+        : 'Phone entry: on a Tailscale-connected phone, open the preferred connect URL directly. The local page QR is optional and only helps with first-time sharing.'
     );
     if (launchInfo.authRequired && launchInfo.accessCode) {
       console.log(`Access code: ${launchInfo.accessCode}`);

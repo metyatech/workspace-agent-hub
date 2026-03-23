@@ -48,7 +48,7 @@ const baseHtml = `
     <button id="enableNotificationsButton">notify</button>
     <span id="notificationStatus"></span>
     <button id="lockDeviceButton">lock</button>
-    <div id="deviceLockHint">ロックすると、このブラウザに保存したアクセスコードとキャッシュを消します。</div>
+    <div id="deviceLockHint">ロックすると、このブラウザに保存した接続情報とキャッシュを消します。</div>
     <p id="pairingHint"></p>
     <input id="pairingUrlInput" />
     <button id="sharePairingButton">share</button>
@@ -282,7 +282,7 @@ describe('web-app DOM', () => {
     ).toContain('迷ったら Codex');
     expect(
       document.querySelector<HTMLDivElement>('#deviceLockHint')!.textContent
-    ).toContain('アクセスコードとキャッシュを消します');
+    ).toContain('接続情報とキャッシュを消します');
   });
 
   it('renders fetched sessions and selects one on click', async () => {
@@ -1054,6 +1054,54 @@ describe('web-app DOM', () => {
     ).toBe(true);
   });
 
+  it('clears local device state without reopening auth when the phone-ready path is unprotected', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const confirmMock = vi.fn(() => true);
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token',
+          'stale-token'
+        );
+      },
+      secureContext: true,
+      preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      preferredConnectUrlSource: 'tailscale-serve',
+    });
+
+    Object.defineProperty(window, 'confirm', {
+      value: confirmMock,
+      configurable: true,
+    });
+
+    document.querySelector<HTMLButtonElement>('#lockDeviceButton')!.click();
+    await waitForTick();
+    await waitForTick();
+
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem('workspace-agent-hub.test-token')).toBe(
+      null
+    );
+    expect(
+      document
+        .querySelector<HTMLDivElement>('#authOverlay')!
+        .classList.contains('visible')
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLDivElement>('#deviceLockHint')!.textContent
+    ).toContain('接続情報');
+  });
+
   it('builds a one-tap pairing link from the preferred connect URL', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -1089,10 +1137,42 @@ describe('web-app DOM', () => {
     ).toContain('共有文をコピー');
     expect(
       document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
-    ).toContain('まずこの QR');
+    ).toContain('この URL をスマホで開きます');
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
+  });
+
+  it('treats the Tailscale HTTPS URL as the primary phone entry path when auth is disabled', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      secureContext: true,
+      preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      preferredConnectUrlSource: 'tailscale-serve',
+    });
+
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingUrlInput')!.value
+    ).toBe('https://desktop.tail5a2d2d.ts.net');
+    expect(
+      document.querySelector<HTMLInputElement>('#pairingCodeInput')!.value
+    ).toBe('不要');
+    expect(
+      document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
+    ).toContain('そのまま開けます');
+    expect(
+      document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
+    ).toContain('URL を共有したいときだけ');
   });
 
   it('surfaces a Tailscale direct URL and HTTPS upgrade command when available', async () => {
@@ -1128,10 +1208,10 @@ describe('web-app DOM', () => {
     );
     expect(
       document.querySelector<HTMLParagraphElement>('#pairingHint')!.textContent
-    ).toContain('まずこの QR');
+    ).toContain('この URL をスマホで開きます');
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
     expect(
       document.querySelector<HTMLDivElement>('#secureLaunchShell')!.hidden
     ).toBe(false);
@@ -1219,7 +1299,7 @@ describe('web-app DOM', () => {
     );
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
     expect(
       document.querySelector<HTMLSpanElement>('#secureLaunchStatus')!
         .textContent
@@ -1300,7 +1380,7 @@ describe('web-app DOM', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
   });
 
   it('accepts an access code when the hash is added after the app is already open', async () => {
@@ -1358,7 +1438,7 @@ describe('web-app DOM', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
   });
 
   it('overrides a stale localStorage token when a newer access code is present in the URL hash', async () => {
@@ -1407,7 +1487,7 @@ describe('web-app DOM', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLSpanElement>('#pairingQrStatus')!.textContent
-    ).toContain('まずこれを読み取ってください');
+    ).toContain('初回共有が必要なときは');
   });
 
   it('shows the auth overlay when a stale localStorage token is rejected by the server (no hash)', async () => {

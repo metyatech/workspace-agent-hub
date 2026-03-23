@@ -173,7 +173,9 @@ test('authenticates and manages a shell session from the browser UI', async ({
     );
     await expect(page.locator('#connectionHint')).toContainText('接続');
     await expect(page.locator('#installHint')).toContainText('ホーム画面');
-    await expect(page.locator('#pairingHint')).toContainText('まずこの QR');
+    await expect(page.locator('#pairingHint')).toContainText(
+      'この URL をスマホで開きます'
+    );
     await expect(page.locator('#pairingUrlInput')).toHaveValue(
       /#accessCode=playwright-token$/
     );

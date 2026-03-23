@@ -49,8 +49,8 @@ function Start-EnsureProcess {
         [int]$PortNumber,
         [Parameter(Mandatory = $true)]
         [string]$TargetStatePath,
-        [Parameter(Mandatory = $true)]
-        [string]$Token,
+        [AllowEmptyString()]
+        [string]$Token = '',
         [Parameter(Mandatory = $true)]
         [string]$RunName,
         [Parameter(Mandatory = $true)]
@@ -69,10 +69,14 @@ function Start-EnsureProcess {
         [string]$PortNumber,
         '-StatePath',
         $TargetStatePath,
-        '-AuthToken',
-        $Token,
         '-JsonOutput'
     )
+    if ($Token -and $Token.Trim()) {
+        $argumentList += @(
+            '-AuthToken',
+            $Token.Trim()
+        )
+    }
     $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentList -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
 
     return [pscustomobject]@{
@@ -135,12 +139,14 @@ function Wait-ForApiReady {
     param(
         [Parameter(Mandatory = $true)]
         [int]$PortNumber,
-        [Parameter(Mandatory = $true)]
-        [string]$Token,
+        [string]$Token = '',
         [int]$TimeoutMilliseconds = 30000
     )
 
-    $headers = @{ 'X-Workspace-Agent-Hub-Token' = $Token }
+    $headers = @{}
+    if ($Token -and $Token.Trim() -and $Token.Trim().ToLowerInvariant() -ne 'none') {
+        $headers['X-Workspace-Agent-Hub-Token'] = $Token.Trim()
+    }
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     do {
         try {
@@ -164,31 +170,34 @@ $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
 
 try {
-    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'first' -TargetDirectory $testDirectory
+    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
     if (-not $first.ListenUrl) {
         throw 'Expected ensure-web-ui-running.ps1 to return a listen URL.'
     }
-    if ([string]$first.AccessCode -ne 'ensure-test-token') {
-        throw 'Expected ensure-web-ui-running.ps1 to preserve the requested auth token.'
+    if ($null -ne $first.AccessCode) {
+        throw 'Expected ensure-web-ui-running.ps1 to default to no access code in PhoneReady mode.'
+    }
+    if (-not [bool]$first.AuthDisabled) {
+        throw 'Expected ensure-web-ui-running.ps1 to persist that PhoneReady mode disables the extra app auth layer by default.'
     }
 
     $firstPort = ([Uri][string]$first.ListenUrl).Port
-    Wait-ForApiReady -PortNumber $firstPort -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber $firstPort -Token ''
 
-    $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'second' -TargetDirectory $testDirectory
+    $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'second' -TargetDirectory $testDirectory
     $second = Wait-ForLaunchMetadata -ProcessInfo $secondRun
     Wait-ForProcessSuccess -ProcessInfo $secondRun
     $secondPort = ([Uri][string]$second.ListenUrl).Port
-    Wait-ForApiReady -PortNumber $secondPort -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber $secondPort -Token ''
 
     if ([string]$second.ListenUrl -ne [string]$first.ListenUrl) {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the existing instance when it is already healthy.'
     }
-    if ([string]$second.AccessCode -ne 'ensure-test-token') {
-        throw 'Expected ensure-web-ui-running.ps1 to preserve the requested auth token on reuse.'
+    if ($null -ne $second.AccessCode) {
+        throw 'Expected ensure-web-ui-running.ps1 to keep the no-auth PhoneReady state on reuse.'
     }
     if ([int]$second.ProcessId -ne [int]$first.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the same background process when the instance is already healthy.'
@@ -198,10 +207,10 @@ try {
     $legacyState.RequestedPhoneReady = $false
     ($legacyState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
-    $legacyUpgradeRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'legacy-upgrade' -TargetDirectory $testDirectory
+    $legacyUpgradeRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'legacy-upgrade' -TargetDirectory $testDirectory
     $legacyUpgrade = Wait-ForLaunchMetadata -ProcessInfo $legacyUpgradeRun
     Wait-ForProcessSuccess -ProcessInfo $legacyUpgradeRun
-    Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token ''
 
     if ([int]$legacyUpgrade.ProcessId -eq [int]$first.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to restart when the saved state predates the required PhoneReady marker.'
@@ -212,10 +221,10 @@ try {
         throw 'Expected ensure-web-ui-running.ps1 to persist the required PhoneReady launch mode marker.'
     }
 
-    $upgradedReuseRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'upgraded-reuse' -TargetDirectory $testDirectory
+    $upgradedReuseRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'upgraded-reuse' -TargetDirectory $testDirectory
     $upgradedReuse = Wait-ForLaunchMetadata -ProcessInfo $upgradedReuseRun
     Wait-ForProcessSuccess -ProcessInfo $upgradedReuseRun
-    Wait-ForApiReady -PortNumber ([Uri][string]$upgradedReuse.ListenUrl).Port -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber ([Uri][string]$upgradedReuse.ListenUrl).Port -Token ''
 
     if ([int]$upgradedReuse.ProcessId -ne [int]$legacyUpgrade.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the existing process once the PhoneReady marker is present.'
@@ -230,11 +239,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:$([Uri][string]$legacyUpgrade.ListenUrl).Port
 "@
 
-    $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-healthy' -TargetDirectory $testDirectory
+    $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'serve-healthy' -TargetDirectory $testDirectory
     $serveHealthy = Wait-ForLaunchMetadata -ProcessInfo $serveHealthyRun
     Wait-ForProcessSuccess -ProcessInfo $serveHealthyRun
     $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
-    Wait-ForApiReady -PortNumber $serveHealthyPort -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber $serveHealthyPort -Token ''
 
     if ([string]$serveHealthy.ListenUrl -ne [string]$legacyUpgrade.ListenUrl) {
         throw 'Expected ensure-web-ui-running.ps1 to preserve the existing listen URL when the saved Tailscale Serve target still matches the listener port.'
@@ -245,11 +254,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:57921
 '@
 
-    $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-mismatch' -TargetDirectory $testDirectory
+    $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'serve-mismatch' -TargetDirectory $testDirectory
     $serveMismatch = Wait-ForLaunchMetadata -ProcessInfo $serveMismatchRun
     Wait-ForProcessSuccess -ProcessInfo $serveMismatchRun
     $serveMismatchPort = ([Uri][string]$serveMismatch.ListenUrl).Port
-    Wait-ForApiReady -PortNumber $serveMismatchPort -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber $serveMismatchPort -Token ''
 
     if ([int]$serveMismatch.ProcessId -eq [int]$first.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to restart when the saved Tailscale Serve target no longer matches the listener port.'
@@ -264,10 +273,10 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $corruptedState.ProcessId = 999999
     ($corruptedState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
-    $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'stale-pid' -TargetDirectory $testDirectory
+    $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'stale-pid' -TargetDirectory $testDirectory
     $stalePid = Wait-ForLaunchMetadata -ProcessInfo $stalePidRun
     Wait-ForProcessSuccess -ProcessInfo $stalePidRun
-    Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token 'ensure-test-token'
+    Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token ''
 
     if ([int]$stalePid.ProcessId -ne [int]$serveMismatch.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to recover the real listener PID when the saved wrapper PID is stale.'

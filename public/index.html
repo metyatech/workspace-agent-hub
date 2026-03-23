@@ -851,28 +851,26 @@
               </button>
             </div>
             <div id="deviceLockHint" class="install-note">
-              ロックすると、このブラウザに保存したアクセスコードとキャッシュを消します。
+              ロックすると、このブラウザに保存した接続情報とキャッシュを消します。
             </div>
           </div>
           <div id="pairingCard" class="status-card pairing-card">
-            <strong>スマホで開く</strong>
+            <strong>スマホから開く</strong>
             <p id="pairingHint">
-              まずこの QR をスマホで読み取ります。リンク共有は QR
-              が使えないときの予備です。
+              同じ Tailscale 内のスマホでは、この URL をそのまま開けます。QR
+              は最初の共有が必要なときだけ使います。
             </p>
             <div class="qr-shell">
               <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
               <span id="pairingQrStatus" class="install-note"
-                >アクセスコードを受け付けると QR を表示します。</span
+                >必要なときだけ QR を表示します。</span
               >
             </div>
             <p class="install-note">
-              QR が使えないときだけ、下のリンクや共有文を使います。
+              URL をホーム画面に追加しておくと、次からはそのまま開けます。
             </p>
             <div class="field">
-              <label for="pairingUrlInput"
-                >QR が使えないときのワンタップ再接続リンク</label
-              >
+              <label for="pairingUrlInput">スマホで開く URL</label>
               <input
                 id="pairingUrlInput"
                 class="pairing-url"
@@ -897,7 +895,7 @@
             </div>
             <div class="field">
               <label for="pairingCodeInput"
-                >QR が使えないときのアクセスコード</label
+                >必要なときだけ使うアクセスコード</label
               >
               <input
                 id="pairingCodeInput"
@@ -1144,7 +1142,7 @@
           この画面を開くコードを入力
         </h2>
         <p class="panel-copy" style="margin-top: 8px">
-          スマホから使うときは、このコードを一度入れれば同じ端末に保存されます。
+          この起動は追加のアクセスコード保護付きです。必要なときだけ入力します。
         </p>
         <div class="field" style="margin-top: 16px">
           <label for="authTokenInput">この画面を開くアクセスコード</label>

@@ -278,6 +278,33 @@ describe('web UI server', () => {
     });
   });
 
+  it('builds machine-readable launch metadata without an access code when auth is disabled', () => {
+    expect(
+      buildWebUiLaunchInfo({
+        host: '127.0.0.1',
+        port: 3360,
+        authConfig: {
+          required: false,
+          token: null,
+          storageKey: 'workspace-agent-hub.token:D:\\ghws',
+        },
+        connectInfo: {
+          preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+          source: 'tailscale-serve',
+          tailscale: null,
+        },
+      })
+    ).toEqual({
+      listenUrl: 'http://127.0.0.1:3360',
+      preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
+      preferredConnectUrlSource: 'tailscale-serve',
+      authRequired: false,
+      accessCode: null,
+      oneTapPairingLink: 'https://desktop.tail5a2d2d.ts.net',
+      tailscale: null,
+    });
+  });
+
   it('builds a browser-open URL that preloads the access code on the local page', () => {
     expect(
       buildBrowserOpenUrl({
@@ -393,6 +420,22 @@ To enable, visit:
     );
     const transcript = (await transcriptResponse.json()) as SessionTranscript;
     expect(transcript.Transcript).toContain('hello from transcript');
+  });
+
+  it('serves sessions without an access code when auth is disabled', async () => {
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'none',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+    expect(response.status).toBe(200);
+    const listed = (await response.json()) as SessionRecord[];
+    expect(listed[0]?.Name).toBe('shell-existing');
   });
 
   it('streams Hub live snapshots for sessions and selected transcript updates', async () => {

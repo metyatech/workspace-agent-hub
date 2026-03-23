@@ -74,24 +74,113 @@ function New-AccessCode {
     return $token
 }
 
+function Test-AuthTokenOptionDisablesAuth {
+    param(
+        [string]$TokenOption
+    )
+
+    if (-not $TokenOption) {
+        return $false
+    }
+
+    return ($TokenOption.Trim().ToLowerInvariant() -eq 'none')
+}
+
+function Get-EffectiveAccessCode {
+    param(
+        [string]$TokenOption
+    )
+
+    if (Test-AuthTokenOptionDisablesAuth -TokenOption $TokenOption) {
+        return ''
+    }
+
+    if ($TokenOption -and $TokenOption.Trim()) {
+        return $TokenOption.Trim()
+    }
+
+    return ''
+}
+
+function Get-StateAccessCodeValue {
+    param(
+        $State
+    )
+
+    if (-not $State) {
+        return $null
+    }
+
+    if (
+        $State.PSObject.Properties.Match('AuthDisabled').Count -gt 0 -and
+        [bool]$State.AuthDisabled
+    ) {
+        return $null
+    }
+
+    if (
+        $State.PSObject.Properties.Match('AccessCode').Count -gt 0 -and
+        $null -ne $State.AccessCode -and
+        [string]$State.AccessCode -ne ''
+    ) {
+        return [string]$State.AccessCode
+    }
+
+    return $null
+}
+
 function Get-ResolvedAuthToken {
     param(
-        $ExistingState
+        $ExistingState,
+        [bool]$RequestedPhoneReady
     )
 
     if ($AuthToken -and $AuthToken.Trim()) {
         return $AuthToken.Trim()
     }
 
-    if ($ExistingState -and $ExistingState.AccessCode) {
-        return ([string]$ExistingState.AccessCode).Trim()
-    }
-
     if ($env:WORKSPACE_AGENT_HUB_WEB_UI_AUTH_TOKEN) {
         return ([string]$env:WORKSPACE_AGENT_HUB_WEB_UI_AUTH_TOKEN).Trim()
     }
 
+    if ($RequestedPhoneReady) {
+        return 'none'
+    }
+
+    $existingAccessCode = Get-StateAccessCodeValue -State $ExistingState
+    if ($existingAccessCode) {
+        return $existingAccessCode
+    }
+
     return (New-AccessCode)
+}
+
+function Test-RequestedAuthMatches {
+    param(
+        $ExistingState,
+        [string]$RequestedTokenOption
+    )
+
+    $requestedAuthDisabled = Test-AuthTokenOptionDisablesAuth -TokenOption $RequestedTokenOption
+    $existingAccessCode = Get-StateAccessCodeValue -State $ExistingState
+    $existingAuthDisabled = if (
+        $ExistingState -and
+        $ExistingState.PSObject.Properties.Match('AuthDisabled').Count -gt 0
+    ) {
+        [bool]$ExistingState.AuthDisabled
+    } else {
+        $false
+    }
+
+    if ($requestedAuthDisabled -ne $existingAuthDisabled) {
+        return $false
+    }
+
+    if ($requestedAuthDisabled) {
+        return $true
+    }
+
+    return ($existingAccessCode -eq (Get-EffectiveAccessCode -TokenOption $RequestedTokenOption))
 }
 
 function Test-RequestedPhoneReadyMatches {
@@ -130,8 +219,9 @@ function Get-BrowserUrl {
 
     $uri = [Uri]$ListenUrl
     $builder = [UriBuilder]::new($uri)
-    if ($Token -and $Token.Trim()) {
-        $builder.Fragment = 'accessCode=' + [Uri]::EscapeDataString($Token.Trim())
+    $effectiveAccessCode = Get-EffectiveAccessCode -TokenOption $Token
+    if ($effectiveAccessCode) {
+        $builder.Fragment = 'accessCode=' + [Uri]::EscapeDataString($effectiveAccessCode)
     } else {
         $builder.Fragment = ''
     }
@@ -257,8 +347,9 @@ function Test-WebUiReady {
 
     try {
         $headers = @{}
-        if ($Token -and $Token.Trim()) {
-            $headers['X-Workspace-Agent-Hub-Token'] = $Token.Trim()
+        $effectiveAccessCode = Get-EffectiveAccessCode -TokenOption $Token
+        if ($effectiveAccessCode) {
+            $headers['X-Workspace-Agent-Hub-Token'] = $effectiveAccessCode
         }
         $response = Invoke-WebRequest -Uri ($ListenUrl.TrimEnd('/') + '/api/sessions?includeArchived=true') -Method Get -Headers $headers -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
         return ($response.StatusCode -eq 200)
@@ -479,10 +570,10 @@ function Get-ProcessLaunchDetail {
     return 'No process output captured.'
 }
 
+$requestedPhoneReady = $true
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
-$resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState
-$requestedPhoneReady = $true
+$resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady
 $existingProcessAlive = Test-ManagedProcessAlive -ExistingState $existingState
 $existingListenUrl = if ($existingState -and $existingState.ListenUrl) {
     Get-LocalReachableUrl -ListenUrl ([string]$existingState.ListenUrl)
@@ -495,7 +586,7 @@ $canReuseExistingInstance = $false
 if (
     $existingState -and
     $existingListenUrl -and
-    [string]$existingState.AccessCode -eq $resolvedToken -and
+    (Test-RequestedAuthMatches -ExistingState $existingState -RequestedTokenOption $resolvedToken) -and
     (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady)
 ) {
     $existingListenerProcessId = if ($existingProcessAlive) {
@@ -517,11 +608,21 @@ if (
     $canReuseExistingInstance
 ) {
     $localListenUrl = $existingListenUrl
+    $reusedAccessCode = Get-StateAccessCodeValue -State $existingState
+    $reusedAuthDisabled = if (
+        $existingState -and
+        $existingState.PSObject.Properties.Match('AuthDisabled').Count -gt 0
+    ) {
+        [bool]$existingState.AuthDisabled
+    } else {
+        $false
+    }
     $finalState = [pscustomobject]@{
         ListenUrl = $localListenUrl
         PreferredConnectUrl = [string]$existingState.PreferredConnectUrl
         PreferredConnectUrlSource = [string]$existingState.PreferredConnectUrlSource
-        AccessCode = [string]$existingState.AccessCode
+        AccessCode = $reusedAccessCode
+        AuthDisabled = $reusedAuthDisabled
         OneTapPairingLink = [string]$existingState.OneTapPairingLink
         ProcessId = [int]$existingListenerProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
@@ -559,7 +660,8 @@ if (
         ListenUrl = $localListenUrl
         PreferredConnectUrl = [string]$launchInfo.preferredConnectUrl
         PreferredConnectUrlSource = [string]$launchInfo.preferredConnectUrlSource
-        AccessCode = [string]$launchInfo.accessCode
+        AccessCode = if ([bool]$launchInfo.authRequired) { [string]$launchInfo.accessCode } else { $null }
+        AuthDisabled = -not [bool]$launchInfo.authRequired
         OneTapPairingLink = [string]$launchInfo.oneTapPairingLink
         ProcessId = [int]$actualProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
