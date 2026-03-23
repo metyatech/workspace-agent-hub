@@ -11,7 +11,8 @@
  * Key design rules:
  *  - One stateless Codex routing turn per freeform inbox send
  *  - One Codex execution thread per Manager topic, persisted in thread meta
- *  - Messages are processed serially; concurrent arrivals are queued and flushed in order
+ *  - Messages are processed serially; queued work is priority-aware rather than
+ *    strict FIFO when the user asks a question or explicitly requests priority
  *  - On server restart, a stale PID is detected and the queue resumes automatically
  *  - No external npm dependencies — only the `codex` CLI in PATH is required
  *  - Requires: Codex CLI (`npm install -g @openai/codex`)
@@ -46,6 +47,14 @@ import {
   summarizeManagerMessage,
   type ManagerMessageAttachment,
 } from './manager-message.js';
+import {
+  advanceManagerQueuePriorityStreak,
+  chooseNextQueueBatch,
+  collectContiguousQueueBatch,
+  detectManagerQueuePriority,
+  normalizeManagerQueueEntry,
+  type ManagerQueuePriority,
+} from './manager-queue-priority.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -100,12 +109,13 @@ const MANAGER_WORKER_JSON_RULES =
 const MANAGER_ROUTING_JSON_RULES =
   'Return only strict JSON in the form {"actions":[...]}. ' +
   'Each action must have kind "attach-existing", "create-new", "routing-confirmation", or "resolve-existing". ' +
-  'For "attach-existing" and "resolve-existing", include threadId and content. ' +
+  'For "attach-existing" and "resolve-existing", include topicRef and content. ' +
   'For "create-new", include title and content. ' +
   'Treat contextThreadId only as a hint; create a new topic unless the current message clearly belongs to that existing topic. ' +
   'Do not attach to an existing topic just because it is broadly similar or was discussed recently; attach only when the current message clearly reads as a continuation of that exact topic. ' +
   'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
+  'Use topicRef exactly as shown in Existing open topics, and never mention topicRef, threadId, or any other internal ID in user-facing titles, reasons, questions, or stored content. ' +
   'content is the user message text that will be stored in that target topic. For "create-new" and "routing-confirmation", content must stand on its own inside that topic: keep it as close to the original wording as possible, but add the smallest missing context needed so the topic still makes sense when read alone. If the original wording already stands alone, make content match originalText. ' +
   'Split confident intents immediately and leave only the ambiguous parts for confirmation. ' +
   'Do not wrap JSON in markdown fences.';
@@ -121,6 +131,7 @@ export interface ManagerRoutingAction {
     | 'create-new'
     | 'routing-confirmation'
     | 'resolve-existing';
+  topicRef?: string;
   threadId?: string;
   title?: string;
   originalText?: string;
@@ -165,6 +176,8 @@ export interface ManagerSession {
   currentQueueId: string | null;
   startedAt: string | null;
   lastMessageAt: string | null;
+  /** Prevents normal backlog from starving when priority items keep arriving. */
+  priorityStreak: number;
 }
 
 export interface QueueEntry {
@@ -174,6 +187,7 @@ export interface QueueEntry {
   attachments?: QueueEntryAttachment[];
   createdAt: string;
   processed: boolean;
+  priority: ManagerQueuePriority;
 }
 
 export interface QueueEntryAttachment {
@@ -209,6 +223,7 @@ function makeDefaultSession(dir: string): ManagerSession {
     currentQueueId: null,
     startedAt: null,
     lastMessageAt: null,
+    priorityStreak: 0,
   };
 }
 
@@ -279,7 +294,7 @@ export async function readQueue(dir: string): Promise<QueueEntry[]> {
       .filter((line) => line.trim())
       .flatMap((line) => {
         try {
-          return [JSON.parse(line) as QueueEntry];
+          return [normalizeManagerQueueEntry(JSON.parse(line) as QueueEntry)];
         } catch {
           return [];
         }
@@ -319,6 +334,7 @@ export async function enqueueMessage(
     attachments,
     createdAt: new Date().toISOString(),
     processed: false,
+    priority: detectManagerQueuePriority(content),
   };
   // Serialise via the queue lock so concurrent enqueue + writeQueue cannot interleave
   // and cause a full rewrite to overwrite an in-flight append.
@@ -364,30 +380,6 @@ function queueEntriesImagePaths(entries: QueueEntry[]): string[] {
     }
   }
   return paths;
-}
-
-function collectContiguousQueueBatch(
-  queue: QueueEntry[],
-  startIndex: number
-): QueueEntry[] {
-  const first = queue[startIndex];
-  if (!first) {
-    return [];
-  }
-
-  const batch = [first];
-  for (let index = startIndex + 1; index < queue.length; index += 1) {
-    const candidate = queue[index];
-    if (
-      !candidate ||
-      candidate.processed ||
-      candidate.threadId !== first.threadId
-    ) {
-      break;
-    }
-    batch.push(candidate);
-  }
-  return batch;
 }
 
 function mergeQueuedEntryContent(entries: QueueEntry[]): string {
@@ -598,9 +590,9 @@ export function buildManagerReplyPrompt(
   isFirstTurn: boolean
 ): string {
   if (!isFirstTurn) {
-    return `[Thread: ${threadId}]\n${MANAGER_REPLY_JSON_RULES}\n\n${content}`;
+    return `[Topic: ${threadId}]\n${MANAGER_REPLY_JSON_RULES}\n\n${content}`;
   }
-  return `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${MANAGER_REPLY_JSON_RULES}\n\nWorkspace: ${resolvedDir}\n\n[Thread: ${threadId}]\n${content}`;
+  return `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${MANAGER_REPLY_JSON_RULES}\n\nWorkspace: ${resolvedDir}\n\n[Topic: ${threadId}]\n${content}`;
 }
 
 function formatThreadHistory(thread: Thread): string {
@@ -650,19 +642,29 @@ function buildRoutingPrompt(input: {
   threads: Thread[];
   contextThreadId?: string | null;
   isFirstTurn: boolean;
-}): string {
+}): {
+  prompt: string;
+  threadIdByTopicRef: Map<string, string>;
+} {
+  const topicRefs = input.threads.slice(0, 40).map((thread, index) => ({
+    thread,
+    topicRef: `topic-${index + 1}`,
+  }));
+  const threadIdByTopicRef = new Map(
+    topicRefs.map((entry) => [entry.topicRef, entry.thread.id])
+  );
   const threadSummary =
-    input.threads.length === 0
+    topicRefs.length === 0
       ? 'No existing open topics.'
-      : input.threads
-          .slice(0, 40)
-          .map((thread) => {
+      : topicRefs
+          .map((entry) => {
+            const thread = entry.thread;
             const last = thread.messages.at(-1);
             const preview = last
               ? `${last.sender}: ${summarizeManagerMessage(last.content, 140)}`
               : 'no messages yet';
             return [
-              `- id: ${thread.id}`,
+              `- topicRef: ${entry.topicRef}`,
               `  title: ${thread.title}`,
               `  status: ${thread.status}`,
               `  updatedAt: ${thread.updatedAt}`,
@@ -671,9 +673,16 @@ function buildRoutingPrompt(input: {
           })
           .join('\n');
 
-  const contextBlock = input.contextThreadId
-    ? `Current open thread preferred context: ${input.contextThreadId}`
-    : 'No current open thread context.';
+  const contextThread =
+    input.contextThreadId === undefined || input.contextThreadId === null
+      ? null
+      : (topicRefs.find((entry) => entry.thread.id === input.contextThreadId)
+          ?.thread ?? null);
+  const contextBlock = contextThread
+    ? `Current open topic mention hint: @${contextThread.title}. If you decide this really belongs to that topic, use its topicRef from the Existing open topics list. Treat this like a user mention hint, not a forced destination.`
+    : input.contextThreadId
+      ? 'There is a currently open topic, but its metadata was unavailable. Treat that only as a weak continuation hint and never mention internal IDs.'
+      : 'No current open topic mention hint.';
 
   const body = [
     'Route the following freeform manager message into workspace topics.',
@@ -686,11 +695,13 @@ function buildRoutingPrompt(input: {
     buildManagerMessagePromptContent(input.content).text,
   ].join('\n\n');
 
-  if (!input.isFirstTurn) {
-    return body;
-  }
-
-  return `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${body}`;
+  const prompt = input.isFirstTurn
+    ? `${MANAGER_ROUTER_SYSTEM_PROMPT}\n${body}`
+    : body;
+  return {
+    prompt,
+    threadIdByTopicRef,
+  };
 }
 
 function stripMarkdownCodeFence(text: string): string {
@@ -853,6 +864,10 @@ export function parseManagerRoutingPlan(
       return [
         {
           kind,
+          topicRef:
+            typeof action.topicRef === 'string'
+              ? action.topicRef.trim()
+              : undefined,
           threadId:
             typeof action.threadId === 'string'
               ? action.threadId.trim()
@@ -1079,22 +1094,32 @@ export async function processNextQueued(
     }
 
     const queue = await readQueue(dir);
-    const nextIndex = queue.findIndex((entry) => !entry.processed);
-    if (nextIndex < 0) return;
+    const nextBatch = chooseNextQueueBatch(queue, session);
+    if (!nextBatch) return;
 
-    const nextEntries = collectContiguousQueueBatch(queue, nextIndex);
+    const nextEntries = nextBatch.entries;
     const next = nextEntries[0];
     if (!next) return;
     const nextBatchIds = new Set(nextEntries.map((entry) => entry.id));
+    const remainingQueue = queue.filter(
+      (entry) => !entry.processed && !nextBatchIds.has(entry.id)
+    );
+    const nextPriorityStreak = advanceManagerQueuePriorityStreak(
+      session.priorityStreak,
+      nextBatch.priority,
+      remainingQueue
+    );
 
     // Mark session as busy before spawning
     const freshSession = await readSession(dir);
-    await writeSession(dir, {
+    const busySession: ManagerSession = {
       ...freshSession,
       status: 'busy',
       currentQueueId: next.id,
       lastMessageAt: new Date().toISOString(),
-    });
+      priorityStreak: nextPriorityStreak,
+    };
+    await writeSession(dir, busySession);
 
     const thread = await getThread(resolvedDir, next.threadId);
     if (!thread) {
@@ -1102,7 +1127,7 @@ export async function processNextQueued(
         q.filter((entry) => !nextBatchIds.has(entry.id))
       );
       await writeSession(dir, {
-        ...freshSession,
+        ...busySession,
         status: 'idle',
         pid: null,
         currentQueueId: null,
@@ -1316,7 +1341,7 @@ async function routeFreeformMessage(input: {
   const openThreads = (await listThreads(input.dir)).filter(
     (thread) => thread.status !== 'resolved'
   );
-  const prompt = buildRoutingPrompt({
+  const { prompt, threadIdByTopicRef } = buildRoutingPrompt({
     content: input.content,
     resolvedDir: input.resolvedDir,
     threads: openThreads,
@@ -1360,8 +1385,44 @@ async function routeFreeformMessage(input: {
     };
   }
 
+  const resolvedActions = parsedPlan.actions.flatMap((action) => {
+    if (
+      action.kind !== 'attach-existing' &&
+      action.kind !== 'resolve-existing'
+    ) {
+      return [action];
+    }
+    const threadId =
+      action.threadId ??
+      (action.topicRef
+        ? (threadIdByTopicRef.get(action.topicRef) ?? null)
+        : null);
+    if (!threadId) {
+      return [];
+    }
+    return [{ ...action, threadId }];
+  });
+
+  if (resolvedActions.length === 0) {
+    return {
+      plan: {
+        actions: [
+          {
+            kind: 'create-new',
+            title: makeFallbackThreadTitle(input.content),
+            content: input.content,
+            reason:
+              '既存トピックの参照を解決できなかったため、新しい話題として受け付けました。',
+          },
+        ],
+      },
+    };
+  }
+
   return {
-    plan: parsedPlan,
+    plan: {
+      actions: resolvedActions,
+    },
   };
 }
 

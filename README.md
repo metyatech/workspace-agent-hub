@@ -58,6 +58,11 @@ It provides:
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-web-ui-shortcuts.ps1
    ```
 
+   This installs a Startup shortcut that now launches the browser UI in
+   `-PhoneReady` mode automatically after Windows sign-in, so the same Hub and
+   Manager can be reopened from a smartphone without using Remote Desktop while
+   the PC stays on.
+
    This is the canonical day-to-day entrypoint. The installer also removes the
    old `AI Agent Sessions` shortcut if it still exists on this PC.
 
@@ -140,13 +145,20 @@ Keep the browser UI server running in the background without opening a browser:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1
 ```
 
+Keep the background instance smartphone-ready so the reconnect URL/QR stays
+available for phone access:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1 -PhoneReady
+```
+
 The shortcut installer creates:
 
 - `Workspace Agent Hub` on the Desktop and Start Menu, which opens the browser
   UI directly
 - `Workspace Agent Hub Background` in the Windows Startup folder, which keeps
-  the web UI available after sign-in so the phone can reconnect anytime while
-  the PC is on
+  the web UI running in `-PhoneReady` mode after sign-in so the phone can
+  reconnect anytime while the PC is on
 - It also removes any stale `AI Agent Sessions` shortcut so the browser Hub is
   the only normal Windows entrypoint
 
@@ -324,7 +336,8 @@ How it works:
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user writes from one global send dock instead of creating tasks by hand;
-   the writing surface stays collapsed until needed, then expands inline.
+   the writing surface stays collapsed on the inbox, then stays visible while a
+   topic conversation screen is open.
 6. The built-in manager backend splits each message across existing tasks,
    new tasks, or routing-confirmation items, then executes each routed task
    in order and writes the resulting updates back into the task.
@@ -346,27 +359,47 @@ Important behavior:
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
-- The Manager page keeps a `まず見る` priority lane near the top, and opens the
-  selected task detail inline in that task row so the user can keep context
-  without jumping to a detached panel.
+- The Manager page keeps a `まず見る` priority lane near the top, but limits
+  that lane to items the human can actually act on now. `AI の順番待ち` and
+  `AI作業中` remain in the inbox buckets instead of cluttering the read-next
+  lane.
+- Opening a topic now moves into a dedicated conversation screen with the
+  message history in chat order and the newest message at the bottom, so the
+  user can read and continue that topic in one place.
 - The current built-in Manager routes each global send with a fresh Codex
   routing turn so old router-chat context does not blur distinct tasks, then
   executes each actionable task with its own persisted Codex worker
   continuation so routed requests do real repository work instead of stopping
   at inbox acknowledgements.
 - The global send dock now shows an explicit send target: either the whole
-  inbox or a selected `@task`, so follow-up messages to one task are visually
-  obvious before sending.
+  inbox or a selected topic mention hint, so follow-up messages can keep that
+  topic attached without bypassing the normal routing pass.
 - Manager topic messages now preserve multiline user text, support inline image
-  insertion inside the message body, and render both user/AI replies with
-  Markdown formatting in the detail view.
+  insertion inside the message body via drag-and-drop or Ctrl/Cmd+V clipboard
+  paste at the current cursor position, and render both user/AI replies with
+  Markdown formatting in the topic conversation view.
+- When AI refers to another topic, the Manager UI rewrites internal topic IDs
+  into that topic's visible title so the screen never expects the human to know
+  backend IDs.
+- ANSI-colored CLI output inside Manager replies is rendered as styled text, so
+  git diffs and other terminal-colored snippets stay readable instead of
+  exposing raw escape sequences.
 - The composer now shows a rendered preview before send, so image placement and
   Markdown structure are visible before the message is queued.
+- Pressing `Send` now moves the just-sent draft into a separate sending/recent
+  lane immediately, so the composer itself clears at once and is ready for the
+  next draft instead of mixing in-flight content with new edits.
 - Sending from the global dock does not forcibly jump the reading focus to the
   newly routed topic; the current task stays open unless the user explicitly
   opens a routing-result chip.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
+- Inside the queued bucket, the default is still arrival order, but explicit
+  priority requests jump ahead of ordinary work, question-only items jump ahead
+  of ordinary work after that, and ties inside each lane stay FIFO.
+- The built-in queue also enforces a fairness cap so older ordinary work is
+  periodically drained instead of being starved forever by repeated priority or
+  question follow-ups.
 - `AI working` is reserved for tasks that are genuinely in flight in the
   built-in execution queue; only genuinely ready results should move into the
   user's confirmation bucket.
@@ -375,8 +408,8 @@ Important behavior:
 - The built-in manager backend runs on Codex CLI (`gpt-5.4` with
   `model_reasoning_effort="xhigh"`).
 - Manager messages are serialized: one queued message is processed at a time,
-  and messages received during an in-flight turn continue automatically in
-  queue order.
+  and messages received during an in-flight turn continue automatically with
+  the same priority-aware ordering.
 - Manager continuity is persisted in two layers:
   - one routing-thread Codex session for global inbox triage
   - one worker Codex session per topic for actual task execution across turns

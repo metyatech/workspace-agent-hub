@@ -34,6 +34,7 @@ describe('manager thread state derivation', () => {
         currentQueueId: null,
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:05.000Z',
+        priorityStreak: 0,
       },
       queue: [],
       meta: {},
@@ -84,6 +85,7 @@ describe('manager thread state derivation', () => {
         currentQueueId: 'queue-working',
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:12.000Z',
+        priorityStreak: 0,
       },
       queue: [
         {
@@ -92,6 +94,7 @@ describe('manager thread state derivation', () => {
           content: 'AAして',
           createdAt: '2026-03-21T00:00:02.000Z',
           processed: false,
+          priority: 'normal',
         },
         {
           id: 'queue-queued',
@@ -99,6 +102,7 @@ describe('manager thread state derivation', () => {
           content: 'BBして',
           createdAt: '2026-03-21T00:00:03.000Z',
           processed: false,
+          priority: 'normal',
         },
       ],
       meta: {},
@@ -109,5 +113,145 @@ describe('manager thread state derivation', () => {
     expect(views[0]?.uiState).toBe('queued');
     expect(views[1]?.id).toBe('thread-working');
     expect(views[1]?.uiState).toBe('ai-working');
+  });
+
+  it('orders queued threads by dispatch priority instead of newest update time', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-normal',
+          title: '通常依頼',
+          status: 'active',
+          updatedAt: '2026-03-21T00:10:00.000Z',
+          createdAt: '2026-03-21T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'AA を進めてください',
+              at: '2026-03-21T00:00:00.000Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-question',
+          title: '質問',
+          status: 'active',
+          updatedAt: '2026-03-21T00:05:00.000Z',
+          createdAt: '2026-03-21T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'BB はどうなっていますか？',
+              at: '2026-03-21T00:00:01.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-03-21T00:00:00.000Z',
+        lastMessageAt: '2026-03-21T00:00:05.000Z',
+        priorityStreak: 0,
+      },
+      queue: [
+        {
+          id: 'queue-normal',
+          threadId: 'thread-normal',
+          content: 'AA を進めてください',
+          createdAt: '2026-03-21T00:00:02.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+        {
+          id: 'queue-question',
+          threadId: 'thread-question',
+          content: 'BB はどうなっていますか？',
+          createdAt: '2026-03-21T00:00:03.000Z',
+          processed: false,
+          priority: 'question',
+        },
+      ],
+      meta: {},
+    });
+
+    expect(views[0]?.id).toBe('thread-question');
+    expect(views[0]?.queuePriority).toBe('question');
+    expect(views[1]?.id).toBe('thread-normal');
+    expect(views[1]?.queuePriority).toBe('normal');
+  });
+
+  it('keeps the oldest normal backlog visible first once priority jumps hit the fairness cap', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-normal',
+          title: '通常依頼',
+          status: 'active',
+          updatedAt: '2026-03-21T00:05:00.000Z',
+          createdAt: '2026-03-21T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'AA を進めてください',
+              at: '2026-03-21T00:00:00.000Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-question',
+          title: '質問',
+          status: 'active',
+          updatedAt: '2026-03-21T00:10:00.000Z',
+          createdAt: '2026-03-21T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'BB はどうなっていますか？',
+              at: '2026-03-21T00:00:01.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-03-21T00:00:00.000Z',
+        lastMessageAt: '2026-03-21T00:00:05.000Z',
+        priorityStreak: 3,
+      },
+      queue: [
+        {
+          id: 'queue-normal',
+          threadId: 'thread-normal',
+          content: 'AA を進めてください',
+          createdAt: '2026-03-21T00:00:02.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+        {
+          id: 'queue-question',
+          threadId: 'thread-question',
+          content: 'BB はどうなっていますか？',
+          createdAt: '2026-03-21T00:00:03.000Z',
+          processed: false,
+          priority: 'question',
+        },
+      ],
+      meta: {},
+    });
+
+    expect(views[0]?.id).toBe('thread-normal');
+    expect(views[0]?.queueOrder).toBe(0);
+    expect(views[1]?.id).toBe('thread-question');
+    expect(views[1]?.queueOrder).toBe(1);
   });
 });

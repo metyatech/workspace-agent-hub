@@ -265,8 +265,8 @@ describe('manager backend codex integration', () => {
 
     expect(first).toContain('You are a manager AI assistant');
     expect(first).toContain('Workspace: D:\\ghws');
-    expect(first).toContain('[Thread: thread-a]');
-    expect(follow).toContain('[Thread: thread-a]');
+    expect(first).toContain('[Topic: thread-a]');
+    expect(follow).toContain('[Topic: thread-a]');
     expect(follow).toContain('Return only strict JSON');
     expect(follow).toContain('Next');
     expect(workerFirst).toContain('built-in execution worker');
@@ -297,7 +297,7 @@ describe('manager backend codex integration', () => {
           actions: [
             {
               kind: 'attach-existing',
-              threadId: 'thread-1',
+              topicRef: 'topic-1',
               originalText: 'CCの件ってどうなってる？',
               content: 'CC の件どうなってる？',
               reason: '既存の CC に続けます',
@@ -315,7 +315,7 @@ describe('manager backend codex integration', () => {
       actions: [
         {
           kind: 'attach-existing',
-          threadId: 'thread-1',
+          topicRef: 'topic-1',
           originalText: 'CCの件ってどうなってる？',
           content: 'CC の件どうなってる？',
           reason: '既存の CC に続けます',
@@ -514,6 +514,167 @@ describe('manager backend codex integration', () => {
     expect(session.routingSessionId).toBeNull();
   });
 
+  it('passes the open topic as a mention-style routing hint instead of forcing the destination', async () => {
+    const routingProc = makeProc(8611);
+    const workerProc = makeProc(8612);
+    spawnMock.mockReturnValueOnce(routingProc).mockReturnValueOnce(workerProc);
+
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-target',
+        title: '特定 task',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: '既存の topic',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    ]);
+    createThreadMock.mockResolvedValueOnce({
+      id: 'thread-new',
+      title: '別タスク',
+    });
+
+    const sendPromise = sendGlobalToBuiltinManager(tempDir, 'これは別件です', {
+      contextThreadId: 'thread-target',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    expect(routingProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('Current open topic mention hint: @特定 task.')
+    );
+    expect(routingProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Treat this like a user mention hint, not a forced destination.'
+      )
+    );
+    expect(routingProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('- topicRef: topic-1')
+    );
+    expect(routingProc.stdin.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('thread-target')
+    );
+
+    completeCodexTurn(routingProc, {
+      sessionId: 'routing-thread-hint',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'create-new',
+            title: '別タスク',
+            content: 'これは別件です',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-hint',
+      text: '{"status":"review","reply":"別タスクとして処理しました"}',
+    });
+
+    await sendPromise;
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+  });
+
+  it('resolves router topicRef aliases back to the actual threadId for existing topics', async () => {
+    const routingProc = makeProc(8621);
+    const workerProc = makeProc(8622);
+    spawnMock.mockReturnValueOnce(routingProc).mockReturnValueOnce(workerProc);
+
+    listThreadsMock.mockResolvedValue([
+      {
+        id: '_bX_UpQR',
+        title: '支払いUIの修正',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: '既存の topic',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    ]);
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title:
+          threadId === '_bX_UpQR' ? '支払いUIの修正' : `Thread ${threadId}`,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: `Existing context for ${threadId}`,
+            at: new Date().toISOString(),
+          },
+        ],
+      })
+    );
+
+    const sendPromise = sendGlobalToBuiltinManager(
+      tempDir,
+      '続きをお願いします'
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    expect(routingProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('- topicRef: topic-1')
+    );
+    expect(routingProc.stdin.write).not.toHaveBeenCalledWith(
+      expect.stringContaining('_bX_UpQR')
+    );
+
+    completeCodexTurn(routingProc, {
+      sessionId: 'routing-topic-ref',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'attach-existing',
+            topicRef: 'topic-1',
+            content: '続きをお願いします',
+            reason: '既存 topic の続きです',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-topic-ref',
+      text: '{"status":"review","reply":"対応しました"}',
+    });
+
+    const summary = await sendPromise;
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('_bX_UpQR');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('続きをお願いします');
+    expect(summary.items[0]).toMatchObject({
+      threadId: '_bX_UpQR',
+      title: '支払いUIの修正',
+      outcome: 'attached-existing',
+    });
+  });
+
   it('starts processing immediately when a manager message arrives while idle', async () => {
     const proc = makeProc(6101);
     spawnMock.mockReturnValueOnce(proc);
@@ -591,6 +752,7 @@ describe('manager backend codex integration', () => {
         content: 'first pending message',
         createdAt: new Date().toISOString(),
         processed: false,
+        priority: 'normal',
       },
       {
         id: 'q_batch_2',
@@ -598,6 +760,7 @@ describe('manager backend codex integration', () => {
         content: 'second pending message',
         createdAt: new Date().toISOString(),
         processed: false,
+        priority: 'normal',
       },
     ]);
 
@@ -775,6 +938,71 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[1]?.[1]).toBe('thread-two');
     expect(addMessageMock.mock.calls[1]?.[2]).toBe('reply two');
     expect(addMessageMock.mock.calls[1]?.[4]).toBe('review');
+  });
+
+  it('dispatches a queued question ahead of older normal backlog after the current turn completes', async () => {
+    const firstProc = makeProc(7101);
+    const secondProc = makeProc(7102);
+    const thirdProc = makeProc(7103);
+    spawnMock
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc)
+      .mockReturnValueOnce(thirdProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-current',
+      'AA を進めてください'
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-normal-backlog',
+      'BB を実装してください'
+    );
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-question',
+      'CC はどうなっていますか？'
+    );
+
+    completeCodexTurn(firstProc, {
+      sessionId: 'codex-thread-current',
+      text: '{"status":"review","reply":"current done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    const secondPrompt = String(
+      secondProc.stdin.write.mock.calls[0]?.[0] ?? ''
+    );
+    expect(secondPrompt).toContain('[Topic: Thread thread-question]');
+    expect(secondPrompt).toContain('CC はどうなっていますか？');
+
+    completeCodexTurn(secondProc, {
+      sessionId: 'codex-thread-question',
+      text: '{"status":"review","reply":"question done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    const thirdPrompt = String(thirdProc.stdin.write.mock.calls[0]?.[0] ?? '');
+    expect(thirdPrompt).toContain('[Topic: Thread thread-normal-backlog]');
+    expect(thirdPrompt).toContain('BB を実装してください');
+
+    completeCodexTurn(thirdProc, {
+      sessionId: 'codex-thread-normal',
+      text: '{"status":"review","reply":"normal done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(3);
+    expect(addMessageMock.mock.calls[1]?.[1]).toBe('thread-question');
+    expect(addMessageMock.mock.calls[2]?.[1]).toBe('thread-normal-backlog');
   });
 
   it('reuses the saved worker continuity for follow-up messages on the same topic', async () => {

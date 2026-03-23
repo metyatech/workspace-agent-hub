@@ -169,6 +169,17 @@ separate AI completion from user closure.
 produced something the human can now inspect. Intake acknowledgements or
 "started working" updates belong in `ai-working` until a real result is ready.
 
+Within `queued`, the default is FIFO by arrival time, but two user intents can
+legitimately jump ahead:
+
+- explicit priority requests such as `優先して` or `先に答えて`
+- question-only items that should be answered before ordinary backlog
+
+If multiple queued items are in the same priority lane, they stay FIFO. The
+queue must also include a fairness cap so older ordinary work is periodically
+drained instead of being starved forever by a stream of priority/question
+follow-ups.
+
 ### Closure rules
 
 - AI must not silently mark a topic as fully done just because it thinks the
@@ -196,21 +207,30 @@ The Manager screen must make these points obvious without external explanation:
 - A single urgency-ordered inbox view
 - One global composer anchored consistently across the screen
 - A small `what to read first` lane near the top that surfaces the highest
-  urgency tasks without making the user scan every section
-- The selected task opens inline in its own row so the user keeps local context
-  instead of jumping to a detached panel
+  urgency tasks the human can act on now without making the user scan every
+  section
+- Opening a task switches into that task's own conversation screen instead of
+  expanding detail inline inside the inbox
 - Task detail remains available, but the primary mental model is the inbox, not
   thread administration
-- Avoid exposing internal thread IDs or infrastructure wording
+- Avoid exposing internal thread IDs or infrastructure wording; if stored AI
+  text contains an internal ID anyway, render it back to the human as the
+  corresponding topic title instead of showing the raw ID
 - Make the current composer target obvious: either whole-inbox routing or a
-  specific selected task
+  specific selected task mention hint, without turning that hint into a forced
+  destination
 - Preserve real conversation shape inside a topic: multiline user messages,
-  inline image evidence, and Markdown-formatted AI replies
+  inline image evidence inserted by drag-and-drop or clipboard paste at the
+  current cursor position, and Markdown-formatted AI replies with the newest
+  message at the bottom of the conversation
 
 ### Routing feedback placement
 
 Routing feedback should appear near the global composer, because that is where
-the user's attention is immediately after sending.
+the user's attention is immediately after sending. The just-sent draft should
+move into a separate sending/recent lane right away so the composer itself can
+reset immediately for the next draft instead of mixing in-flight content with
+new edits.
 
 It should be compact, for example:
 
@@ -243,7 +263,7 @@ This feedback is not the main record; the main record remains the topic list.
    - routing confirmation needed
    - user reply needed
    - AI finished, user confirmation needed
-   - queued
+   - AI execution waiting
    - AI working
    - done
 8. `done` items are hidden by default and can be shown on demand.
@@ -253,7 +273,7 @@ This feedback is not the main record; the main record remains the topic list.
 11. The user can understand the next action from the screen itself without
     needing chat guidance.
 12. When the user is reading one topic and that topic changes state, the screen
-    keeps that topic visibly anchored so it does not feel lost.
+    keeps that topic open in the conversation view so it does not feel lost.
 13. When the user is about to send a follow-up to one topic, the target topic
     is visually explicit before send.
 

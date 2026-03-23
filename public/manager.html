@@ -371,6 +371,48 @@
         gap: 8px;
       }
 
+      .thread-screen {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .thread-screen-top {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .thread-screen-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .thread-screen-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(43, 141, 228, 0.08);
+        border: 1px solid rgba(43, 141, 228, 0.12);
+        color: #215a8c;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      .thread-screen-subtitle {
+        color: var(--text-soft);
+        font-size: 0.8rem;
+        line-height: 1.6;
+      }
+
       .focus-list-item {
         width: 100%;
         text-align: left;
@@ -660,17 +702,6 @@
         box-shadow: 0 20px 36px rgba(23, 52, 34, 0.12);
       }
 
-      .thread-row.thread-row-open {
-        padding-bottom: 12px;
-      }
-
-      .thread-inline-detail-host {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        margin-top: 8px;
-      }
-
       .thread-row-top {
         display: flex;
         gap: 8px;
@@ -764,6 +795,15 @@
         box-shadow: none;
       }
 
+      .thread-screen .detail-card {
+        min-height: min(62vh, 760px);
+        background: linear-gradient(
+          180deg,
+          rgba(252, 255, 252, 0.98),
+          rgba(241, 249, 243, 0.98)
+        );
+      }
+
       .detail-empty {
         flex: 1;
         display: flex;
@@ -808,6 +848,11 @@
         gap: 10px;
       }
 
+      .thread-screen .detail-body {
+        flex: 1;
+        min-height: 0;
+      }
+
       .detail-note {
         color: var(--text-soft);
         background: rgba(6, 199, 85, 0.08);
@@ -837,6 +882,13 @@
             rgba(6, 199, 85, 0.05),
             transparent 45%
           );
+      }
+
+      .thread-screen .msg-area {
+        flex: 1;
+        min-height: min(50vh, 520px);
+        max-height: none;
+        padding-bottom: 18px;
       }
 
       .bubble {
@@ -921,7 +973,7 @@
       .bubble-content {
         font-size: 0.8rem;
         color: #163123;
-        white-space: pre-wrap;
+        white-space: normal;
         word-break: break-word;
       }
 
@@ -939,20 +991,20 @@
 
       .bubble-content p,
       .composer-preview-body p {
-        margin: 0 0 0.78em;
+        margin: 0 0 0.54em;
       }
 
       .bubble-content ul,
       .bubble-content ol,
       .composer-preview-body ul,
       .composer-preview-body ol {
-        margin: 0 0 0.9em;
-        padding-left: 1.4em;
+        margin: 0 0 0.68em;
+        padding-left: 1.25em;
       }
 
       .bubble-content li + li,
       .composer-preview-body li + li {
-        margin-top: 0.25em;
+        margin-top: 0.12em;
       }
 
       .bubble-content a,
@@ -974,7 +1026,7 @@
 
       .bubble-content pre,
       .composer-preview-body pre {
-        margin: 0 0 0.9em;
+        margin: 0 0 0.68em;
         padding: 11px 12px;
         border-radius: 14px;
         background: rgba(15, 23, 42, 0.92);
@@ -988,6 +1040,11 @@
         font-size: 0.74rem;
       }
 
+      .bubble-content .ansi-segment,
+      .composer-preview-body .ansi-segment {
+        border-radius: 0.28em;
+      }
+
       .bubble-content :not(pre) > code,
       .composer-preview-body :not(pre) > code {
         padding: 0.1em 0.35em;
@@ -997,8 +1054,8 @@
 
       .bubble-content blockquote,
       .composer-preview-body blockquote {
-        margin: 0 0 0.9em;
-        padding: 0.1em 0 0.1em 0.9em;
+        margin: 0 0 0.68em;
+        padding: 0.08em 0 0.08em 0.75em;
         border-left: 3px solid rgba(6, 199, 85, 0.3);
         color: var(--text-soft);
       }
@@ -1007,7 +1064,7 @@
       .composer-preview-body table {
         width: 100%;
         border-collapse: collapse;
-        margin: 0 0 0.9em;
+        margin: 0 0 0.68em;
         font-size: 0.74rem;
       }
 
@@ -1142,6 +1199,11 @@
         gap: 10px;
       }
 
+      .composer-card-drop-active {
+        border-color: rgba(43, 141, 228, 0.28);
+        box-shadow: 0 18px 40px rgba(24, 49, 35, 0.1);
+      }
+
       .composer-card-top {
         display: flex;
         gap: 10px;
@@ -1214,6 +1276,12 @@
         border-color: rgba(43, 141, 228, 0.28);
       }
 
+      .composer-textarea-drop-active {
+        border-color: rgba(43, 141, 228, 0.34);
+        background: rgba(240, 248, 255, 0.98);
+        box-shadow: inset 0 0 0 1px rgba(43, 141, 228, 0.12);
+      }
+
       .composer-actions {
         display: flex;
         gap: 10px;
@@ -1255,7 +1323,7 @@
       .composer-preview-body {
         font-size: 0.8rem;
         color: #163123;
-        white-space: pre-wrap;
+        white-space: normal;
         word-break: break-word;
       }
 
@@ -1267,6 +1335,63 @@
         padding: 10px 12px;
         font-size: 0.76rem;
         line-height: 1.65;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .composer-feedback-heading {
+        font-size: 0.72rem;
+        font-weight: 800;
+        color: var(--accent-strong);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .composer-feedback-entry {
+        border-radius: 16px;
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        background: rgba(246, 252, 247, 0.92);
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .composer-feedback-entry-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .composer-feedback-state {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 0.7rem;
+        font-weight: 800;
+      }
+
+      .composer-feedback-entry-body {
+        max-height: 140px;
+        overflow: auto;
+        border-radius: 14px;
+        border: 1px solid rgba(122, 158, 125, 0.12);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 10px 12px;
+      }
+
+      .composer-feedback-entry-body img {
+        max-width: min(100%, 180px);
+      }
+
+      .composer-feedback-entry-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
       }
 
       .composer-feedback-list {
@@ -1474,162 +1599,188 @@
       </div>
     </section>
 
-    <main id="manager-main" data-auth-content aria-label="Manager inbox">
-      <div class="stack">
-        <section id="activity-summary" class="card activity-card">
-          <div class="activity-eyebrow">いまの状況</div>
-          <div id="activity-primary" class="activity-primary">
-            状態を確認しています…
-          </div>
-          <div id="activity-detail" class="activity-detail">
-            少し待つと、AI が作業中か待機中か、いま確認すべき task
-            があるかをここに表示します。
-          </div>
-          <div id="activity-counts" class="activity-counts"></div>
-        </section>
+    <main id="manager-main" data-auth-content aria-label="Manager">
+      <section id="manager-inbox-screen">
+        <div class="stack">
+          <section id="activity-summary" class="card activity-card">
+            <div class="activity-eyebrow">いまの状況</div>
+            <div id="activity-primary" class="activity-primary">
+              状態を確認しています…
+            </div>
+            <div id="activity-detail" class="activity-detail">
+              少し待つと、AI が作業中か待機中か、いま確認すべき task
+              があるかをここに表示します。
+            </div>
+            <div id="activity-counts" class="activity-counts"></div>
+          </section>
 
-        <section id="priority-lane" class="card focus-card">
-          <div class="focus-eyebrow">まず見る</div>
-          <div class="focus-title-row">
-            <div class="focus-title">いま読む task</div>
-          </div>
-          <div id="priority-lane-copy" class="focus-meta">
-            返信待ちや確認待ちを上から順に開けば、その task
-            の場所で詳細が開きます。
-          </div>
-          <div id="priority-lane-list" class="focus-list"></div>
-        </section>
+          <section id="priority-lane" class="card focus-card">
+            <div class="focus-eyebrow">まず見る</div>
+            <div class="focus-title-row">
+              <div class="focus-title">いま読む task</div>
+            </div>
+            <div id="priority-lane-copy" class="focus-meta">
+              いま自分が返す・確認する必要がある task だけを上から出します。
+            </div>
+            <div id="priority-lane-list" class="focus-list"></div>
+          </section>
 
-        <div id="thread-detail-parking" class="hidden">
-          <section id="thread-detail" class="card detail-card hidden">
-            <div class="detail-empty">
-              task を開くと、ここにやり取りの流れが出ます。
+          <section id="getting-started" class="card intro-card hidden">
+            <div class="intro-pill">最初の使い方</div>
+            <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
+            <p>
+              何の task かを先に決める必要はありません。AI が既存の task
+              に振り分けるか、新しい task を作るか、確認が必要かを整理します。
+              整理した task は、そのまま built-in Manager
+              が実際の作業まで進めます。
+            </p>
+            <div class="intro-steps">
+              <div class="intro-step">
+                1. 下の送信ボタンを開いて、やりたいことをそのまま書く
+              </div>
+              <div class="intro-step">
+                2. AI が task ごとに分けて、必要なものを上に並べる
+              </div>
+              <div class="intro-step">3. 返事が必要なものから順に確認する</div>
             </div>
           </section>
+
+          <section
+            class="card section-card"
+            id="sec-routing-confirmation-needed"
+          >
+            <div
+              class="section-header"
+              data-section-key="routing-confirmation-needed"
+            >
+              <span class="section-dot" style="background: #fb7185"></span>
+              <span class="section-title">振り分けの確認が必要です</span>
+              <span
+                id="count-routing-confirmation-needed"
+                class="section-count"
+              ></span>
+              <span
+                id="chevron-routing-confirmation-needed"
+                class="section-chevron"
+                >▲</span
+              >
+            </div>
+            <div
+              id="body-routing-confirmation-needed"
+              class="section-body"
+            ></div>
+          </section>
+
+          <section class="card section-card" id="sec-user-reply-needed">
+            <div class="section-header" data-section-key="user-reply-needed">
+              <span class="section-dot" style="background: #f59e0b"></span>
+              <span class="section-title">あなたの返信が必要です</span>
+              <span id="count-user-reply-needed" class="section-count"></span>
+              <span id="chevron-user-reply-needed" class="section-chevron"
+                >▲</span
+              >
+            </div>
+            <div id="body-user-reply-needed" class="section-body"></div>
+          </section>
+
+          <section
+            class="card section-card"
+            id="sec-ai-finished-awaiting-user-confirmation"
+          >
+            <div
+              class="section-header"
+              data-section-key="ai-finished-awaiting-user-confirmation"
+            >
+              <span class="section-dot" style="background: #8b5cf6"></span>
+              <span class="section-title">あなたの確認待ちです</span>
+              <span
+                id="count-ai-finished-awaiting-user-confirmation"
+                class="section-count"
+              ></span>
+              <span
+                id="chevron-ai-finished-awaiting-user-confirmation"
+                class="section-chevron"
+                >▲</span
+              >
+            </div>
+            <div
+              id="body-ai-finished-awaiting-user-confirmation"
+              class="section-body"
+            ></div>
+          </section>
+
+          <section class="card section-card" id="sec-queued">
+            <div class="section-header" data-section-key="queued">
+              <span class="section-dot" style="background: #38bdf8"></span>
+              <span class="section-title">AI の順番待ち</span>
+              <span id="count-queued" class="section-count"></span>
+              <span id="chevron-queued" class="section-chevron">▲</span>
+            </div>
+            <div id="body-queued" class="section-body"></div>
+          </section>
+
+          <section class="card section-card" id="sec-ai-working">
+            <div class="section-header" data-section-key="ai-working">
+              <span class="section-dot" style="background: #22c55e"></span>
+              <span class="section-title">AI が作業中です</span>
+              <span id="count-ai-working" class="section-count"></span>
+              <span id="chevron-ai-working" class="section-chevron">▲</span>
+            </div>
+            <div id="body-ai-working" class="section-body"></div>
+          </section>
+
+          <section
+            class="card section-card hidden"
+            id="sec-done"
+            data-done-section
+          >
+            <div class="section-header" data-section-key="done">
+              <span class="section-dot" style="background: #6b7280"></span>
+              <span class="section-title">完了</span>
+              <span id="count-done" class="section-count"></span>
+              <span id="chevron-done" class="section-chevron">▲</span>
+            </div>
+            <div id="body-done" class="section-body"></div>
+          </section>
+
+          <section class="card section-card tasks-card" id="sec-tasks">
+            <div class="section-header" data-section-key="tasks">
+              <span class="section-dot" style="background: #60a5fa"></span>
+              <span class="section-title">タスク（進行中）</span>
+              <span id="count-tasks" class="section-count"></span>
+              <span id="chevron-tasks" class="section-chevron">▲</span>
+            </div>
+            <div id="body-tasks" class="section-body"></div>
+          </section>
         </div>
+      </section>
 
-        <section id="getting-started" class="card intro-card hidden">
-          <div class="intro-pill">最初の使い方</div>
-          <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
-          <p>
-            何の task かを先に決める必要はありません。AI が既存の task
-            に振り分けるか、新しい task を作るか、確認が必要かを整理します。
-            整理した task は、そのまま built-in Manager
-            が実際の作業まで進めます。
-          </p>
-          <div class="intro-steps">
-            <div class="intro-step">
-              1. 下の送信ボタンを開いて、やりたいことをそのまま書く
-            </div>
-            <div class="intro-step">
-              2. AI が task ごとに分けて、必要なものを上に並べる
-            </div>
-            <div class="intro-step">3. 返事が必要なものから順に確認する</div>
-          </div>
-        </section>
-
-        <section class="card section-card" id="sec-routing-confirmation-needed">
-          <div
-            class="section-header"
-            data-section-key="routing-confirmation-needed"
+      <section
+        id="thread-screen"
+        class="thread-screen hidden"
+        aria-label="選択した task の会話"
+      >
+        <div class="thread-screen-top">
+          <button
+            data-action="back-to-inbox"
+            class="btn btn-ghost"
+            style="width: auto"
           >
-            <span class="section-dot" style="background: #fb7185"></span>
-            <span class="section-title">振り分けの確認が必要です</span>
-            <span
-              id="count-routing-confirmation-needed"
-              class="section-count"
-            ></span>
-            <span
-              id="chevron-routing-confirmation-needed"
-              class="section-chevron"
-              >▲</span
-            >
+            ← 一覧へ戻る
+          </button>
+          <div class="thread-screen-copy">
+            <div class="thread-screen-eyebrow">Topic</div>
+            <div id="thread-screen-subtitle" class="thread-screen-subtitle">
+              この画面で会話の流れを上から下へ読み、そのまま下の送信欄から続きを送れます。最新の会話は一番下に出ます。
+            </div>
           </div>
-          <div id="body-routing-confirmation-needed" class="section-body"></div>
-        </section>
-
-        <section class="card section-card" id="sec-user-reply-needed">
-          <div class="section-header" data-section-key="user-reply-needed">
-            <span class="section-dot" style="background: #f59e0b"></span>
-            <span class="section-title">あなたの返信が必要です</span>
-            <span id="count-user-reply-needed" class="section-count"></span>
-            <span id="chevron-user-reply-needed" class="section-chevron"
-              >▲</span
-            >
+        </div>
+        <section id="thread-detail" class="card detail-card hidden">
+          <div class="detail-empty">
+            task を開くと、ここにその topic の会話が出ます。
           </div>
-          <div id="body-user-reply-needed" class="section-body"></div>
         </section>
-
-        <section
-          class="card section-card"
-          id="sec-ai-finished-awaiting-user-confirmation"
-        >
-          <div
-            class="section-header"
-            data-section-key="ai-finished-awaiting-user-confirmation"
-          >
-            <span class="section-dot" style="background: #8b5cf6"></span>
-            <span class="section-title">あなたの確認待ちです</span>
-            <span
-              id="count-ai-finished-awaiting-user-confirmation"
-              class="section-count"
-            ></span>
-            <span
-              id="chevron-ai-finished-awaiting-user-confirmation"
-              class="section-chevron"
-              >▲</span
-            >
-          </div>
-          <div
-            id="body-ai-finished-awaiting-user-confirmation"
-            class="section-body"
-          ></div>
-        </section>
-
-        <section class="card section-card" id="sec-queued">
-          <div class="section-header" data-section-key="queued">
-            <span class="section-dot" style="background: #38bdf8"></span>
-            <span class="section-title">まだ着手していません</span>
-            <span id="count-queued" class="section-count"></span>
-            <span id="chevron-queued" class="section-chevron">▲</span>
-          </div>
-          <div id="body-queued" class="section-body"></div>
-        </section>
-
-        <section class="card section-card" id="sec-ai-working">
-          <div class="section-header" data-section-key="ai-working">
-            <span class="section-dot" style="background: #22c55e"></span>
-            <span class="section-title">AI が作業中です</span>
-            <span id="count-ai-working" class="section-count"></span>
-            <span id="chevron-ai-working" class="section-chevron">▲</span>
-          </div>
-          <div id="body-ai-working" class="section-body"></div>
-        </section>
-
-        <section
-          class="card section-card hidden"
-          id="sec-done"
-          data-done-section
-        >
-          <div class="section-header" data-section-key="done">
-            <span class="section-dot" style="background: #6b7280"></span>
-            <span class="section-title">完了</span>
-            <span id="count-done" class="section-count"></span>
-            <span id="chevron-done" class="section-chevron">▲</span>
-          </div>
-          <div id="body-done" class="section-body"></div>
-        </section>
-
-        <section class="card section-card tasks-card" id="sec-tasks">
-          <div class="section-header" data-section-key="tasks">
-            <span class="section-dot" style="background: #60a5fa"></span>
-            <span class="section-title">タスク（進行中）</span>
-            <span id="count-tasks" class="section-count"></span>
-            <span id="chevron-tasks" class="section-chevron">▲</span>
-          </div>
-          <div id="body-tasks" class="section-body"></div>
-        </section>
-      </div>
+      </section>
     </main>
 
     <aside
@@ -1692,26 +1843,13 @@
             id="globalComposerInput"
             class="composer-textarea"
             aria-label="Manager への送信内容"
-            placeholder="例: AAして、BBして。\n\nあと、さっきのCCの件ってどうなってる？\nMarkdown や画像も送れます。"
+            aria-describedby="composerMediaHint composerSendHint"
+            placeholder="例: AAして、BBして。&#10;&#10;あと、さっきのCCの件ってどうなってる？&#10;Markdown や画像も送れます。"
           ></textarea>
           <div class="composer-tools">
-            <button
-              id="composerInsertImageButton"
-              type="button"
-              class="btn btn-ghost"
-              style="width: auto"
-            >
-              画像を追加
-            </button>
-            <input
-              id="composerImageInput"
-              class="hidden"
-              type="file"
-              accept="image/*"
-              multiple
-            />
-            <span class="composer-hint"
-              >複数行のまま保存され、画像は文中に差し込めます。</span
+            <span id="composerMediaHint" class="composer-hint"
+              >画像はここへドラッグ&ドロップするか、Ctrl / Cmd + V で
+              カーソル位置へ差し込めます。</span
             >
           </div>
           <div
@@ -1726,7 +1864,7 @@
             <button id="globalComposerSendButton" class="btn btn-primary">
               AI に送る
             </button>
-            <span class="composer-hint"
+            <span id="composerSendHint" class="composer-hint"
               >Ctrl / Cmd + Enter でも送れます。AI の返答は Markdown
               表示です。</span
             >

@@ -2,6 +2,7 @@ param(
     [int]$Port = 3360,
     [string]$AuthToken = '',
     [string]$StatePath = '',
+    [switch]$PhoneReady,
     [switch]$OpenBrowser,
     [switch]$JsonOutput
 )
@@ -91,6 +92,24 @@ function Get-ResolvedAuthToken {
     }
 
     return (New-AccessCode)
+}
+
+function Test-RequestedPhoneReadyMatches {
+    param(
+        $ExistingState,
+        [bool]$RequestedPhoneReady
+    )
+
+    $existingPhoneReady = $false
+    if (
+        $ExistingState -and
+        $ExistingState.PSObject.Properties.Match('RequestedPhoneReady').Count -gt 0 -and
+        $null -ne $ExistingState.RequestedPhoneReady
+    ) {
+        $existingPhoneReady = [bool]$ExistingState.RequestedPhoneReady
+    }
+
+    return ($existingPhoneReady -eq $RequestedPhoneReady)
 }
 
 function Get-PowerShellPath {
@@ -373,6 +392,8 @@ function Start-WebUiProcess {
         [Parameter(Mandatory = $true)]
         [int]$PreferredPort,
         [Parameter(Mandatory = $true)]
+        [bool]$RequestedPhoneReady,
+        [Parameter(Mandatory = $true)]
         [string]$TargetStatePath
     )
 
@@ -461,6 +482,7 @@ function Get-ProcessLaunchDetail {
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
 $resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState
+$requestedPhoneReady = $true
 $existingProcessAlive = Test-ManagedProcessAlive -ExistingState $existingState
 $existingListenUrl = if ($existingState -and $existingState.ListenUrl) {
     Get-LocalReachableUrl -ListenUrl ([string]$existingState.ListenUrl)
@@ -473,7 +495,8 @@ $canReuseExistingInstance = $false
 if (
     $existingState -and
     $existingListenUrl -and
-    [string]$existingState.AccessCode -eq $resolvedToken
+    [string]$existingState.AccessCode -eq $resolvedToken -and
+    (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady)
 ) {
     $existingListenerProcessId = if ($existingProcessAlive) {
         [int]$existingState.ProcessId
@@ -503,6 +526,7 @@ if (
         ProcessId = [int]$existingListenerProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
         StatePath = $resolvedStatePath
+        RequestedPhoneReady = $requestedPhoneReady
         StdOutPath = [string]$existingState.StdOutPath
         StdErrPath = [string]$existingState.StdErrPath
         UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -519,7 +543,7 @@ if (
         $null
     }
     Stop-ManagedProcessIfPresent -ExistingState $existingState -FallbackProcessId $fallbackProcessId
-    $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -TargetStatePath $resolvedStatePath
+    $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -RequestedPhoneReady $requestedPhoneReady -TargetStatePath $resolvedStatePath
     $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
     $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
     $ready = Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken -TimeoutMilliseconds 90000
@@ -540,6 +564,7 @@ if (
         ProcessId = [int]$actualProcessId
         BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
         StatePath = $resolvedStatePath
+        RequestedPhoneReady = $requestedPhoneReady
         StdOutPath = $started.StdOutPath
         StdErrPath = $started.StdErrPath
         UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')

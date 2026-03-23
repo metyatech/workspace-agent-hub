@@ -59,7 +59,7 @@ function Start-EnsureProcess {
 
     $stdoutPath = Join-Path $TargetDirectory "$RunName.stdout.log"
     $stderrPath = Join-Path $TargetDirectory "$RunName.stderr.log"
-    $process = Start-Process -FilePath $powerShellPath -ArgumentList @(
+    $argumentList = @(
         '-NoProfile',
         '-ExecutionPolicy',
         'Bypass',
@@ -72,7 +72,8 @@ function Start-EnsureProcess {
         '-AuthToken',
         $Token,
         '-JsonOutput'
-    ) -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+    )
+    $process = Start-Process -FilePath $powerShellPath -ArgumentList $argumentList -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
 
     return [pscustomobject]@{
         Process = $process
@@ -161,8 +162,6 @@ $statePath = Join-Path $testDirectory 'state.json'
 $port = Get-FreeTcpPort
 $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
-$originalTestPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
-$env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = 'https://hub.example.test/connect'
 
 try {
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'first' -TargetDirectory $testDirectory
@@ -195,13 +194,40 @@ try {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the same background process when the instance is already healthy.'
     }
 
+    $legacyState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $legacyState.RequestedPhoneReady = $false
+    ($legacyState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
+
+    $legacyUpgradeRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'legacy-upgrade' -TargetDirectory $testDirectory
+    $legacyUpgrade = Wait-ForLaunchMetadata -ProcessInfo $legacyUpgradeRun
+    Wait-ForProcessSuccess -ProcessInfo $legacyUpgradeRun
+    Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token 'ensure-test-token'
+
+    if ([int]$legacyUpgrade.ProcessId -eq [int]$first.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to restart when the saved state predates the required PhoneReady marker.'
+    }
+
+    $upgradedState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    if (-not [bool]$upgradedState.RequestedPhoneReady) {
+        throw 'Expected ensure-web-ui-running.ps1 to persist the required PhoneReady launch mode marker.'
+    }
+
+    $upgradedReuseRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'upgraded-reuse' -TargetDirectory $testDirectory
+    $upgradedReuse = Wait-ForLaunchMetadata -ProcessInfo $upgradedReuseRun
+    Wait-ForProcessSuccess -ProcessInfo $upgradedReuseRun
+    Wait-ForApiReady -PortNumber ([Uri][string]$upgradedReuse.ListenUrl).Port -Token 'ensure-test-token'
+
+    if ([int]$upgradedReuse.ProcessId -ne [int]$legacyUpgrade.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to reuse the existing process once the PhoneReady marker is present.'
+    }
+
     $tailscaleState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
     $tailscaleState.PreferredConnectUrlSource = 'tailscale-serve'
     $tailscaleState.PreferredConnectUrl = 'https://desktop-dr5v76c.tail5a2d2d.ts.net'
     ($tailscaleState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
-|-- / proxy http://127.0.0.1:$firstPort
+|-- / proxy http://127.0.0.1:$([Uri][string]$legacyUpgrade.ListenUrl).Port
 "@
 
     $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-test-token' -RunName 'serve-healthy' -TargetDirectory $testDirectory
@@ -210,8 +236,8 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
     Wait-ForApiReady -PortNumber $serveHealthyPort -Token 'ensure-test-token'
 
-    if ([int]$serveHealthy.ProcessId -ne [int]$first.ProcessId) {
-        throw 'Expected ensure-web-ui-running.ps1 to keep reusing the existing instance when the saved Tailscale Serve target still matches the listener port.'
+    if ([string]$serveHealthy.ListenUrl -ne [string]$legacyUpgrade.ListenUrl) {
+        throw 'Expected ensure-web-ui-running.ps1 to preserve the existing listen URL when the saved Tailscale Serve target still matches the listener port.'
     }
 
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
@@ -280,12 +306,6 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = $originalTailscaleServeStatusText
     }
-    if ($null -eq $originalTestPublicUrl) {
-        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -ErrorAction SilentlyContinue
-    } else {
-        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = $originalTestPublicUrl
-    }
-
     if (Test-Path -Path $testDirectory) {
         Start-Sleep -Milliseconds 200
         try {

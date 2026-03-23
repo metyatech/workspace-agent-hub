@@ -84,10 +84,32 @@ interface ManagerRoutingSummary {
   detail: string;
 }
 
+type ComposerFeedbackStatus = 'sending' | 'sent' | 'failed';
+
+interface ComposerFeedbackEntry {
+  id: string;
+  content: string;
+  targetLabel: string;
+  status: ComposerFeedbackStatus;
+  detail: string;
+  items: ManagerRoutingSummaryItem[];
+}
+
 interface StyleEntry {
   bg: string;
   color: string;
   border: string;
+}
+
+interface AnsiStyleState {
+  foreground: string | null;
+  background: string | null;
+  bold: boolean;
+  dim: boolean;
+  italic: boolean;
+  underline: boolean;
+  strike: boolean;
+  inverse: boolean;
 }
 
 const ALLOWED_MARKDOWN_TAGS = new Set([
@@ -118,6 +140,27 @@ const ALLOWED_MARKDOWN_TAGS = new Set([
   'ul',
 ]);
 
+const ANSI_CSI_PATTERN = /\u001b\[([0-9;?]*)([A-Za-z])/g;
+const ANSI_OSC_PATTERN = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+const ANSI_16_COLOR_PALETTE = [
+  '#0f172a',
+  '#ff7b72',
+  '#3fb950',
+  '#d29922',
+  '#79c0ff',
+  '#d2a8ff',
+  '#56d4dd',
+  '#e5e7eb',
+  '#6e7681',
+  '#ffa198',
+  '#56d364',
+  '#e3b341',
+  '#a5d6ff',
+  '#f0b6ff',
+  '#7ee7f2',
+  '#f8fafc',
+];
+
 const GUI_DIR = window.GUI_DIR;
 const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
 const MANAGER_AUTH_STORAGE_KEY =
@@ -137,7 +180,7 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
   'user-reply-needed': 'あなたの返信待ち',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
-  queued: '未着手',
+  queued: 'AI の順番待ち',
   'ai-working': 'AI作業中',
   done: '完了',
 };
@@ -147,7 +190,7 @@ const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
   'user-reply-needed': 'あなたの返信が必要な task はありません',
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
-  queued: 'まだ着手していない task はありません',
+  queued: 'AI の順番待ちはありません',
   'ai-working': 'AI が作業中の task はありません',
   done: '完了済みの task はありません',
 };
@@ -184,8 +227,6 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     border: 'rgba(107, 114, 128, 0.28)',
   },
 };
-
-const COMPOSER_FEEDBACK_DISMISS_MS = 4800;
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -273,6 +314,55 @@ function hashMessageContent(text: string): string {
   return (hash >>> 0).toString(16);
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildThreadTitleMap(threads: ThreadView[]): Map<string, string> {
+  return new Map(
+    threads
+      .filter((thread) => thread.id.trim() && thread.title.trim())
+      .map((thread) => [thread.id, thread.title])
+  );
+}
+
+function humanizeThreadReferenceText(
+  text: string,
+  threadTitlesById: Map<string, string>
+): string {
+  if (!text || threadTitlesById.size === 0) {
+    return text;
+  }
+
+  let result = text;
+  const entries = Array.from(threadTitlesById.entries()).sort(
+    (left, right) => right[0].length - left[0].length
+  );
+
+  for (const [threadId, title] of entries) {
+    const label = `「${title}」`;
+    const escapedId = escapeRegExp(threadId);
+    result = result.replace(
+      new RegExp(`\\[Thread:\\s*${escapedId}\\]`, 'g'),
+      `[Topic: ${label}]`
+    );
+    result = result.replace(
+      new RegExp(`threadId\\s*[:=]\\s*${escapedId}`, 'gi'),
+      `topic ${label}`
+    );
+    result = result.replace(
+      new RegExp(`task\\s*ID\\s*[:=]?\\s*${escapedId}`, 'gi'),
+      `topic ${label}`
+    );
+    result = result.replace(
+      new RegExp(`(^|[^A-Za-z0-9_-])(${escapedId})(?=$|[^A-Za-z0-9_-])`, 'g'),
+      (_match, prefix: string) => `${prefix}${label}`
+    );
+  }
+
+  return result;
+}
+
 function sanitizeLinkHref(href: string | null): string | null {
   if (!href) {
     return null;
@@ -303,6 +393,282 @@ function resolveImageSrc(
     return attachments.get(attachmentId)?.dataUrl ?? null;
   }
   return null;
+}
+
+function makeDefaultAnsiStyleState(): AnsiStyleState {
+  return {
+    foreground: null,
+    background: null,
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+    strike: false,
+    inverse: false,
+  };
+}
+
+function rgbToHex(red: number, green: number, blue: number): string {
+  const clamp = (value: number): string =>
+    Math.max(0, Math.min(255, value)).toString(16).padStart(2, '0');
+  return `#${clamp(red)}${clamp(green)}${clamp(blue)}`;
+}
+
+function xtermColor(index: number): string | null {
+  if (index < 0 || index > 255) {
+    return null;
+  }
+  if (index < ANSI_16_COLOR_PALETTE.length) {
+    return ANSI_16_COLOR_PALETTE[index] ?? null;
+  }
+  if (index >= 16 && index <= 231) {
+    const cubeIndex = index - 16;
+    const red = Math.floor(cubeIndex / 36);
+    const green = Math.floor((cubeIndex % 36) / 6);
+    const blue = cubeIndex % 6;
+    const convertCubeChannel = (value: number): number =>
+      value === 0 ? 0 : 55 + value * 40;
+    return rgbToHex(
+      convertCubeChannel(red),
+      convertCubeChannel(green),
+      convertCubeChannel(blue)
+    );
+  }
+  const gray = 8 + (index - 232) * 10;
+  return rgbToHex(gray, gray, gray);
+}
+
+function parseAnsiCodes(parameters: string): number[] {
+  if (!parameters) {
+    return [0];
+  }
+  const codes = parameters
+    .split(';')
+    .map((part) => (part === '' ? 0 : Number(part)))
+    .filter((part) => Number.isFinite(part));
+  return codes.length > 0 ? codes : [0];
+}
+
+function setAnsiColor(
+  state: AnsiStyleState,
+  type: 'foreground' | 'background',
+  color: string | null
+): void {
+  state[type] = color;
+}
+
+function applyAnsiCodes(state: AnsiStyleState, codes: number[]): void {
+  for (let index = 0; index < codes.length; index += 1) {
+    const code = codes[index];
+    switch (code) {
+      case 0:
+        Object.assign(state, makeDefaultAnsiStyleState());
+        break;
+      case 1:
+        state.bold = true;
+        break;
+      case 2:
+        state.dim = true;
+        break;
+      case 3:
+        state.italic = true;
+        break;
+      case 4:
+        state.underline = true;
+        break;
+      case 7:
+        state.inverse = true;
+        break;
+      case 9:
+        state.strike = true;
+        break;
+      case 21:
+      case 22:
+        state.bold = false;
+        state.dim = false;
+        break;
+      case 23:
+        state.italic = false;
+        break;
+      case 24:
+        state.underline = false;
+        break;
+      case 27:
+        state.inverse = false;
+        break;
+      case 29:
+        state.strike = false;
+        break;
+      case 39:
+        state.foreground = null;
+        break;
+      case 49:
+        state.background = null;
+        break;
+      default:
+        if (code >= 30 && code <= 37) {
+          setAnsiColor(state, 'foreground', xtermColor(code - 30));
+          break;
+        }
+        if (code >= 40 && code <= 47) {
+          setAnsiColor(state, 'background', xtermColor(code - 40));
+          break;
+        }
+        if (code >= 90 && code <= 97) {
+          setAnsiColor(state, 'foreground', xtermColor(code - 90 + 8));
+          break;
+        }
+        if (code >= 100 && code <= 107) {
+          setAnsiColor(state, 'background', xtermColor(code - 100 + 8));
+          break;
+        }
+        if ((code === 38 || code === 48) && index + 1 < codes.length) {
+          const mode = codes[index + 1];
+          const target = code === 38 ? 'foreground' : 'background';
+          if (mode === 5 && index + 2 < codes.length) {
+            setAnsiColor(state, target, xtermColor(codes[index + 2]!));
+            index += 2;
+            break;
+          }
+          if (mode === 2 && index + 4 < codes.length) {
+            setAnsiColor(
+              state,
+              target,
+              rgbToHex(codes[index + 2]!, codes[index + 3]!, codes[index + 4]!)
+            );
+            index += 4;
+          }
+        }
+        break;
+    }
+  }
+}
+
+function createAnsiSegment(
+  ownerDocument: Document,
+  text: string,
+  state: AnsiStyleState
+): Node | null {
+  if (!text) {
+    return null;
+  }
+
+  const effectiveForeground = state.inverse
+    ? (state.background ?? '#f8fafc')
+    : state.foreground;
+  const effectiveBackground = state.inverse
+    ? (state.foreground ?? 'rgba(15, 23, 42, 0.92)')
+    : state.background;
+  const hasDecoration =
+    state.bold ||
+    state.dim ||
+    state.italic ||
+    state.underline ||
+    state.strike ||
+    effectiveForeground !== null ||
+    effectiveBackground !== null;
+  if (!hasDecoration) {
+    return ownerDocument.createTextNode(text);
+  }
+
+  const span = ownerDocument.createElement('span');
+  span.className = 'ansi-segment';
+  span.textContent = text;
+  if (effectiveForeground) {
+    span.style.color = effectiveForeground;
+  }
+  if (effectiveBackground) {
+    span.style.backgroundColor = effectiveBackground;
+  }
+  if (state.bold) {
+    span.style.fontWeight = '700';
+  }
+  if (state.dim) {
+    span.style.opacity = '0.72';
+  }
+  if (state.italic) {
+    span.style.fontStyle = 'italic';
+  }
+  const decorations: string[] = [];
+  if (state.underline) {
+    decorations.push('underline');
+  }
+  if (state.strike) {
+    decorations.push('line-through');
+  }
+  if (decorations.length > 0) {
+    span.style.textDecoration = decorations.join(' ');
+  }
+  return span;
+}
+
+function renderAnsiTextNode(
+  ownerDocument: Document,
+  rawText: string
+): DocumentFragment | null {
+  const text = rawText.replace(ANSI_OSC_PATTERN, '');
+  const fragment = ownerDocument.createDocumentFragment();
+  const state = makeDefaultAnsiStyleState();
+  let cursor = 0;
+  let sawAnsi = text !== rawText;
+  ANSI_CSI_PATTERN.lastIndex = 0;
+
+  for (const match of text.matchAll(ANSI_CSI_PATTERN)) {
+    const start = match.index ?? 0;
+    sawAnsi = true;
+    const textBefore = text.slice(cursor, start);
+    const segment = createAnsiSegment(ownerDocument, textBefore, state);
+    if (segment) {
+      fragment.appendChild(segment);
+    }
+    if (match[2] === 'm') {
+      applyAnsiCodes(state, parseAnsiCodes(match[1] ?? ''));
+    }
+    cursor = start + match[0].length;
+  }
+
+  if (!sawAnsi) {
+    return null;
+  }
+
+  const trailing = createAnsiSegment(ownerDocument, text.slice(cursor), state);
+  if (trailing) {
+    fragment.appendChild(trailing);
+  }
+  return fragment;
+}
+
+function renderAnsiTextNodes(root: ParentNode): void {
+  const rootNode = root as Node;
+  const ownerDocument =
+    rootNode.nodeType === 9 ? (root as Document) : rootNode.ownerDocument;
+  if (!ownerDocument) {
+    return;
+  }
+  const nodeFilter = ownerDocument.defaultView?.NodeFilter;
+  const walker = ownerDocument.createTreeWalker(
+    root,
+    nodeFilter?.SHOW_TEXT ?? 4
+  );
+  const textNodes: Text[] = [];
+  let current: Node | null = walker.nextNode();
+  while (current) {
+    if ((current.textContent ?? '').includes('\u001b')) {
+      textNodes.push(current as Text);
+    }
+    current = walker.nextNode();
+  }
+
+  for (const textNode of textNodes) {
+    const rendered = renderAnsiTextNode(
+      ownerDocument,
+      textNode.textContent ?? ''
+    );
+    if (!rendered) {
+      continue;
+    }
+    textNode.replaceWith(rendered);
+  }
 }
 
 function sanitizeMarkdownChildren(
@@ -383,19 +749,29 @@ function sanitizeMarkdownNode(
   return clean;
 }
 
-function renderMessageMarkdown(target: HTMLElement, raw: string): void {
+function renderMessageMarkdown(
+  target: HTMLElement,
+  raw: string,
+  threadTitlesById: Map<string, string> = new Map()
+): void {
   const parsed = parseManagerMessage(raw);
-  const html = String(
-    marked.parse(parsed.markdown, { gfm: true, breaks: true })
+  const markdown = humanizeThreadReferenceText(
+    parsed.markdown,
+    threadTitlesById
   );
+  const html = String(marked.parse(markdown, { gfm: true, breaks: true }));
   const template = document.createElement('template');
   template.innerHTML = html;
   const attachments = new Map(
     parsed.attachments.map((attachment) => [attachment.id, attachment])
   );
-  target.replaceChildren(
-    sanitizeMarkdownChildren(document, template.content, attachments)
+  const sanitized = sanitizeMarkdownChildren(
+    document,
+    template.content,
+    attachments
   );
+  renderAnsiTextNodes(sanitized);
+  target.replaceChildren(sanitized);
 }
 
 function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
@@ -409,7 +785,10 @@ function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
   return badge;
 }
 
-function makeBubble(message: Msg): HTMLDivElement {
+function makeBubble(
+  message: Msg,
+  threadTitlesById: Map<string, string>
+): HTMLDivElement {
   const bubble = document.createElement('div');
   const ai = message.sender === 'ai';
   bubble.className = `bubble ${ai ? 'bubble-ai' : 'bubble-user'}`;
@@ -430,7 +809,11 @@ function makeBubble(message: Msg): HTMLDivElement {
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  renderMessageMarkdown(content, message.content);
+  renderMessageMarkdown(
+    content,
+    message.content,
+    message.sender === 'ai' ? threadTitlesById : new Map()
+  );
 
   meta.append(sender, timestamp);
   bubble.append(meta, content);
@@ -438,7 +821,7 @@ function makeBubble(message: Msg): HTMLDivElement {
 }
 
 function messagesForDetail(messages: Msg[]): Msg[] {
-  return [...messages].reverse();
+  return [...messages];
 }
 
 function makeFeedbackChip(
@@ -460,6 +843,31 @@ function makeFeedbackChip(
   return chip;
 }
 
+function makeFeedbackStateBadge(
+  status: ComposerFeedbackStatus
+): HTMLSpanElement {
+  const badge = document.createElement('span');
+  badge.className = 'composer-feedback-state';
+  switch (status) {
+    case 'sending':
+      badge.textContent = '送信中';
+      badge.style.background = 'rgba(43, 141, 228, 0.12)';
+      badge.style.color = '#1660b8';
+      break;
+    case 'sent':
+      badge.textContent = '送信済み';
+      badge.style.background = 'rgba(6, 199, 85, 0.12)';
+      badge.style.color = '#0f7a3e';
+      break;
+    case 'failed':
+      badge.textContent = '送信失敗';
+      badge.style.background = 'rgba(220, 38, 38, 0.12)';
+      badge.style.color = '#b42318';
+      break;
+  }
+  return badge;
+}
+
 function describeThreadState(thread: ThreadView): string | null {
   if (thread.routingConfirmationNeeded) {
     return (
@@ -477,7 +885,7 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'いま AI がこの task の作業を実行中です。結果が返ると自動で上の優先度へ移動します。';
   }
   if (thread.uiState === 'queued') {
-    return 'この task はまだ未着手です。AI が順番に取りかかります。';
+    return 'いまは AI の順番待ちです。順番が来ると、そのまま自動で作業に入ります。';
   }
   if (thread.uiState === 'done') {
     return 'この task は完了として閉じています。必要ならもう一度開けます。';
@@ -501,8 +909,8 @@ function threadStateLocation(thread: ThreadView): string {
 
 function composerActionLabel(thread: ThreadView): string {
   return thread.uiState === 'ai-working'
-    ? 'この task に追加指示を送る'
-    : 'この task に送る';
+    ? 'この会話をメンションして追加指示を送る'
+    : 'この会話をメンションして送る';
 }
 
 function composerSendButtonLabel(thread: ThreadView | null): string {
@@ -524,6 +932,7 @@ class ThreadSectionController {
   #lastOpenThreadId: string | null = null;
   #lastTargetThreadId: string | null = null;
   #lastSelectHandler: ((id: string) => void) | null = null;
+  #lastThreadTitlesById = new Map<string, string>();
 
   constructor(key: ManagerUiState) {
     this.#key = key;
@@ -553,7 +962,8 @@ class ThreadSectionController {
         this.#lastThreads,
         this.#lastOpenThreadId,
         this.#lastTargetThreadId,
-        this.#lastSelectHandler
+        this.#lastSelectHandler,
+        this.#lastThreadTitlesById
       );
     }
   }
@@ -562,12 +972,14 @@ class ThreadSectionController {
     threads: ThreadView[],
     openThreadId: string | null,
     targetThreadId: string | null,
-    onSelect: ((id: string) => void) | null
+    onSelect: ((id: string) => void) | null,
+    threadTitlesById: Map<string, string>
   ): void {
     this.#lastThreads = threads;
     this.#lastOpenThreadId = openThreadId;
     this.#lastTargetThreadId = targetThreadId;
     this.#lastSelectHandler = onSelect;
+    this.#lastThreadTitlesById = threadTitlesById;
 
     if (this.#count) {
       this.#count.textContent = threads.length > 0 ? `(${threads.length})` : '';
@@ -607,11 +1019,23 @@ class ThreadSectionController {
     for (const thread of threads) {
       const existing = this.#rows.get(thread.id);
       if (existing) {
-        this.#patchRow(existing, thread, openThreadId, targetThreadId);
+        this.#patchRow(
+          existing,
+          thread,
+          openThreadId,
+          targetThreadId,
+          threadTitlesById
+        );
       } else {
         this.#rows.set(
           thread.id,
-          this.#buildRow(thread, openThreadId, targetThreadId, onSelect)
+          this.#buildRow(
+            thread,
+            openThreadId,
+            targetThreadId,
+            onSelect,
+            threadTitlesById
+          )
         );
       }
     }
@@ -632,7 +1056,8 @@ class ThreadSectionController {
     thread: ThreadView,
     openThreadId: string | null,
     targetThreadId: string | null,
-    onSelect: ((id: string) => void) | null
+    onSelect: ((id: string) => void) | null,
+    threadTitlesById: Map<string, string>
   ): HTMLDivElement {
     const row = document.createElement('div');
     row.className = 'thread-row';
@@ -662,7 +1087,7 @@ class ThreadSectionController {
     detailToggle.className = 'thread-open-indicator';
     detailToggle.dataset.rowToggle = '';
     detailToggle.textContent =
-      openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
+      openThreadId === thread.id ? '表示中' : '会話を開く';
 
     const target = document.createElement('span');
     target.className = 'thread-open-indicator thread-target-indicator';
@@ -673,7 +1098,9 @@ class ThreadSectionController {
     const preview = document.createElement('div');
     preview.className = 'thread-preview';
     preview.dataset.rowPreview = '';
-    preview.textContent = thread.previewText || 'まだやり取りはありません';
+    preview.textContent =
+      humanizeThreadReferenceText(thread.previewText, threadTitlesById) ||
+      'まだやり取りはありません';
 
     top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
@@ -682,14 +1109,12 @@ class ThreadSectionController {
       const note = document.createElement('div');
       note.className = 'thread-note';
       note.dataset.rowNote = '';
-      note.textContent = thread.routingHint;
+      note.textContent = humanizeThreadReferenceText(
+        thread.routingHint,
+        threadTitlesById
+      );
       row.appendChild(note);
     }
-
-    const detailHost = document.createElement('div');
-    detailHost.className = 'thread-inline-detail-host hidden';
-    detailHost.dataset.rowDetailHost = '';
-    row.appendChild(detailHost);
 
     row.addEventListener('click', () => {
       onSelect?.(thread.id);
@@ -701,7 +1126,8 @@ class ThreadSectionController {
     row: HTMLElement,
     thread: ThreadView,
     openThreadId: string | null,
-    targetThreadId: string | null
+    targetThreadId: string | null,
+    threadTitlesById: Map<string, string>
   ): void {
     row.classList.toggle('selected', openThreadId === thread.id);
     row.classList.toggle('thread-row-open', openThreadId === thread.id);
@@ -727,16 +1153,18 @@ class ThreadSectionController {
 
     const toggle = row.querySelector<HTMLElement>('[data-row-toggle]');
     if (toggle) {
-      toggle.textContent =
-        openThreadId === thread.id ? '詳細を閉じる' : '詳細を開く';
+      toggle.textContent = openThreadId === thread.id ? '表示中' : '会話を開く';
     }
 
     const target = row.querySelector<HTMLElement>('[data-row-target]');
     target?.classList.toggle('hidden', targetThreadId !== thread.id);
 
     const preview = row.querySelector<HTMLElement>('[data-row-preview]');
-    if (preview && preview.textContent !== thread.previewText) {
-      preview.textContent = thread.previewText || 'まだやり取りはありません';
+    const nextPreview =
+      humanizeThreadReferenceText(thread.previewText, threadTitlesById) ||
+      'まだやり取りはありません';
+    if (preview && preview.textContent !== nextPreview) {
+      preview.textContent = nextPreview;
     }
 
     let note = row.querySelector<HTMLElement>('[data-row-note]');
@@ -747,14 +1175,12 @@ class ThreadSectionController {
         note.dataset.rowNote = '';
         row.appendChild(note);
       }
-      note.textContent = thread.routingHint;
+      note.textContent = humanizeThreadReferenceText(
+        thread.routingHint,
+        threadTitlesById
+      );
     } else {
       note?.remove();
-    }
-
-    const detailHost = row.querySelector<HTMLElement>('[data-row-detail-host]');
-    if (detailHost) {
-      detailHost.classList.toggle('hidden', openThreadId !== thread.id);
     }
   }
 }
@@ -825,14 +1251,12 @@ class TaskSectionController {
 
 class DetailController {
   #detailEl: HTMLElement;
-  #parkingEl: HTMLElement;
   #app: ManagerApp;
   #currentThreadId: string | null = null;
   #lastRenderedSignature: string | null = null;
 
-  constructor(detailEl: HTMLElement, parkingEl: HTMLElement, app: ManagerApp) {
+  constructor(detailEl: HTMLElement, app: ManagerApp) {
     this.#detailEl = detailEl;
-    this.#parkingEl = parkingEl;
     this.#app = app;
     this.#detailEl.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -900,14 +1324,15 @@ class DetailController {
 
   render(
     thread: ThreadView | null,
-    hostEl: HTMLElement | null,
-    movementNotice: string | null
+    movementNotice: string | null,
+    threadTitlesById: Map<string, string>
   ): void {
-    if (!thread || !hostEl) {
+    if (!thread) {
       this.clear();
       return;
     }
 
+    const previousThreadId = this.#currentThreadId;
     const nextSignature = JSON.stringify({
       id: thread.id,
       title: thread.title,
@@ -930,20 +1355,16 @@ class DetailController {
 
     const previousMsgArea =
       this.#detailEl.querySelector<HTMLElement>('.msg-area');
+    const sameThread = previousThreadId === thread.id;
     const previousScrollTop =
-      this.#currentThreadId === thread.id && previousMsgArea
-        ? previousMsgArea.scrollTop
-        : null;
+      sameThread && previousMsgArea ? previousMsgArea.scrollTop : null;
     const previousAnchor =
-      this.#currentThreadId === thread.id && previousMsgArea
+      sameThread && previousMsgArea
         ? this.#captureScrollAnchor(previousMsgArea)
         : null;
 
     this.#currentThreadId = thread.id;
     this.#lastRenderedSignature = nextSignature;
-    if (this.#detailEl.parentElement !== hostEl) {
-      hostEl.appendChild(this.#detailEl);
-    }
     this.#detailEl.classList.remove('hidden');
     this.#detailEl.innerHTML = '';
 
@@ -957,19 +1378,13 @@ class DetailController {
     const header = document.createElement('div');
     header.className = 'detail-header';
 
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'btn btn-ghost';
-    closeBtn.style.width = 'auto';
-    closeBtn.textContent = '閉じる';
-    closeBtn.addEventListener('click', () => this.#app.closeDetail());
-
     const title = document.createElement('div');
     title.className = 'detail-title';
     title.textContent = thread.title;
 
     const badge = makeStateBadge(thread.uiState);
 
-    header.append(closeBtn, title, badge);
+    header.append(title, badge);
     this.#detailEl.appendChild(header);
 
     const meta = document.createElement('div');
@@ -1030,15 +1445,20 @@ class DetailController {
       const empty = document.createElement('div');
       empty.className = 'detail-empty';
       empty.textContent =
-        'まだやり取りはありません。下の送信ボタンを開くと最初のメッセージを送れます。';
+        'まだやり取りはありません。下の送信欄から最初のメッセージを送れます。';
       msgArea.appendChild(empty);
     } else {
       for (const message of detailMessages) {
-        msgArea.appendChild(makeBubble(message));
+        msgArea.appendChild(makeBubble(message, threadTitlesById));
       }
     }
     body.appendChild(msgArea);
     this.#detailEl.appendChild(body);
+
+    if (!sameThread) {
+      msgArea.scrollTop = msgArea.scrollHeight;
+      return;
+    }
 
     this.#restoreScrollPosition(msgArea, previousScrollTop, previousAnchor);
   }
@@ -1048,10 +1468,7 @@ class DetailController {
     this.#lastRenderedSignature = null;
     this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
-      '<div class="detail-empty">task を開くと、ここにやり取りの流れが固定表示されます。</div>';
-    if (this.#detailEl.parentElement !== this.#parkingEl) {
-      this.#parkingEl.appendChild(this.#detailEl);
-    }
+      '<div class="detail-empty">task を開くと、ここにその topic の会話が表示されます。</div>';
   }
 }
 
@@ -1075,7 +1492,9 @@ class ManagerApp {
   #composerExpanded = false;
   #composerAttachments = new Map<string, ManagerMessageAttachment>();
   #composerAttachmentSerial = 0;
-  #composerFeedbackTimer: number | null = null;
+  #composerImageDragDepth = 0;
+  #composerFeedbackEntries: ComposerFeedbackEntry[] = [];
+  #composerFeedbackSerial = 0;
 
   constructor() {
     this.#sections = {
@@ -1093,7 +1512,6 @@ class ManagerApp {
     this.#taskSection = new TaskSectionController();
     this.#detail = new DetailController(
       document.getElementById('thread-detail') as HTMLElement,
-      document.getElementById('thread-detail-parking') as HTMLElement,
       this
     );
   }
@@ -1139,6 +1557,45 @@ class ManagerApp {
     return document.getElementById(
       'globalComposerInput'
     ) as HTMLTextAreaElement | null;
+  }
+
+  #setComposerDropActive(active: boolean): void {
+    document
+      .getElementById('composerPanel')
+      ?.classList.toggle('composer-card-drop-active', active);
+    this.#composerInput()?.classList.toggle(
+      'composer-textarea-drop-active',
+      active
+    );
+  }
+
+  #resetComposerDropState(): void {
+    this.#composerImageDragDepth = 0;
+    this.#setComposerDropActive(false);
+  }
+
+  #imageFilesFromTransfer(transfer: DataTransfer | null | undefined): File[] {
+    if (!transfer) {
+      return [];
+    }
+
+    const itemFiles = Array.from(transfer.items ?? []).flatMap((item) => {
+      if (item.kind !== 'file' || !item.type.startsWith('image/')) {
+        return [];
+      }
+      const file = item.getAsFile();
+      return file ? [file] : [];
+    });
+    if (itemFiles.length > 0) {
+      return itemFiles;
+    }
+    return Array.from(transfer.files ?? []).filter((file) =>
+      file.type.startsWith('image/')
+    );
+  }
+
+  #hasImageTransfer(transfer: DataTransfer | null | undefined): boolean {
+    return this.#imageFilesFromTransfer(transfer).length > 0;
   }
 
   #referencedComposerAttachments(markdown: string): ManagerMessageAttachment[] {
@@ -1225,10 +1682,40 @@ class ManagerApp {
     input.focus();
   }
 
-  #insertTextAtCursor(input: HTMLTextAreaElement, text: string): void {
-    const selectionStart = input.selectionStart ?? input.value.length;
-    const selectionEnd = input.selectionEnd ?? selectionStart;
+  #insertTextAtCursor(
+    input: HTMLTextAreaElement,
+    text: string,
+    selectionStart = input.selectionStart ?? input.value.length,
+    selectionEnd = input.selectionEnd ?? selectionStart
+  ): void {
     input.setRangeText(text, selectionStart, selectionEnd, 'end');
+  }
+
+  #imageInsertionText(
+    input: HTMLTextAreaElement,
+    insertions: string[],
+    selectionStart: number,
+    selectionEnd: number
+  ): string {
+    const before = input.value.slice(0, selectionStart);
+    const after = input.value.slice(selectionEnd);
+    const prefix =
+      selectionStart === 0
+        ? ''
+        : before.endsWith('\n\n')
+          ? ''
+          : before.endsWith('\n')
+            ? '\n'
+            : '\n\n';
+    const suffix =
+      selectionEnd >= input.value.length
+        ? ''
+        : after.startsWith('\n\n')
+          ? ''
+          : after.startsWith('\n')
+            ? '\n'
+            : '\n\n';
+    return `${prefix}${insertions.join('\n\n')}${suffix}`;
   }
 
   #readFileAsDataUrl(file: File): Promise<string> {
@@ -1259,7 +1746,11 @@ class ManagerApp {
     });
   }
 
-  async #insertComposerImages(files: FileList | File[]): Promise<void> {
+  async #insertComposerImages(
+    files: FileList | File[],
+    selectionStart?: number,
+    selectionEnd?: number
+  ): Promise<void> {
     const input = this.#composerInput();
     if (!input || files.length === 0) {
       return;
@@ -1286,7 +1777,15 @@ class ManagerApp {
       return;
     }
 
-    this.#insertTextAtCursor(input, insertions.join('\n'));
+    const rangeStart =
+      selectionStart ?? input.selectionStart ?? input.value.length;
+    const rangeEnd = selectionEnd ?? input.selectionEnd ?? rangeStart;
+    this.#insertTextAtCursor(
+      input,
+      this.#imageInsertionText(input, insertions, rangeStart, rangeEnd),
+      rangeStart,
+      rangeEnd
+    );
     this.#syncComposerDraftUi();
     input.focus();
   }
@@ -1384,6 +1883,9 @@ class ManagerApp {
       if (nextOpenThread.uiState === 'done') {
         this.#showDone = true;
         this.#renderDoneToggle();
+        if (this.#composerTargetThreadId === nextOpenThread.id) {
+          this.#composerTargetThreadId = null;
+        }
       }
     } else if (!nextOpenThread) {
       this.#openThreadMovementNotice = null;
@@ -1485,44 +1987,11 @@ class ManagerApp {
     if (thread?.uiState === 'done') {
       this.#showDone = true;
       this.#renderDoneToggle();
+      this.#setComposerTarget(null);
+    } else {
+      this.#setComposerTarget(threadId);
     }
     this.#renderAll();
-    this.#scrollOpenThreadIntoViewIfNeeded();
-  }
-
-  #scrollOpenThreadIntoViewIfNeeded(): void {
-    const row = this.#getRowForThread(this.openThreadId);
-    if (!row) {
-      return;
-    }
-
-    const rect = row.getBoundingClientRect();
-    const viewportHeight =
-      window.innerHeight || document.documentElement.clientHeight || 0;
-    if (
-      rect.top >= 0 &&
-      rect.left >= 0 &&
-      rect.bottom <= viewportHeight &&
-      rect.width > 0 &&
-      rect.height > 0
-    ) {
-      return;
-    }
-
-    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }
-
-  #getRowForThread(threadId: string | null): HTMLElement | null {
-    if (!threadId) {
-      return null;
-    }
-    for (const state of STATE_ORDER) {
-      const row = this.#sections[state].getRow(threadId);
-      if (row) {
-        return row;
-      }
-    }
-    return null;
   }
 
   #setComposerTarget(threadId: string | null): void {
@@ -1541,6 +2010,63 @@ class ManagerApp {
       return;
     }
     await this.loadManagerStatus();
+  }
+
+  #composerTargetLabel(): string {
+    const targetThread = this.#findThread(this.#composerTargetThreadId);
+    return targetThread ? `送信ヒント: @${targetThread.title}` : '送信先: 全体';
+  }
+
+  #queueComposerFeedbackEntry(content: string): string {
+    const entryId = `composer-feedback-${Date.now()}-${this.#composerFeedbackSerial}`;
+    this.#composerFeedbackSerial += 1;
+    const entry: ComposerFeedbackEntry = {
+      id: entryId,
+      content,
+      targetLabel: this.#composerTargetLabel(),
+      status: 'sending',
+      detail: '振り分けています…',
+      items: [],
+    };
+    this.#composerFeedbackEntries = [
+      entry,
+      ...this.#composerFeedbackEntries,
+    ].slice(0, 4);
+    this.#renderComposerFeedback();
+    return entryId;
+  }
+
+  #updateComposerFeedbackEntry(
+    entryId: string,
+    patch: Partial<Pick<ComposerFeedbackEntry, 'status' | 'detail' | 'items'>>
+  ): void {
+    this.#composerFeedbackEntries = this.#composerFeedbackEntries.map(
+      (entry) => (entry.id === entryId ? { ...entry, ...patch } : entry)
+    );
+    this.#renderComposerFeedback();
+  }
+
+  #restoreComposerFeedbackEntry(entryId: string): void {
+    const entry = this.#composerFeedbackEntries.find(
+      (item) => item.id === entryId
+    );
+    if (!entry) {
+      return;
+    }
+
+    const parsed = parseManagerMessage(entry.content);
+    const input = this.#composerInput();
+    if (!input) {
+      return;
+    }
+
+    input.value = parsed.markdown;
+    this.#composerAttachments = new Map(
+      parsed.attachments.map((attachment) => [attachment.id, attachment])
+    );
+    this.#syncComposerDraftUi();
+    this.#setComposerExpanded(true);
+    input.focus();
   }
 
   async sendGlobalMessage(): Promise<void> {
@@ -1566,10 +2092,15 @@ class ManagerApp {
     if (sendButton) {
       sendButton.disabled = true;
     }
-    this.#clearComposerFeedback();
+    const feedbackEntryId = this.#queueComposerFeedbackEntry(content);
+    input.value = '';
+    this.#composerAttachments.clear();
+    this.#syncComposerDraftUi();
     if (statusText) {
-      statusText.textContent = '振り分けています…';
+      statusText.textContent =
+        '前の送信を処理中です。次の内容はこの欄で続けて書けます。';
     }
+    input.focus();
 
     const response = await this.apiFetch('/api/manager/global-send', {
       method: 'POST',
@@ -1587,22 +2118,40 @@ class ManagerApp {
 
     if (!response) {
       if (statusText) {
-        statusText.textContent = '';
+        statusText.textContent =
+          '送信できませんでした。上のカードから送信内容を戻せます。';
       }
+      this.#updateComposerFeedbackEntry(feedbackEntryId, {
+        status: 'failed',
+        detail: '送信できませんでした。',
+        items: [],
+      });
+      return;
+    }
+
+    if (!response.ok) {
+      if (statusText) {
+        statusText.textContent =
+          '送信できませんでした。上のカードから送信内容を戻せます。';
+      }
+      this.#updateComposerFeedbackEntry(feedbackEntryId, {
+        status: 'failed',
+        detail: '送信できませんでした。',
+        items: [],
+      });
       return;
     }
 
     const summary = (await response.json()) as ManagerRoutingSummary;
-    input.value = '';
-    this.#composerAttachments.clear();
-    this.#syncComposerDraftUi();
     if (statusText) {
-      statusText.textContent = summary.detail;
+      statusText.textContent = '';
     }
     await Promise.all([this.loadAll(), this.loadManagerStatus()]);
-    this.#setComposerExpanded(false);
-    this.#renderComposerFeedback(summary);
-    this.#scheduleComposerFeedbackDismiss();
+    this.#updateComposerFeedbackEntry(feedbackEntryId, {
+      status: 'sent',
+      detail: summary.detail,
+      items: summary.items,
+    });
   }
 
   #consumeHashToken(): void {
@@ -1704,6 +2253,9 @@ class ManagerApp {
         case 'close-composer':
           this.#setComposerExpanded(false);
           break;
+        case 'back-to-inbox':
+          this.closeDetail();
+          break;
         case 'unlock-auth':
           void this.#unlockAuth();
           break;
@@ -1745,27 +2297,64 @@ class ManagerApp {
         void this.sendGlobalMessage();
       }
     });
+    composerInput?.addEventListener('paste', (event) => {
+      const files = this.#imageFilesFromTransfer(event.clipboardData);
+      if (files.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const selectionStart =
+        composerInput.selectionStart ?? composerInput.value.length;
+      const selectionEnd = composerInput.selectionEnd ?? selectionStart;
+      void this.#insertComposerImages(files, selectionStart, selectionEnd);
+    });
+    composerInput?.addEventListener('dragenter', (event) => {
+      if (!this.#hasImageTransfer(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      this.#composerImageDragDepth += 1;
+      this.#setComposerDropActive(true);
+    });
+    composerInput?.addEventListener('dragover', (event) => {
+      if (!this.#hasImageTransfer(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      this.#setComposerDropActive(true);
+    });
+    composerInput?.addEventListener('dragleave', (event) => {
+      if (!this.#hasImageTransfer(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      this.#composerImageDragDepth = Math.max(
+        0,
+        this.#composerImageDragDepth - 1
+      );
+      if (this.#composerImageDragDepth === 0) {
+        this.#setComposerDropActive(false);
+      }
+    });
+    composerInput?.addEventListener('drop', (event) => {
+      const files = this.#imageFilesFromTransfer(event.dataTransfer);
+      if (files.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      this.#resetComposerDropState();
+      const selectionStart =
+        composerInput.selectionStart ?? composerInput.value.length;
+      const selectionEnd = composerInput.selectionEnd ?? selectionStart;
+      void this.#insertComposerImages(files, selectionStart, selectionEnd);
+    });
 
     const composerButton = document.getElementById('globalComposerSendButton');
     composerButton?.addEventListener('click', () => {
       void this.sendGlobalMessage();
-    });
-
-    const composerImageButton = document.getElementById(
-      'composerInsertImageButton'
-    ) as HTMLButtonElement | null;
-    const composerImageInput = document.getElementById(
-      'composerImageInput'
-    ) as HTMLInputElement | null;
-    composerImageButton?.addEventListener('click', () => {
-      composerImageInput?.click();
-    });
-    composerImageInput?.addEventListener('change', () => {
-      const files = composerImageInput.files;
-      if (files && files.length > 0) {
-        void this.#insertComposerImages(files);
-      }
-      composerImageInput.value = '';
     });
 
     const composerTargetClear = document.getElementById(
@@ -1775,6 +2364,12 @@ class ManagerApp {
       this.#setComposerTarget(null);
       this.#renderAll();
       this.focusComposer();
+    });
+    document.addEventListener('drop', () => {
+      this.#resetComposerDropState();
+    });
+    document.addEventListener('dragend', () => {
+      this.#resetComposerDropState();
     });
   }
 
@@ -1789,19 +2384,23 @@ class ManagerApp {
     const toggle = document.getElementById(
       'composerToggleButton'
     ) as HTMLButtonElement | null;
+    const closeButton = document.getElementById(
+      'composerCloseButton'
+    ) as HTMLButtonElement | null;
+    const forceExpanded = this.openThreadId !== null;
+    const expanded = forceExpanded || this.#composerExpanded;
     if (panel) {
-      panel.classList.toggle('hidden', !this.#composerExpanded);
+      panel.classList.toggle('hidden', !expanded);
     }
     if (toggle) {
       toggle.textContent = this.#composerExpanded
         ? '送信欄を閉じる'
         : '送信欄を開く';
-      toggle.setAttribute('aria-expanded', String(this.#composerExpanded));
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.classList.toggle('hidden', forceExpanded);
     }
-    this.#composerDock?.classList.toggle(
-      'composer-dock-expanded',
-      this.#composerExpanded
-    );
+    closeButton?.classList.toggle('hidden', forceExpanded);
+    this.#composerDock?.classList.toggle('composer-dock-expanded', expanded);
   }
 
   #wireAuthPanel(): void {
@@ -1924,6 +2523,7 @@ class ManagerApp {
     const grouped = new Map<ManagerUiState, ThreadView[]>(
       STATE_ORDER.map((state) => [state, []])
     );
+    const threadTitlesById = buildThreadTitleMap(this.allThreads);
 
     for (const thread of this.allThreads) {
       grouped.get(thread.uiState)?.push(thread);
@@ -1936,7 +2536,8 @@ class ManagerApp {
         threads,
         this.openThreadId,
         this.#composerTargetThreadId,
-        onSelect
+        onSelect,
+        threadTitlesById
       );
     }
 
@@ -1952,26 +2553,35 @@ class ManagerApp {
     this.#taskSection.render(this.allTasks);
     this.#renderGettingStarted();
     this.#renderActivitySummary();
-    this.#renderPriorityLane();
+    this.#renderPriorityLane(threadTitlesById);
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
+    this.#syncComposerDockReserve();
 
     const openThread =
       this.openThreadId === null
         ? null
         : (this.allThreads.find((thread) => thread.id === this.openThreadId) ??
           null);
-    const openThreadRow = this.#getRowForThread(this.openThreadId);
+    const inboxScreen = document.getElementById('manager-inbox-screen');
+    const threadScreen = document.getElementById('thread-screen');
+    const threadSubtitle = document.getElementById('thread-screen-subtitle');
+    inboxScreen?.classList.toggle('hidden', openThread !== null);
+    threadScreen?.classList.toggle('hidden', openThread === null);
+    if (threadSubtitle) {
+      threadSubtitle.textContent = openThread
+        ? `この画面で「${openThread.title}」の会話を上から下へ読み、そのまま下の送信欄で続きを送れます。最新の会話は一番下に出ます。`
+        : 'この画面で会話の流れを上から下へ読み、そのまま下の送信欄から続きを送れます。最新の会話は一番下に出ます。';
+    }
     this.#detail.render(
       openThread,
-      openThreadRow?.querySelector<HTMLElement>('[data-row-detail-host]') ??
-        null,
-      this.#openThreadMovementNotice
+      this.#openThreadMovementNotice,
+      threadTitlesById
     );
   }
 
-  #renderPriorityLane(): void {
+  #renderPriorityLane(threadTitlesById: Map<string, string>): void {
     const list = document.getElementById('priority-lane-list');
     const copy = document.getElementById('priority-lane-copy');
     if (!list || !copy) {
@@ -1979,22 +2589,34 @@ class ManagerApp {
     }
 
     list.innerHTML = '';
-    const threads = this.allThreads.filter(
-      (thread) => thread.uiState !== 'done'
+    const actionableStates = new Set<ManagerUiState>([
+      'routing-confirmation-needed',
+      'user-reply-needed',
+      'ai-finished-awaiting-user-confirmation',
+    ]);
+    const threads = this.allThreads.filter((thread) =>
+      actionableStates.has(thread.uiState)
     );
 
     if (threads.length === 0) {
-      copy.textContent =
-        'まだ見るべき task はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
+      const hasBackgroundWork = this.allThreads.some(
+        (thread) =>
+          thread.uiState === 'queued' || thread.uiState === 'ai-working'
+      );
+      copy.textContent = hasBackgroundWork
+        ? 'いま自分が返すものはありません。AI の順番待ちや作業中のものは下の一覧で確認できます。'
+        : 'まだ見るべき task はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
       const empty = document.createElement('div');
       empty.className = 'focus-empty';
-      empty.textContent = 'いま優先して見る task はありません。';
+      empty.textContent = hasBackgroundWork
+        ? 'いま優先して読む task はありません。'
+        : 'いま優先して見る task はありません。';
       list.appendChild(empty);
       return;
     }
 
     copy.textContent =
-      'まずは上から順に見れば、返事が必要なものや確認すべきものを見失いにくくなり、開いた詳細もその task の行で追えます。';
+      'まずは上から開けば、いま返すべきものや確認すべきものだけを topic 画面で順に見ていけます。';
 
     for (const thread of threads.slice(0, 4)) {
       const button = document.createElement('button');
@@ -2017,7 +2639,7 @@ class ManagerApp {
 
       const meta = document.createElement('div');
       meta.className = 'focus-list-item-meta';
-      meta.textContent = `${thread.previewText} / ${threadStateLocation(thread)} / 更新 ${formatAge(thread.updatedAt)}`;
+      meta.textContent = `${humanizeThreadReferenceText(thread.previewText, threadTitlesById)} / ${threadStateLocation(thread)} / 更新 ${formatAge(thread.updatedAt)}`;
 
       button.append(top, meta);
       list.appendChild(button);
@@ -2044,7 +2666,9 @@ class ManagerApp {
       }
       if (hint) {
         hint.textContent =
-          '一覧を見て、書くときだけ送信欄を開けます。AI が既存 task への追記・新しい task・確認待ちに分けます。';
+          this.openThreadId === null
+            ? '一覧を見て、書くときだけ送信欄を開けます。AI が既存 topic への追記・新しい topic・確認待ちに分けます。'
+            : 'この画面を開いたままでも、全体へ新しい依頼を送れます。AI が topic を振り分けます。';
       }
       pill.textContent = '送信先: 全体（AI が振り分けます）';
       if (sendButton) {
@@ -2059,13 +2683,13 @@ class ManagerApp {
     if (hint) {
       hint.textContent =
         thread.uiState === 'ai-working'
-          ? 'いま AI がこの task を進めています。ここへ送る内容は追加指示として順番待ちに入り、今の処理のあと自動で続きます。'
-          : 'いま選んでいる @task に優先して送ります。全体へ戻すと、AI がもう一度 task を振り分けます。';
+          ? 'いま AI がこの topic を進めています。この topic をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別 topic に振り分けます。'
+          : 'いま開いている topic をメンション付きのヒントとして全体へ送ります。内容がこの topic の続きならここに入り、別件なら AI が別 topic に振り分けます。';
     }
     pill.textContent =
       thread.uiState === 'ai-working'
-        ? `送信先: @${thread.title}（追加指示として送る）`
-        : `送信先: @${thread.title}`;
+        ? `送信ヒント: @${thread.title}（続きなら追加指示）`
+        : `送信ヒント: @${thread.title}`;
     if (sendButton) {
       sendButton.textContent = composerSendButtonLabel(thread);
     }
@@ -2114,7 +2738,7 @@ class ManagerApp {
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       primary.textContent = 'AI から返答が来ています';
     } else if (counts['queued'] > 0) {
-      primary.textContent = 'まだ着手していない task があります';
+      primary.textContent = 'AI の順番待ちがあります';
     } else if (counts['ai-working'] > 0) {
       primary.textContent = 'AI が作業中です';
     } else if (running) {
@@ -2144,6 +2768,9 @@ class ManagerApp {
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
         'AI が返答済みです。確認したいものから順に開いてください。';
+    } else if (counts['queued'] > 0) {
+      detail.textContent =
+        'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';
     } else {
       detail.textContent =
         '送った内容は task ごとに分かれて、ここで今の状況が見えるようになります。';
@@ -2164,7 +2791,7 @@ class ManagerApp {
         value: counts['ai-finished-awaiting-user-confirmation'],
       },
       {
-        label: '未着手',
+        label: 'AI の順番待ち',
         value: counts['queued'],
       },
       {
@@ -2204,72 +2831,86 @@ class ManagerApp {
       context.classList.remove('hidden');
       context.textContent =
         thread.uiState === 'ai-working'
-          ? `この送信は @${thread.title} の追加指示として順番待ちに入ります。`
-          : `この送信は @${thread.title} を優先します。`;
+          ? `この送信は「${thread.title}」をメンション付きヒントとして全体へ送り、続きなら追加指示として順番待ちに入ります。`
+          : `この送信は「${thread.title}」をメンション付きヒントとして全体へ送ります。`;
       return;
     }
     context.textContent = '';
     context.classList.add('hidden');
   }
 
-  #clearComposerFeedback(): void {
-    if (this.#composerFeedbackTimer !== null) {
-      window.clearTimeout(this.#composerFeedbackTimer);
-      this.#composerFeedbackTimer = null;
-    }
-
-    const statusText = document.getElementById('composerStatusText');
-    if (statusText) {
-      statusText.textContent = '';
-    }
-
+  #renderComposerFeedback(): void {
     const feedback = document.getElementById('composerFeedback');
     if (!feedback) {
       return;
     }
 
     feedback.innerHTML = '';
-    feedback.classList.add('hidden');
-  }
-
-  #scheduleComposerFeedbackDismiss(): void {
-    if (this.#composerFeedbackTimer !== null) {
-      window.clearTimeout(this.#composerFeedbackTimer);
-    }
-    this.#composerFeedbackTimer = window.setTimeout(() => {
-      this.#composerFeedbackTimer = null;
-      this.#clearComposerFeedback();
-    }, COMPOSER_FEEDBACK_DISMISS_MS);
-  }
-
-  #renderComposerFeedback(summary: ManagerRoutingSummary): void {
-    const feedback = document.getElementById('composerFeedback');
-    if (!feedback) {
+    if (this.#composerFeedbackEntries.length === 0) {
+      feedback.classList.add('hidden');
       return;
     }
 
-    feedback.innerHTML = '';
     feedback.classList.remove('hidden');
 
-    const detail = document.createElement('div');
-    detail.textContent = summary.detail;
-    feedback.appendChild(detail);
+    const heading = document.createElement('div');
+    heading.className = 'composer-feedback-heading';
+    heading.textContent = '送信中と直前の送信';
+    feedback.appendChild(heading);
 
-    if (summary.items.length > 0) {
-      const list = document.createElement('div');
-      list.className = 'composer-feedback-list';
-      for (const item of summary.items) {
-        const label =
-          item.outcome === 'routing-confirmation'
-            ? `確認: ${item.title}`
-            : item.title;
-        list.appendChild(
-          makeFeedbackChip(label, () => {
-            this.#focusThread(item.threadId);
+    for (const entry of this.#composerFeedbackEntries) {
+      const card = document.createElement('section');
+      card.className = 'composer-feedback-entry';
+
+      const top = document.createElement('div');
+      top.className = 'composer-feedback-entry-top';
+      top.appendChild(makeFeedbackStateBadge(entry.status));
+
+      const target = document.createElement('span');
+      target.className = 'composer-hint';
+      target.textContent = entry.targetLabel;
+      top.appendChild(target);
+      card.appendChild(top);
+
+      const body = document.createElement('div');
+      body.className = 'composer-feedback-entry-body';
+      renderMessageMarkdown(body, entry.content);
+      card.appendChild(body);
+
+      const detail = document.createElement('div');
+      detail.className = 'composer-hint';
+      detail.textContent = entry.detail;
+      card.appendChild(detail);
+
+      if (entry.items.length > 0) {
+        const list = document.createElement('div');
+        list.className = 'composer-feedback-list';
+        for (const item of entry.items) {
+          const label =
+            item.outcome === 'routing-confirmation'
+              ? `確認: ${item.title}`
+              : item.title;
+          list.appendChild(
+            makeFeedbackChip(label, () => {
+              this.#focusThread(item.threadId);
+            })
+          );
+        }
+        card.appendChild(list);
+      }
+
+      if (entry.status === 'failed') {
+        const actions = document.createElement('div');
+        actions.className = 'composer-feedback-entry-actions';
+        actions.appendChild(
+          makeFeedbackChip('送信欄に戻す', () => {
+            this.#restoreComposerFeedbackEntry(entry.id);
           })
         );
+        card.appendChild(actions);
       }
-      feedback.appendChild(list);
+
+      feedback.appendChild(card);
     }
   }
 }

@@ -3,6 +3,11 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import type { Thread } from '@metyatech/thread-inbox';
 import type { QueueEntry, ManagerSession } from './manager-backend.js';
+import {
+  buildQueueDispatchPlan,
+  collectContiguousQueueBatch,
+  type ManagerQueuePriority,
+} from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
 
 export const MANAGER_THREAD_META_FILE =
@@ -33,6 +38,8 @@ export interface ManagerThreadView extends Thread {
   routingHint: string | null;
   queueDepth: number;
   isWorking: boolean;
+  queueOrder: number | null;
+  queuePriority: ManagerQueuePriority | null;
 }
 
 type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
@@ -180,6 +187,14 @@ function compareByPriority(
     return leftPriority - rightPriority;
   }
 
+  if (left.uiState === 'queued' && right.uiState === 'queued') {
+    const leftQueueOrder = left.queueOrder ?? Number.MAX_SAFE_INTEGER;
+    const rightQueueOrder = right.queueOrder ?? Number.MAX_SAFE_INTEGER;
+    if (leftQueueOrder !== rightQueueOrder) {
+      return leftQueueOrder - rightQueueOrder;
+    }
+  }
+
   return (
     new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
   );
@@ -197,6 +212,32 @@ export function deriveManagerThreadViews(input: {
       : (input.queue.find(
           (entry) => entry.id === input.session.currentQueueId
         ) ?? null);
+  const currentBatchIds = new Set<string>();
+  if (input.session.status === 'busy' && currentQueueEntry) {
+    const currentIndex = input.queue.findIndex(
+      (entry) => entry.id === currentQueueEntry.id
+    );
+    for (const entry of collectContiguousQueueBatch(
+      input.queue,
+      currentIndex
+    )) {
+      currentBatchIds.add(entry.id);
+    }
+  }
+
+  const dispatchPlan = buildQueueDispatchPlan(
+    input.queue.filter((entry) => !currentBatchIds.has(entry.id)),
+    input.session
+  );
+  const queueOrderByThread = new Map<string, number>();
+  const queuePriorityByThread = new Map<string, ManagerQueuePriority>();
+  for (const batch of dispatchPlan) {
+    if (queueOrderByThread.has(batch.threadId)) {
+      continue;
+    }
+    queueOrderByThread.set(batch.threadId, batch.order);
+    queuePriorityByThread.set(batch.threadId, batch.priority);
+  }
 
   const pendingQueueDepth = new Map<string, number>();
   for (const entry of input.queue) {
@@ -232,6 +273,8 @@ export function deriveManagerThreadViews(input: {
       routingHint: meta?.routingHint ?? null,
       queueDepth,
       isWorking,
+      queueOrder: queueOrderByThread.get(thread.id) ?? null,
+      queuePriority: queuePriorityByThread.get(thread.id) ?? null,
     } satisfies ManagerThreadView;
   });
 

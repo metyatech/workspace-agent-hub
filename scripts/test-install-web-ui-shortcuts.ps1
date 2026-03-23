@@ -39,6 +39,12 @@ try {
         }
     }
 
+    $shell = New-Object -ComObject WScript.Shell
+    $backgroundShortcut = $shell.CreateShortcut((Join-Path $startupPath 'Workspace Agent Hub Background.lnk'))
+    if ([string]$backgroundShortcut.Arguments -notmatch '(?i)-PhoneReady(\s|$)') {
+        throw 'Expected the Startup shortcut to launch ensure-web-ui-running.ps1 in PhoneReady mode.'
+    }
+
     foreach ($legacyPath in @($desktopLegacyPath, $programsLegacyPath)) {
         if (Test-Path -Path $legacyPath) {
             throw "Expected legacy shortcut to be removed: $legacyPath"

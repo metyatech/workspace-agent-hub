@@ -350,9 +350,9 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
     await openComposerButton.dispatchEvent('click');
   }
   await expect(page.getByLabel('Manager への送信内容')).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: '画像を追加', exact: true })
-  ).toBeVisible();
+  await expect(page.locator('#composerMediaHint')).toContainText(
+    'Ctrl / Cmd + V'
+  );
   await expect
     .poll(async () =>
       page.evaluate(

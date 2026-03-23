@@ -53,8 +53,8 @@ $shortcutDefinitions = @(
     },
     @{
         Path = Join-Path $startupPath 'Workspace Agent Hub Background.lnk'
-        Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScriptPath`""
-        Description = 'Keep Workspace Agent Hub running in the background after sign-in'
+        Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScriptPath`" -PhoneReady"
+        Description = 'Keep Workspace Agent Hub phone-ready in the background after sign-in'
         WindowStyle = 7
     }
 )
