@@ -79,6 +79,24 @@ function waitForTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function makeNdjsonResponse(payloads: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const payload of payloads) {
+        controller.enqueue(encoder.encode(JSON.stringify(payload) + '\n'));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+    },
+  });
+}
+
 async function loadApp(
   fetchMock: typeof fetch,
   authRequired = false,
@@ -86,6 +104,7 @@ async function loadApp(
     beforeImport?: (window: Window) => void;
     secureContext?: boolean;
     url?: string;
+    livePayloads?: unknown[];
     preferredConnectUrl?: string | null;
     preferredConnectUrlSource?:
       | 'listen-url'
@@ -115,6 +134,9 @@ async function loadApp(
           }),
           { status: 200 }
         );
+      }
+      if (url.includes('/api/live') && options?.livePayloads) {
+        return makeNdjsonResponse(options.livePayloads);
       }
       return fetchMock(input, init);
     }
@@ -176,6 +198,11 @@ async function loadApp(
     configurable: true,
   });
 
+  Object.defineProperty(dom.window, 'setInterval', {
+    value: vi.fn(dom.window.setInterval.bind(dom.window)),
+    configurable: true,
+  });
+
   class MockNotification {
     static permission: NotificationPermission = 'default';
     static requestPermission = vi
@@ -223,7 +250,7 @@ afterEach(() => {
 
 describe('web-app DOM', () => {
   it('keeps the prompt area visible and disabled until a session is selected', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/directories')) {
         return new Response(JSON.stringify([]), { status: 200 });
@@ -232,7 +259,8 @@ describe('web-app DOM', () => {
         return new Response(JSON.stringify([]), { status: 200 });
       }
       return new Response('{}', { status: 200 });
-    }) as unknown as typeof fetch;
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
 
     const document = await loadApp(fetchMock);
     expect(
@@ -454,7 +482,7 @@ describe('web-app DOM', () => {
   });
 
   it('filters sessions by search text and keeps favorite sessions first', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/directories')) {
         return new Response(JSON.stringify([]), { status: 200 });
@@ -509,7 +537,8 @@ describe('web-app DOM', () => {
         );
       }
       return new Response('{}', { status: 200 });
-    }) as unknown as typeof fetch;
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
 
     const document = await loadApp(fetchMock, false, {
       beforeImport: (window) => {
@@ -1723,9 +1752,8 @@ describe('web-app DOM', () => {
     ).toBe(true);
   });
 
-  it('marks the selected session stopped when live transcript polling reports the tmux session missing', async () => {
-    let sessionListCalls = 0;
-    let outputRequests = 0;
+  it('marks the selected session stopped when Hub live snapshots report the tmux session missing', async () => {
+    let liveRequests = 0;
     const liveSession = {
       Name: 'codex-live',
       Type: 'codex',
@@ -1759,22 +1787,28 @@ describe('web-app DOM', () => {
         return new Response(JSON.stringify([]), { status: 200 });
       }
       if (url.includes('/api/sessions?includeArchived=true')) {
-        sessionListCalls += 1;
-        return new Response(
-          JSON.stringify([
-            sessionListCalls === 1 ? liveSession : stoppedSession,
-          ]),
-          { status: 200 }
-        );
+        return new Response(JSON.stringify([liveSession]), { status: 200 });
       }
-      if (url.includes('/api/sessions/codex-live/output')) {
-        outputRequests += 1;
-        return new Response(
-          JSON.stringify({
-            error: "Command failed: ... Session 'codex-live' not found.",
-          }),
-          { status: 500 }
-        );
+      if (url.includes('/api/live')) {
+        liveRequests += 1;
+        return makeNdjsonResponse([
+          {
+            kind: 'snapshot',
+            emittedAt: '2026-03-16T00:36:11.000Z',
+            sessions: [liveSession],
+            selectedSessionName: 'codex-live',
+            selectedTranscript: null,
+            selectedSessionMissing: true,
+          },
+          {
+            kind: 'snapshot',
+            emittedAt: '2026-03-16T00:36:12.000Z',
+            sessions: [stoppedSession],
+            selectedSessionName: 'codex-live',
+            selectedTranscript: null,
+            selectedSessionMissing: false,
+          },
+        ]);
       }
       return new Response('{}', { status: 200 });
     }) as unknown as typeof fetch;
@@ -1799,9 +1833,96 @@ describe('web-app DOM', () => {
     expect(
       document.querySelector<HTMLButtonElement>('#sendPromptButton')!.disabled
     ).toBe(true);
-    expect(outputRequests).toBe(1);
+    expect(liveRequests).toBeGreaterThanOrEqual(1);
     expect(
       document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
     ).toContain('停止済み');
+  });
+
+  it('uses the Hub live snapshot stream instead of interval polling', async () => {
+    const liveSession = {
+      Name: 'shell-live',
+      Type: 'shell',
+      DisplayName: 'shell-live',
+      Distro: 'Ubuntu',
+      CreatedUnix: 1,
+      CreatedLocal: '2026-03-16 08:35:57',
+      AttachedClients: 0,
+      WindowCount: 1,
+      LastActivityUnix: 2,
+      LastActivityLocal: '2026-03-16 08:36:10',
+      Title: 'ライブ session',
+      WorkingDirectoryWindows: 'D:\\ghws',
+      PreviewText: 'preview',
+      Archived: false,
+      ClosedUtc: '',
+      IsLive: true,
+      State: 'Running',
+      SortUnix: 2,
+      DisplayTitle: 'ライブ session',
+    };
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([liveSession]), { status: 200 });
+      }
+      if (url.includes('/api/sessions/shell-live/output')) {
+        return new Response(
+          JSON.stringify({
+            SessionName: 'shell-live',
+            WorkingDirectoryWsl: '/mnt/d/ghws',
+            Transcript: 'initial output',
+            CapturedAtUtc: '2026-03-16T00:36:10.000Z',
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/live')) {
+        return makeNdjsonResponse([
+          {
+            kind: 'snapshot',
+            emittedAt: '2026-03-16T00:36:11.000Z',
+            sessions: [liveSession],
+            selectedSessionName: 'shell-live',
+            selectedTranscript: {
+              SessionName: 'shell-live',
+              WorkingDirectoryWsl: '/mnt/d/ghws',
+              Transcript: 'live stream output',
+              CapturedAtUtc: '2026-03-16T00:36:11.000Z',
+            },
+            selectedSessionMissing: false,
+          },
+        ]);
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock, false, {
+      beforeImport: (window) => {
+        window.localStorage.setItem(
+          'workspace-agent-hub.test-token.last-session-name',
+          'shell-live'
+        );
+      },
+    });
+
+    await waitForTick();
+    await waitForTick();
+
+    expect(
+      window.setInterval as unknown as ReturnType<typeof vi.fn>
+    ).not.toHaveBeenCalled();
+    expect(
+      fetchMockImpl.mock.calls.some(([input]) =>
+        String(input).includes('/api/live')
+      )
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLPreElement>('#sessionTranscript')!.textContent
+    ).toContain('live stream output');
   });
 });

@@ -29,6 +29,15 @@ export interface SessionTranscript {
   CapturedAtUtc: string;
 }
 
+export interface HubLiveSnapshotPayload {
+  kind: 'snapshot';
+  emittedAt: string;
+  sessions: SessionRecord[];
+  selectedSessionName: string | null;
+  selectedTranscript: SessionTranscript | null;
+  selectedSessionMissing: boolean;
+}
+
 export interface SessionMutationResult {
   SessionName?: string;
   Deleted?: boolean;

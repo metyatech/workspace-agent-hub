@@ -68,7 +68,7 @@ async function expectNoAccessibilityViolations(page: Page): Promise<void> {
 }
 
 async function openManager(page: Page): Promise<void> {
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
@@ -154,7 +154,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
 
   try {
     await cleanupPlaywrightSessions();
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.evaluate(() => {
       window.localStorage.clear();
       window.sessionStorage.clear();
@@ -278,7 +278,7 @@ test('keeps the access-code screen above the hub on desktop and mobile widths', 
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await page.evaluate(() => {
       window.localStorage.clear();
       window.sessionStorage.clear();
@@ -289,7 +289,7 @@ test('keeps the access-code screen above the hub on desktop and mobile widths', 
 });
 
 test('opens Manager from Hub in the same tab on desktop', async ({ page }) => {
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
@@ -318,7 +318,7 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
@@ -363,7 +363,7 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
 });
 
 test('keeps the Manager auth screen accessible', async ({ page }) => {
-  await page.goto(`${baseUrl}/manager/`, { waitUntil: 'networkidle' });
+  await page.goto(`${baseUrl}/manager/`, { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();

@@ -10,13 +10,17 @@ import {
   PowerShellSessionBridge,
   type SessionBridge,
 } from './session-bridge.js';
+import { notifyHubUpdate, subscribeHubUpdates } from './hub-live-updates.js';
 import {
   isWebUiAuthorized,
   resolveWebUiAuthConfig,
   type WebUiAuthConfig,
 } from './web-auth.js';
 import type {
+  HubLiveSnapshotPayload,
   PreferredConnectUrlSource,
+  SessionRecord,
+  SessionTranscript,
   SessionType,
   TailscaleConnectInfo,
 } from './types.js';
@@ -88,6 +92,83 @@ function sendUnauthorized(res: ServerResponse): void {
 
 function sendError(res: ServerResponse, message: string, status = 400): void {
   sendJson(res, { error: message }, status);
+}
+
+function isMissingLiveSessionError(
+  error: unknown,
+  sessionName: string
+): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.message.includes(sessionName) &&
+    error.message.includes('Session') &&
+    error.message.includes('not found')
+  );
+}
+
+async function buildHubLiveSnapshot(input: {
+  bridge: SessionBridge;
+  includeArchived: boolean;
+  selectedSessionName: string | null;
+  transcriptLines: number;
+}): Promise<HubLiveSnapshotPayload> {
+  const sessions = await input.bridge.listSessions(input.includeArchived);
+  const selectedSession =
+    input.selectedSessionName === null
+      ? undefined
+      : sessions.find((session) => session.Name === input.selectedSessionName);
+
+  let selectedTranscript: SessionTranscript | null = null;
+  let selectedSessionMissing = false;
+
+  if (selectedSession?.IsLive) {
+    try {
+      selectedTranscript = await input.bridge.readTranscript(
+        selectedSession.Name,
+        input.transcriptLines
+      );
+    } catch (error) {
+      if (
+        input.selectedSessionName &&
+        isMissingLiveSessionError(error, input.selectedSessionName)
+      ) {
+        selectedSessionMissing = true;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return {
+    kind: 'snapshot',
+    emittedAt: new Date().toISOString(),
+    sessions,
+    selectedSessionName: selectedSession?.Name ?? null,
+    selectedTranscript,
+    selectedSessionMissing,
+  };
+}
+
+function buildHubSnapshotSignature(snapshot: HubLiveSnapshotPayload): string {
+  return JSON.stringify({
+    sessions: snapshot.sessions.map((session: SessionRecord) => ({
+      Name: session.Name,
+      LastActivityUnix: session.LastActivityUnix,
+      IsLive: session.IsLive,
+      State: session.State,
+      PreviewText: session.PreviewText,
+      Archived: session.Archived,
+      SortUnix: session.SortUnix,
+      DisplayTitle: session.DisplayTitle,
+      WorkingDirectoryWindows: session.WorkingDirectoryWindows,
+    })),
+    selectedSessionName: snapshot.selectedSessionName,
+    selectedTranscript: snapshot.selectedTranscript?.Transcript ?? null,
+    selectedCapturedAt: snapshot.selectedTranscript?.CapturedAtUtc ?? null,
+    selectedSessionMissing: snapshot.selectedSessionMissing,
+  });
 }
 
 function tryListen(
@@ -753,6 +834,121 @@ export async function createWebUiServer(
           return;
         }
 
+        if (method === 'GET' && pathname === '/api/live') {
+          const includeArchived =
+            requestUrl.searchParams.get('includeArchived') !== 'false';
+          const selectedSessionParam =
+            requestUrl.searchParams.get('selectedSession');
+          const selectedSessionName =
+            selectedSessionParam && selectedSessionParam.trim()
+              ? selectedSessionParam.trim()
+              : null;
+          const transcriptLines = Number(
+            requestUrl.searchParams.get('lines') ?? '500'
+          );
+          const normalizedLines = Number.isFinite(transcriptLines)
+            ? Math.max(50, Math.min(2000, Math.floor(transcriptLines)))
+            : 500;
+
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson; charset=utf-8',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          });
+
+          let closed = false;
+          let writeChain = Promise.resolve();
+          let lastSnapshotSignature = '';
+
+          const enqueueSnapshot = (
+            snapshot: HubLiveSnapshotPayload,
+            force = false
+          ): void => {
+            const signature = buildHubSnapshotSignature(snapshot);
+            if (!force && signature === lastSnapshotSignature) {
+              return;
+            }
+            lastSnapshotSignature = signature;
+            writeChain = writeChain
+              .then(async () => {
+                if (closed || res.writableEnded) {
+                  return;
+                }
+                res.write(JSON.stringify(snapshot) + '\n');
+              })
+              .catch(() => {
+                /* ignore stream write failures */
+              });
+          };
+
+          const emitLatestSnapshot = async (force = false): Promise<void> => {
+            try {
+              const snapshot = await buildHubLiveSnapshot({
+                bridge,
+                includeArchived,
+                selectedSessionName,
+                transcriptLines: normalizedLines,
+              });
+              enqueueSnapshot(snapshot, force);
+            } catch {
+              /* ignore snapshot refresh failures */
+            }
+          };
+
+          await emitLatestSnapshot(true);
+          const unsubscribe = subscribeHubUpdates(
+            bridge.getWorkspaceRoot(),
+            () => {
+              void emitLatestSnapshot();
+            }
+          );
+
+          const reconciliationInterval = setInterval(
+            () => {
+              void emitLatestSnapshot();
+            },
+            selectedSessionName ? 1000 : 2500
+          );
+
+          const heartbeat = setInterval(() => {
+            writeChain = writeChain
+              .then(async () => {
+                if (closed || res.writableEnded) {
+                  return;
+                }
+                res.write(
+                  JSON.stringify({
+                    kind: 'ping',
+                    emittedAt: new Date().toISOString(),
+                  }) + '\n'
+                );
+              })
+              .catch(() => {
+                /* ignore stream write failures */
+              });
+          }, 20000);
+
+          const cleanup = () => {
+            if (closed) {
+              return;
+            }
+            closed = true;
+            clearInterval(heartbeat);
+            clearInterval(reconciliationInterval);
+            unsubscribe();
+            if (!res.writableEnded) {
+              res.end();
+            }
+          };
+
+          req.on('close', cleanup);
+          req.on('error', cleanup);
+          res.on('close', cleanup);
+          res.on('error', cleanup);
+          return;
+        }
+
         if (method === 'POST' && pathname === '/api/sessions') {
           const body = await parseBody(req);
           const type = body.type;
@@ -774,6 +970,7 @@ export async function createWebUiServer(
                 ? body.workingDirectory
                 : '',
           });
+          notifyHubUpdate(bridge.getWorkspaceRoot());
           sendJson(res, session, 201);
           return;
         }
@@ -814,14 +1011,13 @@ export async function createWebUiServer(
             sendError(res, 'text is required');
             return;
           }
-          sendJson(
-            res,
-            await bridge.sendInput(
-              decodeURIComponent(inputMatch[1]),
-              body.text,
-              body.submit !== false
-            )
+          const result = await bridge.sendInput(
+            decodeURIComponent(inputMatch[1]),
+            body.text,
+            body.submit !== false
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
@@ -829,10 +1025,11 @@ export async function createWebUiServer(
           /^\/api\/sessions\/([^/]+)\/interrupt$/
         );
         if (method === 'POST' && interruptMatch) {
-          sendJson(
-            res,
-            await bridge.interruptSession(decodeURIComponent(interruptMatch[1]))
+          const result = await bridge.interruptSession(
+            decodeURIComponent(interruptMatch[1])
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
@@ -845,13 +1042,12 @@ export async function createWebUiServer(
             sendError(res, 'title is required');
             return;
           }
-          sendJson(
-            res,
-            await bridge.renameSession(
-              decodeURIComponent(renameMatch[1]),
-              body.title
-            )
+          const result = await bridge.renameSession(
+            decodeURIComponent(renameMatch[1]),
+            body.title
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
@@ -859,10 +1055,11 @@ export async function createWebUiServer(
           /^\/api\/sessions\/([^/]+)\/archive$/
         );
         if (method === 'POST' && archiveMatch) {
-          sendJson(
-            res,
-            await bridge.archiveSession(decodeURIComponent(archiveMatch[1]))
+          const result = await bridge.archiveSession(
+            decodeURIComponent(archiveMatch[1])
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
@@ -870,28 +1067,31 @@ export async function createWebUiServer(
           /^\/api\/sessions\/([^/]+)\/unarchive$/
         );
         if (method === 'POST' && unarchiveMatch) {
-          sendJson(
-            res,
-            await bridge.unarchiveSession(decodeURIComponent(unarchiveMatch[1]))
+          const result = await bridge.unarchiveSession(
+            decodeURIComponent(unarchiveMatch[1])
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
         const closeMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/close$/);
         if (method === 'POST' && closeMatch) {
-          sendJson(
-            res,
-            await bridge.closeSession(decodeURIComponent(closeMatch[1]))
+          const result = await bridge.closeSession(
+            decodeURIComponent(closeMatch[1])
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 
         const deleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
         if (method === 'DELETE' && deleteMatch) {
-          sendJson(
-            res,
-            await bridge.deleteSession(decodeURIComponent(deleteMatch[1]))
+          const result = await bridge.deleteSession(
+            decodeURIComponent(deleteMatch[1])
           );
+          notifyHubUpdate(bridge.getWorkspaceRoot());
+          sendJson(res, result);
           return;
         }
 

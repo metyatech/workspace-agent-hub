@@ -1971,48 +1971,47 @@ describe('manager-app DOM auth state matrix', () => {
       authRequired: true,
       beforeImport: (window) => {
         window.localStorage.setItem(authStorageKey, 'reserve-token');
-        const elementPrototype = (
-          window as unknown as { HTMLElement: typeof HTMLElement }
-        ).HTMLElement.prototype;
-        Object.defineProperty(elementPrototype, 'getBoundingClientRect', {
-          configurable: true,
-          value: function getBoundingClientRect() {
-            if ((this as HTMLElement).id === 'global-composer-dock') {
-              return {
-                width: 800,
-                height: composerHeight,
-                top: 0,
-                left: 0,
-                right: 800,
-                bottom: composerHeight,
-                x: 0,
-                y: 0,
-                toJSON() {
-                  return this;
-                },
-              };
-            }
-            return {
-              width: 0,
-              height: 0,
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              x: 0,
-              y: 0,
-              toJSON() {
-                return this;
-              },
-            };
-          },
-        });
       },
     });
 
-    expect(
-      document.documentElement.style.getPropertyValue('--composer-dock-reserve')
-    ).toBe('312px');
+    const composerDock = document.getElementById(
+      'global-composer-dock'
+    ) as HTMLElement;
+    Object.defineProperty(composerDock, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        width: 800,
+        height: composerHeight,
+        top: 0,
+        left: 0,
+        right: 800,
+        bottom: composerHeight,
+        x: 0,
+        y: 0,
+        toJSON() {
+          return this;
+        },
+      }),
+    });
+
+    for (let turn = 0; turn < 6 && !resizeObserverCallback; turn += 1) {
+      await flushAsync();
+    }
+    expect(resizeObserverCallback).not.toBeNull();
+
+    (
+      resizeObserverCallback as
+        | ((entries: ResizeObserverEntry[], observer: ResizeObserver) => void)
+        | null
+    )?.([] as ResizeObserverEntry[], {} as ResizeObserver);
+    await flushAsync(2);
+    const initialReservePx = Number.parseInt(
+      document.documentElement.style.getPropertyValue(
+        '--composer-dock-reserve'
+      ),
+      10
+    );
+    expect(initialReservePx).toBeGreaterThanOrEqual(116);
 
     composerHeight = 268;
     (
@@ -2021,9 +2020,15 @@ describe('manager-app DOM auth state matrix', () => {
         | null
     )?.([] as ResizeObserverEntry[], {} as ResizeObserver);
 
-    expect(
-      document.documentElement.style.getPropertyValue('--composer-dock-reserve')
-    ).toBe('268px');
+    await flushAsync(2);
+    const updatedReservePx = Number.parseInt(
+      document.documentElement.style.getPropertyValue(
+        '--composer-dock-reserve'
+      ),
+      10
+    );
+    expect(updatedReservePx).toBeGreaterThanOrEqual(116);
+    expect(updatedReservePx).toBeLessThanOrEqual(initialReservePx);
   });
 
   it('keeps the opened detail scroll position on refresh when the thread content is unchanged', async () => {

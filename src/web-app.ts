@@ -2,6 +2,7 @@
 
 import type {
   DirectorySuggestion,
+  HubLiveSnapshotPayload,
   SessionRecord,
   SessionTranscript,
   WebUiConfigBootstrap,
@@ -182,8 +183,10 @@ let sessions: SessionRecord[] = [];
 let selectedSessionName = '';
 let includeArchived = false;
 let showFavoriteSessionsOnly = false;
-let transcriptPollTimer: number | null = null;
-let sessionPollTimer: number | null = null;
+let liveStreamAbort: AbortController | null = null;
+let liveStreamSelectedSessionName: string | null = null;
+let liveStreamEnabled = true;
+let applyingLiveSnapshot = false;
 let lastTranscript = '';
 let favoriteSessionNames = new Set(
   readStoredJson<string[]>(favoriteSessionsKey) ?? []
@@ -921,6 +924,9 @@ function setAuthOverlayVisible(visible: boolean): void {
   }
   if (visible) {
     authTokenInput.focus();
+    stopLiveStream();
+  } else if (hasAccessToken()) {
+    startLiveStream(true);
   }
   setPairingUiState();
 }
@@ -951,6 +957,182 @@ async function apiJson<T>(input: string, init: RequestInit = {}): Promise<T> {
     );
   }
   return (await response.json()) as T;
+}
+
+function getDesiredLiveStreamSelection(): string | null {
+  const selected = getSelectedSession();
+  if (!selected || !selected.IsLive) {
+    return null;
+  }
+  return selected.Name;
+}
+
+function buildHubLiveUrl(selectedSessionName: string | null): string {
+  const params = new URLSearchParams();
+  params.set('includeArchived', 'true');
+  params.set('lines', '500');
+  if (selectedSessionName) {
+    params.set('selectedSession', selectedSessionName);
+  }
+  return `/api/live?${params.toString()}`;
+}
+
+function stopLiveStream(): void {
+  if (liveStreamAbort) {
+    liveStreamAbort.abort();
+    liveStreamAbort = null;
+  }
+}
+
+function applyLiveTranscript(
+  session: SessionRecord,
+  transcript: SessionTranscript
+): void {
+  const nearBottom =
+    sessionTranscript.scrollHeight -
+      sessionTranscript.scrollTop -
+      sessionTranscript.clientHeight <
+    40;
+  if (transcript.Transcript !== lastTranscript) {
+    maybeNotifyTranscript(session, transcript.Transcript);
+    sessionTranscript.textContent =
+      transcript.Transcript || 'まだ出力はありません。';
+    lastTranscript = transcript.Transcript;
+    writeStoredJson(getTranscriptCacheKey(session.Name), transcript.Transcript);
+    if (nearBottom) {
+      sessionTranscript.scrollTop = sessionTranscript.scrollHeight;
+    }
+  }
+  markSessionSeen(session);
+  setConnectionState(
+    'online',
+    `session 出力を同期しました。最終取得 ${new Date().toLocaleTimeString('ja-JP')}`
+  );
+}
+
+function applyLiveSnapshot(snapshot: HubLiveSnapshotPayload): void {
+  applyingLiveSnapshot = true;
+  try {
+    sessions = snapshot.sessions;
+    restorePreferredSelection();
+    writeStoredJson(sessionsCacheKey, sessions);
+    renderSessions(sessions);
+    renderSelectedSession();
+
+    const selected = getSelectedSession();
+    if (!selected) {
+      return;
+    }
+    if (!selected.IsLive) {
+      showStoppedSessionTranscript(selected.Name);
+      return;
+    }
+    if (snapshot.selectedSessionMissing && snapshot.selectedSessionName) {
+      markSessionStopped(snapshot.selectedSessionName);
+      renderSessions(sessions);
+      renderSelectedSession();
+      showStoppedSessionTranscript(snapshot.selectedSessionName);
+      setConnectionState(
+        'online',
+        'session が停止したため、保存済み transcript の表示に切り替えました。'
+      );
+      return;
+    }
+    if (
+      snapshot.selectedSessionName === selected.Name &&
+      snapshot.selectedTranscript
+    ) {
+      applyLiveTranscript(selected, snapshot.selectedTranscript);
+    }
+  } finally {
+    applyingLiveSnapshot = false;
+  }
+  startLiveStream();
+}
+
+function startLiveStream(forceRestart = false): void {
+  if (!liveStreamEnabled) {
+    return;
+  }
+  if (!hasAccessToken()) {
+    return;
+  }
+  const desiredSelection = getDesiredLiveStreamSelection();
+  if (
+    !forceRestart &&
+    liveStreamAbort &&
+    liveStreamSelectedSessionName === desiredSelection
+  ) {
+    return;
+  }
+
+  stopLiveStream();
+  liveStreamSelectedSessionName = desiredSelection;
+
+  const controller = new AbortController();
+  liveStreamAbort = controller;
+
+  void (async () => {
+    try {
+      const response = await apiFetch(
+        buildHubLiveUrl(liveStreamSelectedSessionName),
+        {
+          signal: controller.signal,
+        }
+      );
+      const contentType = response.headers.get('content-type') ?? '';
+      if (
+        !response.ok ||
+        !response.body ||
+        !contentType.includes('application/x-ndjson')
+      ) {
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          try {
+            const payload = JSON.parse(trimmed) as
+              | HubLiveSnapshotPayload
+              | { kind?: string };
+            if (payload.kind === 'snapshot') {
+              applyLiveSnapshot(payload as HubLiveSnapshotPayload);
+            }
+          } catch {
+            /* ignore malformed live payloads */
+          }
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (error instanceof AuthRequiredError) {
+        setAuthOverlayVisible(true);
+        return;
+      }
+    } finally {
+      if (liveStreamAbort?.signal === controller.signal) {
+        liveStreamAbort = null;
+      }
+    }
+  })();
 }
 
 function sessionIsVisible(session: SessionRecord): boolean {
@@ -1057,6 +1239,10 @@ function selectSession(
   }
   renderSessions(sessions);
   renderSelectedSession();
+  const selected = getSelectedSession();
+  if (selected?.IsLive) {
+    void refreshTranscript();
+  }
   if (options?.revealPrompt) {
     spotlightPromptComposer({
       focusInput: Boolean(getSelectedSession()?.IsLive),
@@ -1283,13 +1469,6 @@ function upsertSession(nextSession: SessionRecord): void {
   );
 }
 
-function stopTranscriptPolling(): void {
-  if (transcriptPollTimer !== null) {
-    window.clearInterval(transcriptPollTimer);
-    transcriptPollTimer = null;
-  }
-}
-
 function showStoppedSessionTranscript(sessionName: string): void {
   const cachedTranscript = readStoredJson<string>(
     getTranscriptCacheKey(sessionName)
@@ -1378,7 +1557,6 @@ async function refreshTranscript(): Promise<void> {
       return;
     }
     if (isMissingLiveSessionError(error, session.Name)) {
-      stopTranscriptPolling();
       markSessionStopped(session.Name);
       renderSessions(sessions);
       renderSelectedSession();
@@ -1391,15 +1569,6 @@ async function refreshTranscript(): Promise<void> {
     }
     showToast(error instanceof Error ? error.message : String(error));
   }
-}
-
-function startTranscriptPolling(): void {
-  stopTranscriptPolling();
-  void refreshTranscript();
-  transcriptPollTimer = window.setInterval(
-    () => void refreshTranscript(),
-    1500
-  );
 }
 
 function renderSelectedSession(): void {
@@ -1428,7 +1597,9 @@ function renderSelectedSession(): void {
     deleteSessionButton.disabled = true;
     sendPromptButton.disabled = true;
     sendRawButton.disabled = true;
-    stopTranscriptPolling();
+    if (!applyingLiveSnapshot) {
+      startLiveStream();
+    }
     return;
   }
 
@@ -1481,8 +1652,10 @@ function renderSelectedSession(): void {
   deleteSessionButton.disabled = false;
   sessionPromptInput.value = getSavedDraft(session.Name);
   if (!session.IsLive) {
-    stopTranscriptPolling();
     showStoppedSessionTranscript(session.Name);
+    if (!applyingLiveSnapshot) {
+      startLiveStream();
+    }
     return;
   }
 
@@ -1493,7 +1666,9 @@ function renderSelectedSession(): void {
     sessionTranscript.textContent = cachedTranscript;
     lastTranscript = cachedTranscript;
   }
-  startTranscriptPolling();
+  if (!applyingLiveSnapshot) {
+    startLiveStream();
+  }
 }
 
 async function refreshSessions(): Promise<void> {
@@ -2085,11 +2260,8 @@ window.addEventListener('appinstalled', () => {
 });
 
 window.addEventListener('beforeunload', () => {
-  stopTranscriptPolling();
-  if (sessionPollTimer !== null) {
-    window.clearInterval(sessionPollTimer);
-    sessionPollTimer = null;
-  }
+  liveStreamEnabled = false;
+  stopLiveStream();
 });
 
 if ('serviceWorker' in navigator) {
@@ -2106,4 +2278,4 @@ if (config.authRequired && !authToken) {
 primeCachedSessions();
 void loadDirectorySuggestions();
 void refreshSessions();
-sessionPollTimer = window.setInterval(() => void refreshSessions(), 2500);
+startLiveStream();

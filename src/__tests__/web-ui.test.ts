@@ -193,6 +193,43 @@ async function createTempWorkspace(): Promise<string> {
   return dir;
 }
 
+async function readNdjsonObjects(
+  response: Response,
+  maxObjects: number
+): Promise<unknown[]> {
+  const objects: unknown[] = [];
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return objects;
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (objects.length < maxObjects) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      objects.push(JSON.parse(trimmed));
+      if (objects.length >= maxObjects) {
+        await reader.cancel();
+        break;
+      }
+    }
+  }
+
+  return objects;
+}
+
 afterEach(async () => {
   if (activeServer) {
     await new Promise<void>((resolve) => activeServer!.close(() => resolve()));
@@ -348,6 +385,43 @@ To enable, visit:
     );
     const transcript = (await transcriptResponse.json()) as SessionTranscript;
     expect(transcript.Transcript).toContain('hello from transcript');
+  });
+
+  it('streams Hub live snapshots for sessions and selected transcript updates', async () => {
+    const bridge = new FakeBridge();
+    const { server, port } = await createWebUiServer({
+      bridge,
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const headers = { 'X-Workspace-Agent-Hub-Token': 'secret-token' };
+    const liveResponse = await fetch(
+      `http://127.0.0.1:${port}/api/live?includeArchived=true&selectedSession=shell-existing&lines=500`,
+      { headers }
+    );
+
+    expect(liveResponse.status).toBe(200);
+    expect(liveResponse.headers.get('content-type')).toContain(
+      'application/x-ndjson'
+    );
+
+    const [snapshot] = (await readNdjsonObjects(liveResponse, 1)) as Array<{
+      kind: string;
+      sessions: SessionRecord[];
+      selectedSessionName: string | null;
+      selectedTranscript: SessionTranscript | null;
+    }>;
+
+    expect(snapshot.kind).toBe('snapshot');
+    expect(snapshot.sessions[0]?.Name).toBe('shell-existing');
+    expect(snapshot.selectedSessionName).toBe('shell-existing');
+    expect(snapshot.selectedTranscript?.Transcript).toContain(
+      'hello from transcript'
+    );
   });
 
   it('injects the preferred connect URL into the browser bootstrap config', async () => {
