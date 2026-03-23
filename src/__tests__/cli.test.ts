@@ -1,4 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+
+const { readManagerWorkItemsMock } = vi.hoisted(() => ({
+  readManagerWorkItemsMock: vi.fn(),
+}));
+
+vi.mock('../manager-work-items.js', () => ({
+  readManagerWorkItems: readManagerWorkItemsMock,
+}));
+
 import { createProgram } from '../cli.js';
 
 describe('CLI', () => {
@@ -37,5 +46,67 @@ describe('CLI', () => {
       jsonOutput: true,
       openBrowser: false,
     });
+  });
+
+  it('prints the work-item graph as JSON', async () => {
+    readManagerWorkItemsMock.mockResolvedValueOnce([
+      {
+        id: 'item-1',
+        title: '親作業',
+        uiState: 'ai-working',
+        derivedFromThreadIds: [],
+        derivedChildThreadIds: ['item-2'],
+      },
+      {
+        id: 'item-2',
+        title: '派生作業',
+        uiState: 'queued',
+        derivedFromThreadIds: ['item-1'],
+        derivedChildThreadIds: [],
+      },
+    ]);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram(vi.fn().mockResolvedValue(undefined));
+
+    await program.parseAsync(
+      [
+        'node',
+        'workspace-agent-hub',
+        'work-items',
+        '--workspace',
+        'D:\\ghws\\workspace-agent-hub',
+        '--json',
+      ],
+      { from: 'node' }
+    );
+
+    expect(readManagerWorkItemsMock).toHaveBeenCalledWith(
+      'D:\\ghws\\workspace-agent-hub'
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          workItems: [
+            {
+              id: 'item-1',
+              title: '親作業',
+              uiState: 'ai-working',
+              derivedFromThreadIds: [],
+              derivedChildThreadIds: ['item-2'],
+            },
+            {
+              id: 'item-2',
+              title: '派生作業',
+              uiState: 'queued',
+              derivedFromThreadIds: ['item-1'],
+              derivedChildThreadIds: [],
+            },
+          ],
+        },
+        null,
+        2
+      )
+    );
+    logSpy.mockRestore();
   });
 });

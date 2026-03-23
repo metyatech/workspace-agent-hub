@@ -24,6 +24,7 @@ export type ManagerUiState =
 export interface ManagerThreadMeta {
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
+  derivedFromThreadIds?: string[] | null;
   lastRoutingAt?: string | null;
   workerSessionId?: string | null;
   workerLastStartedAt?: string | null;
@@ -36,6 +37,8 @@ export interface ManagerThreadView extends Thread {
   hiddenByDefault: boolean;
   routingConfirmationNeeded: boolean;
   routingHint: string | null;
+  derivedFromThreadIds: string[];
+  derivedChildThreadIds: string[];
   queueDepth: number;
   isWorking: boolean;
   queueOrder: number | null;
@@ -123,6 +126,21 @@ function previewText(thread: Thread): string {
   }
   const senderLabel = lastMessage.sender === 'ai' ? '[ai]' : '[user]';
   return `${senderLabel} ${summarizeManagerMessage(lastMessage.content, 140)}`;
+}
+
+function normalizeDerivedFromThreadIds(
+  value: string[] | null | undefined
+): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter(Boolean)
+    )
+  );
 }
 
 function deriveUiState(input: {
@@ -250,6 +268,19 @@ export function deriveManagerThreadViews(input: {
     );
   }
 
+  const derivedFromByThread = new Map<string, string[]>();
+  const derivedChildrenByThread = new Map<string, string[]>();
+  for (const [threadId, meta] of Object.entries(input.meta)) {
+    const parentIds = normalizeDerivedFromThreadIds(meta.derivedFromThreadIds);
+    derivedFromByThread.set(threadId, parentIds);
+    for (const parentId of parentIds) {
+      derivedChildrenByThread.set(parentId, [
+        ...(derivedChildrenByThread.get(parentId) ?? []),
+        threadId,
+      ]);
+    }
+  }
+
   const views = input.threads.map((thread) => {
     const meta = input.meta[thread.id] ?? null;
     const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
@@ -271,6 +302,8 @@ export function deriveManagerThreadViews(input: {
       hiddenByDefault: uiState === 'done',
       routingConfirmationNeeded: Boolean(meta?.routingConfirmationNeeded),
       routingHint: meta?.routingHint ?? null,
+      derivedFromThreadIds: derivedFromByThread.get(thread.id) ?? [],
+      derivedChildThreadIds: derivedChildrenByThread.get(thread.id) ?? [],
       queueDepth,
       isWorking,
       queueOrder: queueOrderByThread.get(thread.id) ?? null,

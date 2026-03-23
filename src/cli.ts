@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
+import { readManagerWorkItems } from './manager-work-items.js';
 import { startWebUi } from './web-ui.js';
 
 type StartWebUiCommand = typeof startWebUi;
@@ -13,6 +14,38 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
     .name('workspace-agent-hub')
     .description(packageJson.description)
     .version(packageJson.version);
+
+  program
+    .command('work-items')
+    .description('Inspect the Manager work-item graph for a workspace')
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print the work-item graph as JSON')
+    .action(async (options: { workspace: string; json?: boolean }) => {
+      const workItems = await readManagerWorkItems(options.workspace);
+      if (options.json) {
+        console.log(JSON.stringify({ workItems }, null, 2));
+        return;
+      }
+
+      const titleById = new Map(
+        workItems.map((item) => [item.id, item.title] as const)
+      );
+      for (const item of workItems) {
+        const parentTitles = item.derivedFromThreadIds
+          .map((id) => titleById.get(id) ?? id)
+          .filter(Boolean);
+        const childTitles = item.derivedChildThreadIds
+          .map((id) => titleById.get(id) ?? id)
+          .filter(Boolean);
+        console.log(`[${item.uiState}] ${item.title}`);
+        if (parentTitles.length > 0) {
+          console.log(`  derived from: ${parentTitles.join(', ')}`);
+        }
+        if (childTitles.length > 0) {
+          console.log(`  branches: ${childTitles.join(', ')}`);
+        }
+      }
+    });
 
   program
     .command('web-ui')

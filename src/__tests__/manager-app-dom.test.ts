@@ -50,6 +50,8 @@ function makeThreadView(
     hiddenByDefault: false,
     routingConfirmationNeeded: false,
     routingHint: null,
+    derivedFromThreadIds: [],
+    derivedChildThreadIds: [],
     queueDepth: 0,
     isWorking: false,
     ...overrides,
@@ -752,7 +754,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#priority-lane-list .focus-empty')!
         .textContent
-    ).toContain('いま優先して読む task はありません');
+    ).toContain('いま優先して読む作業項目はありません');
     expect(
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
     ).toContain('AI の順番待ちがあります');
@@ -2367,7 +2369,7 @@ describe('manager-app activity summary', () => {
     ).toContain('AI が作業や振り分けを進めています');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('いまの task を実行中です');
+    ).toContain('いまの作業項目を実行中です');
 
     const chips = Array.from(
       document.querySelectorAll<HTMLElement>('.activity-chip')

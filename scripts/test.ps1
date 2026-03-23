@@ -162,6 +162,12 @@ if (($shortcutInstallOutput | Out-String).Trim() -notmatch 'PASS') {
 
 & (Join-Path $PSScriptRoot 'test-ensure-web-ui-running.ps1')
 
+$phoneReadyWatchdogOutput = & (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')
+if (($phoneReadyWatchdogOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected the phone-ready watchdog to rerun ensure-web-ui-running.ps1 and reject duplicate instances cleanly.'
+    exit 1
+}
+
 $tls12 = [Net.SecurityProtocolType]::Tls12
 if (-not ([Net.ServicePointManager]::SecurityProtocol.HasFlag($tls12))) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12

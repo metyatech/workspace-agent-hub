@@ -254,4 +254,64 @@ describe('manager thread state derivation', () => {
     expect(views[1]?.id).toBe('thread-question');
     expect(views[1]?.queueOrder).toBe(1);
   });
+
+  it('builds parent and child graph links from derived work-item metadata', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-parent',
+          title: '親作業',
+          status: 'review',
+          updatedAt: '2026-03-21T00:10:00.000Z',
+          createdAt: '2026-03-21T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'ai',
+              content: '完了報告です',
+              at: '2026-03-21T00:10:00.000Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-child',
+          title: '派生作業',
+          status: 'waiting',
+          updatedAt: '2026-03-21T00:12:00.000Z',
+          createdAt: '2026-03-21T00:11:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '追加依頼です',
+              at: '2026-03-21T00:11:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-03-21T00:00:00.000Z',
+        lastMessageAt: '2026-03-21T00:12:00.000Z',
+        priorityStreak: 0,
+      },
+      queue: [],
+      meta: {
+        'thread-child': {
+          derivedFromThreadIds: ['thread-parent'],
+        },
+      },
+    });
+
+    const parent = views.find((view) => view.id === 'thread-parent');
+    const child = views.find((view) => view.id === 'thread-child');
+
+    expect(parent?.derivedFromThreadIds).toEqual([]);
+    expect(parent?.derivedChildThreadIds).toEqual(['thread-child']);
+    expect(child?.derivedFromThreadIds).toEqual(['thread-parent']);
+    expect(child?.derivedChildThreadIds).toEqual([]);
+  });
 });

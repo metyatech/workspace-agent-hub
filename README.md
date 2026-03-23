@@ -334,7 +334,7 @@ Workspace Agent Hub now provides the official `Open Manager` entrypoint in the
 browser UI.
 
 The Manager UX design and behavior for the single global composer plus
-AI-managed topic routing is documented in
+AI-managed work-item graph routing is documented in
 [docs/manager-global-inbox.md](docs/manager-global-inbox.md).
 
 How it works:
@@ -346,7 +346,7 @@ How it works:
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user writes from one global send dock instead of creating tasks by hand;
    the writing surface stays collapsed on the inbox, then stays visible while a
-   topic conversation screen is open.
+   work-item conversation screen is open.
 6. The built-in manager backend splits each message across existing tasks,
    new tasks, or routing-confirmation items, then executes each routed task
    in order and writes the resulting updates back into the task.
@@ -362,10 +362,10 @@ Important behavior:
   before sending, and the larger text area only opens when they choose to
   write.
 - When Manager splits a freeform message into tasks, the default granularity is
-  one new user turn per topic. Follow-ups to existing topics are normally
-  stored as new derived topics with parent context embedded into the stored
-  user message, while only direct replies to an outstanding confirmation stay
-  inside the same topic.
+  one new user turn per work item. Follow-ups to existing work items are
+  normally stored as new derived work items with `derived_from` parent links
+  and parent context embedded into the stored user message, while only direct
+  replies to an outstanding confirmation stay inside the same work item.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
@@ -373,9 +373,9 @@ Important behavior:
   that lane to items the human can actually act on now. `AI の順番待ち` and
   `AI作業中` remain in the inbox buckets instead of cluttering the read-next
   lane.
-- Opening a topic now moves into a dedicated conversation screen with the
+- Opening a work item now moves into a dedicated conversation screen with the
   message history in chat order and the newest message at the bottom, scrolls
-  that conversation to the latest message when the topic opens, and lets the
+  that conversation to the latest message when the work item opens, and lets the
   browser back button return to the Manager list before leaving Hub.
 - The current built-in Manager routes each global send with a fresh Codex
   routing turn so old router-chat context does not blur distinct tasks, then
@@ -383,15 +383,18 @@ Important behavior:
   continuation so routed requests do real repository work instead of stopping
   at inbox acknowledgements.
 - The global send dock now shows an explicit send target: either the whole
-  inbox or a selected topic mention hint, so follow-up messages can keep that
-  topic attached without bypassing the normal routing pass.
-- Manager topic messages now preserve multiline user text, support inline image
+  inbox or a selected work item mention hint, so follow-up messages can keep
+  that work item attached without bypassing the normal routing pass.
+- Manager work-item messages now preserve multiline user text, support inline image
   insertion inside the message body via drag-and-drop or Ctrl/Cmd+V clipboard
   paste at the current cursor position, and render both user/AI replies with
-  Markdown formatting in the topic conversation view.
-- When AI refers to another topic, the Manager UI rewrites internal topic IDs
-  into that topic's visible title so the screen never expects the human to know
-  backend IDs.
+  Markdown formatting in the work-item conversation view.
+- The work-item graph keeps zero or more `derived_from` parent work items, and
+  the Manager UI surfaces those relations directly instead of relying on
+  topic-like folders as the primary mental model.
+- When AI refers to another work item, the Manager UI rewrites internal IDs
+  into that work item's visible title so the screen never expects the human to
+  know backend IDs.
 - ANSI-colored CLI output inside Manager replies is rendered as styled text, so
   git diffs and other terminal-colored snippets stay readable instead of
   exposing raw escape sequences.
@@ -402,8 +405,8 @@ Important behavior:
   lane immediately, so the composer itself clears at once and is ready for the
   next draft instead of mixing in-flight content with new edits.
 - Sending from the global dock does not forcibly jump the reading focus to the
-  newly routed topic; the current task stays open unless the user explicitly
-  opens a routing-result chip.
+  newly routed work item; the current task stays open unless the user
+  explicitly opens a routing-result chip.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
 - Inside the queued bucket, the default is still arrival order, but explicit
@@ -424,10 +427,12 @@ Important behavior:
   the same priority-aware ordering.
 - Manager continuity is persisted in two layers:
   - one routing-thread Codex session for global inbox triage
-  - one worker Codex session per topic for actual task execution across turns
+  - one worker Codex session per work item for actual task execution across turns
     and server restarts
 - Thread storage remains compatible with `thread-inbox` data files, but the
-  higher-level Manager GUI now belongs to `workspace-agent-hub`.
+  higher-level Manager work-item graph now belongs to `workspace-agent-hub`.
+- The CLI now exposes `workspace-agent-hub work-items --json` so automation and
+  humans can inspect the same work-item graph that drives the Manager UI.
 
 #### Manager browser auth state matrix
 

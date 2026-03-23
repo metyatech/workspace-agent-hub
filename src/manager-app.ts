@@ -43,6 +43,8 @@ interface ThreadView {
   hiddenByDefault: boolean;
   routingConfirmationNeeded: boolean;
   routingHint: string | null;
+  derivedFromThreadIds: string[];
+  derivedChildThreadIds: string[];
   queueDepth: number;
   isWorking: boolean;
 }
@@ -193,13 +195,13 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
 };
 
 const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
-  'routing-confirmation-needed': '振り分け確認が必要な topic はありません',
-  'user-reply-needed': 'あなたの返信が必要な topic はありません',
+  'routing-confirmation-needed': '振り分け確認が必要な作業項目はありません',
+  'user-reply-needed': 'あなたの返信が必要な作業項目はありません',
   'ai-finished-awaiting-user-confirmation':
     'あなたに確認してほしい返答はありません',
   queued: 'AI の順番待ちはありません',
-  'ai-working': 'AI が作業中の topic はありません',
-  done: '完了済みの topic はありません',
+  'ai-working': 'AI が作業中の作業項目はありません',
+  done: '完了済みの作業項目はありません',
 };
 
 const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
@@ -397,15 +399,15 @@ function humanizeThreadReferenceText(
     const escapedId = escapeRegExp(threadId);
     result = result.replace(
       new RegExp(`\\[Thread:\\s*${escapedId}\\]`, 'g'),
-      `[Topic: ${label}]`
+      `[Work Item: ${label}]`
     );
     result = result.replace(
       new RegExp(`threadId\\s*[:=]\\s*${escapedId}`, 'gi'),
-      `topic ${label}`
+      `work item ${label}`
     );
     result = result.replace(
       new RegExp(`task\\s*ID\\s*[:=]?\\s*${escapedId}`, 'gi'),
-      `topic ${label}`
+      `work item ${label}`
     );
     result = result.replace(
       new RegExp(`(^|[^A-Za-z0-9_-])(${escapedId})(?=$|[^A-Za-z0-9_-])`, 'g'),
@@ -923,13 +925,7 @@ function makeFeedbackStateBadge(
 
 function describeThreadState(thread: ThreadView): string | null {
   if (thread.routingConfirmationNeeded) {
-    return (
-      thread.routingHint ??
-      'この task だけ、どの task として扱うかをあなたに確認したい状態です。'
-    );
-  }
-  if (thread.routingHint) {
-    return thread.routingHint;
+    return 'この work item だけ、どの work item として扱うかをあなたに確認したい状態です。';
   }
   if (thread.uiState === 'user-reply-needed') {
     return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
@@ -938,13 +934,13 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
   if (thread.uiState === 'ai-working') {
-    return 'いま AI がこの task の作業を実行中です。結果が返ると自動で上の優先度へ移動します。';
+    return 'いま AI がこの作業項目を実行中です。結果が返ると自動で上の優先度へ移動します。';
   }
   if (thread.uiState === 'queued') {
     return 'いまは AI の順番待ちです。順番が来ると、そのまま自動で作業に入ります。';
   }
   if (thread.uiState === 'done') {
-    return 'この task は完了として閉じています。必要ならもう一度開けます。';
+    return 'この作業項目は完了として閉じています。必要ならもう一度開けます。';
   }
   return null;
 }
@@ -961,6 +957,42 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
 
 function threadStateLocation(thread: ThreadView): string {
   return `一覧では「${STATE_LABELS[thread.uiState]}」にあります`;
+}
+
+function summarizeRelationTitles(titles: string[]): string {
+  if (titles.length <= 2) {
+    return titles.join('、');
+  }
+  return `${titles.slice(0, 2).join('、')} ほか${titles.length - 2}件`;
+}
+
+function describeWorkItemRelations(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): string | null {
+  const parentTitles = (thread.derivedFromThreadIds ?? [])
+    .map((id) => threadTitlesById.get(id))
+    .filter((value): value is string => Boolean(value));
+  const childTitles = (thread.derivedChildThreadIds ?? [])
+    .map((id) => threadTitlesById.get(id))
+    .filter((value): value is string => Boolean(value));
+  const parts: string[] = [];
+  if (parentTitles.length > 0) {
+    parts.push(`派生元: ${summarizeRelationTitles(parentTitles)}`);
+  }
+  if (childTitles.length > 0) {
+    parts.push(`派生先: ${summarizeRelationTitles(childTitles)}`);
+  }
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function describeWorkItemContext(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): string | null {
+  return (
+    describeWorkItemRelations(thread, threadTitlesById) ?? thread.routingHint
+  );
 }
 
 function composerActionLabel(thread: ThreadView): string {
@@ -1161,12 +1193,13 @@ class ThreadSectionController {
     top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
 
-    if (thread.routingHint) {
+    const noteText = describeWorkItemContext(thread, threadTitlesById);
+    if (noteText) {
       const note = document.createElement('div');
       note.className = 'thread-note';
       note.dataset.rowNote = '';
       note.textContent = humanizeThreadReferenceText(
-        thread.routingHint,
+        noteText,
         threadTitlesById
       );
       row.appendChild(note);
@@ -1224,7 +1257,8 @@ class ThreadSectionController {
     }
 
     let note = row.querySelector<HTMLElement>('[data-row-note]');
-    if (thread.routingHint) {
+    const noteText = describeWorkItemContext(thread, threadTitlesById);
+    if (noteText) {
       if (!note) {
         note = document.createElement('div');
         note.className = 'thread-note';
@@ -1232,7 +1266,7 @@ class ThreadSectionController {
         row.appendChild(note);
       }
       note.textContent = humanizeThreadReferenceText(
-        thread.routingHint,
+        noteText,
         threadTitlesById
       );
     } else {
@@ -1269,7 +1303,7 @@ class TaskSectionController {
     const copy = document.createElement('div');
     copy.className = 'task-copy';
     copy.textContent =
-      'topic の会話とは別に、このリポジトリ全体でまだ終わっていない作業メモを出します。いま自分が返す一覧ではありません。';
+      '作業項目の会話とは別に、このリポジトリ全体でまだ終わっていない作業メモを出します。いま自分が返す一覧ではありません。';
     this.#body.appendChild(copy);
     if (tasks.length === 0) {
       const empty = document.createElement('div');
@@ -1471,6 +1505,17 @@ class DetailController {
     const body = document.createElement('div');
     body.className = 'detail-body';
 
+    const contextNote = describeWorkItemContext(thread, threadTitlesById);
+    if (contextNote) {
+      const note = document.createElement('div');
+      note.className = 'detail-note';
+      note.textContent = humanizeThreadReferenceText(
+        contextNote,
+        threadTitlesById
+      );
+      body.appendChild(note);
+    }
+
     const noteText = describeThreadState(thread);
     if (noteText) {
       const note = document.createElement('div');
@@ -1539,7 +1584,7 @@ class DetailController {
     this.#lastRenderedSignature = null;
     this.#detailEl.classList.add('hidden');
     this.#detailEl.innerHTML =
-      '<div class="detail-empty">topic を開くと、ここにその会話が表示されます。</div>';
+      '<div class="detail-empty">作業項目を開くと、ここにその会話が表示されます。</div>';
   }
 }
 
@@ -2006,7 +2051,7 @@ class ManagerApp {
       nextOpenThread &&
       previousOpenThread.uiState !== nextOpenThread.uiState
     ) {
-      this.#openThreadMovementNotice = `この task は「${STATE_LABELS[previousOpenThread.uiState]}」から「${STATE_LABELS[nextOpenThread.uiState]}」に移動しました。`;
+      this.#openThreadMovementNotice = `この作業項目は「${STATE_LABELS[previousOpenThread.uiState]}」から「${STATE_LABELS[nextOpenThread.uiState]}」に移動しました。`;
       if (nextOpenThread.uiState === 'done') {
         this.#showDone = true;
         this.#renderDoneToggle();
@@ -2724,18 +2769,18 @@ class ManagerApp {
       );
       copy.textContent = hasBackgroundWork
         ? 'いま自分が返すものはありません。AI の順番待ちや作業中のものは下の一覧で確認できます。'
-        : 'まだ見るべき task はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
+        : 'まだ見るべき作業項目はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
       const empty = document.createElement('div');
       empty.className = 'focus-empty';
       empty.textContent = hasBackgroundWork
-        ? 'いま優先して読む task はありません。'
-        : 'いま優先して見る task はありません。';
+        ? 'いま優先して読む作業項目はありません。'
+        : 'いま優先して見る作業項目はありません。';
       list.appendChild(empty);
       return;
     }
 
     copy.textContent =
-      'まずは上から開けば、いま返すべきものや確認すべきものだけを topic 画面で順に見ていけます。';
+      'まずは上から開けば、いま返すべきものや確認すべきものだけを作業項目画面で順に見ていけます。';
 
     for (const thread of threads.slice(0, 4)) {
       const button = document.createElement('button');
@@ -2786,8 +2831,8 @@ class ManagerApp {
       if (hint) {
         hint.textContent =
           this.openThreadId === null
-            ? '一覧を見て、書くときだけ送信欄を開けます。AI が既存 topic への追記・新しい topic・確認待ちに分けます。'
-            : 'この画面を開いたままでも、全体へ新しい依頼を送れます。AI が topic を振り分けます。';
+            ? '一覧を見て、書くときだけ送信欄を開けます。AI が既存の作業項目への追記・新しい作業項目・確認待ちに分けます。'
+            : 'この画面を開いたままでも、全体へ新しい依頼を送れます。AI が作業項目を振り分けます。';
       }
       pill.textContent = '送信先: 全体（AI が振り分けます）';
       if (sendButton) {
@@ -2802,8 +2847,8 @@ class ManagerApp {
     if (hint) {
       hint.textContent =
         thread.uiState === 'ai-working'
-          ? 'いま AI がこの topic を進めています。この topic をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別 topic に振り分けます。'
-          : 'いま開いている topic をメンション付きのヒントとして全体へ送ります。内容がこの topic の続きならここに入り、別件なら AI が別 topic に振り分けます。';
+          ? 'いま AI がこの作業項目を進めています。この作業項目をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別の作業項目に振り分けます。'
+          : 'いま開いている作業項目をメンション付きのヒントとして全体へ送ります。内容がこの作業項目の続きならここに入り、別件なら AI が別の作業項目に振り分けます。';
     }
     pill.textContent =
       thread.uiState === 'ai-working'
@@ -2851,7 +2896,7 @@ class ManagerApp {
         ? `AI が「${currentThreadTitle}」を進めています`
         : 'AI が作業や振り分けを進めています';
     } else if (counts['routing-confirmation-needed'] > 0) {
-      primary.textContent = '振り分け確認が必要な task があります';
+      primary.textContent = '振り分け確認が必要な作業項目があります';
     } else if (counts['user-reply-needed'] > 0) {
       primary.textContent = 'あなたの返信待ちがあります';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
@@ -2871,8 +2916,8 @@ class ManagerApp {
     if (busy) {
       detail.textContent =
         pendingCount > 0
-          ? `いまの task が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると一覧の上へ上がります。`
-          : 'いまの task を実行中です。返答できる状態になると一覧の上へ上がります。';
+          ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると一覧の上へ上がります。`
+          : 'いまの作業項目を実行中です。返答できる状態になると一覧の上へ上がります。';
     } else if (running) {
       detail.textContent =
         pendingCount > 0
@@ -2883,7 +2928,7 @@ class ManagerApp {
         'まだ始まっていません。下の送信ボタンを開いて送れば自動で起動します。';
     } else if (counts['user-reply-needed'] > 0) {
       detail.textContent =
-        '上から順に開けば、いま返した方がいい task から見られます。';
+        '上から順に開けば、いま返した方がいい作業項目から見られます。';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
         'AI が返答済みです。確認したいものから順に開いてください。';
@@ -2892,7 +2937,7 @@ class ManagerApp {
         'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';
     } else {
       detail.textContent =
-        '送った内容は task ごとに分かれて、ここで今の状況が見えるようになります。';
+        '送った内容は作業項目ごとに分かれて、ここで今の状況が見えるようになります。';
     }
 
     countsRoot.innerHTML = '';
@@ -2941,8 +2986,8 @@ class ManagerApp {
       );
       button.classList.toggle('hidden', !this.#showDone && !hasDoneThreads);
       button.textContent = this.#showDone
-        ? '完了した topic を隠す'
-        : '完了した topic を見る';
+        ? '完了した作業項目を隠す'
+        : '完了した作業項目を見る';
     }
   }
 

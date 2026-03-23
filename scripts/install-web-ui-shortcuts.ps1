@@ -3,11 +3,15 @@ $ErrorActionPreference = 'Stop'
 
 $openScriptPath = Join-Path $PSScriptRoot 'open-web-ui.ps1'
 $ensureScriptPath = Join-Path $PSScriptRoot 'ensure-web-ui-running.ps1'
+$keepPhoneReadyScriptPath = Join-Path $PSScriptRoot 'keep-web-ui-phone-ready.ps1'
 if (-not (Test-Path -Path $openScriptPath)) {
     throw "Missing script: $openScriptPath"
 }
 if (-not (Test-Path -Path $ensureScriptPath)) {
     throw "Missing script: $ensureScriptPath"
+}
+if (-not (Test-Path -Path $keepPhoneReadyScriptPath)) {
+    throw "Missing script: $keepPhoneReadyScriptPath"
 }
 
 $shellPath = (Get-Command 'powershell.exe' -ErrorAction Stop).Source
@@ -53,8 +57,8 @@ $shortcutDefinitions = @(
     },
     @{
         Path = Join-Path $startupPath 'Workspace Agent Hub Background.lnk'
-        Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScriptPath`" -PhoneReady"
-        Description = 'Keep Workspace Agent Hub phone-ready in the background after sign-in'
+        Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$keepPhoneReadyScriptPath`""
+        Description = 'Keep Workspace Agent Hub phone-ready in the background after sign-in and self-heal if it stops'
         WindowStyle = 7
     }
 )

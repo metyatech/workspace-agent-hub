@@ -41,8 +41,8 @@ try {
 
     $shell = New-Object -ComObject WScript.Shell
     $backgroundShortcut = $shell.CreateShortcut((Join-Path $startupPath 'Workspace Agent Hub Background.lnk'))
-    if ([string]$backgroundShortcut.Arguments -notmatch '(?i)-PhoneReady(\s|$)') {
-        throw 'Expected the Startup shortcut to launch ensure-web-ui-running.ps1 in PhoneReady mode.'
+    if ([string]$backgroundShortcut.Arguments -notmatch '(?i)keep-web-ui-phone-ready\.ps1') {
+        throw 'Expected the Startup shortcut to launch the phone-ready watchdog.'
     }
 
     foreach ($legacyPath in @($desktopLegacyPath, $programsLegacyPath)) {

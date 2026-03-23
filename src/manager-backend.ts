@@ -78,7 +78,7 @@ const MANAGER_ROUTER_SYSTEM_PROMPT =
   'You are a manager AI assistant for this software workspace. ' +
   'Help coordinate work across multiple threads. ' +
   'Judge each incoming user message on its own against the currently open topics instead of relying on older router-chat memory. ' +
-  'Default to a new topic unless the message clearly continues an existing open topic. ' +
+  'Default to a new topic for each new user turn unless the message is directly answering a blocking question already asked inside an existing topic. ' +
   'Route requests into the right topic, ask for clarification only when routing is truly ambiguous, and keep stored user wording as close to the original as possible.';
 
 const MANAGER_REPLY_JSON_RULES =
@@ -112,6 +112,7 @@ const MANAGER_ROUTING_JSON_RULES =
   'For "attach-existing" and "resolve-existing", include topicRef and content. ' +
   'For "create-new", include title and content. ' +
   'Treat contextThreadId only as a hint; create a new topic unless the current message clearly belongs to that existing topic. ' +
+  'Default granularity is one user turn per topic. When the message is a follow-up or additional instruction about an existing topic, prefer a fresh topic with standalone context instead of attach-existing. Reserve attach-existing for direct answers to an outstanding blocking question or routing-confirmation request that already exists inside that topic. ' +
   'Do not attach to an existing topic just because it is broadly similar or was discussed recently; attach only when the current message clearly reads as a continuation of that exact topic. ' +
   'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
@@ -940,6 +941,91 @@ export function pickThreadUserMessage(
   });
 }
 
+function shortenThreadLabel(text: string, maxLength = 28): string {
+  const normalized = text.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function makeDerivedThreadTitle(parentTitle: string, content: string): string {
+  const base = makeFallbackThreadTitle(content);
+  const parentLabel = shortenThreadLabel(parentTitle);
+  if (!base) {
+    return `「${parentLabel}」から派生`;
+  }
+  if (base.includes(parentLabel)) {
+    return base;
+  }
+  const suffix = `（「${parentLabel}」から派生）`;
+  const maxBaseLength = Math.max(12, 72 - suffix.length);
+  const clippedBase =
+    base.length > maxBaseLength
+      ? `${base.slice(0, Math.max(0, maxBaseLength - 1)).trimEnd()}…`
+      : base;
+  return `${clippedBase}${suffix}`;
+}
+
+function buildDerivedThreadUserMessage(input: {
+  fullInput: string;
+  action: ManagerRoutingAction;
+  totalActions: number;
+  parentThread: Thread;
+}): string {
+  const baseMessage = pickThreadUserMessage(
+    input.fullInput,
+    input.action,
+    input.totalActions
+  );
+  const parsed = parseManagerMessage(baseMessage);
+  const markdown = parsed.markdown.trim();
+  const parentTitle = input.parentThread.title.trim();
+
+  if (
+    markdown.includes('派生元作業項目:') ||
+    (parentTitle && markdown.includes(parentTitle))
+  ) {
+    return baseMessage;
+  }
+
+  const parentSummary = summarizeManagerMessage(
+    input.parentThread.messages.at(-1)?.content ?? input.parentThread.title,
+    160
+  );
+
+  return serializeManagerMessage({
+    content: [
+      `派生元作業項目: 「${parentTitle}」`,
+      `直前の要点: ${parentSummary}`,
+      '',
+      markdown,
+    ].join('\n'),
+    attachments: parsed.attachments,
+  });
+}
+
+async function shouldKeepUserMessageInSameTopic(input: {
+  dir: string;
+  resolvedDir: string;
+  threadId: string;
+}): Promise<{
+  keepSameTopic: boolean;
+  thread: Thread | null;
+}> {
+  const [thread, meta] = await Promise.all([
+    getThread(input.dir, input.threadId),
+    readManagerThreadMeta(input.resolvedDir),
+  ]);
+  const threadMeta = meta[input.threadId] ?? null;
+  return {
+    keepSameTopic:
+      Boolean(threadMeta?.routingConfirmationNeeded) ||
+      thread?.status === 'needs-reply',
+    thread,
+  };
+}
+
 async function runCodexTurn(input: {
   dir: string;
   resolvedDir: string;
@@ -1412,7 +1498,7 @@ async function routeFreeformMessage(input: {
             title: makeFallbackThreadTitle(input.content),
             content: input.content,
             reason:
-              '既存トピックの参照を解決できなかったため、新しい話題として受け付けました。',
+              '既存の作業項目参照を解決できなかったため、新しい作業項目として受け付けました。',
           },
         ],
       },
@@ -1462,18 +1548,70 @@ export async function sendGlobalToBuiltinManager(
     const items: ManagerRoutingSummaryItem[] = [];
     let routedCount = 0;
     let ambiguousCount = 0;
+    const contextParentThread =
+      options?.contextThreadId &&
+      plan.actions.some((action) => action.kind === 'create-new')
+        ? await getThread(dir, options.contextThreadId)
+        : null;
 
     for (const action of plan.actions) {
-      const userMessage = pickThreadUserMessage(
-        content,
-        action,
-        plan.actions.length
-      );
       switch (action.kind) {
         case 'attach-existing': {
           if (!action.threadId) {
             break;
           }
+          const { keepSameTopic, thread: parentThread } =
+            await shouldKeepUserMessageInSameTopic({
+              dir,
+              resolvedDir,
+              threadId: action.threadId,
+            });
+          if (!keepSameTopic && parentThread) {
+            const derivedUserMessage = buildDerivedThreadUserMessage({
+              fullInput: content,
+              action,
+              totalActions: plan.actions.length,
+              parentThread,
+            });
+            const createdThread = await createThread(
+              resolvedDir,
+              makeDerivedThreadTitle(parentThread.title, action.content)
+            );
+            await addMessage(
+              resolvedDir,
+              createdThread.id,
+              derivedUserMessage,
+              'user',
+              'waiting'
+            );
+            await updateManagerThreadMeta(
+              resolvedDir,
+              createdThread.id,
+              () => ({
+                derivedFromThreadIds: [parentThread.id],
+                routingHint: `派生元: 「${parentThread.title}」から分けた task です。`,
+              })
+            );
+            await sendToBuiltinManager(
+              resolvedDir,
+              createdThread.id,
+              derivedUserMessage
+            );
+            items.push({
+              threadId: createdThread.id,
+              title: createdThread.title,
+              outcome: 'created-new',
+              reason: `「${parentThread.title}」から派生した新しい話題として分け、そのまま実行に回しました。`,
+            });
+            routedCount += 1;
+            break;
+          }
+
+          const userMessage = pickThreadUserMessage(
+            content,
+            action,
+            plan.actions.length
+          );
           await ensureThreadReadyForUserMessage(dir, action.threadId);
           await clearManagerThreadMeta(resolvedDir, action.threadId);
           await addMessage(
@@ -1484,23 +1622,39 @@ export async function sendGlobalToBuiltinManager(
             'waiting'
           );
           await sendToBuiltinManager(resolvedDir, action.threadId, userMessage);
-          const existingThread = await getThread(dir, action.threadId);
           items.push({
             threadId: action.threadId,
-            title: existingThread?.title ?? action.threadId,
+            title: parentThread?.title ?? action.threadId,
             outcome: 'attached-existing',
             reason:
               action.reason ??
-              '既存の話題の続きとして扱い、このまま実行に回しました。',
+              'この話題で待っていた確認への返答として扱い、そのまま実行に回しました。',
           });
           routedCount += 1;
           break;
         }
 
         case 'create-new': {
+          const derivedParentThread =
+            contextParentThread && contextParentThread.status !== 'resolved'
+              ? contextParentThread
+              : null;
+          const userMessage = derivedParentThread
+            ? buildDerivedThreadUserMessage({
+                fullInput: content,
+                action,
+                totalActions: plan.actions.length,
+                parentThread: derivedParentThread,
+              })
+            : pickThreadUserMessage(content, action, plan.actions.length);
           const createdThread = await createThread(
             resolvedDir,
-            action.title?.trim() || makeFallbackThreadTitle(action.content)
+            derivedParentThread
+              ? makeDerivedThreadTitle(
+                  derivedParentThread.title,
+                  action.title?.trim() || action.content
+                )
+              : action.title?.trim() || makeFallbackThreadTitle(action.content)
           );
           await addMessage(
             resolvedDir,
@@ -1509,7 +1663,18 @@ export async function sendGlobalToBuiltinManager(
             'user',
             'waiting'
           );
-          await clearManagerThreadMeta(resolvedDir, createdThread.id);
+          if (derivedParentThread) {
+            await updateManagerThreadMeta(
+              resolvedDir,
+              createdThread.id,
+              () => ({
+                derivedFromThreadIds: [derivedParentThread.id],
+                routingHint: `派生元: 「${derivedParentThread.title}」から分けた task です。`,
+              })
+            );
+          } else {
+            await clearManagerThreadMeta(resolvedDir, createdThread.id);
+          }
           await sendToBuiltinManager(
             resolvedDir,
             createdThread.id,
@@ -1519,14 +1684,21 @@ export async function sendGlobalToBuiltinManager(
             threadId: createdThread.id,
             title: createdThread.title,
             outcome: 'created-new',
-            reason:
-              action.reason ?? '新しい話題を作って、そのまま実行に回しました。',
+            reason: derivedParentThread
+              ? `「${derivedParentThread.title}」から派生した新しい話題として分け、そのまま実行に回しました。`
+              : (action.reason ??
+                '新しい話題を作って、そのまま実行に回しました。'),
           });
           routedCount += 1;
           break;
         }
 
         case 'routing-confirmation': {
+          const userMessage = pickThreadUserMessage(
+            content,
+            action,
+            plan.actions.length
+          );
           const confirmationThread = await createThread(
             resolvedDir,
             action.title?.trim() || makeFallbackThreadTitle(action.content)
@@ -1571,6 +1743,11 @@ export async function sendGlobalToBuiltinManager(
           if (!action.threadId) {
             break;
           }
+          const userMessage = pickThreadUserMessage(
+            content,
+            action,
+            plan.actions.length
+          );
           await ensureThreadReadyForUserMessage(dir, action.threadId);
           await addMessage(
             resolvedDir,

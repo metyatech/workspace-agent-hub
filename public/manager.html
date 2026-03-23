@@ -1557,7 +1557,7 @@
               状態を確認しています…
             </div>
             <div id="activity-detail" class="activity-detail">
-              少し待つと、AI が作業中か待機中か、いま確認すべき task
+              少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
               があるかをここに表示します。
             </div>
             <div id="activity-counts" class="activity-counts"></div>
@@ -1566,10 +1566,10 @@
           <section id="priority-lane" class="card focus-card">
             <div class="focus-eyebrow">まず見る</div>
             <div class="focus-title-row">
-              <div class="focus-title">いま読む task</div>
+              <div class="focus-title">いま読む作業項目</div>
             </div>
             <div id="priority-lane-copy" class="focus-meta">
-              いま自分が返す・確認する必要がある task だけを上から出します。
+              いま自分が返す・確認する必要がある作業項目だけを上から出します。
             </div>
             <div id="priority-lane-list" class="focus-list"></div>
           </section>
@@ -1578,9 +1578,9 @@
             <div class="intro-pill">最初の使い方</div>
             <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
             <p>
-              何の task かを先に決める必要はありません。AI が既存の task
-              に振り分けるか、新しい task を作るか、確認が必要かを整理します。
-              整理した task は、そのまま built-in Manager
+              何の作業項目かを先に決める必要はありません。AI が既存の作業項目
+              に振り分けるか、新しい作業項目を作るか、確認が必要かを整理します。
+              整理した作業項目は、そのまま built-in Manager
               が実際の作業まで進めます。
             </p>
             <div class="intro-steps">
@@ -1588,7 +1588,7 @@
                 1. 下の送信ボタンを開いて、やりたいことをそのまま書く
               </div>
               <div class="intro-step">
-                2. AI が task ごとに分けて、必要なものを上に並べる
+                2. AI が作業項目ごとに分けて、必要なものを上に並べる
               </div>
               <div class="intro-step">3. 返事が必要なものから順に確認する</div>
             </div>
@@ -1692,7 +1692,7 @@
               class="btn btn-ghost hidden"
               style="width: auto"
             >
-              完了した topic を見る
+              完了した作業項目を見る
             </button>
           </div>
 
@@ -1725,7 +1725,7 @@
       <section
         id="thread-screen"
         class="thread-screen hidden"
-        aria-label="選択した topic の会話"
+        aria-label="選択した作業項目の会話"
       >
         <div class="thread-screen-top">
           <button
@@ -1733,10 +1733,10 @@
             class="btn btn-ghost"
             style="width: auto"
           >
-            ← topic 一覧へ戻る
+            ← 作業項目一覧へ戻る
           </button>
           <div class="thread-screen-copy">
-            <div class="thread-screen-eyebrow">Topic</div>
+            <div class="thread-screen-eyebrow">Work Item</div>
             <div id="thread-screen-subtitle" class="thread-screen-subtitle">
               この画面で会話の流れを上から下へ読み、そのまま下の送信欄から続きを送れます。最新の会話は一番下に出ます。
             </div>
@@ -1744,7 +1744,7 @@
         </div>
         <section id="thread-detail" class="card detail-card hidden">
           <div class="detail-empty">
-            topic を開くと、ここにその会話が出ます。
+            作業項目を開くと、ここにその会話が出ます。
           </div>
         </section>
       </section>
