@@ -11,12 +11,12 @@ The target behavior is:
 2. the Manager AI decomposes it into concrete work items
 3. each work item gets an assignee
 4. the Manager answers only the work items it should handle itself
-5. the rest are dispatched to worker agents/sub-agents
+5. the rest are dispatched to worker agents
 6. the human sees the work item graph, assignee, live progress, and resulting
    state in one place
 
 The inbox should stay human-first. The human should not need to create folders,
-topics, or sub-agents manually.
+topics, or worker agents manually.
 
 ## Project contract
 
@@ -25,7 +25,7 @@ system: workspace-agent-hub-manager
 actors:
   - human requester
   - manager orchestrator
-  - worker agent or sub-agent
+  - worker agent
   - runtime scheduler/lock manager
 canonical_store:
   work_items:
@@ -43,7 +43,7 @@ human_surface:
 ai_surface:
   - manager routing/orchestration turn
   - worker execution turns
-  - future sub-agent dispatch layer
+  - worker-agent dispatch layer
 sync:
   direction: canonical store -> live browser snapshot stream
   trigger:
@@ -133,7 +133,6 @@ Each work item has exactly one active assignee at a time:
 
 - `manager`
 - `worker`
-- `sub-agent`
 
 The UI should show both the work item and its current assignee so the human can
 see who is responsible now.
@@ -195,20 +194,22 @@ Already implemented in this line:
 - work-item graph terminology and relationships
 - Manager live snapshot stream for `/manager/`
 - browser-side removal of interval polling on the Manager screen
+- manager-vs-worker dispatch decisions per queued batch
+- direct manager answers for manager-assigned items
+- scope-aware worker-agent parallel dispatch using repo-relative write scopes
 - live worker output persisted in thread meta and rendered as the latest AI
   bubble at the bottom of the open work-item conversation
 
 Not yet complete:
 
-- real sub-agent orchestration and assignment lifecycle
-- non-overlap scope locks for parallel work
+- richer worker-agent lifecycle and UI controls
 - supersede/cancel decisions carried out by the Manager
-- explicit manager-vs-worker assignment policy enforcement
+- broader manager policy tuning for when to answer directly vs dispatch
 
 ## Rollout sequence
 
 1. Keep the work-item graph and live-stream browser model stable
 2. Add explicit assignee/worker lifecycle controls
-3. Introduce sub-agent dispatch with scope-aware parallelism
+3. Harden worker-agent dispatch with richer lifecycle and visibility
 4. Add supersede/cancel decisions for descendant conflicts
 5. Expose richer assignee state and worker logs in the Manager UI

@@ -48,7 +48,7 @@ interface ThreadView {
   derivedChildThreadIds: string[];
   queueDepth: number;
   isWorking: boolean;
-  assigneeKind: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeKind: 'manager' | 'worker' | null;
   assigneeLabel: string | null;
   workerLiveOutput: string | null;
   workerLiveAt: string | null;

@@ -374,8 +374,9 @@ How it works:
    the writing surface stays collapsed on the inbox, then stays visible while a
    work-item conversation screen is open.
 6. The built-in manager backend splits each message across existing tasks,
-   new tasks, or routing-confirmation items, then executes each routed task
-   in order and writes the resulting updates back into the task.
+   new tasks, or routing-confirmation items, then either answers the routed
+   work item directly or dispatches it to a worker agent. Worker-agent items
+   can run in parallel when their declared write scopes do not overlap.
 7. The built-in manager backend starts inside Hub when needed and keeps
    handling inbox messages for that workspace.
 

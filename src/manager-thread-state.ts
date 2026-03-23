@@ -5,7 +5,6 @@ import type { Thread } from '@metyatech/thread-inbox';
 import type { QueueEntry, ManagerSession } from './manager-backend.js';
 import {
   buildQueueDispatchPlan,
-  collectContiguousQueueBatch,
   type ManagerQueuePriority,
 } from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
@@ -29,7 +28,7 @@ export interface ManagerThreadMeta {
   lastRoutingAt?: string | null;
   workerSessionId?: string | null;
   workerLastStartedAt?: string | null;
-  assigneeKind?: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeKind?: 'manager' | 'worker' | null;
   assigneeLabel?: string | null;
   workerLiveOutput?: string | null;
   workerLiveAt?: string | null;
@@ -48,7 +47,7 @@ export interface ManagerThreadView extends Thread {
   isWorking: boolean;
   queueOrder: number | null;
   queuePriority: ManagerQueuePriority | null;
-  assigneeKind: 'manager' | 'worker' | 'sub-agent' | null;
+  assigneeKind: 'manager' | 'worker' | null;
   assigneeLabel: string | null;
   workerLiveOutput: string | null;
   workerLiveAt: string | null;
@@ -269,22 +268,10 @@ export function deriveManagerThreadViews(input: {
   queue: QueueEntry[];
   meta: ManagerThreadMetaMap;
 }): ManagerThreadView[] {
-  const currentQueueEntry =
-    input.session.currentQueueId === null
-      ? null
-      : (input.queue.find(
-          (entry) => entry.id === input.session.currentQueueId
-        ) ?? null);
   const currentBatchIds = new Set<string>();
-  if (input.session.status === 'busy' && currentQueueEntry) {
-    const currentIndex = input.queue.findIndex(
-      (entry) => entry.id === currentQueueEntry.id
-    );
-    for (const entry of collectContiguousQueueBatch(
-      input.queue,
-      currentIndex
-    )) {
-      currentBatchIds.add(entry.id);
+  for (const assignment of input.session.activeAssignments ?? []) {
+    for (const entryId of assignment.queueEntryIds) {
+      currentBatchIds.add(entryId);
     }
   }
 
@@ -329,9 +316,9 @@ export function deriveManagerThreadViews(input: {
   const views = input.threads.map((thread) => {
     const meta = input.meta[thread.id] ?? null;
     const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
-    const isWorking =
-      currentQueueEntry?.threadId === thread.id &&
-      input.session.status === 'busy';
+    const isWorking = (input.session.activeAssignments ?? []).some(
+      (assignment) => assignment.threadId === thread.id
+    );
     const uiState = deriveUiState({
       thread,
       meta,

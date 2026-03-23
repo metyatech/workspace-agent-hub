@@ -438,13 +438,17 @@ describe('manager backend codex integration', () => {
 
   it('routes each global send with a fresh routing turn instead of resuming older router context', async () => {
     const routingProcOne = makeProc(8601);
-    const workerProcOne = makeProc(8602);
-    const routingProcTwo = makeProc(8603);
-    const workerProcTwo = makeProc(8604);
+    const dispatchProcOne = makeProc(8602);
+    const workerProcOne = makeProc(8603);
+    const routingProcTwo = makeProc(8604);
+    const dispatchProcTwo = makeProc(8605);
+    const workerProcTwo = makeProc(8606);
     spawnMock
       .mockReturnValueOnce(routingProcOne)
+      .mockReturnValueOnce(dispatchProcOne)
       .mockReturnValueOnce(workerProcOne)
       .mockReturnValueOnce(routingProcTwo)
+      .mockReturnValueOnce(dispatchProcTwo)
       .mockReturnValueOnce(workerProcTwo);
 
     listThreadsMock.mockResolvedValue([]);
@@ -476,6 +480,15 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(dispatchProcOne, {
+      sessionId: 'dispatch-thread-1',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     completeCodexTurn(workerProcOne, {
       sessionId: 'worker-thread-1',
       text: '{"status":"review","reply":"done one"}',
@@ -483,8 +496,8 @@ describe('manager backend codex integration', () => {
     await firstSend;
 
     const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
-    await waitFor(() => spawnMock.mock.calls.length === 3);
-    expect(spawnMock.mock.calls[2]?.[1]).not.toContain('resume');
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    expect(spawnMock.mock.calls[3]?.[1]).not.toContain('resume');
 
     completeCodexTurn(routingProcTwo, {
       sessionId: 'routing-thread-2',
@@ -499,7 +512,16 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 4);
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    completeCodexTurn(dispatchProcTwo, {
+      sessionId: 'dispatch-thread-2',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 6);
     completeCodexTurn(workerProcTwo, {
       sessionId: 'worker-thread-2',
       text: '{"status":"review","reply":"done two"}',
@@ -517,8 +539,12 @@ describe('manager backend codex integration', () => {
 
   it('passes the open topic as a mention-style routing hint instead of forcing the destination', async () => {
     const routingProc = makeProc(8611);
-    const workerProc = makeProc(8612);
-    spawnMock.mockReturnValueOnce(routingProc).mockReturnValueOnce(workerProc);
+    const dispatchProc = makeProc(8612);
+    const workerProc = makeProc(8613);
+    spawnMock
+      .mockReturnValueOnce(routingProc)
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -595,6 +621,15 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-thread-hint',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     completeCodexTurn(workerProc, {
       sessionId: 'worker-thread-hint',
       text: '{"status":"review","reply":"別タスクとして処理しました"}',
@@ -620,8 +655,12 @@ describe('manager backend codex integration', () => {
 
   it('turns ordinary follow-ups to existing topics into new derived topics', async () => {
     const routingProc = makeProc(8621);
-    const workerProc = makeProc(8622);
-    spawnMock.mockReturnValueOnce(routingProc).mockReturnValueOnce(workerProc);
+    const dispatchProc = makeProc(8622);
+    const workerProc = makeProc(8623);
+    spawnMock
+      .mockReturnValueOnce(routingProc)
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -689,6 +728,15 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-topic-ref',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     completeCodexTurn(workerProc, {
       sessionId: 'worker-topic-ref',
       text: '{"status":"review","reply":"対応しました"}',
@@ -719,8 +767,12 @@ describe('manager backend codex integration', () => {
 
   it('keeps direct replies to needs-reply topics in the same topic instead of splitting them', async () => {
     const routingProc = makeProc(8623);
-    const workerProc = makeProc(8624);
-    spawnMock.mockReturnValueOnce(routingProc).mockReturnValueOnce(workerProc);
+    const dispatchProc = makeProc(8624);
+    const workerProc = makeProc(8625);
+    spawnMock
+      .mockReturnValueOnce(routingProc)
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -776,6 +828,15 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-needs-reply',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     completeCodexTurn(workerProc, {
       sessionId: 'worker-needs-reply',
       text: '{"status":"review","reply":"確認を受けて更新しました"}',
@@ -986,6 +1047,19 @@ describe('manager backend codex integration', () => {
       currentQueueId: 'q_stalled',
       lastMessageAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
       lastProgressAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+      activeAssignments: [
+        {
+          id: 'assign-stalled',
+          threadId: 'thread-stalled',
+          queueEntryIds: ['q_stalled'],
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+          pid: process.pid,
+          startedAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+          lastProgressAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        },
+      ],
     });
 
     const status = await getBuiltinManagerStatus(tempDir);
@@ -1174,7 +1248,7 @@ describe('manager backend codex integration', () => {
       return (
         session.status === 'busy' &&
         meta['thread-live']?.workerLiveOutput ===
-          'AI が作業を始めました。内容を整理しています…'
+          'AI が担当 worker を起動しました。内容を整理しています…'
       );
     });
 
@@ -1205,7 +1279,8 @@ describe('manager backend codex integration', () => {
         queue.length === 0 &&
         session.status === 'idle' &&
         meta['thread-live']?.workerLiveOutput === null &&
-        meta['thread-live']?.assigneeLabel?.includes('Codex gpt-5.4') === true
+        meta['thread-live']?.assigneeLabel?.includes('Worker agent gpt-5.4') ===
+          true
       );
     });
   });

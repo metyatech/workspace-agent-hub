@@ -38,6 +38,7 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        activeAssignments: [],
       },
       queue: [],
       meta: {},
@@ -92,6 +93,19 @@ describe('manager thread state derivation', () => {
         lastProgressAt: '2026-03-21T00:00:12.000Z',
         lastErrorMessage: null,
         lastErrorAt: null,
+        activeAssignments: [
+          {
+            id: 'assign-working',
+            threadId: 'thread-working',
+            queueEntryIds: ['queue-working'],
+            assigneeKind: 'worker',
+            assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+            writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+            pid: 1234,
+            startedAt: '2026-03-21T00:00:02.000Z',
+            lastProgressAt: '2026-03-21T00:00:12.000Z',
+          },
+        ],
       },
       queue: [
         {
@@ -166,6 +180,7 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        activeAssignments: [],
       },
       queue: [
         {
@@ -239,6 +254,7 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        activeAssignments: [],
       },
       queue: [
         {
@@ -312,6 +328,7 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        activeAssignments: [],
       },
       queue: [],
       meta: {

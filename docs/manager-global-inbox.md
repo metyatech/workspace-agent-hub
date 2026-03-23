@@ -148,12 +148,10 @@ Each work item should expose who is currently responsible for it.
 
 - `manager`
 - `worker`
-- `sub-agent`
-
-When a worker is actively running, the open work-item conversation should show
-its latest live output at the bottom of the message list as a provisional AI
-message so the human can see what is happening without waiting for a final
-reply.
+  When a worker is actively running, the open work-item conversation should show
+  its latest live output at the bottom of the message list as a provisional AI
+  message so the human can see what is happening without waiting for a final
+  reply.
 
 ## Work-item state model
 
