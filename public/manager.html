@@ -14,24 +14,26 @@
       }
 
       :root {
-        color-scheme: dark;
-        --bg-0: #020617;
-        --bg-1: #07111f;
-        --composer-dock-reserve: 220px;
-        --panel: rgba(15, 23, 42, 0.78);
-        --panel-strong: rgba(15, 23, 42, 0.9);
-        --panel-soft: rgba(15, 23, 42, 0.66);
-        --border: rgba(148, 163, 184, 0.16);
-        --border-strong: rgba(56, 189, 248, 0.2);
-        --text: #f8fafc;
-        --text-soft: #cbd5e1;
-        --text-muted: #94a3b8;
-        --accent: #86efac;
-        --accent-strong: #22c55e;
-        --accent-cool: #38bdf8;
-        --warning: #fcd34d;
-        --danger: #fda4af;
-        --shadow: 0 28px 80px rgba(2, 6, 23, 0.4);
+        color-scheme: light;
+        --bg-0: #eef7ef;
+        --bg-1: #dff2e0;
+        --composer-dock-reserve: 116px;
+        --panel: rgba(255, 255, 255, 0.92);
+        --panel-strong: rgba(255, 255, 255, 0.98);
+        --panel-soft: rgba(246, 252, 247, 0.86);
+        --border: rgba(122, 158, 125, 0.18);
+        --border-strong: rgba(6, 199, 85, 0.24);
+        --text: #183123;
+        --text-soft: #284434;
+        --text-muted: #53675a;
+        --accent: #0b7a3a;
+        --accent-strong: #075f2d;
+        --accent-cool: #0f5ea9;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --dark-card-text: #f8fafc;
+        --dark-card-muted: #d7e3f1;
+        --shadow: 0 24px 60px rgba(28, 62, 41, 0.12);
       }
 
       html,
@@ -41,15 +43,15 @@
         background:
           radial-gradient(
             circle at top left,
-            rgba(34, 197, 94, 0.16),
+            rgba(6, 199, 85, 0.16),
             transparent 26%
           ),
           radial-gradient(
             circle at top right,
-            rgba(56, 189, 248, 0.14),
+            rgba(43, 141, 228, 0.12),
             transparent 24%
           ),
-          linear-gradient(180deg, #07111f 0%, #030712 54%, #020617 100%);
+          linear-gradient(180deg, #f5fbf5 0%, #edf7ef 54%, #e4f2e7 100%);
         color: var(--text);
         font-family: 'Fira Sans', 'Segoe UI', system-ui, sans-serif;
       }
@@ -67,19 +69,19 @@
         background:
           linear-gradient(
             120deg,
-            rgba(255, 255, 255, 0.035),
+            rgba(255, 255, 255, 0.28),
             transparent 22%,
             transparent 78%,
-            rgba(255, 255, 255, 0.02)
+            rgba(255, 255, 255, 0.16)
           ),
           repeating-linear-gradient(
             90deg,
-            rgba(255, 255, 255, 0.02) 0,
-            rgba(255, 255, 255, 0.02) 1px,
+            rgba(6, 199, 85, 0.035) 0,
+            rgba(6, 199, 85, 0.035) 1px,
             transparent 1px,
             transparent 120px
           );
-        opacity: 0.38;
+        opacity: 0.44;
       }
 
       .hidden {
@@ -88,6 +90,18 @@
 
       .auth-hidden {
         display: none !important;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
       }
 
       .btn {
@@ -119,21 +133,21 @@
       }
 
       .btn-ghost {
-        background: rgba(15, 23, 42, 0.68);
-        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(122, 158, 125, 0.18);
         color: var(--text-soft);
       }
 
       .btn-ghost:hover {
-        background: rgba(15, 23, 42, 0.88);
-        box-shadow: 0 16px 30px rgba(2, 6, 23, 0.2);
+        background: rgba(247, 253, 248, 1);
+        box-shadow: 0 16px 30px rgba(32, 58, 42, 0.1);
       }
 
       .btn-primary {
         background: linear-gradient(135deg, #86efac 0%, #22c55e 100%);
         color: #04110c;
         font-weight: 700;
-        box-shadow: 0 16px 28px rgba(34, 197, 94, 0.2);
+        box-shadow: 0 16px 28px rgba(6, 199, 85, 0.2);
       }
 
       .btn-primary:hover {
@@ -141,23 +155,23 @@
       }
 
       .btn-secondary {
-        background: rgba(15, 23, 42, 0.72);
-        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(122, 158, 125, 0.18);
         color: var(--accent-cool);
       }
 
       .btn-secondary:hover {
-        background: rgba(15, 23, 42, 0.9);
+        background: rgba(246, 252, 247, 1);
       }
 
       .btn-danger {
-        background: rgba(73, 22, 22, 0.84);
-        border: 1px solid rgba(244, 63, 94, 0.22);
-        color: #ffe4e6;
+        background: rgba(254, 226, 226, 0.92);
+        border: 1px solid rgba(244, 63, 94, 0.2);
+        color: #991b1b;
       }
 
       .btn-danger:hover {
-        background: rgba(96, 28, 28, 0.96);
+        background: rgba(254, 205, 211, 0.98);
       }
 
       .app-header {
@@ -165,8 +179,8 @@
         top: 0;
         z-index: 20;
         backdrop-filter: blur(18px);
-        background: rgba(6, 13, 26, 0.82);
-        border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(244, 251, 245, 0.92);
+        border-bottom: 1px solid rgba(122, 158, 125, 0.14);
       }
 
       .app-header-inner {
@@ -203,8 +217,8 @@
       }
 
       #manager-bar {
-        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
-        background: rgba(8, 16, 30, 0.78);
+        border-bottom: 1px solid rgba(122, 158, 125, 0.08);
+        background: rgba(240, 249, 242, 0.82);
       }
 
       .manager-bar-inner {
@@ -221,7 +235,7 @@
         width: 9px;
         height: 9px;
         border-radius: 50%;
-        background: #334155;
+        background: #b6cbb8;
         flex-shrink: 0;
       }
 
@@ -235,10 +249,10 @@
         gap: 12px;
         background: linear-gradient(
           180deg,
-          rgba(12, 22, 38, 0.94),
-          rgba(8, 16, 30, 0.9)
+          rgba(250, 255, 250, 0.98),
+          rgba(241, 249, 242, 0.96)
         );
-        border: 1px solid rgba(56, 189, 248, 0.14);
+        border: 1px solid rgba(6, 199, 85, 0.12);
       }
 
       .activity-eyebrow {
@@ -248,9 +262,9 @@
         width: fit-content;
         padding: 6px 10px;
         border-radius: 999px;
-        background: rgba(56, 189, 248, 0.12);
-        border: 1px solid rgba(56, 189, 248, 0.16);
-        color: #d8f5ff;
+        background: rgba(43, 141, 228, 0.08);
+        border: 1px solid rgba(43, 141, 228, 0.12);
+        color: #215a8c;
         font-size: 0.74rem;
         font-weight: 700;
         letter-spacing: 0.02em;
@@ -280,7 +294,7 @@
         padding: 7px 11px;
         border-radius: 999px;
         border: 1px solid rgba(148, 163, 184, 0.16);
-        background: rgba(15, 23, 42, 0.5);
+        background: rgba(246, 252, 247, 0.96);
         color: var(--text-soft);
         font-size: 0.74rem;
         font-weight: 700;
@@ -293,8 +307,8 @@
         gap: 12px;
         background: linear-gradient(
           145deg,
-          rgba(15, 23, 42, 0.78),
-          rgba(8, 17, 32, 0.7)
+          rgba(255, 255, 255, 0.96),
+          rgba(243, 250, 244, 0.96)
         );
       }
 
@@ -304,8 +318,8 @@
         width: fit-content;
         padding: 6px 10px;
         border-radius: 999px;
-        background: rgba(34, 197, 94, 0.12);
-        border: 1px solid rgba(34, 197, 94, 0.16);
+        background: rgba(6, 199, 85, 0.1);
+        border: 1px solid rgba(6, 199, 85, 0.14);
         color: var(--accent);
         font-size: 0.72rem;
         font-weight: 700;
@@ -342,9 +356,9 @@
       }
 
       .focus-move {
-        color: #fde68a;
-        background: rgba(120, 53, 15, 0.28);
-        border: 1px solid rgba(251, 191, 36, 0.16);
+        color: #92400e;
+        background: rgba(254, 243, 199, 0.92);
+        border: 1px solid rgba(251, 191, 36, 0.22);
         border-radius: 14px;
         padding: 10px 12px;
         font-size: 0.76rem;
@@ -368,7 +382,7 @@
         border: 1px solid rgba(148, 163, 184, 0.12);
         border-radius: 18px;
         padding: 12px 13px;
-        color: inherit;
+        color: var(--dark-card-text);
       }
 
       .focus-list-item:hover {
@@ -401,13 +415,14 @@
         min-width: 0;
         font-size: 0.82rem;
         font-weight: 700;
+        color: var(--dark-card-text);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
 
       .focus-list-item-meta {
-        color: var(--text-muted);
+        color: var(--dark-card-muted);
         font-size: 0.7rem;
         line-height: 1.55;
         margin-top: 6px;
@@ -420,8 +435,8 @@
       }
 
       .auth-card {
-        background: rgba(15, 23, 42, 0.96);
-        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(122, 158, 125, 0.16);
         border-radius: 24px;
         box-shadow: var(--shadow);
         padding: 24px;
@@ -466,10 +481,21 @@
         min-width: 220px;
         padding: 12px 14px;
         border-radius: 16px;
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        background: rgba(2, 6, 23, 0.72);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        background: rgba(15, 23, 42, 0.9);
         color: #f8fafc;
         font: inherit;
+      }
+
+      .auth-input::placeholder {
+        color: #cbd5e1;
+        opacity: 1;
+      }
+
+      .auth-input:focus {
+        outline: 2px solid rgba(15, 94, 169, 0.32);
+        outline-offset: 2px;
+        border-color: rgba(147, 197, 253, 0.72);
       }
 
       .auth-error {
@@ -534,8 +560,8 @@
       }
 
       .intro-step {
-        background: rgba(15, 23, 42, 0.56);
-        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(244, 250, 245, 0.98);
+        border: 1px solid rgba(122, 158, 125, 0.12);
         border-radius: 18px;
         padding: 10px 12px;
         color: var(--text-soft);
@@ -552,7 +578,7 @@
         align-items: center;
         gap: 10px;
         padding: 13px 16px;
-        background: rgba(15, 23, 42, 0.84);
+        background: rgba(246, 252, 247, 0.98);
         cursor: pointer;
         user-select: none;
       }
@@ -592,17 +618,17 @@
       }
 
       .thread-row {
-        border: 1px solid rgba(148, 163, 184, 0.12);
+        border: 1px solid rgba(122, 158, 125, 0.12);
         border-radius: 18px;
         padding: 12px 13px;
         background: linear-gradient(
           145deg,
-          rgba(15, 23, 42, 0.58),
-          rgba(8, 17, 32, 0.54)
+          rgba(255, 255, 255, 0.98),
+          rgba(243, 250, 244, 0.96)
         );
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 8px;
         cursor: pointer;
         transition:
           transform 0.12s ease,
@@ -616,22 +642,22 @@
 
       .thread-row:hover {
         transform: translateY(-1px);
-        border-color: rgba(56, 189, 248, 0.26);
+        border-color: rgba(43, 141, 228, 0.22);
         background: linear-gradient(
           145deg,
-          rgba(15, 23, 42, 0.82),
-          rgba(8, 17, 32, 0.76)
+          rgba(255, 255, 255, 1),
+          rgba(236, 248, 240, 1)
         );
       }
 
       .thread-row.selected {
-        border-color: rgba(34, 197, 94, 0.32);
+        border-color: rgba(6, 199, 85, 0.28);
         background: linear-gradient(
           145deg,
-          rgba(18, 48, 37, 0.96),
-          rgba(9, 30, 31, 0.92)
+          rgba(238, 251, 240, 1),
+          rgba(227, 246, 231, 0.98)
         );
-        box-shadow: 0 20px 36px rgba(8, 23, 29, 0.32);
+        box-shadow: 0 20px 36px rgba(23, 52, 34, 0.12);
       }
 
       .thread-row.thread-row-open {
@@ -648,7 +674,7 @@
       .thread-row-top {
         display: flex;
         gap: 8px;
-        align-items: center;
+        align-items: flex-start;
         flex-wrap: wrap;
       }
 
@@ -675,8 +701,8 @@
         font-size: 0.64rem;
         font-weight: 700;
         color: var(--text-muted);
-        background: rgba(2, 6, 23, 0.68);
-        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(246, 252, 247, 0.96);
+        border: 1px solid rgba(122, 158, 125, 0.12);
       }
 
       .thread-target-indicator {
@@ -698,7 +724,7 @@
       .thread-note {
         font-size: 0.72rem;
         color: var(--text-soft);
-        background: rgba(34, 197, 94, 0.08);
+        background: rgba(6, 199, 85, 0.08);
         border-radius: 12px;
         padding: 8px 10px;
         line-height: 1.55;
@@ -719,6 +745,11 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
+        background: linear-gradient(
+          180deg,
+          rgba(250, 254, 250, 0.98),
+          rgba(240, 248, 242, 0.98)
+        );
       }
 
       .focus-card .detail-card,
@@ -727,8 +758,8 @@
         border-radius: 18px;
         background: linear-gradient(
           155deg,
-          rgba(2, 6, 23, 0.88),
-          rgba(8, 17, 32, 0.82)
+          rgba(247, 253, 248, 0.98),
+          rgba(237, 247, 239, 0.98)
         );
         box-shadow: none;
       }
@@ -779,7 +810,7 @@
 
       .detail-note {
         color: var(--text-soft);
-        background: rgba(34, 197, 94, 0.08);
+        background: rgba(6, 199, 85, 0.08);
         border-radius: 14px;
         padding: 10px 12px;
         font-size: 0.76rem;
@@ -789,26 +820,71 @@
       .msg-area {
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 12px;
         max-height: 430px;
         overflow-y: auto;
-        padding-right: 4px;
+        padding: 14px 12px 14px 4px;
+        border-radius: 22px;
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        background:
+          linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.98),
+            rgba(246, 252, 247, 0.98)
+          ),
+          radial-gradient(
+            circle at top,
+            rgba(6, 199, 85, 0.05),
+            transparent 45%
+          );
       }
 
       .bubble {
-        border-radius: 18px;
+        position: relative;
+        max-width: min(82%, 640px);
+        border-radius: 20px;
         padding: 12px 14px;
         line-height: 1.65;
+        box-shadow: 0 14px 24px rgba(24, 49, 35, 0.08);
       }
 
       .bubble-ai {
-        background: rgba(8, 28, 43, 0.9);
-        border: 1px solid rgba(56, 189, 248, 0.18);
+        align-self: flex-start;
+        margin-right: auto;
+        border-radius: 20px 20px 20px 8px;
+        background: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(122, 158, 125, 0.16);
       }
 
       .bubble-user {
-        background: rgba(11, 31, 23, 0.92);
-        border: 1px solid rgba(34, 197, 94, 0.16);
+        align-self: flex-end;
+        margin-left: auto;
+        border-radius: 20px 20px 8px 20px;
+        background: linear-gradient(135deg, #b8f7c8 0%, #86efac 100%);
+        border: 1px solid rgba(6, 199, 85, 0.18);
+      }
+
+      .bubble-ai::before,
+      .bubble-user::before {
+        content: '';
+        position: absolute;
+        bottom: 0;
+        width: 12px;
+        height: 12px;
+        transform: translateY(1px) rotate(45deg);
+        border-bottom: inherit;
+      }
+
+      .bubble-ai::before {
+        left: -5px;
+        background: rgba(255, 255, 255, 0.98);
+        border-left: inherit;
+      }
+
+      .bubble-user::before {
+        right: -5px;
+        background: #9af0b3;
+        border-right: inherit;
       }
 
       .bubble-meta {
@@ -816,19 +892,25 @@
         gap: 8px;
         align-items: center;
         margin-bottom: 6px;
+        justify-content: space-between;
+      }
+
+      .bubble-user .bubble-meta {
+        justify-content: flex-end;
       }
 
       .bubble-sender {
         font-size: 0.68rem;
         font-weight: 800;
+        letter-spacing: 0.06em;
       }
 
       .bubble-sender-ai {
-        color: #8fe9ff;
+        color: #166534;
       }
 
       .bubble-sender-user {
-        color: #94f3c2;
+        color: #14532d;
       }
 
       .bubble-ts {
@@ -838,9 +920,105 @@
 
       .bubble-content {
         font-size: 0.8rem;
-        color: #eefcf3;
+        color: #163123;
         white-space: pre-wrap;
         word-break: break-word;
+      }
+
+      .bubble-user .bubble-content {
+        color: #0f2217;
+      }
+
+      .bubble-content > :first-child {
+        margin-top: 0;
+      }
+
+      .bubble-content > :last-child {
+        margin-bottom: 0;
+      }
+
+      .bubble-content p,
+      .composer-preview-body p {
+        margin: 0 0 0.78em;
+      }
+
+      .bubble-content ul,
+      .bubble-content ol,
+      .composer-preview-body ul,
+      .composer-preview-body ol {
+        margin: 0 0 0.9em;
+        padding-left: 1.4em;
+      }
+
+      .bubble-content li + li,
+      .composer-preview-body li + li {
+        margin-top: 0.25em;
+      }
+
+      .bubble-content a,
+      .composer-preview-body a {
+        color: #1660b8;
+      }
+
+      .bubble-content img,
+      .composer-preview-body img {
+        display: block;
+        max-width: min(100%, 360px);
+        width: auto;
+        height: auto;
+        margin-top: 0.72em;
+        border-radius: 14px;
+        border: 1px solid rgba(122, 158, 125, 0.2);
+        box-shadow: 0 10px 24px rgba(24, 49, 35, 0.12);
+      }
+
+      .bubble-content pre,
+      .composer-preview-body pre {
+        margin: 0 0 0.9em;
+        padding: 11px 12px;
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.92);
+        color: #e2e8f0;
+        overflow-x: auto;
+      }
+
+      .bubble-content code,
+      .composer-preview-body code {
+        font-family: 'Fira Code', 'Consolas', monospace;
+        font-size: 0.74rem;
+      }
+
+      .bubble-content :not(pre) > code,
+      .composer-preview-body :not(pre) > code {
+        padding: 0.1em 0.35em;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.08);
+      }
+
+      .bubble-content blockquote,
+      .composer-preview-body blockquote {
+        margin: 0 0 0.9em;
+        padding: 0.1em 0 0.1em 0.9em;
+        border-left: 3px solid rgba(6, 199, 85, 0.3);
+        color: var(--text-soft);
+      }
+
+      .bubble-content table,
+      .composer-preview-body table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0 0 0.9em;
+        font-size: 0.74rem;
+      }
+
+      .bubble-content th,
+      .bubble-content td,
+      .composer-preview-body th,
+      .composer-preview-body td {
+        border: 1px solid rgba(122, 158, 125, 0.16);
+        padding: 7px 8px;
+        text-align: left;
+        vertical-align: top;
       }
 
       .detail-actions {
@@ -850,12 +1028,12 @@
       }
 
       .tasks-card .section-header {
-        background: rgba(11, 25, 44, 0.92);
+        background: rgba(241, 249, 244, 0.98);
       }
 
       .task-row {
-        background: rgba(11, 22, 37, 0.84);
-        border: 1px solid rgba(56, 189, 248, 0.16);
+        background: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(43, 141, 228, 0.14);
         border-radius: 18px;
         padding: 10px 12px;
         display: flex;
@@ -872,12 +1050,12 @@
         flex: 1;
         min-width: 0;
         font-size: 0.8rem;
-        color: #dbeafe;
+        color: #1d4f78;
       }
 
       .task-age {
         font-size: 0.68rem;
-        color: #93c5fd;
+        color: #5b8bb6;
       }
 
       .composer-dock {
@@ -886,47 +1064,97 @@
         right: 0;
         bottom: 0;
         z-index: 24;
-        padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+        padding: 12px 16px max(12px, env(safe-area-inset-bottom));
         background: linear-gradient(
           180deg,
-          rgba(2, 6, 23, 0) 0%,
-          rgba(2, 6, 23, 0.92) 26%,
-          rgba(2, 6, 23, 0.98) 100%
+          rgba(226, 241, 228, 0) 0%,
+          rgba(226, 241, 228, 0.72) 30%,
+          rgba(226, 241, 228, 0.94) 100%
         );
       }
 
       .composer-shell {
         max-width: 1120px;
         margin: 0 auto;
-      }
-
-      .composer-card {
-        background: linear-gradient(
-          145deg,
-          rgba(15, 23, 42, 0.92),
-          rgba(8, 17, 32, 0.88)
-        );
-        border: 1px solid rgba(148, 163, 184, 0.16);
-        border-radius: 26px;
-        box-shadow: var(--shadow);
-        padding: 12px;
         display: flex;
         flex-direction: column;
         gap: 10px;
       }
 
-      .composer-top {
+      .composer-rail {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        border-radius: 26px;
+        border: 1px solid rgba(122, 158, 125, 0.18);
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: var(--shadow);
+        padding: 12px 14px;
+      }
+
+      .composer-rail-main {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .composer-rail-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1;
+        min-width: min(260px, 100%);
+      }
+
+      .composer-rail-title {
+        font-size: 0.72rem;
+        font-weight: 800;
+        color: var(--accent-strong);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .composer-rail-controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .composer-card {
+        background: linear-gradient(
+          145deg,
+          rgba(255, 255, 255, 0.98),
+          rgba(243, 250, 244, 0.98)
+        );
+        border: 1px solid rgba(122, 158, 125, 0.18);
+        border-radius: 26px;
+        box-shadow: var(--shadow);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .composer-card-top {
         display: flex;
         gap: 10px;
         align-items: center;
         flex-wrap: wrap;
+        justify-content: space-between;
       }
 
       .composer-label {
         display: inline-flex;
         padding: 5px 10px;
         border-radius: 999px;
-        background: rgba(34, 197, 94, 0.12);
+        background: rgba(6, 199, 85, 0.12);
         color: var(--accent);
         font-size: 0.72rem;
         font-weight: 700;
@@ -936,13 +1164,11 @@
         color: var(--text-soft);
         font-size: 0.76rem;
         line-height: 1.55;
-        flex: 1;
-        min-width: 0;
       }
 
       .composer-context {
         color: var(--text-soft);
-        background: rgba(34, 197, 94, 0.08);
+        background: rgba(6, 199, 85, 0.08);
         border-radius: 12px;
         padding: 8px 10px;
         font-size: 0.74rem;
@@ -961,9 +1187,9 @@
         align-items: center;
         border-radius: 999px;
         padding: 6px 10px;
-        background: rgba(2, 6, 23, 0.66);
-        border: 1px solid rgba(148, 163, 184, 0.12);
-        color: var(--text-soft);
+        background: rgba(246, 252, 247, 0.98);
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        color: var(--text);
         font-size: 0.72rem;
         font-weight: 700;
       }
@@ -974,9 +1200,9 @@
         max-height: 180px;
         resize: vertical;
         border-radius: 18px;
-        border: 1px solid rgba(148, 163, 184, 0.16);
-        background: rgba(2, 6, 23, 0.72);
-        color: #f8fafc;
+        border: 1px solid rgba(122, 158, 125, 0.16);
+        background: rgba(250, 254, 250, 0.98);
+        color: var(--text);
         padding: 13px 14px;
         font: inherit;
         font-size: 0.84rem;
@@ -985,7 +1211,7 @@
 
       .composer-textarea:focus {
         outline: none;
-        border-color: rgba(56, 189, 248, 0.34);
+        border-color: rgba(43, 141, 228, 0.28);
       }
 
       .composer-actions {
@@ -995,9 +1221,48 @@
         flex-wrap: wrap;
       }
 
+      .composer-tools {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .composer-attachment-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .composer-preview {
+        border-radius: 18px;
+        border: 1px solid rgba(122, 158, 125, 0.16);
+        background: rgba(255, 255, 255, 0.92);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .composer-preview-title {
+        font-size: 0.72rem;
+        font-weight: 800;
+        color: var(--accent-strong);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .composer-preview-body {
+        font-size: 0.8rem;
+        color: #163123;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
       .composer-feedback {
         color: var(--text-soft);
-        background: rgba(34, 197, 94, 0.08);
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(122, 158, 125, 0.16);
         border-radius: 14px;
         padding: 10px 12px;
         font-size: 0.76rem;
@@ -1014,8 +1279,8 @@
       .composer-chip {
         padding: 6px 10px;
         border-radius: 999px;
-        background: rgba(2, 6, 23, 0.7);
-        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(246, 252, 247, 0.98);
+        border: 1px solid rgba(122, 158, 125, 0.12);
         color: var(--text-soft);
         font-size: 0.7rem;
         font: inherit;
@@ -1023,8 +1288,8 @@
       }
 
       .composer-chip:hover {
-        border-color: rgba(56, 189, 248, 0.28);
-        color: #eefcf3;
+        border-color: rgba(43, 141, 228, 0.28);
+        color: var(--text);
       }
 
       @media (max-width: 920px) {
@@ -1039,7 +1304,7 @@
 
       @media (max-width: 600px) {
         :root {
-          --composer-dock-reserve: 176px;
+          --composer-dock-reserve: 100px;
         }
 
         .app-header-inner,
@@ -1056,12 +1321,13 @@
           border-radius: 20px;
         }
 
+        .composer-rail,
         .composer-card {
           padding: 10px;
         }
 
         .btn {
-          width: 100%;
+          width: auto;
           justify-content: center;
         }
 
@@ -1073,8 +1339,26 @@
           width: auto;
         }
 
-        .composer-actions .btn {
-          width: auto;
+        .composer-rail {
+          align-items: stretch;
+        }
+
+        .composer-rail-main,
+        .composer-rail-controls,
+        .composer-actions,
+        .composer-tools {
+          width: 100%;
+        }
+
+        .composer-rail-controls,
+        .composer-actions {
+          justify-content: stretch;
+        }
+
+        .composer-rail-controls .btn,
+        .composer-actions .btn,
+        .composer-tools .btn {
+          flex: 1;
         }
 
         .composer-textarea {
@@ -1092,6 +1376,10 @@
           overflow: visible;
           text-overflow: clip;
           word-break: break-word;
+        }
+
+        .bubble {
+          max-width: 92%;
         }
       }
     </style>
@@ -1123,7 +1411,12 @@
       </div>
     </header>
 
-    <div id="auth-panel" class="hidden">
+    <main
+      id="auth-panel"
+      class="hidden"
+      aria-labelledby="auth-context-title"
+      aria-describedby="auth-context-copy"
+    >
       <div class="auth-card">
         <div id="auth-context-kicker" class="auth-kicker">
           Hub の次に使う画面
@@ -1137,12 +1430,14 @@
           task は、そのまま実際の作業まで進めます。
         </p>
         <div class="auth-row">
+          <label for="auth-token-input" class="sr-only">アクセスコード</label>
           <input
             id="auth-token-input"
             type="password"
             placeholder="アクセスコード"
             class="auth-input"
             autocomplete="current-password"
+            aria-describedby="auth-context-copy auth-error"
           />
           <button
             data-action="unlock-auth"
@@ -1162,9 +1457,9 @@
         </div>
         <div id="auth-error" class="auth-error"></div>
       </div>
-    </div>
+    </main>
 
-    <div id="manager-bar" data-auth-content>
+    <section id="manager-bar" data-auth-content aria-label="Manager status">
       <div class="manager-bar-inner">
         <span id="manager-status-dot" class="status-dot"></span>
         <span id="manager-status-text">マネージャー状態を確認中...</span>
@@ -1177,9 +1472,9 @@
           ▶ 起動する
         </button>
       </div>
-    </div>
+    </section>
 
-    <main data-auth-content>
+    <main id="manager-main" data-auth-content aria-label="Manager inbox">
       <div class="stack">
         <section id="activity-summary" class="card activity-card">
           <div class="activity-eyebrow">いまの状況</div>
@@ -1196,7 +1491,7 @@
         <section id="priority-lane" class="card focus-card">
           <div class="focus-eyebrow">まず見る</div>
           <div class="focus-title-row">
-            <div class="focus-title">優先度が高い task</div>
+            <div class="focus-title">いま読む task</div>
           </div>
           <div id="priority-lane-copy" class="focus-meta">
             返信待ちや確認待ちを上から順に開けば、その task
@@ -1224,7 +1519,7 @@
           </p>
           <div class="intro-steps">
             <div class="intro-step">
-              1. 下の送信欄に、やりたいことをそのまま書く
+              1. 下の送信ボタンを開いて、やりたいことをそのまま書く
             </div>
             <div class="intro-step">
               2. AI が task ごとに分けて、必要なものを上に並べる
@@ -1274,7 +1569,7 @@
             data-section-key="ai-finished-awaiting-user-confirmation"
           >
             <span class="section-dot" style="background: #8b5cf6"></span>
-            <span class="section-title">AI から確認待ちです</span>
+            <span class="section-title">あなたの確認待ちです</span>
             <span
               id="count-ai-finished-awaiting-user-confirmation"
               class="section-count"
@@ -1337,25 +1632,59 @@
       </div>
     </main>
 
-    <div id="global-composer-dock" class="composer-dock" data-auth-content>
+    <aside
+      id="global-composer-dock"
+      class="composer-dock"
+      data-auth-content
+      aria-labelledby="composerLabel"
+    >
       <div class="composer-shell">
-        <div class="composer-card">
-          <div class="composer-top">
-            <div id="composerLabel" class="composer-label">AI へ送る</div>
-            <div id="composerHint" class="composer-hint">
-              まとめて送れます。必要なら開いている task を優先します。
+        <div class="composer-rail">
+          <div class="composer-rail-main">
+            <div class="composer-rail-copy">
+              <div class="composer-rail-title">Send</div>
+              <div id="composerHint" class="composer-hint">
+                まず一覧を見て、書くときだけ送信欄を開けます。
+              </div>
+            </div>
+            <div id="composerTargetBar" class="composer-target-bar">
+              <span id="composerTargetPill" class="composer-target-pill">
+                送信先: 全体（AI が振り分けます）
+              </span>
+              <button
+                id="composerTargetClearButton"
+                class="btn btn-ghost hidden"
+                style="width: auto"
+              >
+                全体へ戻す
+              </button>
             </div>
           </div>
-          <div id="composerTargetBar" class="composer-target-bar">
-            <span id="composerTargetPill" class="composer-target-pill">
-              送信先: 全体（AI が振り分けます）
-            </span>
+          <div class="composer-rail-controls">
+            <span id="composerStatusText" class="composer-hint"></span>
             <button
-              id="composerTargetClearButton"
-              class="btn btn-ghost hidden"
+              id="composerToggleButton"
+              data-action="toggle-composer"
+              class="btn btn-primary"
+              style="width: auto"
+              aria-expanded="false"
+              aria-controls="composerPanel"
+            >
+              送信欄を開く
+            </button>
+          </div>
+        </div>
+        <div id="composerFeedback" class="composer-feedback hidden"></div>
+        <div id="composerPanel" class="composer-card hidden">
+          <div class="composer-card-top">
+            <div id="composerLabel" class="composer-label">AI へ送る</div>
+            <button
+              id="composerCloseButton"
+              data-action="close-composer"
+              class="btn btn-ghost"
               style="width: auto"
             >
-              全体へ戻す
+              閉じる
             </button>
           </div>
           <div id="composerContext" class="composer-context hidden"></div>
@@ -1363,24 +1692,61 @@
             id="globalComposerInput"
             class="composer-textarea"
             aria-label="Manager への送信内容"
-            placeholder="例: AAして、BBして。あと、さっきのCCの件ってどうなってる？"
+            placeholder="例: AAして、BBして。\n\nあと、さっきのCCの件ってどうなってる？\nMarkdown や画像も送れます。"
           ></textarea>
+          <div class="composer-tools">
+            <button
+              id="composerInsertImageButton"
+              type="button"
+              class="btn btn-ghost"
+              style="width: auto"
+            >
+              画像を追加
+            </button>
+            <input
+              id="composerImageInput"
+              class="hidden"
+              type="file"
+              accept="image/*"
+              multiple
+            />
+            <span class="composer-hint"
+              >複数行のまま保存され、画像は文中に差し込めます。</span
+            >
+          </div>
+          <div
+            id="composerAttachmentList"
+            class="composer-attachment-list hidden"
+          ></div>
+          <div id="composerPreviewWrap" class="composer-preview hidden">
+            <div class="composer-preview-title">送信プレビュー</div>
+            <div id="composerPreviewBody" class="composer-preview-body"></div>
+          </div>
           <div class="composer-actions">
             <button id="globalComposerSendButton" class="btn btn-primary">
               AI に送る
             </button>
-            <span id="composerStatusText" class="composer-hint"></span>
+            <span class="composer-hint"
+              >Ctrl / Cmd + Enter でも送れます。AI の返答は Markdown
+              表示です。</span
+            >
           </div>
-          <div id="composerFeedback" class="composer-feedback hidden"></div>
         </div>
       </div>
-    </div>
+    </aside>
 
     <script>
       window.GUI_DIR = __GUI_DIR__;
       window.MANAGER_AUTH_REQUIRED = __MANAGER_AUTH_REQUIRED__;
       window.MANAGER_AUTH_STORAGE_KEY = __MANAGER_AUTH_STORAGE_KEY__;
       window.MANAGER_API_BASE = './api';
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "marked": "./vendor/marked.js"
+        }
+      }
     </script>
     <script type="module" src="./manager-app.js"></script>
   </body>

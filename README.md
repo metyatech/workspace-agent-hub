@@ -323,8 +323,8 @@ How it works:
 3. The browser moves into Hub's native `/manager/` page on the same origin and in the same tab.
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
-5. The user writes into one fixed global composer instead of creating tasks by
-   hand.
+5. The user writes from one global send dock instead of creating tasks by hand;
+   the writing surface stays collapsed until needed, then expands inline.
 6. The built-in manager backend splits each message across existing tasks,
    new tasks, or routing-confirmation items, then executes each routed task
    in order and writes the resulting updates back into the task.
@@ -336,25 +336,35 @@ Important behavior:
 - The same Hub access code protects the smartphone/desktop Manager path.
 - There is no separate `manager-gui` process or second GUI server anymore.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
-- Users send from one global composer; they do not need to create or pick a
-  task before sending.
-- When Manager splits a freeform message into tasks, it now preserves the
-  user's original wording as the stored user-side thread message whenever it
-  can match an exact excerpt, instead of immediately replacing it with an
-  AI-paraphrased rewrite.
+- Users send from one global dock; they do not need to create or pick a task
+  before sending, and the larger text area only opens when they choose to
+  write.
+- When Manager splits a freeform message into tasks, follow-ups on existing
+  topics keep the user's original wording when possible, while brand-new topics
+  store the closest standalone wording that still makes sense when read in that
+  topic by itself.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
 - The Manager page keeps a `まず見る` priority lane near the top, and opens the
   selected task detail inline in that task row so the user can keep context
   without jumping to a detached panel.
-- The current built-in Manager routes with one global Codex routing thread, then
+- The current built-in Manager routes each global send with a fresh Codex
+  routing turn so old router-chat context does not blur distinct tasks, then
   executes each actionable task with its own persisted Codex worker
-  continuation so routed requests do real repository work instead of stopping at
-  inbox acknowledgements.
-- The global composer now shows an explicit send target: either the whole inbox
-  or a selected `@task`, so follow-up messages to one task are visually
+  continuation so routed requests do real repository work instead of stopping
+  at inbox acknowledgements.
+- The global send dock now shows an explicit send target: either the whole
+  inbox or a selected `@task`, so follow-up messages to one task are visually
   obvious before sending.
+- Manager topic messages now preserve multiline user text, support inline image
+  insertion inside the message body, and render both user/AI replies with
+  Markdown formatting in the detail view.
+- The composer now shows a rendered preview before send, so image placement and
+  Markdown structure are visible before the message is queued.
+- Sending from the global dock does not forcibly jump the reading focus to the
+  newly routed topic; the current task stays open unless the user explicitly
+  opens a routing-result chip.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
   finished awaiting user confirmation, queued, AI working, then done.
 - `AI working` is reserved for tasks that are genuinely in flight in the

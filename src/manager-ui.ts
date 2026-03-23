@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -29,6 +30,13 @@ import { isWebUiAuthorized, type WebUiAuthConfig } from './web-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
+const markedPackageJsonPath = require.resolve('marked/package.json');
+const markedBrowserModulePath = join(
+  dirname(markedPackageJsonPath),
+  'lib',
+  'marked.esm.js'
+);
 
 const VALID_THREAD_STATUSES = new Set<ThreadStatus>([
   'waiting',
@@ -175,6 +183,16 @@ export async function handleManagerUiRequest(input: {
     sendText(
       input.res,
       readFileSync(getAssetPath('manager-app.js'), 'utf-8'),
+      200,
+      'application/javascript; charset=utf-8'
+    );
+    return true;
+  }
+
+  if (localPath === '/vendor/marked.js' && input.method === 'GET') {
+    sendText(
+      input.res,
+      readFileSync(markedBrowserModulePath, 'utf-8'),
       200,
       'application/javascript; charset=utf-8'
     );

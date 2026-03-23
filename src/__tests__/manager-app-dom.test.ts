@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { serializeManagerMessage } from '../manager-message.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -361,9 +362,12 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(true);
   });
 
-  it('routes a global composer message and opens the routed topic in the stable focus panel', async () => {
+  it('routes a global composer message without pulling focus away from the task being read', async () => {
     const validToken = 'manager-token';
     let threadsCalls = 0;
+    const browsingThread = makeThreadView('thread-browse', '今見ている task', {
+      previewText: '[ai] いま確認中です',
+    });
     const createdThread = makeThreadView('thread-1', 'AA を進める');
     const secondThread = makeThreadView('thread-2', 'BB を進める');
 
@@ -389,11 +393,16 @@ describe('manager-app DOM auth state matrix', () => {
         ) {
           threadsCalls += 1;
           if (threadsCalls < 2) {
-            return new Response(JSON.stringify([]), { status: 200 });
+            return new Response(JSON.stringify([browsingThread]), {
+              status: 200,
+            });
           }
-          return new Response(JSON.stringify([createdThread, secondThread]), {
-            status: 200,
-          });
+          return new Response(
+            JSON.stringify([browsingThread, createdThread, secondThread]),
+            {
+              status: 200,
+            }
+          );
         }
 
         if (isRoute(url, '/tasks')) {
@@ -453,6 +462,18 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(true);
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
     const composer = document.querySelector<HTMLTextAreaElement>(
       '#globalComposerInput'
     )!;
@@ -466,6 +487,14 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#composerFeedback')!.textContent
     ).toContain('2件を処理しました');
+    expect(
+      document.querySelector<HTMLElement>('#composerStatusText')!.textContent
+    ).toContain('2件を処理しました');
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(true);
     const feedbackButtons = Array.from(
       document.querySelectorAll<HTMLButtonElement>(
         '#composerFeedback .composer-chip'
@@ -477,12 +506,12 @@ describe('manager-app DOM auth state matrix', () => {
     ]);
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('AA を進める');
+    ).toContain('今見ている task');
     expect(
       document.querySelector<HTMLElement>(
         '.thread-row.selected [data-row-title]'
       )!.textContent
-    ).toContain('AA を進める');
+    ).toContain('今見ている task');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('送信先: 全体');
@@ -727,13 +756,85 @@ describe('manager-app DOM auth state matrix', () => {
 
     const contents = Array.from(
       document.querySelectorAll<HTMLElement>('.msg-area .bubble-content')
-    ).map((element) => element.textContent);
+    ).map((element) => element.textContent?.trim());
+    const sides = Array.from(
+      document.querySelectorAll<HTMLElement>('.msg-area .bubble')
+    ).map((element) => element.dataset.chatSide);
 
     expect(contents).toEqual([
       'newest-message',
       'middle-message',
       'oldest-message',
     ]);
+    expect(sides).toEqual(['right', 'left', 'right']);
+  });
+
+  it('renders markdown replies and inline user images in the detail bubbles', async () => {
+    const validToken = 'rich-message-token';
+    const thread = makeThreadView('thread-rich', '装飾付き task', {
+      messages: [
+        {
+          sender: 'user',
+          content: serializeManagerMessage({
+            content:
+              '画像つきの報告です\n\n![capture](attachment://img-1)\n\n続きも見てください',
+            attachments: [
+              {
+                id: 'img-1',
+                name: 'capture.png',
+                mimeType: 'image/png',
+                dataUrl: 'data:image/png;base64,AAAA',
+              },
+            ],
+          }),
+          at: '2026-03-21T00:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '# 見出し\n\n- 箇条書き\n- `code` 付き',
+          at: '2026-03-21T00:01:00.000Z',
+        },
+      ],
+      previewText: '[ai] 見出し',
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [thread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const aiBubble = document.querySelector<HTMLElement>(
+      '.msg-area .bubble[data-sender="ai"] .bubble-content'
+    )!;
+    const userBubble = document.querySelector<HTMLElement>(
+      '.msg-area .bubble[data-sender="user"] .bubble-content'
+    )!;
+
+    expect(aiBubble.querySelector('h1')?.textContent).toBe('見出し');
+    expect(
+      Array.from(aiBubble.querySelectorAll('li')).map((element) =>
+        element.textContent?.trim()
+      )
+    ).toEqual(['箇条書き', 'code 付き']);
+    expect(userBubble.querySelector('img')).not.toBeNull();
+    expect(userBubble.textContent).toContain('画像つきの報告です');
+    expect(userBubble.textContent).toContain('続きも見てください');
   });
 
   it('sends to the selected task when the composer target is set and can return to global routing', async () => {
@@ -828,6 +929,11 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('@特定 task');
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(false);
 
     const composer = document.querySelector<HTMLTextAreaElement>(
       '#globalComposerInput'
@@ -842,6 +948,11 @@ describe('manager-app DOM auth state matrix', () => {
       content: 'この task を続けて',
       contextThreadId: 'thread-target',
     });
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(true);
 
     document
       .querySelector<HTMLButtonElement>('#composerTargetClearButton')!
@@ -851,6 +962,271 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('送信先: 全体');
+  });
+
+  it('explains queued follow-up behavior when targeting an AI-working task', async () => {
+    const validToken = 'working-target-token';
+    const thread = makeThreadView('thread-working', '進行中の task', {
+      status: 'active',
+      uiState: 'ai-working',
+      queueDepth: 2,
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 続きの確認です',
+      messages: [
+        {
+          sender: 'user',
+          content: 'この task を進めて',
+          at: '2026-03-21T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [thread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (進行中の task)',
+        currentQueueId: 'queue-working',
+        currentThreadId: 'thread-working',
+        currentThreadTitle: '進行中の task',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const actionButton = document.querySelector<HTMLButtonElement>(
+      '#thread-detail .detail-actions .btn-secondary'
+    )!;
+    expect(actionButton.textContent).toBe('この task に追加指示を送る');
+
+    actionButton.click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerLabel')!.textContent
+    ).toBe('この task に追加指示を送る');
+    expect(
+      document.querySelector<HTMLElement>('#composerHint')!.textContent
+    ).toContain('追加指示として順番待ちに入り');
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('追加指示として送る');
+    expect(
+      document.querySelector<HTMLElement>('#composerContext')!.textContent
+    ).toContain('追加指示として順番待ちに入ります');
+    expect(
+      document.querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+        .textContent
+    ).toBe('追加指示を送る');
+  });
+
+  it('auto-dismisses routing feedback after a short delay', async () => {
+    const validToken = 'dismiss-feedback-token';
+    const scheduledTimeouts: Array<() => void> = [];
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(
+            JSON.stringify([makeThreadView('thread-1', '通知確認')]),
+            {
+              status: 200,
+            }
+          );
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-1',
+                  title: '通知確認',
+                  outcome: 'attached-existing',
+                  reason: '既存 task に追記しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '1件を実行キューに回しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+        Object.defineProperty(window, 'setTimeout', {
+          value: vi.fn((callback: TimerHandler) => {
+            if (typeof callback === 'function') {
+              scheduledTimeouts.push(callback as () => void);
+            }
+            return scheduledTimeouts.length;
+          }),
+          configurable: true,
+        });
+        Object.defineProperty(window, 'clearTimeout', {
+          value: vi.fn((timeoutId: number) => {
+            if (timeoutId > 0 && timeoutId <= scheduledTimeouts.length) {
+              scheduledTimeouts[timeoutId - 1] = () => {};
+            }
+          }),
+          configurable: true,
+        });
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    composer.value = '通知を確認したいです';
+    document
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+      .click();
+    await flushAsync(6);
+
+    const statusText = document.querySelector<HTMLElement>(
+      '#composerStatusText'
+    )!;
+    const feedback = document.querySelector<HTMLElement>('#composerFeedback')!;
+
+    expect(statusText.textContent).toContain('1件を実行キューに回しました');
+    expect(feedback.classList.contains('hidden')).toBe(false);
+    expect(scheduledTimeouts.length).toBeGreaterThan(0);
+
+    scheduledTimeouts[scheduledTimeouts.length - 1]!();
+    await flushAsync(2);
+
+    expect(statusText.textContent).toBe('');
+    expect(feedback.classList.contains('hidden')).toBe(true);
+    expect(feedback.textContent?.trim() ?? '').toBe('');
+  });
+
+  it('keeps the composer compact until the user opens it', async () => {
+    const fetchMock = createManagerFetch('compact-composer-token');
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'compact-composer-token');
+      },
+    });
+
+    const panel = document.querySelector<HTMLElement>('#composerPanel')!;
+    const toggle = document.querySelector<HTMLButtonElement>(
+      '#composerToggleButton'
+    )!;
+
+    expect(panel.classList.contains('hidden')).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    toggle.click();
+    await flushAsync(2);
+
+    expect(panel.classList.contains('hidden')).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    document.querySelector<HTMLButtonElement>('#composerCloseButton')!.click();
+    await flushAsync(2);
+
+    expect(panel.classList.contains('hidden')).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('inserts selected images into the composer and shows a rendered preview', async () => {
+    const fetchMock = createManagerFetch('composer-image-token');
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'composer-image-token');
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    textarea.value = '前の説明\n\n後ろの説明';
+    textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    const fileInput = document.querySelector<HTMLInputElement>(
+      '#composerImageInput'
+    )!;
+    const file = new window.File([Uint8Array.from([1, 2, 3])], 'capture.png', {
+      type: 'image/png',
+    });
+    Object.defineProperty(fileInput, 'files', {
+      configurable: true,
+      value: [file],
+    });
+    fileInput.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await flushAsync(8);
+
+    expect(textarea.value).toContain('![capture.png](attachment://img-');
+    expect(
+      document.querySelector<HTMLElement>('#composerAttachmentList')!
+        .textContent
+    ).toContain('capture.png');
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPreviewWrap')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(document.querySelector('#composerPreviewBody img')).not.toBeNull();
   });
 
   it('keeps done topics hidden by default and shows them when toggled', async () => {

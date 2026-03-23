@@ -1,5 +1,13 @@
 /// <reference lib="dom" />
 
+import { marked } from 'marked';
+import {
+  extractManagerMessageAttachmentIds,
+  parseManagerMessage,
+  serializeManagerMessage,
+  type ManagerMessageAttachment,
+} from './manager-message.js';
+
 declare global {
   interface Window {
     GUI_DIR: string;
@@ -82,6 +90,34 @@ interface StyleEntry {
   border: string;
 }
 
+const ALLOWED_MARKDOWN_TAGS = new Set([
+  'a',
+  'blockquote',
+  'br',
+  'code',
+  'em',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'img',
+  'li',
+  'ol',
+  'p',
+  'pre',
+  'strong',
+  'table',
+  'tbody',
+  'td',
+  'th',
+  'thead',
+  'tr',
+  'ul',
+]);
+
 const GUI_DIR = window.GUI_DIR;
 const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
 const MANAGER_AUTH_STORAGE_KEY =
@@ -148,6 +184,8 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     border: 'rgba(107, 114, 128, 0.28)',
   },
 };
+
+const COMPOSER_FEEDBACK_DISMISS_MS = 4800;
 
 class AuthRequiredError extends Error {
   constructor() {
@@ -226,6 +264,140 @@ function formatDate(iso: string | undefined): string {
   }
 }
 
+function hashMessageContent(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function sanitizeLinkHref(href: string | null): string | null {
+  if (!href) {
+    return null;
+  }
+  const normalized = href.trim();
+  if (/^(https?:|mailto:|tel:)/i.test(normalized)) {
+    return normalized;
+  }
+  return null;
+}
+
+function resolveImageSrc(
+  src: string | null,
+  attachments: Map<string, ManagerMessageAttachment>
+): string | null {
+  if (!src) {
+    return null;
+  }
+  const normalized = src.trim();
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(normalized)) {
+    return normalized;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+  if (normalized.startsWith('attachment://')) {
+    const attachmentId = normalized.slice('attachment://'.length);
+    return attachments.get(attachmentId)?.dataUrl ?? null;
+  }
+  return null;
+}
+
+function sanitizeMarkdownChildren(
+  ownerDocument: Document,
+  sourceParent: ParentNode,
+  attachments: Map<string, ManagerMessageAttachment>
+): DocumentFragment {
+  const fragment = ownerDocument.createDocumentFragment();
+  for (const child of Array.from(sourceParent.childNodes)) {
+    const sanitized = sanitizeMarkdownNode(ownerDocument, child, attachments);
+    if (sanitized) {
+      fragment.appendChild(sanitized);
+    }
+  }
+  return fragment;
+}
+
+function sanitizeMarkdownNode(
+  ownerDocument: Document,
+  node: Node,
+  attachments: Map<string, ManagerMessageAttachment>
+): Node | null {
+  const textNodeType = ownerDocument.defaultView?.Node.TEXT_NODE ?? 3;
+  const elementNodeType = ownerDocument.defaultView?.Node.ELEMENT_NODE ?? 1;
+
+  if (node.nodeType === textNodeType) {
+    return ownerDocument.createTextNode(node.textContent ?? '');
+  }
+  if (node.nodeType !== elementNodeType) {
+    return null;
+  }
+
+  const element = node as HTMLElement;
+  const tagName = element.tagName.toLowerCase();
+  if (!ALLOWED_MARKDOWN_TAGS.has(tagName)) {
+    return sanitizeMarkdownChildren(ownerDocument, element, attachments);
+  }
+
+  if (tagName === 'a') {
+    const href = sanitizeLinkHref(element.getAttribute('href'));
+    if (!href) {
+      return sanitizeMarkdownChildren(ownerDocument, element, attachments);
+    }
+    const clean = ownerDocument.createElement('a');
+    clean.href = href;
+    clean.target = '_blank';
+    clean.rel = 'noreferrer noopener';
+    clean.appendChild(
+      sanitizeMarkdownChildren(ownerDocument, element, attachments)
+    );
+    return clean;
+  }
+
+  if (tagName === 'img') {
+    const src = resolveImageSrc(element.getAttribute('src'), attachments);
+    if (!src) {
+      return ownerDocument.createTextNode(
+        `[image: ${element.getAttribute('alt') || 'image'}]`
+      );
+    }
+    const clean = ownerDocument.createElement('img');
+    clean.src = src;
+    clean.alt = element.getAttribute('alt') || '';
+    clean.loading = 'lazy';
+    return clean;
+  }
+
+  const clean = ownerDocument.createElement(tagName);
+  if (tagName === 'ol') {
+    const start = element.getAttribute('start');
+    if (start && /^\d+$/.test(start)) {
+      clean.setAttribute('start', start);
+    }
+  }
+  clean.appendChild(
+    sanitizeMarkdownChildren(ownerDocument, element, attachments)
+  );
+  return clean;
+}
+
+function renderMessageMarkdown(target: HTMLElement, raw: string): void {
+  const parsed = parseManagerMessage(raw);
+  const html = String(
+    marked.parse(parsed.markdown, { gfm: true, breaks: true })
+  );
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const attachments = new Map(
+    parsed.attachments.map((attachment) => [attachment.id, attachment])
+  );
+  target.replaceChildren(
+    sanitizeMarkdownChildren(document, template.content, attachments)
+  );
+}
+
 function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
   const badge = document.createElement('span');
   const style = STATE_STYLES[state];
@@ -241,14 +413,16 @@ function makeBubble(message: Msg): HTMLDivElement {
   const bubble = document.createElement('div');
   const ai = message.sender === 'ai';
   bubble.className = `bubble ${ai ? 'bubble-ai' : 'bubble-user'}`;
-  bubble.dataset.messageKey = `${message.sender}|${message.at ?? ''}|${message.content}`;
+  bubble.dataset.messageKey = `${message.sender}|${message.at ?? ''}|${hashMessageContent(message.content)}`;
+  bubble.dataset.chatSide = ai ? 'left' : 'right';
+  bubble.dataset.sender = message.sender;
 
   const meta = document.createElement('div');
   meta.className = 'bubble-meta';
 
   const sender = document.createElement('span');
   sender.className = `bubble-sender ${ai ? 'bubble-sender-ai' : 'bubble-sender-user'}`;
-  sender.textContent = ai ? '[ai]' : '[user]';
+  sender.textContent = ai ? 'AI' : 'あなた';
 
   const timestamp = document.createElement('span');
   timestamp.className = 'bubble-ts';
@@ -256,7 +430,7 @@ function makeBubble(message: Msg): HTMLDivElement {
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  content.textContent = message.content;
+  renderMessageMarkdown(content, message.content);
 
   meta.append(sender, timestamp);
   bubble.append(meta, content);
@@ -323,6 +497,19 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
 
 function threadStateLocation(thread: ThreadView): string {
   return `一覧では「${STATE_LABELS[thread.uiState]}」にあります`;
+}
+
+function composerActionLabel(thread: ThreadView): string {
+  return thread.uiState === 'ai-working'
+    ? 'この task に追加指示を送る'
+    : 'この task に送る';
+}
+
+function composerSendButtonLabel(thread: ThreadView | null): string {
+  if (!thread) {
+    return '送る';
+  }
+  return thread.uiState === 'ai-working' ? '追加指示を送る' : '送る';
 }
 
 class ThreadSectionController {
@@ -812,7 +999,7 @@ class DetailController {
     const focusComposer = document.createElement('button');
     focusComposer.className = 'btn btn-secondary';
     focusComposer.style.width = 'auto';
-    focusComposer.textContent = 'この task に送る';
+    focusComposer.textContent = composerActionLabel(thread);
     focusComposer.addEventListener('click', () =>
       this.#app.focusComposerForThread(thread.id)
     );
@@ -843,7 +1030,7 @@ class DetailController {
       const empty = document.createElement('div');
       empty.className = 'detail-empty';
       empty.textContent =
-        'まだやり取りはありません。下の送信欄から最初のメッセージを送れます。';
+        'まだやり取りはありません。下の送信ボタンを開くと最初のメッセージを送れます。';
       msgArea.appendChild(empty);
     } else {
       for (const message of detailMessages) {
@@ -885,6 +1072,10 @@ class ManagerApp {
   #managerStatus: ManagerStatusPayload | null = null;
   #composerDock: HTMLElement | null = null;
   #composerResizeObserver: ResizeObserver | null = null;
+  #composerExpanded = false;
+  #composerAttachments = new Map<string, ManagerMessageAttachment>();
+  #composerAttachmentSerial = 0;
+  #composerFeedbackTimer: number | null = null;
 
   constructor() {
     this.#sections = {
@@ -918,6 +1109,8 @@ class ManagerApp {
     this.#wireActions();
     this.#wireAuthPanel();
     this.#renderDoneToggle();
+    this.#renderComposerExpansionState();
+    this.#syncComposerDraftUi();
 
     if (MANAGER_AUTH_REQUIRED && !this.#authToken) {
       this.#showAuthPanel();
@@ -929,6 +1122,7 @@ class ManagerApp {
   }
 
   focusComposer(): void {
+    this.#setComposerExpanded(true);
     const input = document.getElementById(
       'globalComposerInput'
     ) as HTMLTextAreaElement | null;
@@ -939,6 +1133,162 @@ class ManagerApp {
     this.#setComposerTarget(threadId);
     this.#renderAll();
     this.focusComposer();
+  }
+
+  #composerInput(): HTMLTextAreaElement | null {
+    return document.getElementById(
+      'globalComposerInput'
+    ) as HTMLTextAreaElement | null;
+  }
+
+  #referencedComposerAttachments(markdown: string): ManagerMessageAttachment[] {
+    const attachmentIds = extractManagerMessageAttachmentIds(markdown);
+    return attachmentIds.flatMap((attachmentId) => {
+      const attachment = this.#composerAttachments.get(attachmentId);
+      return attachment ? [attachment] : [];
+    });
+  }
+
+  #serializedComposerContent(markdown: string): string {
+    return serializeManagerMessage({
+      content: markdown,
+      attachments: this.#referencedComposerAttachments(markdown),
+    });
+  }
+
+  #syncComposerDraftUi(): void {
+    const markdown = this.#composerInput()?.value.replace(/\r\n?/g, '\n') ?? '';
+    this.#renderComposerAttachmentList(markdown);
+    this.#renderComposerPreview(markdown);
+  }
+
+  #renderComposerAttachmentList(markdown: string): void {
+    const list = document.getElementById('composerAttachmentList');
+    if (!list) {
+      return;
+    }
+
+    list.innerHTML = '';
+    const attachments = this.#referencedComposerAttachments(markdown);
+    if (attachments.length === 0) {
+      list.classList.add('hidden');
+      return;
+    }
+
+    list.classList.remove('hidden');
+    for (const attachment of attachments) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'composer-chip';
+      chip.textContent = `画像: ${attachment.name} を外す`;
+      chip.addEventListener('click', () => {
+        this.#removeComposerAttachment(attachment.id);
+      });
+      list.appendChild(chip);
+    }
+  }
+
+  #renderComposerPreview(markdown: string): void {
+    const previewWrap = document.getElementById('composerPreviewWrap');
+    const previewBody = document.getElementById('composerPreviewBody');
+    if (!previewWrap || !previewBody) {
+      return;
+    }
+
+    if (!markdown.trim()) {
+      previewWrap.classList.add('hidden');
+      previewBody.replaceChildren();
+      return;
+    }
+
+    previewWrap.classList.remove('hidden');
+    renderMessageMarkdown(
+      previewBody,
+      this.#serializedComposerContent(markdown)
+    );
+  }
+
+  #removeComposerAttachment(attachmentId: string): void {
+    const input = this.#composerInput();
+    if (!input) {
+      return;
+    }
+    const escapedId = attachmentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    input.value = input.value
+      .replace(
+        new RegExp(`!\\[[^\\]]*\\]\\(attachment://${escapedId}\\)`, 'g'),
+        ''
+      )
+      .replace(/\n{3,}/g, '\n\n');
+    this.#composerAttachments.delete(attachmentId);
+    this.#syncComposerDraftUi();
+    input.focus();
+  }
+
+  #insertTextAtCursor(input: HTMLTextAreaElement, text: string): void {
+    const selectionStart = input.selectionStart ?? input.value.length;
+    const selectionEnd = input.selectionEnd ?? selectionStart;
+    input.setRangeText(text, selectionStart, selectionEnd, 'end');
+  }
+
+  #readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolvePromise, reject) => {
+      const FileReaderCtor =
+        window.FileReader ??
+        (
+          globalThis as typeof globalThis & {
+            FileReader?: typeof FileReader;
+          }
+        ).FileReader;
+      if (!FileReaderCtor) {
+        reject(new Error('FileReader is not available'));
+        return;
+      }
+      const reader = new FileReaderCtor();
+      reader.addEventListener('load', () => {
+        if (typeof reader.result === 'string') {
+          resolvePromise(reader.result);
+          return;
+        }
+        reject(new Error('Failed to read image as data URL'));
+      });
+      reader.addEventListener('error', () => {
+        reject(reader.error ?? new Error('Failed to read image file'));
+      });
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async #insertComposerImages(files: FileList | File[]): Promise<void> {
+    const input = this.#composerInput();
+    if (!input || files.length === 0) {
+      return;
+    }
+
+    const insertions: string[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) {
+        continue;
+      }
+      const attachmentId = `img-${Date.now()}-${this.#composerAttachmentSerial}`;
+      this.#composerAttachmentSerial += 1;
+      const attachment: ManagerMessageAttachment = {
+        id: attachmentId,
+        name: file.name || `image-${this.#composerAttachmentSerial}.png`,
+        mimeType: file.type || 'image/png',
+        dataUrl: await this.#readFileAsDataUrl(file),
+      };
+      this.#composerAttachments.set(attachmentId, attachment);
+      insertions.push(`![${attachment.name}](attachment://${attachment.id})`);
+    }
+
+    if (insertions.length === 0) {
+      return;
+    }
+
+    this.#insertTextAtCursor(input, insertions.join('\n'));
+    this.#syncComposerDraftUi();
+    input.focus();
   }
 
   closeDetail(): void {
@@ -1068,7 +1418,7 @@ class ManagerApp {
         dot.style.background = busy ? '#f59e0b' : '#22c55e';
       }
       if (text) {
-        text.style.color = busy ? '#fde68a' : '#86efac';
+        text.style.color = busy ? '#92400e' : '#166534';
         const label = busy
           ? payload.currentThreadTitle
             ? `AI が「${payload.currentThreadTitle}」を処理中です`
@@ -1092,7 +1442,7 @@ class ManagerApp {
         dot.style.background = '#64748b';
       }
       if (text) {
-        text.style.color = '#cbd5e1';
+        text.style.color = '#334155';
         text.textContent =
           payload.detail || 'まだ始まっていません。送ると自動で動きます。';
       }
@@ -1105,7 +1455,7 @@ class ManagerApp {
       dot.style.background = '#ef4444';
     }
     if (text) {
-      text.style.color = '#fecaca';
+      text.style.color = '#b91c1c';
       text.textContent = payload.detail || 'Manager を使えません。';
     }
     startButton?.classList.add('hidden');
@@ -1194,15 +1544,14 @@ class ManagerApp {
   }
 
   async sendGlobalMessage(): Promise<void> {
-    const input = document.getElementById(
-      'globalComposerInput'
-    ) as HTMLTextAreaElement | null;
+    const input = this.#composerInput();
     if (!input) {
       return;
     }
-    const content = input.value.trim();
+    const markdown = input.value.replace(/\r\n?/g, '\n').trim();
+    const content = this.#serializedComposerContent(markdown);
     if (!content || this.#sending) {
-      if (!content) {
+      if (!markdown) {
         input.focus();
       }
       return;
@@ -1217,6 +1566,7 @@ class ManagerApp {
     if (sendButton) {
       sendButton.disabled = true;
     }
+    this.#clearComposerFeedback();
     if (statusText) {
       statusText.textContent = '振り分けています…';
     }
@@ -1244,14 +1594,15 @@ class ManagerApp {
 
     const summary = (await response.json()) as ManagerRoutingSummary;
     input.value = '';
+    this.#composerAttachments.clear();
+    this.#syncComposerDraftUi();
     if (statusText) {
       statusText.textContent = summary.detail;
     }
     await Promise.all([this.loadAll(), this.loadManagerStatus()]);
-    if (summary.items.length > 0) {
-      this.#focusThread(summary.items[0].threadId);
-    }
+    this.#setComposerExpanded(false);
     this.#renderComposerFeedback(summary);
+    this.#scheduleComposerFeedbackDismiss();
   }
 
   #consumeHashToken(): void {
@@ -1298,7 +1649,7 @@ class ManagerApp {
   }
 
   #syncComposerDockReserve(): void {
-    const fallback = 220;
+    const fallback = 116;
     const dock = this.#composerDock;
     const reserve = dock ? Math.max(dock.getBoundingClientRect().height, 0) : 0;
     const resolvedReserve = reserve > 0 ? reserve : fallback;
@@ -1344,6 +1695,15 @@ class ManagerApp {
         case 'start-manager':
           void this.startManager();
           break;
+        case 'toggle-composer':
+          this.#setComposerExpanded(!this.#composerExpanded);
+          if (this.#composerExpanded) {
+            this.focusComposer();
+          }
+          break;
+        case 'close-composer':
+          this.#setComposerExpanded(false);
+          break;
         case 'unlock-auth':
           void this.#unlockAuth();
           break;
@@ -1376,6 +1736,9 @@ class ManagerApp {
     const composerInput = document.getElementById(
       'globalComposerInput'
     ) as HTMLTextAreaElement | null;
+    composerInput?.addEventListener('input', () => {
+      this.#syncComposerDraftUi();
+    });
     composerInput?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
@@ -1388,6 +1751,23 @@ class ManagerApp {
       void this.sendGlobalMessage();
     });
 
+    const composerImageButton = document.getElementById(
+      'composerInsertImageButton'
+    ) as HTMLButtonElement | null;
+    const composerImageInput = document.getElementById(
+      'composerImageInput'
+    ) as HTMLInputElement | null;
+    composerImageButton?.addEventListener('click', () => {
+      composerImageInput?.click();
+    });
+    composerImageInput?.addEventListener('change', () => {
+      const files = composerImageInput.files;
+      if (files && files.length > 0) {
+        void this.#insertComposerImages(files);
+      }
+      composerImageInput.value = '';
+    });
+
     const composerTargetClear = document.getElementById(
       'composerTargetClearButton'
     ) as HTMLButtonElement | null;
@@ -1396,6 +1776,32 @@ class ManagerApp {
       this.#renderAll();
       this.focusComposer();
     });
+  }
+
+  #setComposerExpanded(expanded: boolean): void {
+    this.#composerExpanded = expanded;
+    this.#renderComposerExpansionState();
+    this.#syncComposerDockReserve();
+  }
+
+  #renderComposerExpansionState(): void {
+    const panel = document.getElementById('composerPanel');
+    const toggle = document.getElementById(
+      'composerToggleButton'
+    ) as HTMLButtonElement | null;
+    if (panel) {
+      panel.classList.toggle('hidden', !this.#composerExpanded);
+    }
+    if (toggle) {
+      toggle.textContent = this.#composerExpanded
+        ? '送信欄を閉じる'
+        : '送信欄を開く';
+      toggle.setAttribute('aria-expanded', String(this.#composerExpanded));
+    }
+    this.#composerDock?.classList.toggle(
+      'composer-dock-expanded',
+      this.#composerExpanded
+    );
   }
 
   #wireAuthPanel(): void {
@@ -1547,6 +1953,7 @@ class ManagerApp {
     this.#renderGettingStarted();
     this.#renderActivitySummary();
     this.#renderPriorityLane();
+    this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
 
@@ -1578,7 +1985,7 @@ class ManagerApp {
 
     if (threads.length === 0) {
       copy.textContent =
-        'まだ見るべき task はありません。下の送信欄からまとめて送ると、ここに優先順で並びます。';
+        'まだ見るべき task はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
       const empty = document.createElement('div');
       empty.className = 'focus-empty';
       empty.textContent = 'いま優先して見る task はありません。';
@@ -1621,6 +2028,9 @@ class ManagerApp {
     const label = document.getElementById('composerLabel');
     const hint = document.getElementById('composerHint');
     const pill = document.getElementById('composerTargetPill');
+    const sendButton = document.getElementById(
+      'globalComposerSendButton'
+    ) as HTMLButtonElement | null;
     const clearButton = document.getElementById(
       'composerTargetClearButton'
     ) as HTMLButtonElement | null;
@@ -1634,20 +2044,31 @@ class ManagerApp {
       }
       if (hint) {
         hint.textContent =
-          '何の task かを先に決めなくて大丈夫です。AI が既存の task への追記・新しい task・確認待ちに分けます。';
+          '一覧を見て、書くときだけ送信欄を開けます。AI が既存 task への追記・新しい task・確認待ちに分けます。';
       }
       pill.textContent = '送信先: 全体（AI が振り分けます）';
+      if (sendButton) {
+        sendButton.textContent = composerSendButtonLabel(null);
+      }
       clearButton?.classList.add('hidden');
       return;
     }
     if (label) {
-      label.textContent = 'この task に送る';
+      label.textContent = composerActionLabel(thread);
     }
     if (hint) {
       hint.textContent =
-        'いま選んでいる task に優先して送ります。全体へ戻すと、AI がもう一度 task を振り分けます。';
+        thread.uiState === 'ai-working'
+          ? 'いま AI がこの task を進めています。ここへ送る内容は追加指示として順番待ちに入り、今の処理のあと自動で続きます。'
+          : 'いま選んでいる @task に優先して送ります。全体へ戻すと、AI がもう一度 task を振り分けます。';
     }
-    pill.textContent = `送信先: @${thread.title}`;
+    pill.textContent =
+      thread.uiState === 'ai-working'
+        ? `送信先: @${thread.title}（追加指示として送る）`
+        : `送信先: @${thread.title}`;
+    if (sendButton) {
+      sendButton.textContent = composerSendButtonLabel(thread);
+    }
     clearButton?.classList.remove('hidden');
   }
 
@@ -1716,7 +2137,7 @@ class ManagerApp {
           : 'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
     } else if (configured) {
       detail.textContent =
-        'まだ始まっていません。下の送信欄から投げれば自動で起動します。';
+        'まだ始まっていません。下の送信ボタンを開いて送れば自動で起動します。';
     } else if (counts['user-reply-needed'] > 0) {
       detail.textContent =
         '上から順に開けば、いま返した方がいい task から見られます。';
@@ -1781,11 +2202,44 @@ class ManagerApp {
     const thread = this.#findThread(this.#composerTargetThreadId);
     if (thread && thread.uiState !== 'done') {
       context.classList.remove('hidden');
-      context.textContent = `この送信は「${thread.title}」を優先します。`;
+      context.textContent =
+        thread.uiState === 'ai-working'
+          ? `この送信は @${thread.title} の追加指示として順番待ちに入ります。`
+          : `この送信は @${thread.title} を優先します。`;
       return;
     }
     context.textContent = '';
     context.classList.add('hidden');
+  }
+
+  #clearComposerFeedback(): void {
+    if (this.#composerFeedbackTimer !== null) {
+      window.clearTimeout(this.#composerFeedbackTimer);
+      this.#composerFeedbackTimer = null;
+    }
+
+    const statusText = document.getElementById('composerStatusText');
+    if (statusText) {
+      statusText.textContent = '';
+    }
+
+    const feedback = document.getElementById('composerFeedback');
+    if (!feedback) {
+      return;
+    }
+
+    feedback.innerHTML = '';
+    feedback.classList.add('hidden');
+  }
+
+  #scheduleComposerFeedbackDismiss(): void {
+    if (this.#composerFeedbackTimer !== null) {
+      window.clearTimeout(this.#composerFeedbackTimer);
+    }
+    this.#composerFeedbackTimer = window.setTimeout(() => {
+      this.#composerFeedbackTimer = null;
+      this.#clearComposerFeedback();
+    }, COMPOSER_FEEDBACK_DISMISS_MS);
   }
 
   #renderComposerFeedback(summary: ManagerRoutingSummary): void {

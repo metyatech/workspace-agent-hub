@@ -52,9 +52,15 @@ import {
   readQueue,
   readSession,
   resolveCodexCommand,
+  sendGlobalToBuiltinManager,
   sendToBuiltinManager,
   shouldUseShellForCodexCommand,
+  writeQueue,
 } from '../manager-backend.js';
+import {
+  parseManagerMessage,
+  serializeManagerMessage,
+} from '../manager-message.js';
 import { readManagerThreadMeta } from '../manager-thread-state.js';
 
 interface FakeProc extends EventEmitter {
@@ -79,6 +85,35 @@ function makeProc(pid: number): FakeProc {
     on: vi.fn(),
   };
   return proc;
+}
+
+function completeCodexTurn(
+  proc: FakeProc,
+  input: {
+    sessionId: string;
+    text: string;
+    code?: number;
+  }
+): void {
+  proc.stdout.emit(
+    'data',
+    Buffer.from(
+      [
+        JSON.stringify({
+          type: 'thread.started',
+          thread_id: input.sessionId,
+        }),
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            type: 'agent_message',
+            text: input.text,
+          },
+        }),
+      ].join('\n')
+    )
+  );
+  proc.emit('close', input.code ?? 0);
 }
 
 async function waitFor(
@@ -160,6 +195,18 @@ describe('manager backend codex integration', () => {
       '-',
     ]);
 
+    expect(buildCodexArgs('hello', null, ['C:\\temp\\capture.png'])).toEqual([
+      'exec',
+      '--image',
+      'C:\\temp\\capture.png',
+      '--json',
+      '--model',
+      MANAGER_MODEL,
+      '-c',
+      `model_reasoning_effort="${MANAGER_REASONING_EFFORT}"`,
+      '-',
+    ]);
+
     expect(buildCodexArgs('follow-up', 'thread-123')).toEqual([
       'exec',
       'resume',
@@ -223,6 +270,8 @@ describe('manager backend codex integration', () => {
     expect(follow).toContain('Return only strict JSON');
     expect(follow).toContain('Next');
     expect(workerFirst).toContain('built-in execution worker');
+    expect(workerFirst).toContain('plain, natural Japanese');
+    expect(workerFirst).toContain('Avoid internal AI/platform/process jargon');
     expect(workerFirst).toContain('[Topic: Implement task]');
     expect(workerFirst).toContain('Please implement the task.');
   });
@@ -281,7 +330,7 @@ describe('manager backend codex integration', () => {
     });
   });
 
-  it('prefers verbatim routed text and falls back to the full original input for single-intent messages', () => {
+  it('keeps verbatim follow-up text on existing topics but prefers standalone stored text for new topics', () => {
     expect(
       pickThreadUserMessage(
         'AAして、BBして。あとCCの件ってどうなってる？',
@@ -297,15 +346,60 @@ describe('manager backend codex integration', () => {
 
     expect(
       pickThreadUserMessage(
-        'Agent CLI settings を他の PC にも共有したい',
+        'これについては新しいタスクとして分けてほしい',
         {
           kind: 'create-new',
-          title: 'Agent CLI settings sync across PCs',
-          content: '他の PC でも同じ設定共有を進める',
+          title: 'Manager の依頼ごとトピック分離',
+          originalText: 'これについては新しいタスクとして分けてほしい',
+          content:
+            'Manager の依頼ごとトピック分離の件として、この依頼は新しいタスクとして分けてほしい。',
         },
         1
       )
-    ).toBe('Agent CLI settings を他の PC にも共有したい');
+    ).toBe(
+      'Manager の依頼ごとトピック分離の件として、この依頼は新しいタスクとして分けてほしい。'
+    );
+  });
+
+  it('preserves rich image metadata when a routed excerpt references an inline attachment', () => {
+    const fullInput = serializeManagerMessage({
+      content:
+        '状況です\n\n![capture](attachment://img-1)\n\nこのエラーを見てください',
+      attachments: [
+        {
+          id: 'img-1',
+          name: 'capture.png',
+          mimeType: 'image/png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        },
+      ],
+    });
+
+    const routed = pickThreadUserMessage(
+      fullInput,
+      {
+        kind: 'create-new',
+        title: 'エラー確認',
+        originalText:
+          '![capture](attachment://img-1)\n\nこのエラーを見てください',
+        content:
+          '![capture](attachment://img-1)\n\nWorkspace Agent Hub の Manager で出たこのエラーを見てください',
+      },
+      2
+    );
+
+    expect(parseManagerMessage(routed)).toEqual({
+      markdown:
+        '![capture](attachment://img-1)\n\nWorkspace Agent Hub の Manager で出たこのエラーを見てください',
+      attachments: [
+        {
+          id: 'img-1',
+          name: 'capture.png',
+          mimeType: 'image/png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        },
+      ],
+    });
   });
 
   it('parses codex JSON output and extracts thread continuity id + final reply', () => {
@@ -339,6 +433,85 @@ describe('manager backend codex integration', () => {
     expect(
       isSessionInvalidError('resume failed: session not found for thread-abc')
     ).toBe(true);
+  });
+
+  it('routes each global send with a fresh routing turn instead of resuming older router context', async () => {
+    const routingProcOne = makeProc(8601);
+    const workerProcOne = makeProc(8602);
+    const routingProcTwo = makeProc(8603);
+    const workerProcTwo = makeProc(8604);
+    spawnMock
+      .mockReturnValueOnce(routingProcOne)
+      .mockReturnValueOnce(workerProcOne)
+      .mockReturnValueOnce(routingProcTwo)
+      .mockReturnValueOnce(workerProcTwo);
+
+    listThreadsMock.mockResolvedValue([]);
+    createThreadMock
+      .mockResolvedValueOnce({
+        id: 'thread-new-1',
+        title: 'Task one',
+      })
+      .mockResolvedValueOnce({
+        id: 'thread-new-2',
+        title: 'Task two',
+      });
+
+    const firstSend = sendGlobalToBuiltinManager(tempDir, 'first new task');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(spawnMock.mock.calls[0]?.[1]).not.toContain('resume');
+
+    completeCodexTurn(routingProcOne, {
+      sessionId: 'routing-thread-1',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'create-new',
+            title: 'Task one',
+            content: 'Task one as a standalone topic request',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(workerProcOne, {
+      sessionId: 'worker-thread-1',
+      text: '{"status":"review","reply":"done one"}',
+    });
+    await firstSend;
+
+    const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    expect(spawnMock.mock.calls[2]?.[1]).not.toContain('resume');
+
+    completeCodexTurn(routingProcTwo, {
+      sessionId: 'routing-thread-2',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'create-new',
+            title: 'Task two',
+            content: 'Task two as a standalone topic request',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(workerProcTwo, {
+      sessionId: 'worker-thread-2',
+      text: '{"status":"review","reply":"done two"}',
+    });
+    await secondSend;
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
+
+    const session = await readSession(tempDir);
+    expect(session.routingSessionId).toBeNull();
   });
 
   it('starts processing immediately when a manager message arrives while idle', async () => {
@@ -377,6 +550,82 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-idle');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('idle reply');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('coalesces consecutive queued user messages on the same topic into one worker turn', async () => {
+    const proc = makeProc(6151);
+    spawnMock.mockReturnValueOnce(proc);
+
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title: `Thread ${threadId}`,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: `Existing context for ${threadId}`,
+            at: new Date().toISOString(),
+          },
+          {
+            sender: 'user',
+            content: 'first pending message',
+            at: new Date().toISOString(),
+          },
+          {
+            sender: 'user',
+            content: 'second pending message',
+            at: new Date().toISOString(),
+          },
+        ],
+      })
+    );
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_batch_1',
+        threadId: 'thread-batch',
+        content: 'first pending message',
+        createdAt: new Date().toISOString(),
+        processed: false,
+      },
+      {
+        id: 'q_batch_2',
+        threadId: 'thread-batch',
+        content: 'second pending message',
+        createdAt: new Date().toISOString(),
+        processed: false,
+      },
+    ]);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.running).toBe(true);
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    const prompt = String(proc.stdin.write.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('first pending message');
+    expect(prompt).toContain('second pending message');
+    expect(prompt.split('first pending message').length - 1).toBe(1);
+    expect(prompt.split('second pending message').length - 1).toBe(1);
+
+    completeCodexTurn(proc, {
+      sessionId: 'codex-thread-batch',
+      text: '{"status":"review","reply":"single batched reply"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-batch');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('single batched reply');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 

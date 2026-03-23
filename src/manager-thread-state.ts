@@ -3,6 +3,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import type { Thread } from '@metyatech/thread-inbox';
 import type { QueueEntry, ManagerSession } from './manager-backend.js';
+import { summarizeManagerMessage } from './manager-message.js';
 
 export const MANAGER_THREAD_META_FILE =
   '.workspace-agent-hub-manager-thread-meta.json';
@@ -114,7 +115,7 @@ function previewText(thread: Thread): string {
     return 'まだやり取りはありません';
   }
   const senderLabel = lastMessage.sender === 'ai' ? '[ai]' : '[user]';
-  return `${senderLabel} ${lastMessage.content.replace(/\s+/g, ' ').trim()}`;
+  return `${senderLabel} ${summarizeManagerMessage(lastMessage.content, 140)}`;
 }
 
 function deriveUiState(input: {

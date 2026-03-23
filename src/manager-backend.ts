@@ -5,11 +5,11 @@
  * per-topic task execution.
  * Maintains per-workspace state in two workspace-local files (not committed):
  *
- *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, routing session ID, PID)
+ *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, legacy routing field, PID)
  *   .workspace-agent-hub-manager-queue.jsonl — persistent message queue
  *
  * Key design rules:
- *  - One Codex routing thread per workspace for freeform inbox triage
+ *  - One stateless Codex routing turn per freeform inbox send
  *  - One Codex execution thread per Manager topic, persisted in thread meta
  *  - Messages are processed serially; concurrent arrivals are queued and flushed in order
  *  - On server restart, a stale PID is detected and the queue resumes automatically
@@ -37,6 +37,15 @@ import {
   readManagerThreadMeta,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
+import { materializeManagerPromptImages } from './manager-message-files.js';
+import {
+  buildManagerMessagePromptContent,
+  extractManagerMessagePlainText,
+  parseManagerMessage,
+  serializeManagerMessage,
+  summarizeManagerMessage,
+  type ManagerMessageAttachment,
+} from './manager-message.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -54,14 +63,14 @@ export const MANAGER_REASONING_EFFORT = 'xhigh';
 export const MANAGER_REPLY_STATUS = 'review' as const;
 
 /**
- * System context embedded in the first message of a new session.
- * Follow-up messages use --resume and omit this prefix.
+ * System context embedded in each stateless routing turn.
  */
 const MANAGER_ROUTER_SYSTEM_PROMPT =
   'You are a manager AI assistant for this software workspace. ' +
   'Help coordinate work across multiple threads. ' +
-  'Keep context across messages; reference prior discussion when relevant. ' +
-  'Route requests into the right topic, ask for clarification only when routing is truly ambiguous, and never paraphrase the stored user wording when an exact excerpt can be preserved.';
+  'Judge each incoming user message on its own against the currently open topics instead of relying on older router-chat memory. ' +
+  'Default to a new topic unless the message clearly continues an existing open topic. ' +
+  'Route requests into the right topic, ask for clarification only when routing is truly ambiguous, and keep stored user wording as close to the original as possible.';
 
 const MANAGER_REPLY_JSON_RULES =
   'Return only strict JSON with keys {"status","reply"}. ' +
@@ -74,7 +83,12 @@ const MANAGER_WORKER_SYSTEM_PROMPT =
   'You are the built-in execution worker for Workspace Agent Hub. ' +
   'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
   'Do not stop at acknowledgement-only replies. ' +
-  'Return concise user-facing progress/result text, but only after you have genuinely attempted the work.';
+  'Return concise user-facing progress/result text, but only after you have genuinely attempted the work. ' +
+  'Write user-facing replies in plain, natural Japanese that reads like a capable coworker, not a tool log. ' +
+  'Avoid internal AI/platform/process jargon unless the user explicitly asked for it or it is necessary to unblock them. ' +
+  'Prefer ordinary task language, complete sentences, and direct explanations of what changed or what is still needed. ' +
+  'If a technical term is unavoidable, explain it briefly in everyday Japanese. ' +
+  'Use normal Markdown formatting only when it genuinely makes the reply easier to read.';
 
 const MANAGER_WORKER_JSON_RULES =
   'Return only strict JSON with keys {"status","reply"}. ' +
@@ -88,8 +102,11 @@ const MANAGER_ROUTING_JSON_RULES =
   'Each action must have kind "attach-existing", "create-new", "routing-confirmation", or "resolve-existing". ' +
   'For "attach-existing" and "resolve-existing", include threadId and content. ' +
   'For "create-new", include title and content. ' +
+  'Treat contextThreadId only as a hint; create a new topic unless the current message clearly belongs to that existing topic. ' +
+  'Do not attach to an existing topic just because it is broadly similar or was discussed recently; attach only when the current message clearly reads as a continuation of that exact topic. ' +
   'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
+  'content is the user message text that will be stored in that target topic. For "create-new" and "routing-confirmation", content must stand on its own inside that topic: keep it as close to the original wording as possible, but add the smallest missing context needed so the topic still makes sense when read alone. If the original wording already stands alone, make content match originalText. ' +
   'Split confident intents immediately and leave only the ambiguous parts for confirmation. ' +
   'Do not wrap JSON in markdown fences.';
 
@@ -140,7 +157,7 @@ export interface ManagerSession {
   status: 'idle' | 'busy' | 'not-started';
   /** Legacy workspace-level worker continuity; new execution turns use per-thread meta. */
   sessionId: string | null;
-  /** Separate Codex thread ID for freeform global routing decisions. */
+  /** Legacy field kept for on-disk compatibility; routing now runs statelessly per send. */
   routingSessionId: string | null;
   /** PID of the currently running codex process, or null */
   pid: number | null;
@@ -154,8 +171,16 @@ export interface QueueEntry {
   id: string;
   threadId: string;
   content: string;
+  attachments?: QueueEntryAttachment[];
   createdAt: string;
   processed: boolean;
+}
+
+export interface QueueEntryAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  path: string;
 }
 
 /** Derive a stable 16-char hex key from an absolute workspace path. */
@@ -283,10 +308,15 @@ export async function enqueueMessage(
   content: string
 ): Promise<string> {
   const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const attachments = await materializeManagerPromptImages({
+    workspaceKey: workspaceKey(dir),
+    message: content,
+  });
   const entry: QueueEntry = {
     id,
     threadId,
     content,
+    attachments,
     createdAt: new Date().toISOString(),
     processed: false,
   };
@@ -315,6 +345,95 @@ async function updateQueueLocked(
     const content = updated.map((e) => JSON.stringify(e)).join('\n');
     await atomicWrite(queueFilePath(dir), content ? content + '\n' : '');
   });
+}
+
+function queueEntryImagePaths(entry: QueueEntry | null): string[] {
+  return entry?.attachments?.map((attachment) => attachment.path) ?? [];
+}
+
+function queueEntriesImagePaths(entries: QueueEntry[]): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    for (const path of queueEntryImagePaths(entry)) {
+      if (seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function collectContiguousQueueBatch(
+  queue: QueueEntry[],
+  startIndex: number
+): QueueEntry[] {
+  const first = queue[startIndex];
+  if (!first) {
+    return [];
+  }
+
+  const batch = [first];
+  for (let index = startIndex + 1; index < queue.length; index += 1) {
+    const candidate = queue[index];
+    if (
+      !candidate ||
+      candidate.processed ||
+      candidate.threadId !== first.threadId
+    ) {
+      break;
+    }
+    batch.push(candidate);
+  }
+  return batch;
+}
+
+function mergeQueuedEntryContent(entries: QueueEntry[]): string {
+  if (entries.length <= 1) {
+    return entries[0]?.content ?? '';
+  }
+
+  const contentParts: string[] = [];
+  const attachments: ManagerMessageAttachment[] = [];
+  for (const entry of entries) {
+    const parsed = parseManagerMessage(entry.content);
+    const markdown = parsed.markdown.trim();
+    if (markdown) {
+      contentParts.push(markdown);
+    }
+    attachments.push(...parsed.attachments);
+  }
+
+  return serializeManagerMessage({
+    content: contentParts.join('\n\n'),
+    attachments,
+  });
+}
+
+function stripTrailingUserMessagesFromThread(thread: Thread): Thread {
+  if (thread.messages.length === 0) {
+    return thread;
+  }
+
+  let endIndex = thread.messages.length;
+  while (endIndex > 0) {
+    const message = thread.messages[endIndex - 1];
+    if (!message || message.sender !== 'user') {
+      break;
+    }
+    endIndex -= 1;
+  }
+
+  if (endIndex === thread.messages.length) {
+    return thread;
+  }
+
+  return {
+    ...thread,
+    messages: thread.messages.slice(0, endIndex),
+  };
 }
 
 /** Check whether a process with the given PID is still alive (zero-signal probe). */
@@ -371,9 +490,14 @@ export function resolveCodexCommand(options?: {
  */
 export function buildCodexArgs(
   _prompt: string,
-  sessionId: string | null
+  sessionId: string | null,
+  imagePaths: string[] = []
 ): string[] {
   const args: string[] = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
+
+  for (const imagePath of imagePaths) {
+    args.push('--image', imagePath);
+  }
 
   args.push(
     '--json',
@@ -488,7 +612,7 @@ function formatThreadHistory(thread: Thread): string {
     .slice(-12)
     .map((message) => {
       const sender = message.sender === 'ai' ? 'AI' : 'User';
-      return `${sender}: ${message.content}`;
+      return `${sender}:\n${buildManagerMessagePromptContent(message.content).text}`;
     })
     .join('\n\n');
 }
@@ -499,11 +623,12 @@ export function buildWorkerExecutionPrompt(input: {
   resolvedDir: string;
   isFirstTurn: boolean;
 }): string {
+  const promptContent = buildManagerMessagePromptContent(input.content).text;
   if (!input.isFirstTurn) {
     return [
       `[Topic: ${input.thread.title}]`,
       MANAGER_WORKER_JSON_RULES,
-      input.content,
+      promptContent,
     ].join('\n\n');
   }
 
@@ -515,7 +640,7 @@ export function buildWorkerExecutionPrompt(input: {
     'Topic history:',
     formatThreadHistory(input.thread),
     'New user request:',
-    input.content,
+    promptContent,
   ].join('\n\n');
 }
 
@@ -534,7 +659,7 @@ function buildRoutingPrompt(input: {
           .map((thread) => {
             const last = thread.messages.at(-1);
             const preview = last
-              ? `${last.sender}: ${last.content.replace(/\s+/g, ' ').slice(0, 140)}`
+              ? `${last.sender}: ${summarizeManagerMessage(last.content, 140)}`
               : 'no messages yet';
             return [
               `- id: ${thread.id}`,
@@ -558,7 +683,7 @@ function buildRoutingPrompt(input: {
     'Existing open topics:',
     threadSummary,
     'User message:',
-    input.content,
+    buildManagerMessagePromptContent(input.content).text,
   ].join('\n\n');
 
   if (!input.isFirstTurn) {
@@ -761,7 +886,7 @@ export function parseManagerRoutingPlan(
 }
 
 function normalizeForRoutingMatch(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+  return parseManagerMessage(text).markdown.replace(/\s+/g, ' ').trim();
 }
 
 export function pickThreadUserMessage(
@@ -769,25 +894,35 @@ export function pickThreadUserMessage(
   action: ManagerRoutingAction,
   totalActions: number
 ): string {
+  const parsedFull = parseManagerMessage(fullInput);
   const normalizedFull = normalizeForRoutingMatch(fullInput);
   const originalText = action.originalText?.trim();
+  let selectedContent = '';
+  const shouldPreferStandaloneContent =
+    action.kind === 'create-new' || action.kind === 'routing-confirmation';
+  const content = action.content.trim();
   if (
+    !shouldPreferStandaloneContent &&
     originalText &&
     normalizedFull.includes(normalizeForRoutingMatch(originalText))
   ) {
-    return originalText;
+    selectedContent = originalText;
+  } else if (shouldPreferStandaloneContent && content) {
+    selectedContent = content;
+  } else {
+    if (content && normalizedFull.includes(normalizeForRoutingMatch(content))) {
+      selectedContent = content;
+    } else if (totalActions === 1) {
+      selectedContent = parsedFull.markdown.trim();
+    } else {
+      selectedContent = content;
+    }
   }
 
-  const content = action.content.trim();
-  if (content && normalizedFull.includes(normalizeForRoutingMatch(content))) {
-    return content;
-  }
-
-  if (totalActions === 1) {
-    return fullInput.trim();
-  }
-
-  return content;
+  return serializeManagerMessage({
+    content: selectedContent,
+    attachments: parsedFull.attachments,
+  });
 }
 
 async function runCodexTurn(input: {
@@ -795,6 +930,7 @@ async function runCodexTurn(input: {
   resolvedDir: string;
   prompt: string;
   sessionId: string | null;
+  imagePaths?: string[];
   onSpawn?: (pid: number | null) => void | Promise<void>;
 }): Promise<{
   code: number | null;
@@ -803,7 +939,11 @@ async function runCodexTurn(input: {
   parsed: { text: string; sessionId: string | null };
 }> {
   const codexCommand = resolveCodexCommand();
-  const args = buildCodexArgs(input.prompt, input.sessionId);
+  const args = buildCodexArgs(
+    input.prompt,
+    input.sessionId,
+    input.imagePaths ?? []
+  );
   const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
   const proc = spawn(spawnSpec.command, spawnSpec.args, spawnSpec.spawnOptions);
   await input.onSpawn?.(proc.pid ?? null);
@@ -847,7 +987,7 @@ const inFlight = new Set<string>();
 const routingLocks = new Map<string, Promise<void>>();
 
 function makeFallbackThreadTitle(content: string): string {
-  const normalized = content.replace(/\s+/g, ' ').trim();
+  const normalized = extractManagerMessagePlainText(content);
   if (!normalized) {
     return '新しい話題';
   }
@@ -939,8 +1079,13 @@ export async function processNextQueued(
     }
 
     const queue = await readQueue(dir);
-    const next = queue.find((e) => !e.processed);
+    const nextIndex = queue.findIndex((entry) => !entry.processed);
+    if (nextIndex < 0) return;
+
+    const nextEntries = collectContiguousQueueBatch(queue, nextIndex);
+    const next = nextEntries[0];
     if (!next) return;
+    const nextBatchIds = new Set(nextEntries.map((entry) => entry.id));
 
     // Mark session as busy before spawning
     const freshSession = await readSession(dir);
@@ -954,7 +1099,7 @@ export async function processNextQueued(
     const thread = await getThread(resolvedDir, next.threadId);
     if (!thread) {
       await updateQueueLocked(dir, (q) =>
-        q.filter((entry) => entry.id !== next.id)
+        q.filter((entry) => !nextBatchIds.has(entry.id))
       );
       await writeSession(dir, {
         ...freshSession,
@@ -971,9 +1116,11 @@ export async function processNextQueued(
       next.threadId
     );
     const isFirstTurn = workerSessionId === null;
+    const promptThread = stripTrailingUserMessagesFromThread(thread);
+    const promptContent = mergeQueuedEntryContent(nextEntries);
     const prompt = buildWorkerExecutionPrompt({
-      content: next.content,
-      thread,
+      content: promptContent,
+      thread: promptThread,
       resolvedDir,
       isFirstTurn,
     });
@@ -991,6 +1138,7 @@ export async function processNextQueued(
         resolvedDir,
         prompt,
         sessionId: workerSessionId,
+        imagePaths: queueEntriesImagePaths(nextEntries),
         onSpawn: async (pid) => {
           const withPid = await readSession(dir);
           await writeSession(dir, { ...withPid, pid });
@@ -1008,12 +1156,13 @@ export async function processNextQueued(
           dir,
           resolvedDir,
           prompt: buildWorkerExecutionPrompt({
-            content: next.content,
-            thread,
+            content: promptContent,
+            thread: promptThread,
             resolvedDir,
             isFirstTurn: true,
           }),
           sessionId: null,
+          imagePaths: queueEntriesImagePaths(nextEntries),
           onSpawn: async (pid) => {
             const withPid = await readSession(dir);
             await writeSession(dir, { ...withPid, pid });
@@ -1027,7 +1176,7 @@ export async function processNextQueued(
       );
 
       await updateQueueLocked(dir, (q) =>
-        q.filter((entry) => entry.id !== next.id)
+        q.filter((entry) => !nextBatchIds.has(entry.id))
       );
 
       const notFoundMsg =
@@ -1062,7 +1211,7 @@ export async function processNextQueued(
 
     if (runResult.code === 0 && parsedReply) {
       await updateQueueLocked(dir, (q) =>
-        q.filter((entry) => entry.id !== next.id)
+        q.filter((entry) => !nextBatchIds.has(entry.id))
       );
       try {
         await addMessage(
@@ -1093,7 +1242,7 @@ export async function processNextQueued(
 
     if (runResult.code === 0 && runResult.parsed.text) {
       await updateQueueLocked(dir, (q) =>
-        q.filter((entry) => entry.id !== next.id)
+        q.filter((entry) => !nextBatchIds.has(entry.id))
       );
       try {
         await addMessage(
@@ -1133,7 +1282,7 @@ export async function processNextQueued(
       /* thread may have been deleted */
     }
     await updateQueueLocked(dir, (q) =>
-      q.filter((entry) => entry.id !== next.id)
+      q.filter((entry) => !nextBatchIds.has(entry.id))
     );
     if (isSessionInvalidError(combinedOutput)) {
       await writeWorkerSessionId(resolvedDir, next.threadId, null);
@@ -1163,24 +1312,27 @@ async function routeFreeformMessage(input: {
   contextThreadId?: string | null;
 }): Promise<{
   plan: ManagerRoutingPlan;
-  routingSessionId: string | null;
 }> {
   const openThreads = (await listThreads(input.dir)).filter(
     (thread) => thread.status !== 'resolved'
   );
-  const session = await readSession(input.dir);
   const prompt = buildRoutingPrompt({
     content: input.content,
     resolvedDir: input.resolvedDir,
     threads: openThreads,
     contextThreadId: input.contextThreadId,
-    isFirstTurn: session.routingSessionId === null,
+    isFirstTurn: true,
+  });
+  const promptImages = await materializeManagerPromptImages({
+    workspaceKey: workspaceKey(input.dir),
+    message: input.content,
   });
   const runResult = await runCodexTurn({
     dir: input.dir,
     resolvedDir: input.resolvedDir,
     prompt,
-    sessionId: session.routingSessionId,
+    sessionId: null,
+    imagePaths: promptImages.map((image) => image.path),
   });
 
   if (runResult.code !== 0) {
@@ -1205,13 +1357,11 @@ async function routeFreeformMessage(input: {
           },
         ],
       },
-      routingSessionId: runResult.parsed.sessionId ?? session.routingSessionId,
     };
   }
 
   return {
     plan: parsedPlan,
-    routingSessionId: runResult.parsed.sessionId ?? session.routingSessionId,
   };
 }
 
@@ -1234,7 +1384,7 @@ export async function sendGlobalToBuiltinManager(
       });
     }
 
-    const { plan, routingSessionId } = await routeFreeformMessage({
+    const { plan } = await routeFreeformMessage({
       dir,
       resolvedDir,
       content,
@@ -1244,7 +1394,7 @@ export async function sendGlobalToBuiltinManager(
     const refreshedSession = await readSession(dir);
     await writeSession(dir, {
       ...refreshedSession,
-      routingSessionId,
+      routingSessionId: null,
       lastMessageAt: new Date().toISOString(),
     });
 

@@ -43,5 +43,6 @@ export default defineConfig([
     clean: false,
     dts: false,
     minify: false,
+    noExternal: ['marked'],
   },
 ]);

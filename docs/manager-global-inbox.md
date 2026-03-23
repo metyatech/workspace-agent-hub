@@ -70,6 +70,8 @@ topic before sending and makes fragmented work harder to capture quickly.
 - Global composer result summary near the composer, not detached elsewhere
 - Topic list with explicit urgency buckets
 - Per-topic detail for deep reading and follow-up
+- Rich message detail rendering for multiline text, inline images, and readable
+  AI formatting
 
 ### Generated artifacts
 
@@ -95,9 +97,15 @@ topic before sending and makes fragmented work harder to capture quickly.
   freeform message, the stored user-side topic message should keep that
   original wording instead of being immediately rewritten into AI-normalized
   prose
+- For brand-new topics, the stored user-side message should still be readable
+  on its own inside that topic: keep the user's wording as much as possible,
+  but add the smallest missing context when the raw excerpt would otherwise be
+  too referential to understand alone
 - Preferred shape:
   - collapsed low-height docked composer when idle
   - expands into a larger writing surface on interaction
+  - rendered preview before send so image placement and markdown structure are
+    obvious before queueing
 
 ### Topic routing model
 
@@ -196,6 +204,8 @@ The Manager screen must make these points obvious without external explanation:
 - Avoid exposing internal thread IDs or infrastructure wording
 - Make the current composer target obvious: either whole-inbox routing or a
   specific selected task
+- Preserve real conversation shape inside a topic: multiline user messages,
+  inline image evidence, and Markdown-formatted AI replies
 
 ### Routing feedback placement
 
@@ -221,28 +231,30 @@ This feedback is not the main record; the main record remains the topic list.
 1. The Manager page has one global send path that does not require selecting a
    topic first.
 2. A multi-intent user message can be split into multiple topic updates.
-3. Confidently routed parts proceed immediately even if another part requires
+3. A newly created topic stores a user-side message that still makes sense when
+   read without the original multi-intent source message.
+4. Confidently routed parts proceed immediately even if another part requires
    clarification.
-4. Ambiguous routing creates a highest-priority confirmation item instead of
+5. Ambiguous routing creates a highest-priority confirmation item instead of
    blocking all work.
-5. Topic replies appear in the resulting topic(s), not only as one global
+6. Topic replies appear in the resulting topic(s), not only as one global
    summary.
-6. The inbox clearly distinguishes:
+7. The inbox clearly distinguishes:
    - routing confirmation needed
    - user reply needed
    - AI finished, user confirmation needed
    - queued
    - AI working
    - done
-7. `done` items are hidden by default and can be shown on demand.
-8. The user can close a topic explicitly and can also close it through a clear
+8. `done` items are hidden by default and can be shown on demand.
+9. The user can close a topic explicitly and can also close it through a clear
    natural-language approval.
-9. The primary mobile and desktop flows avoid horizontal scrolling.
-10. The user can understand the next action from the screen itself without
+10. The primary mobile and desktop flows avoid horizontal scrolling.
+11. The user can understand the next action from the screen itself without
     needing chat guidance.
-11. When the user is reading one topic and that topic changes state, the screen
+12. When the user is reading one topic and that topic changes state, the screen
     keeps that topic visibly anchored so it does not feel lost.
-12. When the user is about to send a follow-up to one topic, the target topic
+13. When the user is about to send a follow-up to one topic, the target topic
     is visually explicit before send.
 
 ## Implementation sequence

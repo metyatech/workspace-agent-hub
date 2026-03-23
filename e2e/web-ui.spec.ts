@@ -1,5 +1,7 @@
+import { AxeBuilder } from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import type { AxeResults } from 'axe-core';
 import type { Server } from 'node:http';
 import { PowerShellSessionBridge } from '../src/session-bridge.js';
 import { createWebUiServer } from '../src/web-ui.js';
@@ -37,6 +39,54 @@ async function expectSessionCard(page: Page, title: string): Promise<void> {
   await expect(
     page.locator('.session-card').filter({ hasText: title })
   ).toHaveCount(1, { timeout: 120000 });
+}
+
+function formatAxeViolations(violations: AxeResults['violations']): string {
+  return violations
+    .map((violation) => {
+      const targets = violation.nodes.flatMap((node) => node.target).join(', ');
+      return `${violation.id}: ${violation.help} [${targets}]`;
+    })
+    .join('\n');
+}
+
+async function expectNoAccessibilityViolations(page: Page): Promise<void> {
+  const results = await new AxeBuilder({ page })
+    .withTags([
+      'wcag2a',
+      'wcag2aa',
+      'wcag21a',
+      'wcag21aa',
+      'wcag22a',
+      'wcag22aa',
+      'best-practice',
+    ])
+    .analyze();
+  expect(results.violations, formatAxeViolations(results.violations)).toEqual(
+    []
+  );
+}
+
+async function openManager(page: Page): Promise<void> {
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
+  await page.getByRole('button', { name: '開く', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Manager を開く' })
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'Manager を開く' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
+  await expect(
+    page.getByRole('heading', { name: 'マネージャー' })
+  ).toBeVisible();
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -120,7 +170,9 @@ test('authenticates and manages a shell session from the browser UI', async ({
     await expect(
       page.getByRole('heading', { name: '最初にやること' })
     ).toBeVisible();
-    await expect(page.locator('#workingDirectoryInput')).toHaveValue('D:\\ghws');
+    await expect(page.locator('#workingDirectoryInput')).toHaveValue(
+      'D:\\ghws'
+    );
     await expect(page.locator('#connectionHint')).toContainText('接続');
     await expect(page.locator('#installHint')).toContainText('ホーム画面');
     await expect(page.locator('#pairingHint')).toContainText('まずこの QR');
@@ -254,10 +306,11 @@ test('opens Manager from Hub in the same tab on desktop', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Manager を開く' }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/manager/?$`));
+  await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
   await expect(
     page.getByRole('heading', { name: 'マネージャー' })
   ).toBeVisible();
+  await expect(page.locator('#dir-label')).not.toHaveText('');
   await expect(
     page.getByRole('heading', { name: 'この画面を開くコードを入力' })
   ).toHaveCount(0);
@@ -282,11 +335,24 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
 
   await page.getByRole('button', { name: 'Manager を開く' }).click();
 
-  await expect(page).toHaveURL(new RegExp(`/manager/?$`));
+  await expect(page).toHaveURL(new RegExp(`/manager/(?:#.*)?$`));
   await expect(
     page.getByRole('heading', { name: 'マネージャー' })
   ).toBeVisible();
+  await expect(page.locator('#dir-label')).not.toHaveText('');
+  const openComposerButton = page.getByRole('button', {
+    name: '送信欄を開く',
+    exact: true,
+  });
+  await expect(openComposerButton).toBeVisible();
+  await openComposerButton.dispatchEvent('click');
+  if (!(await page.getByLabel('Manager への送信内容').isVisible())) {
+    await openComposerButton.dispatchEvent('click');
+  }
   await expect(page.getByLabel('Manager への送信内容')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '画像を追加', exact: true })
+  ).toBeVisible();
   await expect
     .poll(async () =>
       page.evaluate(
@@ -296,4 +362,34 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
       )
     )
     .toBe(true);
+});
+
+test('keeps the Manager auth screen accessible', async ({ page }) => {
+  await page.goto(`${baseUrl}/manager/`, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+
+  await expect(
+    page.getByRole('heading', {
+      name: 'Manager は、あとで状況を見失わないための受信箱です',
+    })
+  ).toBeVisible();
+  await expectNoAccessibilityViolations(page);
+});
+
+test('keeps the unlocked Manager inbox accessible on desktop and mobile', async ({
+  page,
+}) => {
+  for (const viewport of [
+    { width: 1365, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await openManager(page);
+    await expect(page.locator('#dir-label')).not.toHaveText('');
+    await expectNoAccessibilityViolations(page);
+  }
 });
