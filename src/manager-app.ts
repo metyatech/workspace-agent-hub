@@ -1779,13 +1779,13 @@ class ManagerApp {
       return;
     }
     const thread = this.#findThread(this.#composerTargetThreadId);
-    context.classList.remove('hidden');
     if (thread && thread.uiState !== 'done') {
-      context.textContent = `この送信は「${thread.title}」への追記として優先します。別の task に送りたいときは、その task を開いて「この task に送る」か、「全体へ戻す」を押してください。`;
+      context.classList.remove('hidden');
+      context.textContent = `この送信は「${thread.title}」を優先します。`;
       return;
     }
-    context.textContent =
-      '送信先をまだ決めていません。ここにまとめて送れば AI が既存 task への追記・新しい task・確認待ちに分けます。特定の task に送りたいときは、その task を開いて「この task に送る」を押してください。';
+    context.textContent = '';
+    context.classList.add('hidden');
   }
 
   #renderComposerFeedback(summary: ManagerRoutingSummary): void {
