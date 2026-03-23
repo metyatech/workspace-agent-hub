@@ -180,7 +180,16 @@ export interface ManagerSession {
   lastMessageAt: string | null;
   /** Prevents normal backlog from starving when priority items keep arriving. */
   priorityStreak: number;
+  /** Last time the current worker made observable progress (spawn/progress event). */
+  lastProgressAt: string | null;
+  /** Latest manager-runtime error surfaced to the GUI. */
+  lastErrorMessage: string | null;
+  lastErrorAt: string | null;
 }
+
+export type ManagerHealth = 'ok' | 'stalled' | 'error';
+
+const MANAGER_STALLED_PROGRESS_THRESHOLD_MS = 3 * 60 * 1000;
 
 export interface QueueEntry {
   id: string;
@@ -231,6 +240,9 @@ function makeDefaultSession(dir: string): ManagerSession {
     startedAt: null,
     lastMessageAt: null,
     priorityStreak: 0,
+    lastProgressAt: null,
+    lastErrorMessage: null,
+    lastErrorAt: null,
   };
 }
 
@@ -290,6 +302,26 @@ export async function writeSession(
     atomicWrite(filePath, JSON.stringify(session, null, 2))
   );
   notifyManagerUpdate(dir);
+}
+
+async function touchManagerProgress(dir: string): Promise<void> {
+  const session = await readSession(dir);
+  await writeSession(dir, {
+    ...session,
+    lastProgressAt: new Date().toISOString(),
+  });
+}
+
+async function setManagerRuntimeError(
+  dir: string,
+  message: string
+): Promise<void> {
+  const session = await readSession(dir);
+  await writeSession(dir, {
+    ...session,
+    lastErrorMessage: message,
+    lastErrorAt: new Date().toISOString(),
+  });
 }
 
 export async function readQueue(dir: string): Promise<QueueEntry[]> {
@@ -1365,11 +1397,17 @@ export async function processNextQueued(
       session.pid !== null &&
       !isPidAlive(session.pid)
     ) {
+      const staleMessage =
+        session.currentQueueId === null
+          ? '前の担当 worker が途中で停止しました。'
+          : '前の担当 worker が途中で停止したため、この作業項目をもう一度やり直します。';
       await writeSession(dir, {
         ...session,
         status: 'idle',
         pid: null,
         currentQueueId: null,
+        lastErrorMessage: staleMessage,
+        lastErrorAt: new Date().toISOString(),
       });
     } else if (session.status === 'busy') {
       return; // Genuinely still running
@@ -1400,6 +1438,9 @@ export async function processNextQueued(
       currentQueueId: next.id,
       lastMessageAt: new Date().toISOString(),
       priorityStreak: nextPriorityStreak,
+      lastProgressAt: null,
+      lastErrorMessage: null,
+      lastErrorAt: null,
     };
     await writeSession(dir, busySession);
 
@@ -1473,7 +1514,11 @@ export async function processNextQueued(
         imagePaths: queueEntriesImagePaths(nextEntries),
         onSpawn: async (pid) => {
           const withPid = await readSession(dir);
-          await writeSession(dir, { ...withPid, pid });
+          await writeSession(dir, {
+            ...withPid,
+            pid,
+            lastProgressAt: new Date().toISOString(),
+          });
         },
         onProgress: async (progress) => {
           const nextText =
@@ -1490,6 +1535,7 @@ export async function processNextQueued(
             assigneeLabel: `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
             workerSessionId: progress.sessionId ?? workerSessionId,
           });
+          await touchManagerProgress(dir);
         },
       });
 
@@ -1513,7 +1559,11 @@ export async function processNextQueued(
           imagePaths: queueEntriesImagePaths(nextEntries),
           onSpawn: async (pid) => {
             const withPid = await readSession(dir);
-            await writeSession(dir, { ...withPid, pid });
+            await writeSession(dir, {
+              ...withPid,
+              pid,
+              lastProgressAt: new Date().toISOString(),
+            });
           },
           onProgress: async (progress) => {
             const nextText =
@@ -1530,6 +1580,7 @@ export async function processNextQueued(
               assigneeLabel: `Codex ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
               workerSessionId: progress.sessionId ?? null,
             });
+            await touchManagerProgress(dir);
           },
         });
       }
@@ -1560,6 +1611,7 @@ export async function processNextQueued(
       }
 
       const current = await readSession(dir);
+      await setManagerRuntimeError(dir, notFoundMsg);
       await updateWorkerLiveOutput({
         dir: resolvedDir,
         threadId: next.threadId,
@@ -1662,6 +1714,7 @@ export async function processNextQueued(
     } catch {
       /* thread may have been deleted */
     }
+    await setManagerRuntimeError(dir, errMsg);
     await updateQueueLocked(dir, (q) =>
       q.filter((entry) => !nextBatchIds.has(entry.id))
     );
@@ -1686,6 +1739,12 @@ export async function processNextQueued(
     shouldContinue = true;
   } catch (err) {
     console.error('[manager-backend] processNextQueued error:', err);
+    await setManagerRuntimeError(
+      dir,
+      err instanceof Error
+        ? `Manager backend internal error: ${err.message}`
+        : `Manager backend internal error: ${String(err)}`
+    );
   } finally {
     inFlight.delete(resolvedDir);
     if (shouldContinue) {
@@ -2075,20 +2134,23 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   running: boolean;
   configured: boolean;
   builtinBackend: boolean;
+  health: ManagerHealth;
   detail: string;
   pendingCount: number;
   currentQueueId: string | null;
   currentThreadId: string | null;
   currentThreadTitle: string | null;
+  errorMessage: string | null;
+  errorAt: string | null;
 }> {
-  const session = await readSession(dir);
+  let session = await readSession(dir);
   const queue = await readQueue(dir);
   const pending = queue.filter((e) => !e.processed).length;
-  const currentQueueEntry =
+  let currentQueueEntry =
     session.currentQueueId === null
       ? null
       : (queue.find((entry) => entry.id === session.currentQueueId) ?? null);
-  const currentThread =
+  let currentThread =
     currentQueueEntry === null
       ? null
       : await getThread(dir, currentQueueEntry.threadId);
@@ -2096,13 +2158,24 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   if (session.status === 'busy') {
     const alive = session.pid !== null && isPidAlive(session.pid);
     if (alive) {
+      const lastProgressAt =
+        parseMessageTimestamp(session.lastProgressAt) ??
+        parseMessageTimestamp(session.lastMessageAt);
+      const stalled =
+        lastProgressAt !== null &&
+        Date.now() - lastProgressAt >= MANAGER_STALLED_PROGRESS_THRESHOLD_MS;
       return {
         running: true,
         configured: true,
         builtinBackend: true,
-        detail: currentThread
-          ? `処理中 (${currentThread.title})`
-          : `処理中 (PID ${session.pid})`,
+        health: stalled ? 'stalled' : 'ok',
+        detail: stalled
+          ? currentThread
+            ? `AI backend の進捗が止まっている可能性があります (${currentThread.title})`
+            : `AI backend の進捗が止まっている可能性があります (PID ${session.pid})`
+          : currentThread
+            ? `処理中 (${currentThread.title})`
+            : `処理中 (PID ${session.pid})`,
         pendingCount: Math.max(
           pending - (currentQueueEntry === null ? 0 : 1),
           0
@@ -2110,27 +2183,58 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
         currentQueueId: session.currentQueueId,
         currentThreadId: currentQueueEntry?.threadId ?? null,
         currentThreadTitle: currentThread?.title ?? null,
+        errorMessage: stalled
+          ? '最後に進捗が見えてから長く止まっています。worker がハングしている可能性があります。'
+          : null,
+        errorAt: stalled
+          ? (session.lastProgressAt ?? session.lastMessageAt)
+          : null,
       };
     }
     // Stale PID — reset
+    const staleMessage =
+      session.currentQueueId === null
+        ? '前の担当 worker が途中で停止しました。'
+        : '前の担当 worker が途中で停止したため、この作業項目をやり直します。';
     await writeSession(dir, {
       ...session,
       status: 'idle',
       pid: null,
       currentQueueId: null,
+      lastErrorMessage: staleMessage,
+      lastErrorAt: new Date().toISOString(),
     });
+    session = await readSession(dir);
+    currentQueueEntry = null;
+    currentThread = null;
   }
 
   if (pending > 0) {
-    const latestSession = await readSession(dir);
+    let latestSession = await readSession(dir);
     if (latestSession.status === 'not-started') {
       await writeSession(dir, {
         ...latestSession,
         status: 'idle',
         startedAt: latestSession.startedAt ?? new Date().toISOString(),
       });
+      latestSession = await readSession(dir);
     }
     void processNextQueued(dir, resolvePath(dir));
+    if (latestSession.lastErrorMessage) {
+      return {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'error',
+        detail: 'AI backend で問題が起きています',
+        pendingCount: pending,
+        currentQueueId: null,
+        currentThreadId: null,
+        currentThreadTitle: null,
+        errorMessage: latestSession.lastErrorMessage,
+        errorAt: latestSession.lastErrorAt,
+      };
+    }
   }
 
   if (session.status === 'not-started' && pending === 0) {
@@ -2138,11 +2242,30 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       running: false,
       configured: true,
       builtinBackend: true,
+      health: 'ok',
       detail: '未起動 — メッセージ送信で自動起動します',
       pendingCount: 0,
       currentQueueId: null,
       currentThreadId: null,
       currentThreadTitle: null,
+      errorMessage: null,
+      errorAt: null,
+    };
+  }
+
+  if (session.lastErrorMessage) {
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'error',
+      detail: 'AI backend で問題が起きています',
+      pendingCount: pending,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+      errorMessage: session.lastErrorMessage,
+      errorAt: session.lastErrorAt,
     };
   }
 
@@ -2150,11 +2273,14 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
     running: true,
     configured: true,
     builtinBackend: true,
+    health: 'ok',
     detail: pending > 0 ? `待機中 (キュー: ${pending}件)` : '待機中',
     pendingCount: pending,
     currentQueueId: null,
     currentThreadId: null,
     currentThreadTitle: null,
+    errorMessage: null,
+    errorAt: null,
   };
 }
 

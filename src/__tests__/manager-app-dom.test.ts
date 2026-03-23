@@ -156,11 +156,14 @@ function createManagerFetchWithData(input: {
     running: boolean;
     configured: boolean;
     builtinBackend: boolean;
+    health?: 'ok' | 'stalled' | 'error';
     detail: string;
     pendingCount?: number;
     currentQueueId?: string | null;
     currentThreadId?: string | null;
     currentThreadTitle?: string | null;
+    errorMessage?: string | null;
+    errorAt?: string | null;
   };
 }) {
   return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
@@ -2533,6 +2536,55 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('AIから返答 1');
     expect(chips).toContain('AI の順番待ち 0');
     expect(chips).toContain('AI作業中 0');
+  });
+
+  it('shows an explicit backend problem state instead of benign queued copy when manager health is bad', async () => {
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'stalled-status-token',
+      threads: [
+        makeThreadView('queued-thread', '順番待ちの task', {
+          status: 'waiting',
+          uiState: 'queued',
+          previewText: '[user] まだ着手していません',
+          lastSender: 'user',
+          queueDepth: 1,
+        }),
+      ],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'stalled',
+        detail:
+          'AI backend の進捗が止まっている可能性があります (順番待ちの task)',
+        pendingCount: 1,
+        currentQueueId: 'q_stalled',
+        currentThreadId: 'queued-thread',
+        currentThreadTitle: '順番待ちの task',
+        errorMessage:
+          '最後に進捗が見えてから長く止まっています。worker がハングしている可能性があります。',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'stalled-status-token');
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('AI backend が止まっている可能性があります');
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('AI backend が止まっている可能性があります');
+    expect(
+      document.querySelector<HTMLElement>('#activity-detail')!.textContent
+    ).toContain('worker がハングしている可能性があります');
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).not.toContain('AI の順番待ちがあります');
   });
 });
 

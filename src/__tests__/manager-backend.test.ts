@@ -55,6 +55,7 @@ import {
   sendGlobalToBuiltinManager,
   sendToBuiltinManager,
   shouldUseShellForCodexCommand,
+  writeSession,
   writeQueue,
 } from '../manager-backend.js';
 import {
@@ -963,6 +964,54 @@ describe('manager backend codex integration', () => {
 
     expect(spawnMock).not.toHaveBeenCalled();
     expect(addMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('marks the manager status as stalled when the current worker shows no progress for too long', async () => {
+    await writeQueue(tempDir, [
+      {
+        id: 'q_stalled',
+        threadId: 'thread-stalled',
+        content: 'stalled request',
+        createdAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      pid: process.pid,
+      currentQueueId: 'q_stalled',
+      lastMessageAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+      lastProgressAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+    });
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('stalled');
+    expect(status.currentThreadId).toBe('thread-stalled');
+    expect(status.currentThreadTitle).toBe('Thread thread-stalled');
+    expect(status.detail).toContain('止まっている可能性があります');
+    expect(status.errorMessage).toContain(
+      '最後に進捗が見えてから長く止まっています'
+    );
+  });
+
+  it('surfaces the last backend error in manager status instead of showing normal waiting', async () => {
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'idle',
+      lastErrorMessage: '前の担当 worker が途中で停止しました。',
+      lastErrorAt: '2026-03-23T08:00:00.000Z',
+    });
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('error');
+    expect(status.detail).toBe('AI backend で問題が起きています');
+    expect(status.errorMessage).toBe('前の担当 worker が途中で停止しました。');
+    expect(status.errorAt).toBe('2026-03-23T08:00:00.000Z');
   });
 
   it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {

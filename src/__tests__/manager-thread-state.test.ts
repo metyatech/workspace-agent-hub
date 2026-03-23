@@ -35,6 +35,9 @@ describe('manager thread state derivation', () => {
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:05.000Z',
         priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
       },
       queue: [],
       meta: {},
@@ -86,6 +89,9 @@ describe('manager thread state derivation', () => {
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:12.000Z',
         priorityStreak: 0,
+        lastProgressAt: '2026-03-21T00:00:12.000Z',
+        lastErrorMessage: null,
+        lastErrorAt: null,
       },
       queue: [
         {
@@ -157,6 +163,9 @@ describe('manager thread state derivation', () => {
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:05.000Z',
         priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
       },
       queue: [
         {
@@ -227,6 +236,9 @@ describe('manager thread state derivation', () => {
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:00:05.000Z',
         priorityStreak: 3,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
       },
       queue: [
         {
@@ -297,6 +309,9 @@ describe('manager thread state derivation', () => {
         startedAt: '2026-03-21T00:00:00.000Z',
         lastMessageAt: '2026-03-21T00:12:00.000Z',
         priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
       },
       queue: [],
       meta: {

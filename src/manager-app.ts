@@ -74,11 +74,14 @@ interface ManagerStatusPayload {
   running: boolean;
   configured: boolean;
   builtinBackend: boolean;
+  health?: 'ok' | 'stalled' | 'error';
   detail?: string;
   pendingCount?: number;
   currentQueueId?: string | null;
   currentThreadId?: string | null;
   currentThreadTitle?: string | null;
+  errorMessage?: string | null;
+  errorAt?: string | null;
 }
 
 interface ManagerLiveSnapshotPayload {
@@ -1010,6 +1013,16 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
     return true;
   }
   return status.detail?.includes('処理中') ?? false;
+}
+
+function managerStatusProblem(
+  status: ManagerStatusPayload | null
+): 'stalled' | 'error' | null {
+  const health = status?.health ?? 'ok';
+  if (health === 'stalled' || health === 'error') {
+    return health;
+  }
+  return null;
 }
 
 function threadStateLocation(thread: ThreadView): string {
@@ -2306,22 +2319,41 @@ class ManagerApp {
 
     if (payload.running) {
       const busy = managerStatusBusy(payload);
+      const problem = managerStatusProblem(payload);
       if (dot) {
-        dot.style.background = busy ? '#f59e0b' : '#22c55e';
+        dot.style.background =
+          problem === 'error'
+            ? '#ef4444'
+            : problem === 'stalled'
+              ? '#f97316'
+              : busy
+                ? '#f59e0b'
+                : '#22c55e';
       }
       if (text) {
-        text.style.color = busy ? '#92400e' : '#166534';
-        const label = busy
-          ? payload.currentThreadTitle
-            ? `AI が「${payload.currentThreadTitle}」を処理中です`
-            : 'AI が作業中です'
-          : '待機中です';
-        const queueTail =
-          !busy && (payload.pendingCount ?? 0) > 0
+        text.style.color =
+          problem === 'error'
+            ? '#b91c1c'
+            : problem === 'stalled'
+              ? '#c2410c'
+              : busy
+                ? '#92400e'
+                : '#166534';
+        const label =
+          problem === 'error'
+            ? 'AI backend で問題が起きています'
+            : problem === 'stalled'
+              ? 'AI backend が止まっている可能性があります'
+              : busy
+                ? payload.currentThreadTitle
+                  ? `AI が「${payload.currentThreadTitle}」を処理中です`
+                  : 'AI が作業中です'
+                : '待機中です';
+        const queueTail = payload.detail
+          ? ` — ${payload.detail}`
+          : !busy && (payload.pendingCount ?? 0) > 0
             ? ` — キュー ${payload.pendingCount} 件`
-            : payload.detail
-              ? ` — ${payload.detail}`
-              : '';
+            : '';
         text.textContent = `${label}${queueTail}`;
       }
       startButton?.classList.add('hidden');
@@ -3195,12 +3227,18 @@ class ManagerApp {
     ) as Record<ManagerUiState, number>;
 
     const busy = managerStatusBusy(this.#managerStatus);
+    const problem = managerStatusProblem(this.#managerStatus);
     const running = this.#managerStatus?.running ?? false;
     const configured = this.#managerStatus?.configured ?? false;
     const currentThreadTitle = this.#managerStatus?.currentThreadTitle ?? null;
     const pendingCount = this.#managerStatus?.pendingCount ?? 0;
+    const statusErrorMessage = this.#managerStatus?.errorMessage ?? null;
 
-    if (busy) {
+    if (problem === 'error') {
+      primary.textContent = 'AI backend で問題が起きています';
+    } else if (problem === 'stalled') {
+      primary.textContent = 'AI backend が止まっている可能性があります';
+    } else if (busy) {
       primary.textContent = currentThreadTitle
         ? `AI が「${currentThreadTitle}」を進めています`
         : 'AI が作業や振り分けを進めています';
@@ -3222,7 +3260,15 @@ class ManagerApp {
       primary.textContent = 'Manager を使えません';
     }
 
-    if (busy) {
+    if (problem === 'error') {
+      detail.textContent = statusErrorMessage
+        ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''}`
+        : 'AI backend のエラーで処理できていません。';
+    } else if (problem === 'stalled') {
+      detail.textContent = statusErrorMessage
+        ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が進んでいません。` : ''}`
+        : 'しばらく進捗がなく、処理が止まっている可能性があります。';
+    } else if (busy) {
       detail.textContent =
         pendingCount > 0
           ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると一覧の上へ上がります。`
