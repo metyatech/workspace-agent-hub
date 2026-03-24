@@ -335,6 +335,17 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).toContain('残っている作業メモ');
   });
 
+  it('keeps the send target beside the send button without extra SEND or Markdown copy', () => {
+    expect(managerHtml).not.toContain('>Send<');
+    expect(managerHtml).not.toContain('AI の返答は Markdown 表示です。');
+    expect(managerHtml).toMatch(
+      /<div class="composer-actions">\s*<div id="composerTargetBar"[\s\S]*?<button id="globalComposerSendButton"/
+    );
+    expect(managerHtml).toMatch(
+      /\.composer-actions #globalComposerSendButton\s+\{\s+min-width: 84px;/
+    );
+  });
+
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {
     const fetchMock = vi.fn() as unknown as typeof fetch;
     const document = await loadManagerApp(fetchMock, {
@@ -659,7 +670,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('BB を進める');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信ヒント: @BB を進める');
+    ).toContain('送信先: @BB を進める');
   });
 
   it('opens the selected thread in its own conversation screen', async () => {
@@ -1423,7 +1434,7 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信ヒント: @特定 task');
+    ).toContain('送信先: @特定 task');
     expect(
       document
         .querySelector<HTMLElement>('#composerPanel')!
@@ -1519,7 +1530,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('メンション付きのヒントとして全体へ送り');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信ヒント: @進行中の task');
+    ).toContain('送信先: @進行中の task');
     expect(
       document.querySelector<HTMLElement>('#composerContext')!.textContent
     ).toContain('メンション付きヒントとして全体へ送り');

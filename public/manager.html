@@ -1249,14 +1249,6 @@
         min-width: min(260px, 100%);
       }
 
-      .composer-rail-title {
-        font-size: 0.72rem;
-        font-weight: 800;
-        color: var(--accent-strong);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
       .composer-rail-controls {
         display: flex;
         gap: 8px;
@@ -1323,6 +1315,8 @@
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
+        flex: 1 1 260px;
+        min-width: min(220px, 100%);
       }
 
       .composer-target-pill {
@@ -1368,6 +1362,15 @@
         gap: 10px;
         align-items: center;
         flex-wrap: wrap;
+      }
+
+      .composer-actions #globalComposerSendButton {
+        margin-inline-start: auto;
+        flex-shrink: 0;
+      }
+
+      .composer-actions .composer-hint {
+        flex-basis: 100%;
       }
 
       .composer-tools {
@@ -1535,9 +1538,12 @@
         }
 
         .composer-rail-controls .btn,
-        .composer-actions .btn,
         .composer-tools .btn {
           flex: 1;
+        }
+
+        .composer-actions #globalComposerSendButton {
+          min-width: 84px;
         }
 
         .composer-textarea {
@@ -1858,22 +1864,9 @@
         <div class="composer-rail">
           <div class="composer-rail-main">
             <div class="composer-rail-copy">
-              <div class="composer-rail-title">Send</div>
               <div id="composerHint" class="composer-hint">
                 まず一覧を見て、書くときだけ送信欄を開けます。
               </div>
-            </div>
-            <div id="composerTargetBar" class="composer-target-bar">
-              <span id="composerTargetPill" class="composer-target-pill">
-                送信先: 全体（AI が振り分けます）
-              </span>
-              <button
-                id="composerTargetClearButton"
-                class="btn btn-ghost hidden"
-                style="width: auto"
-              >
-                全体へ戻す
-              </button>
             </div>
           </div>
           <div class="composer-rail-controls">
@@ -1922,12 +1915,23 @@
             class="composer-attachment-list hidden"
           ></div>
           <div class="composer-actions">
+            <div id="composerTargetBar" class="composer-target-bar">
+              <span id="composerTargetPill" class="composer-target-pill">
+                送信先: 全体（AI が振り分けます）
+              </span>
+              <button
+                id="composerTargetClearButton"
+                class="btn btn-ghost hidden"
+                style="width: auto"
+              >
+                全体へ戻す
+              </button>
+            </div>
             <button id="globalComposerSendButton" class="btn btn-primary">
-              AI に送る
+              送る
             </button>
             <span id="composerSendHint" class="composer-hint"
-              >Ctrl / Cmd + Enter でも送れます。AI の返答は Markdown
-              表示です。</span
+              >Ctrl / Cmd + Enter でも送れます。</span
             >
           </div>
         </div>

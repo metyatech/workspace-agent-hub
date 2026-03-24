@@ -2660,7 +2660,7 @@ class ManagerApp {
 
   #composerTargetLabel(): string {
     const targetThread = this.#findThread(this.#composerTargetThreadId);
-    return targetThread ? `送信ヒント: @${targetThread.title}` : '送信先: 全体';
+    return targetThread ? `送信先: @${targetThread.title}` : '送信先: 全体';
   }
 
   #queueComposerFeedbackEntry(content: string): string {
@@ -3322,8 +3322,8 @@ class ManagerApp {
     }
     pill.textContent =
       thread.uiState === 'ai-working'
-        ? `送信ヒント: @${thread.title}（続きなら追加指示）`
-        : `送信ヒント: @${thread.title}`;
+        ? `送信先: @${thread.title}（続きなら追加指示）`
+        : `送信先: @${thread.title}`;
     if (sendButton) {
       sendButton.textContent = composerSendButtonLabel(thread);
     }
