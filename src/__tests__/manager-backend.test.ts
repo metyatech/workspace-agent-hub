@@ -1076,6 +1076,71 @@ describe('manager backend codex integration', () => {
     );
   });
 
+  it('reclaims a stale reserved assignment with no pid or progress and redispatches its queued work', async () => {
+    const recoveredWorkerProc = makeProc(7051);
+    spawnMock.mockReturnValueOnce(recoveredWorkerProc);
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_orphaned',
+        threadId: 'thread-orphaned',
+        content: 'recover this queued task',
+        createdAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      currentQueueId: 'q_orphaned',
+      activeAssignments: [
+        {
+          id: 'assign-orphaned',
+          threadId: 'thread-orphaned',
+          queueEntryIds: ['q_orphaned'],
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+          pid: null,
+          startedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          lastProgressAt: null,
+        },
+      ],
+    });
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.detail).toBe('待機中 (キュー: 1件)');
+    expect(status.currentThreadId).toBeNull();
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    const recoveredArgs = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(recoveredArgs).toContain('exec');
+    expect(recoveredArgs).not.toContain('resume');
+
+    completeCodexTurn(recoveredWorkerProc, {
+      sessionId: 'worker-thread-orphaned',
+      text: '{"status":"review","reply":"recovered assignment"}',
+    });
+
+    await waitFor(async () => {
+      const latestSession = await readSession(tempDir);
+      const queue = await readQueue(tempDir);
+      return queue.length === 0 && latestSession.status === 'idle';
+    });
+
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-orphaned' &&
+          call[2] === 'recovered assignment' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
+  });
+
   it('surfaces the last backend error in manager status instead of showing normal waiting', async () => {
     const session = await readSession(tempDir);
     await writeSession(tempDir, {

@@ -748,10 +748,13 @@ async function reconcileActiveAssignments(
     const withinGraceWindow =
       Number.isFinite(latestObservedAt) &&
       Date.now() - latestObservedAt < MANAGER_RECONCILE_GRACE_MS;
+    const lostProcessReservation =
+      normalizedAssignment.pid === null && !withinGraceWindow;
     if (
-      normalizedAssignment.pid !== null &&
-      !isPidAlive(normalizedAssignment.pid) &&
-      !withinGraceWindow
+      lostProcessReservation ||
+      (normalizedAssignment.pid !== null &&
+        !isPidAlive(normalizedAssignment.pid) &&
+        !withinGraceWindow)
     ) {
       droppedAssignments.push(normalizedAssignment);
       continue;
