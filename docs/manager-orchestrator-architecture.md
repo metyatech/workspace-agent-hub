@@ -100,11 +100,16 @@ acceptance:
   descendant
 - Review worker output and move the work item into the correct human-facing
   state
+- After a worker completes acceptable implementation work, own the in-scope
+  delivery chain for that work item: commit, push, and release/publish when
+  that repository normally requires it for completion
 
 ### Worker responsibilities
 
 - Execute exactly one assigned work item
-- Report progress and final result
+- Report progress, changed files, and verification summary back to the Manager
+- Stop before commit/push/release/publish unless the Manager explicitly routes
+  a delivery-only task there
 - Return blocker/needs-user-input when necessary
 
 ## Canonical data model

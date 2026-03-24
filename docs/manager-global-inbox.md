@@ -209,7 +209,15 @@ produced something the human can now inspect. Intake acknowledgements or
 `cancelled-as-superseded` stays visible long enough to explain why an older
 worker stopped, rather than disappearing without context.
 
-Within `queued`, the default is FIFO by arrival time, but two user intents can
+Each visible list can flip between `oldest-first` and `newest-first`.
+
+- `what to read first`, `routing-confirmation-needed`, `user-reply-needed`, and
+  `ai-finished-awaiting-user-confirmation` default to `oldest-first`
+- `queued`, `ai-working`, `cancelled-as-superseded`, and `done` default to
+  `newest-first`
+
+For `queued`, the list sort is only the human-facing display order. Actual
+dispatch still follows the queue policy below, where two user intents can
 legitimately jump ahead:
 
 - explicit priority requests such as `優先して` or `先に答えて`
@@ -251,6 +259,9 @@ The Manager screen must make these points obvious without external explanation:
   section
 - Opening a task switches into that task's own conversation screen instead of
   expanding detail inline inside the inbox
+- The conversation screen should keep the input at the bottom like a normal
+  chat app, using a compact reply bar rather than reusing the larger inbox
+  composer chrome
 - Task detail remains available, but the primary mental model is the inbox, not
   thread administration
 - When a work-item screen opens, the conversation should land at the latest
@@ -270,13 +281,15 @@ The Manager screen must make these points obvious without external explanation:
 
 ### Routing feedback placement
 
-Routing feedback should appear near the global composer, because that is where
-the user's attention is immediately after sending. The just-sent draft should
-move into a separate sending/recent lane right away so the composer itself can
-reset immediately for the next draft instead of mixing in-flight content with
-new edits. Keep the draft surface itself simple; do not add a second rendered
-preview card unless it clearly improves comprehension more than it adds visual
-weight.
+Routing feedback should live in its own compact send-status lane outside the
+global composer, so the composer itself can stay focused on the next draft
+instead of mixing sent content with new edits. The just-sent draft should move
+there right away, and the draft surface itself should stay simple; do not add a
+second rendered preview card unless it clearly improves comprehension more than
+it adds visual weight. The lane should default to a one-line summary, persist
+its entries across reloads in browser-local state, and only expand into full
+cards when the user explicitly opens it. Users should also be able to delete
+one entry at a time or clear the whole lane.
 
 It should be compact, for example:
 

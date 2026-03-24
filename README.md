@@ -371,12 +371,14 @@ How it works:
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user writes from one global send dock instead of creating tasks by hand;
-   the writing surface stays collapsed on the inbox, then stays visible while a
-   work-item conversation screen is open.
+   the writing surface stays collapsed on the inbox, then turns into a compact
+   bottom reply bar while a work-item conversation screen is open.
 6. The built-in manager backend splits each message across existing tasks,
    new tasks, or routing-confirmation items, then either answers the routed
    work item directly or dispatches it to a worker agent. Worker-agent items
-   can run in parallel when their declared write scopes do not overlap.
+   can run in parallel when their declared write scopes do not overlap, and
+   each completed worker result goes back through a manager review turn before
+   the final user-facing update and any delivery actions.
 7. The built-in manager backend starts inside Hub when needed and keeps
    handling inbox messages for that workspace.
 
@@ -402,10 +404,17 @@ Important behavior:
   that lane to items the human can actually act on now. `AI の順番待ち` and
   `AI作業中` remain in the inbox buckets instead of cluttering the read-next
   lane.
+- Each Manager list now has its own `新しい順 / 古い順` toggle. The read-first
+  lane plus the three human-review buckets default to oldest-first so older
+  waiting items surface first, while AI-only buckets default to newest-first.
+  In `AI の順番待ち`, that toggle changes only the visible display order; the
+  actual dispatch queue still follows the backend priority/FIFO rules.
 - Opening a work item now moves into a dedicated conversation screen with the
   message history in chat order and the newest message at the bottom, scrolls
   that conversation to the latest message when the work item opens, and lets the
-  browser back button return to the Manager list before leaving Hub.
+  browser back button return to the Manager list before leaving Hub. That
+  conversation screen keeps the input area as a compact bottom bar instead of
+  reusing the larger inbox composer chrome.
 - The current built-in Manager routes each global send with a fresh Codex
   routing turn so old router-chat context does not blur distinct tasks, then
   executes each actionable task with its own persisted Codex worker
@@ -434,9 +443,12 @@ Important behavior:
 - The composer keeps the draft simple: image placement stays inline in the text
   box and attachment chips, without adding a second rendered preview card above
   the send button.
-- Pressing `Send` now moves the just-sent draft into a separate sending/recent
-  lane immediately, so the composer itself clears at once and is ready for the
-  next draft instead of mixing in-flight content with new edits.
+- Pressing `Send` now moves the just-sent draft into a separate send-status
+  lane above the work area immediately, so the composer itself clears at once
+  and is ready for the next draft instead of mixing in-flight content with new
+  edits. That lane stays collapsed to a one-line summary by default, persists
+  across reloads in browser-local state, and lets the user delete individual
+  items or clear the whole strip when it is no longer useful.
 - Sending from the global dock does not forcibly jump the reading focus to the
   newly routed work item; the current task stays open unless the user
   explicitly opens a routing-result chip.
@@ -459,6 +471,9 @@ Important behavior:
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
   running.
+- When a phone or browser returns from screen lock, backgrounding, or a
+  persisted page restore, the Manager now forces one fresh state fetch and then
+  reopens the live snapshot stream so `送信中…`-style states do not stay stale.
 - The Hub session browser now uses the same live snapshot model (`/api/live`)
   as its primary update path for session list ordering and selected-session
   transcript output, driven by authoritative session-catalog/session-live file
@@ -468,6 +483,11 @@ Important behavior:
   assigned either to the Manager itself or to a worker agent, manager-direct
   answers use a separate lane from worker execution, and worker agents can run
   in parallel when their declared write scopes do not overlap.
+- Worker turns now stop at implementation and verification. After a worker
+  finishes, the Manager itself reviews that result inside the repository and,
+  when the result is acceptable, owns the in-scope commit/push chain plus
+  release/publish follow-through when that repository normally requires it for
+  completion.
 - If a worker cannot start because another running work item owns an
   overlapping write scope, the work item stays visible with an explicit
   scope-blocked runtime reason until that conflict clears.
