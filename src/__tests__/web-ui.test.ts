@@ -827,6 +827,7 @@ describe('native manager page', () => {
     const html = await response.text();
     expect(html).toContain('マネージャー');
     expect(html).toContain('MANAGER_AUTH_REQUIRED');
+    expect(html).toContain('<base href="/manager/" />');
   });
 
   it('also serves manager page at /manager without trailing slash', async () => {
@@ -844,6 +845,7 @@ describe('native manager page', () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('マネージャー');
+    expect(html).toContain('<base href="/manager/" />');
   });
 
   it('requires auth for /manager/api/ routes and can start the built-in manager', async () => {

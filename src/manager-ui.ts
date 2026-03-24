@@ -129,9 +129,11 @@ function injectManagerHtml(
   input: {
     workspaceRoot: string;
     authConfig: Pick<WebUiAuthConfig, 'required' | 'storageKey'>;
+    documentBasePath: string;
   }
 ): string {
   return html
+    .replace('__MANAGER_DOCUMENT_BASE__', input.documentBasePath)
     .replace('__GUI_DIR__', JSON.stringify(resolvePath(input.workspaceRoot)))
     .replace(
       '__MANAGER_AUTH_REQUIRED__',
@@ -210,6 +212,7 @@ export async function handleManagerUiRequest(input: {
       injectManagerHtml(html, {
         workspaceRoot: input.workspaceRoot,
         authConfig: input.authConfig,
+        documentBasePath: '/manager/',
       }),
       200,
       'text/html; charset=utf-8'

@@ -380,6 +380,29 @@ test('keeps the Manager auth screen accessible', async ({ page }) => {
   await expectNoAccessibilityViolations(page);
 });
 
+test('loads Manager directly without a trailing slash', async ({ page }) => {
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+
+  const statusResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/manager/api/manager/status') &&
+      response.request().method() === 'GET' &&
+      response.status() === 200
+  );
+
+  await page.goto(`${baseUrl}/manager#accessCode=${authToken}`, {
+    waitUntil: 'domcontentloaded',
+  });
+
+  await statusResponse;
+  await expect(page.locator('h1.manager-bar-title')).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/manager(?:/(?:#.*)?)?$`));
+});
+
 test('keeps the unlocked Manager inbox accessible on desktop and mobile', async ({
   page,
 }) => {
