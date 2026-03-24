@@ -39,6 +39,7 @@ import {
   buildCodexSpawnOptions,
   buildCodexSpawnSpec,
   buildCodexArgs,
+  buildManagerReviewPrompt,
   buildManagerReplyPrompt,
   buildWorkerExecutionPrompt,
   getBuiltinManagerStatus,
@@ -46,6 +47,7 @@ import {
   MANAGER_MODEL,
   MANAGER_REASONING_EFFORT,
   parseManagerReplyPayload,
+  parseManagerWorkerResultPayload,
   parseManagerRoutingPlan,
   parseCodexOutput,
   pickThreadUserMessage,
@@ -267,6 +269,30 @@ describe('manager backend codex integration', () => {
         ],
       },
     });
+    const reviewPrompt = buildManagerReviewPrompt({
+      resolvedDir: 'D:\\ghws',
+      writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      thread: {
+        id: 'thread-a',
+        title: 'Implement task',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'Please implement the task.',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+      workerResult: {
+        status: 'review',
+        reply: '作業を反映しました。',
+        changedFiles: ['src/manager-backend.ts'],
+        verificationSummary: 'npm run verify PASS',
+      },
+    });
 
     expect(first).toContain('You are a manager AI assistant');
     expect(first).toContain('Workspace: D:\\ghws');
@@ -279,6 +305,10 @@ describe('manager backend codex integration', () => {
     expect(workerFirst).toContain('Avoid internal AI/platform/process jargon');
     expect(workerFirst).toContain('[Topic: Implement task]');
     expect(workerFirst).toContain('Please implement the task.');
+    expect(reviewPrompt).toContain('built-in manager reviewer');
+    expect(reviewPrompt).toContain('commit, push');
+    expect(reviewPrompt).toContain('src/manager-backend.ts');
+    expect(reviewPrompt).toContain('npm run verify PASS');
   });
 
   it('parses manager reply and routing JSON payloads', () => {
@@ -294,6 +324,16 @@ describe('manager backend codex integration', () => {
     ).toEqual({
       status: 'review',
       reply: '確認してください',
+    });
+    expect(
+      parseManagerWorkerResultPayload(
+        '{"status":"review","reply":"確認してください","changedFiles":["src/a.ts"],"verificationSummary":"npm run verify PASS"}'
+      )
+    ).toEqual({
+      status: 'review',
+      reply: '確認してください',
+      changedFiles: ['src/a.ts'],
+      verificationSummary: 'npm run verify PASS',
     });
 
     expect(
@@ -444,16 +484,20 @@ describe('manager backend codex integration', () => {
     const routingProcOne = makeProc(8601);
     const dispatchProcOne = makeProc(8602);
     const workerProcOne = makeProc(8603);
+    const reviewProcOne = makeProc(8607);
     const routingProcTwo = makeProc(8604);
     const dispatchProcTwo = makeProc(8605);
     const workerProcTwo = makeProc(8606);
+    const reviewProcTwo = makeProc(8608);
     spawnMock
       .mockReturnValueOnce(routingProcOne)
       .mockReturnValueOnce(dispatchProcOne)
       .mockReturnValueOnce(workerProcOne)
+      .mockReturnValueOnce(reviewProcOne)
       .mockReturnValueOnce(routingProcTwo)
       .mockReturnValueOnce(dispatchProcTwo)
-      .mockReturnValueOnce(workerProcTwo);
+      .mockReturnValueOnce(workerProcTwo)
+      .mockReturnValueOnce(reviewProcTwo);
 
     listThreadsMock.mockResolvedValue([]);
     createThreadMock
@@ -497,11 +541,16 @@ describe('manager backend codex integration', () => {
       sessionId: 'worker-thread-1',
       text: '{"status":"review","reply":"done one"}',
     });
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(reviewProcOne, {
+      sessionId: 'manager-review-thread-1',
+      text: '{"status":"review","reply":"done one"}',
+    });
     await firstSend;
 
     const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
-    await waitFor(() => spawnMock.mock.calls.length === 4);
-    expect(spawnMock.mock.calls[3]?.[1]).not.toContain('resume');
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    expect(spawnMock.mock.calls[4]?.[1]).not.toContain('resume');
 
     completeCodexTurn(routingProcTwo, {
       sessionId: 'routing-thread-2',
@@ -516,7 +565,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 5);
+    await waitFor(() => spawnMock.mock.calls.length === 6);
     completeCodexTurn(dispatchProcTwo, {
       sessionId: 'dispatch-thread-2',
       text: JSON.stringify({
@@ -525,9 +574,14 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 6);
+    await waitFor(() => spawnMock.mock.calls.length === 7);
     completeCodexTurn(workerProcTwo, {
       sessionId: 'worker-thread-2',
+      text: '{"status":"review","reply":"done two"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 8);
+    completeCodexTurn(reviewProcTwo, {
+      sessionId: 'manager-review-thread-2',
       text: '{"status":"review","reply":"done two"}',
     });
     await secondSend;
@@ -545,10 +599,12 @@ describe('manager backend codex integration', () => {
     const routingProc = makeProc(8611);
     const dispatchProc = makeProc(8612);
     const workerProc = makeProc(8613);
+    const reviewProc = makeProc(8614);
     spawnMock
       .mockReturnValueOnce(routingProc)
       .mockReturnValueOnce(dispatchProc)
-      .mockReturnValueOnce(workerProc);
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -639,6 +695,12 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"別タスクとして処理しました"}',
     });
 
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-hint',
+      text: '{"status":"review","reply":"別タスクとして処理しました"}',
+    });
+
     await sendPromise;
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -661,10 +723,12 @@ describe('manager backend codex integration', () => {
     const routingProc = makeProc(8621);
     const dispatchProc = makeProc(8622);
     const workerProc = makeProc(8623);
+    const reviewProc = makeProc(8626);
     spawnMock
       .mockReturnValueOnce(routingProc)
       .mockReturnValueOnce(dispatchProc)
-      .mockReturnValueOnce(workerProc);
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -746,6 +810,12 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"対応しました"}',
     });
 
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-topic-ref',
+      text: '{"status":"review","reply":"対応しました"}',
+    });
+
     const summary = await sendPromise;
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -773,10 +843,12 @@ describe('manager backend codex integration', () => {
     const routingProc = makeProc(8623);
     const dispatchProc = makeProc(8624);
     const workerProc = makeProc(8625);
+    const reviewProc = makeProc(8627);
     spawnMock
       .mockReturnValueOnce(routingProc)
       .mockReturnValueOnce(dispatchProc)
-      .mockReturnValueOnce(workerProc);
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -846,6 +918,12 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"確認を受けて更新しました"}',
     });
 
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-needs-reply',
+      text: '{"status":"review","reply":"確認を受けて更新しました"}',
+    });
+
     const summary = await sendPromise;
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -863,23 +941,24 @@ describe('manager backend codex integration', () => {
   });
 
   it('starts processing immediately when a manager message arrives while idle', async () => {
-    const proc = makeProc(6101);
-    spawnMock.mockReturnValueOnce(proc);
+    const workerProc = makeProc(6101);
+    const reviewProc = makeProc(6102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-idle', 'idle message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
     expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    expect(proc.stdin.write).toHaveBeenCalledWith(
+    expect(workerProc.stdin.write).toHaveBeenCalledWith(
       expect.stringContaining('idle message')
     );
-    expect(proc.stdin.write).toHaveBeenCalledWith(
+    expect(workerProc.stdin.write).toHaveBeenCalledWith(
       expect.stringContaining('[Topic: Thread thread-idle]')
     );
-    expect(proc.stdin.end).toHaveBeenCalledTimes(1);
+    expect(workerProc.stdin.end).toHaveBeenCalledTimes(1);
 
-    proc.stdout.emit(
+    workerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -888,7 +967,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    proc.emit('close', 0);
+    workerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-idle',
+      text: '{"status":"review","reply":"idle reply"}',
+    });
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -901,9 +986,66 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 
+  it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {
+    const workerProc = makeProc(6121);
+    const reviewProc = makeProc(6122);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-review', 'implement this');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-session-review',
+      text: JSON.stringify({
+        status: 'review',
+        reply: 'worker done',
+        changedFiles: ['src/manager-backend.ts'],
+        verificationSummary: 'npm run verify PASS',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(reviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('built-in manager reviewer')
+    );
+    expect(reviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('src/manager-backend.ts')
+    );
+    expect(reviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('npm run verify PASS')
+    );
+    expect(reviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('commit, push')
+    );
+
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-session',
+      text: '{"status":"review","reply":"manager reviewed and delivered"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        meta['thread-review']?.workerSessionId === 'worker-session-review'
+      );
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe(
+      'manager reviewed and delivered'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
   it('coalesces consecutive queued user messages on the same topic into one worker turn', async () => {
-    const proc = makeProc(6151);
-    spawnMock.mockReturnValueOnce(proc);
+    const workerProc = makeProc(6151);
+    const reviewProc = makeProc(6152);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
 
     getThreadMock.mockImplementation(
       async (_dir: string, threadId: string) => ({
@@ -955,14 +1097,20 @@ describe('manager backend codex integration', () => {
     expect(status.running).toBe(true);
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
-    const prompt = String(proc.stdin.write.mock.calls[0]?.[0] ?? '');
+    const prompt = String(workerProc.stdin.write.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('first pending message');
     expect(prompt).toContain('second pending message');
     expect(prompt.split('first pending message').length - 1).toBe(1);
     expect(prompt.split('second pending message').length - 1).toBe(1);
 
-    completeCodexTurn(proc, {
+    completeCodexTurn(workerProc, {
       sessionId: 'codex-thread-batch',
+      text: '{"status":"review","reply":"single batched reply"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-batch',
       text: '{"status":"review","reply":"single batched reply"}',
     });
 
@@ -972,7 +1120,7 @@ describe('manager backend codex integration', () => {
       return queue.length === 0 && session.status === 'idle';
     });
 
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-batch');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('single batched reply');
@@ -1031,7 +1179,7 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).not.toHaveBeenCalled();
   });
 
-  it('marks the manager status as stalled when the current worker shows no progress for too long', async () => {
+  it('keeps the manager status busy while the current worker is still assigned even after a long quiet stretch', async () => {
     await writeQueue(tempDir, [
       {
         id: 'q_stalled',
@@ -1067,18 +1215,20 @@ describe('manager backend codex integration', () => {
     });
 
     const status = await getBuiltinManagerStatus(tempDir);
-    expect(status.health).toBe('stalled');
+    expect(status.health).toBe('ok');
     expect(status.currentThreadId).toBe('thread-stalled');
     expect(status.currentThreadTitle).toBe('Thread thread-stalled');
-    expect(status.detail).toContain('止まっている可能性があります');
-    expect(status.errorMessage).toContain(
-      '最後に進捗が見えてから長く止まっています'
-    );
+    expect(status.detail).toBe('処理中 (Thread thread-stalled)');
+    expect(status.errorMessage).toBeNull();
+    expect(status.errorAt).toBeNull();
   });
 
   it('reclaims a stale reserved assignment with no pid or progress and redispatches its queued work', async () => {
     const recoveredWorkerProc = makeProc(7051);
-    spawnMock.mockReturnValueOnce(recoveredWorkerProc);
+    const recoveredReviewProc = makeProc(7052);
+    spawnMock
+      .mockReturnValueOnce(recoveredWorkerProc)
+      .mockReturnValueOnce(recoveredReviewProc);
 
     await writeQueue(tempDir, [
       {
@@ -1122,6 +1272,12 @@ describe('manager backend codex integration', () => {
 
     completeCodexTurn(recoveredWorkerProc, {
       sessionId: 'worker-thread-orphaned',
+      text: '{"status":"review","reply":"recovered assignment"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(recoveredReviewProc, {
+      sessionId: 'manager-review-orphaned',
       text: '{"status":"review","reply":"recovered assignment"}',
     });
 
@@ -1203,8 +1359,9 @@ describe('manager backend codex integration', () => {
   });
 
   it('resumes a stuck pending queue when manager status is polled', async () => {
-    const proc = makeProc(9101);
-    spawnMock.mockReturnValueOnce(proc);
+    const workerProc = makeProc(9101);
+    const reviewProc = makeProc(9102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
 
     const stuckQueuePath = join(
       tempDir,
@@ -1226,7 +1383,7 @@ describe('manager backend codex integration', () => {
     expect(status.running).toBe(true);
 
     await waitFor(() => spawnMock.mock.calls.length === 1);
-    proc.stdout.emit(
+    workerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1235,7 +1392,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    proc.emit('close', 0);
+    workerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-stuck',
+      text: '{"status":"review","reply":"recovered reply"}',
+    });
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -1244,9 +1407,15 @@ describe('manager backend codex integration', () => {
   });
 
   it('keeps one in-flight codex turn and serializes queued messages without leaking worker continuity across different topics', async () => {
-    const firstProc = makeProc(7001);
-    const secondProc = makeProc(7002);
-    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+    const firstWorkerProc = makeProc(7001);
+    const firstReviewProc = makeProc(7002);
+    const secondWorkerProc = makeProc(7003);
+    const secondReviewProc = makeProc(7004);
+    spawnMock
+      .mockReturnValueOnce(firstWorkerProc)
+      .mockReturnValueOnce(firstReviewProc)
+      .mockReturnValueOnce(secondWorkerProc)
+      .mockReturnValueOnce(secondReviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-one', 'first message');
     await sendToBuiltinManager(tempDir, 'thread-two', 'second message');
@@ -1256,7 +1425,7 @@ describe('manager backend codex integration', () => {
     expect(firstArgs).toContain('exec');
     expect(firstArgs).not.toContain('resume');
 
-    firstProc.stdout.emit(
+    firstWorkerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1265,14 +1434,20 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    firstProc.emit('close', 0);
+    firstWorkerProc.emit('close', 0);
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
-    const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-thread-1',
+      text: '{"status":"review","reply":"reply one"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    const secondArgs = spawnMock.mock.calls[2]?.[1] as string[];
     expect(secondArgs).toContain('exec');
     expect(secondArgs).not.toContain('resume');
 
-    secondProc.stdout.emit(
+    secondWorkerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1281,7 +1456,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    secondProc.emit('close', 0);
+    secondWorkerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-thread-2',
+      text: '{"status":"review","reply":"reply two"}',
+    });
 
     await waitFor(async () => {
       const session = await readSession(tempDir);
@@ -1303,11 +1484,12 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[1]?.[1]).toBe('thread-two');
     expect(addMessageMock.mock.calls[1]?.[2]).toBe('reply two');
     expect(addMessageMock.mock.calls[1]?.[4]).toBe('review');
-  });
+  }, 10000);
 
   it('stores live worker output in thread meta while a worker turn is running', async () => {
-    const proc = makeProc(7050);
-    spawnMock.mockReturnValueOnce(proc);
+    const workerProc = makeProc(7050);
+    const reviewProc = makeProc(7051);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-live', 'live message');
 
@@ -1323,7 +1505,7 @@ describe('manager backend codex integration', () => {
       );
     });
 
-    proc.stdout.emit(
+    workerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1341,7 +1523,13 @@ describe('manager backend codex integration', () => {
       );
     });
 
-    proc.emit('close', 0);
+    workerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-live',
+      text: '{"status":"review","reply":"いま live 出力を流しています"}',
+    });
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -1359,9 +1547,15 @@ describe('manager backend codex integration', () => {
   });
 
   it('marks a queued work item as scope-blocked until the conflicting worker finishes', async () => {
-    const firstProc = makeProc(7060);
-    const secondProc = makeProc(7061);
-    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+    const firstWorkerProc = makeProc(7060);
+    const firstReviewProc = makeProc(7061);
+    const secondWorkerProc = makeProc(7062);
+    const secondReviewProc = makeProc(7063);
+    spawnMock
+      .mockReturnValueOnce(firstWorkerProc)
+      .mockReturnValueOnce(firstReviewProc)
+      .mockReturnValueOnce(secondWorkerProc)
+      .mockReturnValueOnce(secondReviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-running', 'first message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
@@ -1382,12 +1576,21 @@ describe('manager backend codex integration', () => {
     );
     expect(meta['thread-blocked']?.workerWriteScopes).toEqual(['*']);
 
-    completeCodexTurn(firstProc, {
+    completeCodexTurn(firstWorkerProc, {
       sessionId: 'codex-thread-first',
       text: '{"status":"review","reply":"first done"}',
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-blocked']?.workerRuntimeState).toBe('blocked-by-scope');
+
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-thread-first',
+      text: '{"status":"review","reply":"first done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     await waitFor(async () => {
       const latestMeta = await readManagerThreadMeta(tempDir);
       return (
@@ -1398,8 +1601,14 @@ describe('manager backend codex integration', () => {
     meta = await readManagerThreadMeta(tempDir);
     expect(meta['thread-blocked']?.workerBlockedByThreadIds ?? []).toEqual([]);
 
-    completeCodexTurn(secondProc, {
+    completeCodexTurn(secondWorkerProc, {
       sessionId: 'codex-thread-second',
+      text: '{"status":"review","reply":"second done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-thread-second',
       text: '{"status":"review","reply":"second done"}',
     });
 
@@ -1413,9 +1622,11 @@ describe('manager backend codex integration', () => {
   it('records a cancelled-as-superseded runtime state when Manager preempts an older descendant worker', async () => {
     const dispatchProc = makeProc(7070);
     const newWorkerProc = makeProc(7071);
+    const reviewProc = makeProc(7072);
     spawnMock
       .mockReturnValueOnce(dispatchProc)
-      .mockReturnValueOnce(newWorkerProc);
+      .mockReturnValueOnce(newWorkerProc)
+      .mockReturnValueOnce(reviewProc);
 
     listThreadsMock.mockResolvedValue([
       {
@@ -1540,6 +1751,12 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"new descendant done"}',
     });
 
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-new',
+      text: '{"status":"review","reply":"new descendant done"}',
+    });
+
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
       const latestSession = await readSession(tempDir);
@@ -1548,13 +1765,19 @@ describe('manager backend codex integration', () => {
   });
 
   it('dispatches a queued question ahead of older normal backlog after the current turn completes', async () => {
-    const firstProc = makeProc(7101);
-    const secondProc = makeProc(7102);
-    const thirdProc = makeProc(7103);
+    const currentWorkerProc = makeProc(7101);
+    const currentReviewProc = makeProc(7102);
+    const questionWorkerProc = makeProc(7103);
+    const questionReviewProc = makeProc(7104);
+    const normalWorkerProc = makeProc(7105);
+    const normalReviewProc = makeProc(7106);
     spawnMock
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc)
-      .mockReturnValueOnce(thirdProc);
+      .mockReturnValueOnce(currentWorkerProc)
+      .mockReturnValueOnce(currentReviewProc)
+      .mockReturnValueOnce(questionWorkerProc)
+      .mockReturnValueOnce(questionReviewProc)
+      .mockReturnValueOnce(normalWorkerProc)
+      .mockReturnValueOnce(normalReviewProc);
 
     await sendToBuiltinManager(
       tempDir,
@@ -1574,30 +1797,50 @@ describe('manager backend codex integration', () => {
       'CC はどうなっていますか？'
     );
 
-    completeCodexTurn(firstProc, {
+    completeCodexTurn(currentWorkerProc, {
       sessionId: 'codex-thread-current',
       text: '{"status":"review","reply":"current done"}',
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(currentReviewProc, {
+      sessionId: 'manager-review-current',
+      text: '{"status":"review","reply":"current done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     const secondPrompt = String(
-      secondProc.stdin.write.mock.calls[0]?.[0] ?? ''
+      questionWorkerProc.stdin.write.mock.calls[0]?.[0] ?? ''
     );
     expect(secondPrompt).toContain('[Topic: Thread thread-question]');
     expect(secondPrompt).toContain('CC はどうなっていますか？');
 
-    completeCodexTurn(secondProc, {
+    completeCodexTurn(questionWorkerProc, {
       sessionId: 'codex-thread-question',
       text: '{"status":"review","reply":"question done"}',
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
-    const thirdPrompt = String(thirdProc.stdin.write.mock.calls[0]?.[0] ?? '');
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(questionReviewProc, {
+      sessionId: 'manager-review-question',
+      text: '{"status":"review","reply":"question done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    const thirdPrompt = String(
+      normalWorkerProc.stdin.write.mock.calls[0]?.[0] ?? ''
+    );
     expect(thirdPrompt).toContain('[Topic: Thread thread-normal-backlog]');
     expect(thirdPrompt).toContain('BB を実装してください');
 
-    completeCodexTurn(thirdProc, {
+    completeCodexTurn(normalWorkerProc, {
       sessionId: 'codex-thread-normal',
+      text: '{"status":"review","reply":"normal done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 6);
+    completeCodexTurn(normalReviewProc, {
+      sessionId: 'manager-review-normal',
       text: '{"status":"review","reply":"normal done"}',
     });
 
@@ -1613,14 +1856,20 @@ describe('manager backend codex integration', () => {
   });
 
   it('reuses the saved worker continuity for follow-up messages on the same topic', async () => {
-    const firstProc = makeProc(7201);
-    const secondProc = makeProc(7202);
-    spawnMock.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+    const firstWorkerProc = makeProc(7201);
+    const firstReviewProc = makeProc(7202);
+    const secondWorkerProc = makeProc(7203);
+    const secondReviewProc = makeProc(7204);
+    spawnMock
+      .mockReturnValueOnce(firstWorkerProc)
+      .mockReturnValueOnce(firstReviewProc)
+      .mockReturnValueOnce(secondWorkerProc)
+      .mockReturnValueOnce(secondReviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-follow-up', 'first message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
-    firstProc.stdout.emit(
+    firstWorkerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1629,7 +1878,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    firstProc.emit('close', 0);
+    firstWorkerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-follow-up-1',
+      text: '{"status":"review","reply":"reply one"}',
+    });
 
     await waitFor(async () => {
       const meta = await readManagerThreadMeta(tempDir);
@@ -1639,27 +1894,47 @@ describe('manager backend codex integration', () => {
     });
 
     await sendToBuiltinManager(tempDir, 'thread-follow-up', 'second message');
-    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await waitFor(() => spawnMock.mock.calls.length === 3);
 
-    const secondArgs = spawnMock.mock.calls[1]?.[1] as string[];
+    const secondArgs = spawnMock.mock.calls[2]?.[1] as string[];
     expect(secondArgs).toEqual(
       expect.arrayContaining(['exec', 'resume', 'codex-thread-follow-up'])
     );
+
+    completeCodexTurn(secondWorkerProc, {
+      sessionId: 'codex-thread-follow-up',
+      text: '{"status":"review","reply":"reply two"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-follow-up-2',
+      text: '{"status":"review","reply":"reply two"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
   });
 
   it('retries once with a fresh worker session after an invalid resume failure', async () => {
-    const firstProc = makeProc(8101);
-    const failingProc = makeProc(8102);
-    const recoveryProc = makeProc(8103);
+    const firstWorkerProc = makeProc(8101);
+    const firstReviewProc = makeProc(8102);
+    const failingProc = makeProc(8103);
+    const recoveryProc = makeProc(8104);
+    const secondReviewProc = makeProc(8105);
     spawnMock
-      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(firstWorkerProc)
+      .mockReturnValueOnce(firstReviewProc)
       .mockReturnValueOnce(failingProc)
-      .mockReturnValueOnce(recoveryProc);
+      .mockReturnValueOnce(recoveryProc)
+      .mockReturnValueOnce(secondReviewProc);
 
     await sendToBuiltinManager(tempDir, 'thread-one', 'first message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
-    firstProc.stdout.emit(
+    firstWorkerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1668,7 +1943,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    firstProc.emit('close', 0);
+    firstWorkerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-thread-one-initial',
+      text: '{"status":"review","reply":"reply one"}',
+    });
 
     await waitFor(async () => {
       const session = await readSession(tempDir);
@@ -1680,15 +1961,15 @@ describe('manager backend codex integration', () => {
     });
 
     await sendToBuiltinManager(tempDir, 'thread-one', 'follow-up');
-    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await waitFor(() => spawnMock.mock.calls.length === 3);
     failingProc.stderr.emit(
       'data',
       Buffer.from('resume failed: session not found for codex-thread-stale')
     );
     failingProc.emit('close', 1);
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
-    const retryArgs = spawnMock.mock.calls[2]?.[1] as string[];
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    const retryArgs = spawnMock.mock.calls[3]?.[1] as string[];
     expect(retryArgs).toContain('exec');
     expect(retryArgs).not.toContain('resume');
 
@@ -1702,6 +1983,12 @@ describe('manager backend codex integration', () => {
       )
     );
     recoveryProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-thread-one-retry',
+      text: '{"status":"review","reply":"recovered reply"}',
+    });
 
     await waitFor(async () => {
       const session = await readSession(tempDir);
@@ -1743,14 +2030,15 @@ describe('manager backend codex integration', () => {
   });
 
   it('consumes the queue entry even if writing a successful reply back to thread storage fails', async () => {
-    const proc = makeProc(8301);
-    spawnMock.mockReturnValueOnce(proc);
+    const workerProc = makeProc(8301);
+    const reviewProc = makeProc(8302);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
     addMessageMock.mockRejectedValueOnce(new Error('thread write failed'));
 
     await sendToBuiltinManager(tempDir, 'thread-write-fail', 'message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
-    proc.stdout.emit(
+    workerProc.stdout.emit(
       'data',
       Buffer.from(
         [
@@ -1759,7 +2047,13 @@ describe('manager backend codex integration', () => {
         ].join('\n')
       )
     );
-    proc.emit('close', 0);
+    workerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-write-fail',
+      text: '{"status":"review","reply":"reply that cannot be stored"}',
+    });
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -1767,7 +2061,7 @@ describe('manager backend codex integration', () => {
       return queue.length === 0 && session.status === 'idle';
     });
 
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(addMessageMock).toHaveBeenCalledTimes(1);
   });
 });

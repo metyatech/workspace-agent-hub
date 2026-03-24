@@ -96,6 +96,7 @@ const MANAGER_WORKER_SYSTEM_PROMPT =
   'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
   'Do not stop at acknowledgement-only replies. ' +
   'Return concise user-facing progress/result text, but only after you have genuinely attempted the work. ' +
+  'Implement and verify the task yourself, but normally leave commit, push, release, and publish actions for the Manager review step after your work finishes. ' +
   'Write user-facing replies in plain, natural Japanese that reads like a capable coworker, not a tool log. ' +
   'Avoid internal AI/platform/process jargon unless the user explicitly asked for it or it is necessary to unblock them. ' +
   'Prefer ordinary task language, complete sentences, and direct explanations of what changed or what is still needed. ' +
@@ -103,10 +104,23 @@ const MANAGER_WORKER_SYSTEM_PROMPT =
   'Use normal Markdown formatting only when it genuinely makes the reply easier to read.';
 
 const MANAGER_WORKER_JSON_RULES =
-  'Return only strict JSON with keys {"status","reply"}. ' +
+  'Return only strict JSON with required keys {"status","reply"} and optional keys {"changedFiles","verificationSummary"}. ' +
   'Use status "review" when you completed the actionable work you can do now and the user can review the result. ' +
   'Use status "needs-reply" only when a real blocker or missing user decision prevents further progress. ' +
   'Do not use "active" for mere acknowledgements; keep working until you can return "review" or "needs-reply". ' +
+  'When you changed repository files, include changedFiles as the repo-relative paths you actually modified for this task. ' +
+  'When you ran verification, include verificationSummary as a short plain-text summary of the commands and outcomes. ' +
+  'Do not wrap JSON in markdown fences.';
+
+const MANAGER_REVIEW_SYSTEM_PROMPT =
+  'You are the built-in manager reviewer for Workspace Agent Hub. ' +
+  'A worker has already executed one work item in this repository. ' +
+  'Review that work yourself against the original request and the current repository state. ' +
+  'Run the repo-standard verification needed for this task when necessary. ' +
+  'If the work is acceptable, own the in-scope delivery chain yourself: commit, push, and if this repository or package normally requires release or publish for completion and it applies to this task, continue through that release or publish path as well. ' +
+  'Keep the scope limited to this work item. Prefer the worker-reported changed files and declared write scopes when reviewing or staging changes, and do not include unrelated repository changes. ' +
+  'If review fails or you still need human input, do not commit, push, release, or publish. ' +
+  'Write the user-facing reply in plain, natural Japanese. ' +
   'Do not wrap JSON in markdown fences.';
 
 const MANAGER_ROUTING_JSON_RULES =
@@ -127,6 +141,11 @@ const MANAGER_ROUTING_JSON_RULES =
 export interface ManagerReplyPayload {
   status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
   reply: string;
+}
+
+export interface ManagerWorkerResultPayload extends ManagerReplyPayload {
+  changedFiles: string[];
+  verificationSummary: string | null;
 }
 
 export interface ManagerDispatchPayload {
@@ -212,9 +231,7 @@ export interface ManagerActiveAssignment {
   lastProgressAt: string | null;
 }
 
-export type ManagerHealth = 'ok' | 'stalled' | 'error';
-
-const MANAGER_STALLED_PROGRESS_THRESHOLD_MS = 3 * 60 * 1000;
+export type ManagerHealth = 'ok' | 'error';
 const MANAGER_RECONCILE_GRACE_MS = 15 * 1000;
 const MAX_PARALLEL_WORKER_AGENTS = 3;
 const MAX_PARALLEL_MANAGER_ASSIGNMENTS = 1;
@@ -1048,6 +1065,38 @@ export function buildWorkerExecutionPrompt(input: {
   ].join('\n\n');
 }
 
+export function buildManagerReviewPrompt(input: {
+  thread: Thread;
+  workerResult: ManagerWorkerResultPayload;
+  resolvedDir: string;
+  writeScopes: string[];
+}): string {
+  const changedFiles =
+    input.workerResult.changedFiles.length > 0
+      ? input.workerResult.changedFiles.map((path) => `- ${path}`).join('\n')
+      : '- Worker did not report changed files.';
+  const verificationSummary =
+    input.workerResult.verificationSummary ??
+    'Worker did not report a verification summary.';
+  const declaredWriteScopes =
+    input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+
+  return [
+    MANAGER_REVIEW_SYSTEM_PROMPT,
+    MANAGER_WORKER_JSON_RULES,
+    `Workspace: ${input.resolvedDir}`,
+    `[Work item: ${input.thread.title}]`,
+    'Recent work-item history:',
+    formatThreadHistory(input.thread),
+    'Worker completion report:',
+    `status: ${input.workerResult.status}`,
+    `reply:\n${input.workerResult.reply}`,
+    `changedFiles:\n${changedFiles}`,
+    `verificationSummary:\n${verificationSummary}`,
+    `declaredWriteScopes: ${declaredWriteScopes}`,
+  ].join('\n\n');
+}
+
 function buildDispatchPrompt(input: {
   content: string;
   thread: Thread;
@@ -1399,6 +1448,37 @@ export function parseManagerReplyPayload(
     return { status, reply };
   } catch {
     return null;
+  }
+}
+
+export function parseManagerWorkerResultPayload(
+  text: string
+): ManagerWorkerResultPayload | null {
+  const reply = parseManagerReplyPayload(text);
+  if (!reply) {
+    return null;
+  }
+
+  try {
+    const normalized = stripMarkdownCodeFence(text);
+    const parsed = JSON.parse(
+      normalized
+    ) as Partial<ManagerWorkerResultPayload>;
+    return {
+      ...reply,
+      changedFiles: normalizeStringArray(parsed.changedFiles),
+      verificationSummary:
+        typeof parsed.verificationSummary === 'string' &&
+        parsed.verificationSummary.trim()
+          ? parsed.verificationSummary.trim()
+          : null,
+    };
+  } catch {
+    return {
+      ...reply,
+      changedFiles: [],
+      verificationSummary: null,
+    };
   }
 }
 
@@ -2234,70 +2314,55 @@ async function runQueuedAssignment(input: {
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
   let workerSessionId = await readWorkerSessionId(resolvedDir, thread.id);
-  const runtimeState: ManagerWorkerRuntimeState =
-    assignment.assigneeKind === 'manager'
-      ? 'manager-answering'
-      : 'worker-running';
-  const runtimeDetail =
-    assignment.assigneeKind === 'manager'
-      ? 'Manager がこの作業項目を直接処理しています。'
-      : '担当 worker agent がこの作業項目を実行中です。';
-  let lastLiveOutput =
-    assignment.assigneeKind === 'manager'
-      ? 'AI が内容を整理して返答を準備しています…'
-      : 'AI が担当 worker を起動しました。内容を整理しています…';
+  const imagePaths = queueEntriesImagePaths(entries);
 
-  await setWorkerRuntimeState({
-    dir: resolvedDir,
-    threadId: thread.id,
-    assigneeKind: assignment.assigneeKind,
-    assigneeLabel: assignment.assigneeLabel,
-    workerSessionId,
-    workerAgentId: assignment.id,
-    runtimeState,
-    runtimeDetail,
-    workerWriteScopes: assignment.writeScopes,
-    workerBlockedByThreadIds: [],
-    supersededByThreadId: null,
-    clearWorkerLiveLog: true,
-  });
-  await appendWorkerLiveOutput({
-    dir: resolvedDir,
-    threadId: thread.id,
-    text: lastLiveOutput,
-    kind: 'status',
-    assigneeKind: assignment.assigneeKind,
-    assigneeLabel: assignment.assigneeLabel,
-    workerSessionId,
-    workerAgentId: assignment.id,
-    runtimeState,
-    runtimeDetail,
-    workerWriteScopes: assignment.writeScopes,
-  });
+  const runTurn = async (turn: {
+    prompt: string;
+    sessionId: string | null;
+    assigneeKind: 'manager' | 'worker';
+    assigneeLabel: string;
+    runtimeState: ManagerWorkerRuntimeState;
+    runtimeDetail: string;
+    initialLiveOutput: string;
+    clearLiveLog: boolean;
+    preserveWorkerSessionId: boolean;
+  }) => {
+    let lastLiveOutput = turn.initialLiveOutput;
 
-  const runTurn = async (
-    currentSessionId: string | null,
-    isFirstTurn: boolean
-  ) =>
-    runCodexTurn({
+    await setWorkerRuntimeState({
+      dir: resolvedDir,
+      threadId: thread.id,
+      assigneeKind: turn.assigneeKind,
+      assigneeLabel: turn.assigneeLabel,
+      workerSessionId,
+      workerAgentId: assignment.id,
+      runtimeState: turn.runtimeState,
+      runtimeDetail: turn.runtimeDetail,
+      workerWriteScopes: assignment.writeScopes,
+      workerBlockedByThreadIds: [],
+      supersededByThreadId: null,
+      clearWorkerLiveLog: turn.clearLiveLog,
+    });
+    await appendWorkerLiveOutput({
+      dir: resolvedDir,
+      threadId: thread.id,
+      text: turn.initialLiveOutput,
+      kind: 'status',
+      assigneeKind: turn.assigneeKind,
+      assigneeLabel: turn.assigneeLabel,
+      workerSessionId,
+      workerAgentId: assignment.id,
+      runtimeState: turn.runtimeState,
+      runtimeDetail: turn.runtimeDetail,
+      workerWriteScopes: assignment.writeScopes,
+    });
+
+    return runCodexTurn({
       dir,
       resolvedDir,
-      prompt:
-        assignment.assigneeKind === 'manager'
-          ? buildManagerReplyPrompt(
-              promptContent,
-              thread.title,
-              resolvedDir,
-              isFirstTurn
-            )
-          : buildWorkerExecutionPrompt({
-              content: promptContent,
-              thread: promptThread,
-              resolvedDir,
-              isFirstTurn,
-            }),
-      sessionId: currentSessionId,
-      imagePaths: queueEntriesImagePaths(entries),
+      prompt: turn.prompt,
+      sessionId: turn.sessionId,
+      imagePaths,
       onSpawn: async (pid) => {
         await patchAssignment(dir, assignment.id, (current) => ({
           ...current,
@@ -2331,12 +2396,14 @@ async function runQueuedAssignment(input: {
             threadId: thread.id,
             text: entry.text,
             kind: entry.kind,
-            assigneeKind: assignment.assigneeKind,
-            assigneeLabel: assignment.assigneeLabel,
-            workerSessionId: progress.sessionId ?? currentSessionId,
+            assigneeKind: turn.assigneeKind,
+            assigneeLabel: turn.assigneeLabel,
+            workerSessionId: turn.preserveWorkerSessionId
+              ? workerSessionId
+              : (progress.sessionId ?? turn.sessionId ?? workerSessionId),
             workerAgentId: assignment.id,
-            runtimeState,
-            runtimeDetail,
+            runtimeState: turn.runtimeState,
+            runtimeDetail: turn.runtimeDetail,
             workerWriteScopes: assignment.writeScopes,
           });
         }
@@ -2347,19 +2414,61 @@ async function runQueuedAssignment(input: {
         await touchManagerProgress(dir);
       },
     });
+  };
+
+  const runPrimaryTurn = async (
+    currentSessionId: string | null,
+    isFirstTurn: boolean
+  ) =>
+    runTurn({
+      prompt:
+        assignment.assigneeKind === 'manager'
+          ? buildManagerReplyPrompt(
+              promptContent,
+              thread.title,
+              resolvedDir,
+              isFirstTurn
+            )
+          : buildWorkerExecutionPrompt({
+              content: promptContent,
+              thread: promptThread,
+              resolvedDir,
+              isFirstTurn,
+            }),
+      sessionId: currentSessionId,
+      assigneeKind: assignment.assigneeKind,
+      assigneeLabel: assignment.assigneeLabel,
+      runtimeState:
+        assignment.assigneeKind === 'manager'
+          ? 'manager-answering'
+          : 'worker-running',
+      runtimeDetail:
+        assignment.assigneeKind === 'manager'
+          ? 'Manager がこの作業項目を直接処理しています。'
+          : '担当 worker agent がこの作業項目を実行中です。',
+      initialLiveOutput:
+        assignment.assigneeKind === 'manager'
+          ? 'AI が内容を整理して返答を準備しています…'
+          : 'AI が担当 worker を起動しました。内容を整理しています…',
+      clearLiveLog: true,
+      preserveWorkerSessionId: false,
+    });
 
   try {
-    let runResult = await runTurn(workerSessionId, workerSessionId === null);
-    const firstCombinedOutput = `${runResult.stdout}\n${runResult.stderr}`;
+    let primaryResult = await runPrimaryTurn(
+      workerSessionId,
+      workerSessionId === null
+    );
+    const firstCombinedOutput = `${primaryResult.stdout}\n${primaryResult.stderr}`;
     if (
       assignment.assigneeKind === 'worker' &&
-      runResult.code !== 0 &&
+      primaryResult.code !== 0 &&
       workerSessionId &&
       isSessionInvalidError(firstCombinedOutput)
     ) {
       await writeWorkerSessionId(resolvedDir, thread.id, null);
       workerSessionId = null;
-      runResult = await runTurn(null, true);
+      primaryResult = await runPrimaryTurn(null, true);
     }
 
     const stillTracked = (await readSession(dir)).activeAssignments.some(
@@ -2369,14 +2478,67 @@ async function runQueuedAssignment(input: {
       return;
     }
 
-    const combinedOutput = `${runResult.stdout}\n${runResult.stderr}`;
-    const parsedReply = parseManagerReplyPayload(runResult.parsed.text);
-    const fallbackReply =
-      runResult.code === 0 && runResult.parsed.text
-        ? runResult.parsed.text
+    const nextWorkerSessionId =
+      primaryResult.parsed.sessionId ?? workerSessionId;
+    let finalResult = primaryResult;
+    let finalCombinedOutput = `${primaryResult.stdout}\n${primaryResult.stderr}`;
+    let finalParsedReply = parseManagerReplyPayload(primaryResult.parsed.text);
+    let finalFallbackReply =
+      primaryResult.code === 0 && primaryResult.parsed.text
+        ? primaryResult.parsed.text
         : null;
+    let reviewStepAttempted = false;
 
-    if (runResult.code === 0 && (parsedReply || fallbackReply)) {
+    if (
+      assignment.assigneeKind === 'worker' &&
+      primaryResult.code === 0 &&
+      (finalParsedReply || finalFallbackReply)
+    ) {
+      const workerResult = parseManagerWorkerResultPayload(
+        primaryResult.parsed.text
+      ) ?? {
+        status: finalParsedReply?.status ?? MANAGER_REPLY_STATUS,
+        reply: finalParsedReply?.reply ?? finalFallbackReply ?? '',
+        changedFiles: [],
+        verificationSummary: null,
+      };
+      workerSessionId = nextWorkerSessionId;
+      await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
+      reviewStepAttempted = true;
+      finalResult = await runTurn({
+        prompt: buildManagerReviewPrompt({
+          thread: promptThread,
+          workerResult,
+          resolvedDir,
+          writeScopes: assignment.writeScopes,
+        }),
+        sessionId: null,
+        assigneeKind: 'manager',
+        assigneeLabel: defaultAssigneeLabel('manager'),
+        runtimeState: 'manager-answering',
+        runtimeDetail:
+          'Manager が worker の成果をレビューし、必要な反映と引き渡しを進めています。',
+        initialLiveOutput: 'Manager が worker の成果を確認しています…',
+        clearLiveLog: false,
+        preserveWorkerSessionId: true,
+      });
+
+      const stillTrackedAfterReview = (
+        await readSession(dir)
+      ).activeAssignments.some((current) => current.id === assignment.id);
+      if (!stillTrackedAfterReview) {
+        return;
+      }
+
+      finalCombinedOutput = `${finalResult.stdout}\n${finalResult.stderr}`;
+      finalParsedReply = parseManagerReplyPayload(finalResult.parsed.text);
+      finalFallbackReply =
+        finalResult.code === 0 && finalResult.parsed.text
+          ? finalResult.parsed.text
+          : null;
+    }
+
+    if (finalResult.code === 0 && (finalParsedReply || finalFallbackReply)) {
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
@@ -2384,18 +2546,17 @@ async function runQueuedAssignment(input: {
         await addMessage(
           resolvedDir,
           thread.id,
-          parsedReply?.reply ?? fallbackReply ?? '',
+          finalParsedReply?.reply ?? finalFallbackReply ?? '',
           'ai',
-          parsedReply?.status ?? MANAGER_REPLY_STATUS
+          finalParsedReply?.status ?? MANAGER_REPLY_STATUS
         );
       } catch {
         /* thread may have been deleted */
       }
-      await writeWorkerSessionId(
-        resolvedDir,
-        thread.id,
-        runResult.parsed.sessionId ?? workerSessionId
-      );
+      if (assignment.assigneeKind === 'manager') {
+        workerSessionId = nextWorkerSessionId;
+        await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
+      }
       await clearWorkerLiveOutput(
         resolvedDir,
         thread.id,
@@ -2416,9 +2577,13 @@ async function runQueuedAssignment(input: {
     }
 
     const errMsg =
-      runResult.code === 0
-        ? '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.'
-        : `[Manager error] codex CLI exited with code ${runResult.code ?? '?'}.${runResult.stderr ? `\n${runResult.stderr.slice(0, 300)}` : ''}`;
+      finalResult.code === 0
+        ? reviewStepAttempted
+          ? '[Manager error] worker は結果を返しましたが、manager review の返答を解釈できませんでした。'
+          : '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.'
+        : reviewStepAttempted
+          ? `[Manager error] manager review exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`
+          : `[Manager error] codex CLI exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
     try {
       await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
     } catch {
@@ -2428,7 +2593,7 @@ async function runQueuedAssignment(input: {
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
-    if (isSessionInvalidError(combinedOutput)) {
+    if (isSessionInvalidError(finalCombinedOutput)) {
       await writeWorkerSessionId(resolvedDir, thread.id, null);
     }
     await clearWorkerLiveOutput(
@@ -3155,30 +3320,13 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       : await getThread(dir, currentAssignment.threadId);
 
   if (session.activeAssignments.length > 0) {
-    const latestProgressAt = Math.max(
-      ...session.activeAssignments
-        .map(
-          (assignment: ManagerActiveAssignment) =>
-            parseMessageTimestamp(assignment.lastProgressAt) ??
-            parseMessageTimestamp(assignment.startedAt) ??
-            Number.NEGATIVE_INFINITY
-        )
-        .filter(Number.isFinite),
-      Number.NEGATIVE_INFINITY
-    );
-    const stalled =
-      Number.isFinite(latestProgressAt) &&
-      Date.now() - latestProgressAt >= MANAGER_STALLED_PROGRESS_THRESHOLD_MS;
     return {
       running: true,
       configured: true,
       builtinBackend: true,
-      health: stalled ? 'stalled' : 'ok',
-      detail: stalled
-        ? currentThread
-          ? `AI backend の進捗が止まっている可能性があります (${currentThread.title})`
-          : 'AI backend の進捗が止まっている可能性があります'
-        : session.activeAssignments.length === 1
+      health: 'ok',
+      detail:
+        session.activeAssignments.length === 1
           ? currentThread
             ? `処理中 (${currentThread.title})`
             : '処理中'
@@ -3187,12 +3335,8 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       currentQueueId: currentAssignment?.queueEntryIds[0] ?? null,
       currentThreadId: currentAssignment?.threadId ?? null,
       currentThreadTitle: currentThread?.title ?? null,
-      errorMessage: stalled
-        ? '最後に進捗が見えてから長く止まっています。worker がハングしている可能性があります。'
-        : null,
-      errorAt: stalled
-        ? (session.lastProgressAt ?? session.lastMessageAt)
-        : null,
+      errorMessage: null,
+      errorAt: null,
     };
   }
 
