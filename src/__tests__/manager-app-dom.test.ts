@@ -12,6 +12,8 @@ const managerHtml = readFileSync(
   'utf-8'
 );
 const authStorageKey = 'workspace-agent-hub.test-manager-token';
+const feedbackStorageKey = 'workspace-agent-hub.manager-feedback:D:\\ghws';
+const sortStorageKey = 'workspace-agent-hub.manager-sort:D:\\ghws';
 
 function isRoute(url: string, suffix: string): boolean {
   return url === `./api${suffix}` || url.endsWith(`/api${suffix}`);
@@ -163,7 +165,7 @@ function createManagerFetchWithData(input: {
     running: boolean;
     configured: boolean;
     builtinBackend: boolean;
-    health?: 'ok' | 'stalled' | 'error';
+    health?: 'ok' | 'error';
     detail: string;
     pendingCount?: number;
     currentQueueId?: string | null;
@@ -293,6 +295,12 @@ async function loadManagerApp(
   return dom.window.document;
 }
 
+function textList(document: Document, selector: string): string[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .map((element) => element.textContent?.trim() ?? '')
+    .filter(Boolean);
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -329,21 +337,93 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).not.toContain('送信プレビュー');
   });
 
-  it('keeps always-visible manager chrome minimal', () => {
-    expect(managerHtml).not.toContain('id="dir-label"');
-    expect(managerHtml).not.toContain('↻ 更新');
-    expect(managerHtml).toContain('残っている作業メモ');
+  it('keeps the open work-item composer compact and removes duplicate thread chrome', () => {
+    expect(managerHtml).toMatch(
+      /\.composer-dock-thread-mode \.composer-card-top\s+\{\s+display: none;/
+    );
+    expect(managerHtml).toMatch(
+      /\.composer-dock-thread-mode \.composer-tools,\s+\.composer-dock-thread-mode \.composer-actions \.composer-hint\s+\{\s+display: none;/
+    );
+    expect(managerHtml).toMatch(
+      /\.composer-dock-thread-mode \.composer-textarea\s+\{\s+min-height: 44px;\s+max-height: 112px;/
+    );
+    expect(managerHtml).not.toContain('id="thread-screen-subtitle"');
   });
 
   it('keeps the send target beside the send button without extra SEND or Markdown copy', () => {
     expect(managerHtml).not.toContain('>Send<');
     expect(managerHtml).not.toContain('AI の返答は Markdown 表示です。');
+    expect(managerHtml).not.toContain(
+      'まず一覧を見て、書くときだけ送信欄を開けます。'
+    );
+    expect(managerHtml).toContain(
+      'id="composerHint" class="composer-hint hidden"'
+    );
     expect(managerHtml).toMatch(
       /<div class="composer-actions">\s*<div id="composerTargetBar"[\s\S]*?<button id="globalComposerSendButton"/
     );
     expect(managerHtml).toMatch(
       /\.composer-actions #globalComposerSendButton\s+\{\s+min-width: 84px;/
     );
+  });
+
+  it('moves routed and recently sent items into a separate processing lane', () => {
+    expect(managerHtml).toContain('id="routingFeedbackLane"');
+    expect(managerHtml).toContain('id="routingFeedbackList"');
+    expect(managerHtml).toContain('id="routingFeedbackSummary"');
+    expect(managerHtml).toContain('id="routingFeedbackToggleButton"');
+    expect(managerHtml).toContain('id="routingFeedbackClearButton"');
+    expect(managerHtml).not.toContain('id="composerFeedback"');
+    expect(managerHtml).toMatch(
+      /<main id="manager-main"[\s\S]*id="routingFeedbackLane"[\s\S]*id="manager-inbox-screen"/
+    );
+    expect(managerHtml).not.toContain('直前の送信');
+  });
+
+  it('keeps always-visible manager chrome minimal', () => {
+    expect(managerHtml).not.toContain('id="dir-label"');
+    expect(managerHtml).not.toContain('↻ 更新');
+    expect(managerHtml).toContain('残っている作業メモ');
+  });
+
+  it('keeps first-use routing detail behind an optional disclosure instead of showing it all the time', async () => {
+    expect(managerHtml).toContain('id="getting-started-details"');
+    expect(managerHtml).toContain('どう整理されるかを見る');
+    expect(managerHtml).toMatch(
+      /<details id="getting-started-details" class="intro-details">[\s\S]*既存の作業項目への追記、新しい作業項目、確認が必要なもの/
+    );
+
+    const validToken = 'getting-started-details-token';
+    const document = await loadManagerApp(createManagerFetch(validToken), {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      document
+        .querySelector<HTMLElement>('#getting-started')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(
+      document.querySelector<HTMLDetailsElement>('#getting-started-details')!
+        .open
+    ).toBe(false);
+  });
+
+  it('hides default composer help when the screen already makes the action obvious', async () => {
+    const validToken = 'default-composer-hint-token';
+    const document = await loadManagerApp(createManagerFetch(validToken), {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const hint = document.querySelector<HTMLElement>('#composerHint')!;
+    expect(hint.textContent).toBe('');
+    expect(hint.classList.contains('hidden')).toBe(true);
   });
 
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {
@@ -607,7 +687,11 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('今見ている task');
+    ).toContain('送信先: この会話');
+    expect(
+      document.querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+        .textContent
+    ).toContain('別件にする');
 
     document
       .querySelector<HTMLButtonElement>('#composerTargetClearButton')!
@@ -624,9 +708,18 @@ describe('manager-app DOM auth state matrix', () => {
 
     await flushAsync(6);
 
-    expect(
-      document.querySelector<HTMLElement>('#composerFeedback')!.textContent
-    ).toContain('2件を処理しました');
+    const feedbackLane = document.querySelector<HTMLElement>(
+      '#routingFeedbackLane'
+    )!;
+    const feedbackList = document.querySelector<HTMLElement>(
+      '#routingFeedbackList'
+    )!;
+    const feedbackToggleButton = document.querySelector<HTMLButtonElement>(
+      '#routingFeedbackToggleButton'
+    )!;
+    expect(feedbackLane.textContent).toContain('送信状況');
+    expect(feedbackLane.textContent).toContain('送信済み 1件');
+    expect(feedbackList.classList.contains('hidden')).toBe(true);
     expect(
       document.querySelector<HTMLElement>('#composerStatusText')!.textContent
     ).toBe('');
@@ -636,11 +729,15 @@ describe('manager-app DOM auth state matrix', () => {
         .classList.contains('hidden')
     ).toBe(false);
     expect(composer.value).toBe('');
+    feedbackToggleButton.click();
+    await flushAsync(2);
+    expect(feedbackList.classList.contains('hidden')).toBe(false);
+    expect(feedbackLane.textContent).toContain('2件を処理しました');
     const feedbackButtons = Array.from(
       document.querySelectorAll<HTMLButtonElement>(
-        '#composerFeedback .composer-chip'
+        '#routingFeedbackLane .composer-chip'
       )
-    );
+    ).filter((button) => button.textContent !== '削除');
     expect(feedbackButtons.map((button) => button.textContent)).toEqual([
       'AA を進める',
       'BB を進める',
@@ -655,7 +752,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('今見ている task');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信先: 全体');
+    ).toContain('送信先: 全体（別件）');
 
     feedbackButtons[1]!.click();
     await flushAsync(2);
@@ -670,7 +767,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('BB を進める');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信先: @BB を進める');
+    ).toContain('送信先: この会話');
   });
 
   it('opens the selected thread in its own conversation screen', async () => {
@@ -742,6 +839,230 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('表示中');
     expect(row.textContent).toContain('現在の task');
+  });
+
+  it('marks a thread done immediately and disables repeated completion presses until the server responds', async () => {
+    const validToken = 'resolve-optimistic-token';
+    const thread = makeThreadView('thread-resolve', '完了確認');
+    let threadFetchCount = 0;
+    let resolveCallCount = 0;
+    let settleResolve!: (response: Response) => void;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadFetchCount += 1;
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        if (isRoute(url, '/threads/thread-resolve/resolve')) {
+          resolveCallCount += 1;
+          return await new Promise<Response>((resolve) => {
+            settleResolve = resolve;
+          });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstButton = document.querySelector<HTMLButtonElement>(
+      '#thread-detail .detail-actions button'
+    )!;
+    firstButton.click();
+    await flushAsync(2);
+
+    const pendingButton = document.querySelector<HTMLButtonElement>(
+      '#thread-detail .detail-actions button'
+    )!;
+    expect(pendingButton.disabled).toBe(true);
+    expect(pendingButton.textContent).toBe('完了にしています…');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('この作業項目は完了として閉じています。');
+    expect(
+      document.querySelector<HTMLElement>('#activity-counts')!.textContent
+    ).toContain('完了 1');
+
+    pendingButton.click();
+    await flushAsync(2);
+
+    expect(resolveCallCount).toBe(1);
+    expect(threadFetchCount).toBe(1);
+
+    settleResolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await flushAsync(6);
+
+    const settledButton = document.querySelector<HTMLButtonElement>(
+      '#thread-detail .detail-actions button'
+    )!;
+    expect(settledButton.disabled).toBe(false);
+    expect(settledButton.textContent).toBe('もう一度開く');
+    expect(resolveCallCount).toBe(1);
+    expect(threadFetchCount).toBe(1);
+  });
+
+  it('restores the original thread state when optimistic completion fails', async () => {
+    const validToken = 'resolve-rollback-token';
+    const thread = makeThreadView('thread-rollback', '失敗確認');
+    let settleResolve!: (response: Response) => void;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        if (isRoute(url, '/threads/thread-rollback/resolve')) {
+          return await new Promise<Response>((resolve) => {
+            settleResolve = resolve;
+          });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '#thread-detail .detail-actions button'
+      )!
+      .click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('この作業項目は完了として閉じています。');
+
+    settleResolve(
+      new Response(JSON.stringify({ error: 'resolve failed' }), {
+        status: 500,
+      })
+    );
+    await flushAsync(6);
+
+    const restoredButton = document.querySelector<HTMLButtonElement>(
+      '#thread-detail .detail-actions button'
+    )!;
+    expect(restoredButton.disabled).toBe(false);
+    expect(restoredButton.textContent).toBe('この件は完了');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('AI の中では一区切りついています。');
   });
 
   it('keeps AI execution-waiting items out of the read-first lane', async () => {
@@ -930,6 +1251,166 @@ describe('manager-app DOM auth state matrix', () => {
     expect(scrollSpy).not.toHaveBeenCalled();
   });
 
+  it('defaults human-facing lists to oldest-first and AI lists to newest-first', async () => {
+    const validToken = 'section-sort-defaults-token';
+    const threads = [
+      makeThreadView('human-new', '新しい返信待ち', {
+        status: 'needs-reply',
+        uiState: 'user-reply-needed',
+        previewText: '[ai] 新しい返信待ち',
+        lastSender: 'ai',
+        updatedAt: '2026-03-21T01:00:00.000Z',
+      }),
+      makeThreadView('ai-old', '古いAI作業', {
+        status: 'active',
+        uiState: 'ai-working',
+        previewText: '[user] 古いAI作業',
+        lastSender: 'user',
+        isWorking: true,
+        updatedAt: '2026-03-21T00:30:00.000Z',
+      }),
+      makeThreadView('ai-new', '新しいAI作業', {
+        status: 'active',
+        uiState: 'ai-working',
+        previewText: '[user] 新しいAI作業',
+        lastSender: 'user',
+        isWorking: true,
+        updatedAt: '2026-03-21T02:00:00.000Z',
+      }),
+      makeThreadView('human-old', '古い返信待ち', {
+        status: 'needs-reply',
+        uiState: 'user-reply-needed',
+        previewText: '[ai] 古い返信待ち',
+        lastSender: 'ai',
+        updatedAt: '2026-03-21T00:00:00.000Z',
+      }),
+    ];
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads,
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
+    ).toEqual(['古い返信待ち', '新しい返信待ち']);
+    expect(
+      textList(document, '#priority-lane-list .focus-list-item-title')
+    ).toEqual(['古い返信待ち', '新しい返信待ち']);
+    expect(
+      textList(document, '#body-ai-working .thread-row [data-row-title]')
+    ).toEqual(['新しいAI作業', '古いAI作業']);
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-sort-control="priority-lane"]'
+      )?.textContent
+    ).toContain('上: 古い');
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        '[data-sort-control="ai-working"]'
+      )?.textContent
+    ).toContain('上: 新しい');
+  });
+
+  it('lets the user flip section sort order and keeps the choice after reload', async () => {
+    const validToken = 'section-sort-toggle-token';
+    const threads = [
+      makeThreadView('reply-new', '新しい確認', {
+        status: 'needs-reply',
+        uiState: 'user-reply-needed',
+        previewText: '[ai] 新しい確認',
+        lastSender: 'ai',
+        updatedAt: '2026-03-21T01:00:00.000Z',
+      }),
+      makeThreadView('reply-old', '古い確認', {
+        status: 'needs-reply',
+        uiState: 'user-reply-needed',
+        previewText: '[ai] 古い確認',
+        lastSender: 'ai',
+        updatedAt: '2026-03-21T00:00:00.000Z',
+      }),
+    ];
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads,
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
+    ).toEqual(['古い確認', '新しい確認']);
+    expect(
+      textList(document, '#priority-lane-list .focus-list-item-title')
+    ).toEqual(['古い確認', '新しい確認']);
+
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-sort-control="user-reply-needed"]'
+      )!
+      .click();
+    document
+      .querySelector<HTMLButtonElement>('[data-sort-control="priority-lane"]')!
+      .click();
+    await flushAsync(2);
+
+    expect(
+      textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
+    ).toEqual(['新しい確認', '古い確認']);
+    expect(
+      textList(document, '#priority-lane-list .focus-list-item-title')
+    ).toEqual(['新しい確認', '古い確認']);
+
+    const storedSortOrder = window.localStorage.getItem(sortStorageKey);
+    expect(storedSortOrder).toContain('"user-reply-needed":"newest-first"');
+    expect(storedSortOrder).toContain('"priority-lane":"newest-first"');
+
+    const reloadedDocument = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+        if (storedSortOrder) {
+          window.localStorage.setItem(sortStorageKey, storedSortOrder);
+        }
+      },
+    });
+
+    expect(
+      textList(
+        reloadedDocument,
+        '#body-user-reply-needed .thread-row [data-row-title]'
+      )
+    ).toEqual(['新しい確認', '古い確認']);
+    expect(
+      textList(reloadedDocument, '#priority-lane-list .focus-list-item-title')
+    ).toEqual(['新しい確認', '古い確認']);
+  });
+
   it('shows the latest detail message at the bottom like a chat screen', async () => {
     const validToken = 'latest-bottom-token';
     const thread = makeThreadView('thread-latest-bottom', '最新下部の確認', {
@@ -1018,6 +1499,60 @@ describe('manager-app DOM auth state matrix', () => {
       'newest-message',
     ]);
     expect(sides).toEqual(['right', 'left', 'right']);
+  });
+
+  it('places the completion action right below the latest chat area in conversation view', async () => {
+    const validToken = 'complete-action-below-latest-chat-token';
+    const thread = makeThreadView('thread-complete-action', '完了位置の確認', {
+      messages: [
+        {
+          sender: 'user',
+          content: '先に読むメッセージ',
+          at: '2026-03-21T00:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '最後に読んで判断するメッセージ',
+          at: '2026-03-21T00:01:00.000Z',
+        },
+      ],
+      previewText: '[ai] 最後に読んで判断するメッセージ',
+      lastSender: 'ai',
+      updatedAt: '2026-03-21T00:01:00.000Z',
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [thread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    const msgArea = detail.querySelector<HTMLElement>('.msg-area')!;
+    const actions = detail.querySelector<HTMLElement>('.detail-actions')!;
+    const button = actions.querySelector<HTMLButtonElement>('button')!;
+    const bubbles = Array.from(
+      msgArea.querySelectorAll<HTMLElement>('.bubble-content')
+    ).map((element) => element.textContent?.trim());
+
+    expect(bubbles.at(-1)).toBe('最後に読んで判断するメッセージ');
+    expect(actions.previousElementSibling).toBe(msgArea);
+    expect(button.textContent).toBe('この件は完了');
   });
 
   it('opens a topic with the message area scrolled to the latest message even when layout settles one tick later', async () => {
@@ -1433,8 +1968,25 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(3);
 
     expect(
+      document
+        .querySelector<HTMLElement>('#global-composer-dock')!
+        .classList.contains('composer-dock-thread-mode')
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLElement>('#composerHint')!.textContent
+    ).toBe('');
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerHint')!
+        .classList.contains('hidden')
+    ).toBe(true);
+    expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信先: @特定 task');
+    ).toContain('送信先: この会話');
+    expect(
+      document.querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+        .textContent
+    ).toContain('別件にする');
     expect(
       document
         .querySelector<HTMLElement>('#composerPanel')!
@@ -1467,7 +2019,20 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信先: 全体');
+    ).toContain('送信先: 全体（別件）');
+    expect(
+      document.querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+        .textContent
+    ).toContain('この会話に戻す');
+
+    document
+      .querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+      .click();
+    await flushAsync(2);
+
+    expect(
+      document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
+    ).toContain('送信先: この会話');
   });
 
   it('explains queued follow-up behavior when targeting an AI-working topic', async () => {
@@ -1512,37 +2077,38 @@ describe('manager-app DOM auth state matrix', () => {
     document.querySelector<HTMLElement>('.thread-row')!.click();
     await flushAsync(3);
 
-    const actionButton = document.querySelector<HTMLButtonElement>(
-      '#thread-detail .detail-actions .btn-secondary'
-    )!;
-    expect(actionButton.textContent).toBe(
-      'この会話をメンションして追加指示を送る'
-    );
-
-    actionButton.click();
-    await flushAsync(2);
-
     expect(
-      document.querySelector<HTMLElement>('#composerLabel')!.textContent
-    ).toBe('この会話をメンションして追加指示を送る');
+      document
+        .querySelector<HTMLElement>('#global-composer-dock')!
+        .classList.contains('composer-dock-thread-mode')
+    ).toBe(true);
     expect(
       document.querySelector<HTMLElement>('#composerHint')!.textContent
-    ).toContain('メンション付きのヒントとして全体へ送り');
+    ).toContain('この会話の続きはここから追加指示として送れます');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
-    ).toContain('送信先: @進行中の task');
+    ).toContain('送信先: この会話（追加指示）');
     expect(
       document.querySelector<HTMLElement>('#composerContext')!.textContent
-    ).toContain('メンション付きヒントとして全体へ送り');
+    ).toBe('');
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerContext')!
+        .classList.contains('hidden')
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLButtonElement>('#composerTargetClearButton')!
+        .textContent
+    ).toContain('別件にする');
     expect(
       document.querySelector<HTMLButtonElement>('#globalComposerSendButton')!
         .textContent
     ).toBe('追加指示を送る');
   });
 
-  it('moves a sent draft into a separate feedback lane immediately so the composer can hold the next draft', async () => {
+  it('moves sent drafts into a separate feedback lane immediately so the composer can keep sending while routing continues', async () => {
     const validToken = 'separate-feedback-token';
-    let resolveSend: ((response: Response) => void) | null = null;
+    const resolveSends: Array<(response: Response) => void> = [];
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1587,7 +2153,7 @@ describe('manager-app DOM auth state matrix', () => {
 
         if (isRoute(url, '/manager/global-send')) {
           return await new Promise<Response>((resolve) => {
-            resolveSend = resolve;
+            resolveSends.push(resolve);
           });
         }
 
@@ -1618,20 +2184,41 @@ describe('manager-app DOM auth state matrix', () => {
     const statusText = document.querySelector<HTMLElement>(
       '#composerStatusText'
     )!;
-    const feedback = document.querySelector<HTMLElement>('#composerFeedback')!;
+    const feedback = document.querySelector<HTMLElement>(
+      '#routingFeedbackLane'
+    )!;
+    const feedbackList = document.querySelector<HTMLElement>(
+      '#routingFeedbackList'
+    )!;
+    const feedbackToggleButton = document.querySelector<HTMLButtonElement>(
+      '#routingFeedbackToggleButton'
+    )!;
 
     expect(composer.value).toBe('');
-    expect(sendButton.disabled).toBe(true);
-    expect(statusText.textContent).toContain('前の送信を処理中です');
+    expect(sendButton.disabled).toBe(false);
+    expect(sendButton.textContent).toBe('送る');
+    expect(statusText.textContent).toBe('');
     expect(feedback.classList.contains('hidden')).toBe(false);
-    expect(feedback.textContent).toContain('送信中');
-    expect(feedback.textContent).toContain('通知を確認したいです');
+    expect(feedback.textContent).toContain('送信状況');
+    expect(feedback.textContent).toContain('送信中 1件');
+    expect(feedbackList.classList.contains('hidden')).toBe(true);
+    expect(feedbackToggleButton.textContent).toBe('開く');
+    expect(feedback.textContent).not.toContain('通知を確認したいです');
 
     composer.value = '次に送りたい内容です';
     composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    sendButton.click();
+    await flushAsync(2);
 
-    expect(resolveSend).not.toBeNull();
-    resolveSend!(
+    expect(resolveSends).toHaveLength(2);
+    expect(composer.value).toBe('');
+    expect(sendButton.disabled).toBe(false);
+    expect(sendButton.textContent).toBe('送る');
+    expect(feedback.textContent).toContain('送信中 2件');
+    expect(feedback.textContent).not.toContain('通知を確認したいです');
+    expect(feedback.textContent).not.toContain('次に送りたい内容です');
+
+    resolveSends[0]!(
       new Response(
         JSON.stringify({
           items: [
@@ -1649,13 +2236,43 @@ describe('manager-app DOM auth state matrix', () => {
         { status: 200 }
       )
     );
+    resolveSends[1]!(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              threadId: 'thread-2',
+              title: '別の task',
+              outcome: 'created-new',
+              reason: '新しい task を作りました',
+            },
+          ],
+          routedCount: 1,
+          ambiguousCount: 0,
+          detail: '1件を実行キューに回しました',
+        }),
+        { status: 200 }
+      )
+    );
     await flushAsync(6);
 
     expect(sendButton.disabled).toBe(false);
-    expect(composer.value).toBe('次に送りたい内容です');
+    expect(sendButton.textContent).toBe('送る');
+    expect(composer.value).toBe('');
     expect(statusText.textContent).toBe('');
+    expect(feedback.textContent).toContain('送信状況');
+    expect(feedback.textContent).toContain('送信済み 2件');
+    expect(feedbackList.classList.contains('hidden')).toBe(true);
+
+    feedbackToggleButton.click();
+    await flushAsync(2);
+
+    expect(feedbackToggleButton.textContent).toBe('閉じる');
+    expect(feedbackList.classList.contains('hidden')).toBe(false);
     expect(feedback.textContent).toContain('送信済み');
     expect(feedback.textContent).toContain('1件を実行キューに回しました');
+    expect(feedback.textContent).toContain('通知を確認したいです');
+    expect(feedback.textContent).toContain('次に送りたい内容です');
   });
 
   it('lets the user restore a failed send from the separate feedback lane', async () => {
@@ -1728,18 +2345,308 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(composer.value).toBe('');
     expect(
-      document.querySelector<HTMLElement>('#composerFeedback')!.textContent
-    ).toContain('送信失敗');
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('送信失敗 1件');
+
+    document
+      .querySelector<HTMLButtonElement>('#routingFeedbackToggleButton')!
+      .click();
+    await flushAsync(2);
 
     const restoreButton = Array.from(
       document.querySelectorAll<HTMLButtonElement>(
-        '#composerFeedback .composer-chip'
+        '#routingFeedbackLane .composer-chip'
       )
     ).find((button) => button.textContent === '送信欄に戻す');
     restoreButton!.click();
     await flushAsync(2);
 
     expect(composer.value).toBe('失敗する送信です');
+  });
+
+  it('keeps the send status lane after a reload and only shows details when opened', async () => {
+    const validToken = 'persist-feedback-token';
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-1',
+                  title: '残したい task',
+                  outcome: 'created-new',
+                  reason: '新しい task を作りました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '1件を実行キューに回しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    composer.value = '消えずに残したい送信';
+    document
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+      .click();
+    await flushAsync(6);
+
+    const storedFeedback = window.localStorage.getItem(feedbackStorageKey);
+    expect(storedFeedback).not.toBe(null);
+    expect(storedFeedback).toContain('消えずに残したい送信');
+
+    const reloadedDocument = await loadManagerApp(
+      createManagerFetch(validToken),
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, validToken);
+          if (storedFeedback) {
+            window.localStorage.setItem(feedbackStorageKey, storedFeedback);
+          }
+        },
+      }
+    );
+
+    const feedbackLane = reloadedDocument.querySelector<HTMLElement>(
+      '#routingFeedbackLane'
+    )!;
+    const feedbackList = reloadedDocument.querySelector<HTMLElement>(
+      '#routingFeedbackList'
+    )!;
+
+    expect(feedbackLane.classList.contains('hidden')).toBe(false);
+    expect(feedbackLane.textContent).toContain('送信状況');
+    expect(feedbackLane.textContent).toContain('送信済み 1件');
+    expect(feedbackList.classList.contains('hidden')).toBe(true);
+    expect(feedbackLane.textContent).not.toContain('消えずに残したい送信');
+
+    reloadedDocument
+      .querySelector<HTMLButtonElement>('#routingFeedbackToggleButton')!
+      .click();
+    await flushAsync(2);
+
+    expect(feedbackList.classList.contains('hidden')).toBe(false);
+    expect(feedbackLane.textContent).toContain('消えずに残したい送信');
+    expect(feedbackLane.textContent).toContain('1件を実行キューに回しました');
+  });
+
+  it('lets the user delete individual entries and clear the whole send status lane', async () => {
+    const validToken = 'delete-feedback-token';
+    let sendCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          sendCount += 1;
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: `thread-${sendCount}`,
+                  title: `task-${sendCount}`,
+                  outcome: 'created-new',
+                  reason: '新しい task を作りました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: `${sendCount}件目を実行キューに回しました`,
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    const sendButton = document.querySelector<HTMLButtonElement>(
+      '#globalComposerSendButton'
+    )!;
+
+    composer.value = '最初の送信';
+    sendButton.click();
+    await flushAsync(6);
+
+    composer.value = '次の送信';
+    sendButton.click();
+    await flushAsync(6);
+
+    const feedbackLane = document.querySelector<HTMLElement>(
+      '#routingFeedbackLane'
+    )!;
+    const feedbackList = document.querySelector<HTMLElement>(
+      '#routingFeedbackList'
+    )!;
+
+    expect(feedbackLane.textContent).toContain('送信済み 2件');
+
+    document
+      .querySelector<HTMLButtonElement>('#routingFeedbackToggleButton')!
+      .click();
+    await flushAsync(2);
+
+    expect(feedbackList.classList.contains('hidden')).toBe(false);
+
+    const firstCard = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '#routingFeedbackList .composer-feedback-entry'
+      )
+    ).find((card) => card.textContent?.includes('最初の送信'));
+    const deleteButton = Array.from(
+      firstCard!.querySelectorAll<HTMLButtonElement>('button.composer-chip')
+    ).find((button) => button.textContent === '削除');
+    deleteButton!.click();
+    await flushAsync(2);
+
+    expect(feedbackLane.textContent).toContain('送信済み 1件');
+    expect(feedbackLane.textContent).not.toContain('最初の送信');
+    expect(window.localStorage.getItem(feedbackStorageKey) ?? '').not.toContain(
+      '最初の送信'
+    );
+
+    document
+      .querySelector<HTMLButtonElement>('#routingFeedbackClearButton')!
+      .click();
+    await flushAsync(2);
+
+    expect(feedbackLane.classList.contains('hidden')).toBe(true);
+    expect(window.localStorage.getItem(feedbackStorageKey)).toBe(null);
   });
 
   it('keeps the composer compact until the user opens it', async () => {
@@ -1759,18 +2666,26 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(panel.classList.contains('hidden')).toBe(true);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.classList.contains('hidden')).toBe(false);
 
     toggle.click();
     await flushAsync(2);
 
     expect(panel.classList.contains('hidden')).toBe(false);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.classList.contains('hidden')).toBe(true);
+    expect(
+      document
+        .querySelector<HTMLButtonElement>('#composerCloseButton')!
+        .classList.contains('hidden')
+    ).toBe(false);
 
     document.querySelector<HTMLButtonElement>('#composerCloseButton')!.click();
     await flushAsync(2);
 
     expect(panel.classList.contains('hidden')).toBe(true);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.classList.contains('hidden')).toBe(false);
   });
 
   it('uses real line breaks in the composer placeholder instead of literal \\n text', async () => {
@@ -2728,7 +3643,7 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('AI作業中 0');
   });
 
-  it('shows an explicit backend problem state instead of benign queued copy when manager health is bad', async () => {
+  it('keeps normal busy copy when the backend is still running without a factual error', async () => {
     const fetchMock = createManagerFetchWithData({
       validToken: 'stalled-status-token',
       threads: [
@@ -2744,15 +3659,13 @@ describe('manager-app activity summary', () => {
         running: true,
         configured: true,
         builtinBackend: true,
-        health: 'stalled',
-        detail:
-          'AI backend の進捗が止まっている可能性があります (順番待ちの task)',
+        health: 'ok',
+        detail: '処理中 (順番待ちの task)',
         pendingCount: 1,
         currentQueueId: 'q_stalled',
         currentThreadId: 'queued-thread',
         currentThreadTitle: '順番待ちの task',
-        errorMessage:
-          '最後に進捗が見えてから長く止まっています。worker がハングしている可能性があります。',
+        errorMessage: null,
       },
     });
 
@@ -2765,16 +3678,19 @@ describe('manager-app activity summary', () => {
 
     expect(
       document.querySelector<HTMLElement>('#manager-status-text')!.textContent
-    ).toContain('AI backend が止まっている可能性があります');
+    ).toContain('AI が「順番待ちの task」を処理中です');
     expect(
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
-    ).toContain('AI backend が止まっている可能性があります');
+    ).toContain('AI が「順番待ちの task」を進めています');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('worker がハングしている可能性があります');
+    ).toContain('残り 1 件を順番に進めます');
     expect(
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
     ).not.toContain('AI の順番待ちがあります');
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).not.toContain('止まっている可能性があります');
   });
 });
 
@@ -2798,6 +3714,199 @@ describe('manager-app live updates', () => {
     expect(
       fetchMock.mock.calls.some(([input]) => isRoute(String(input), '/live'))
     ).toBe(true);
+  });
+
+  it('refreshes the open work-item after the screen becomes visible again', async () => {
+    const initialThread = makeThreadView('thread-resume', '送信中の task', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 進めてください',
+      updatedAt: '2026-03-23T09:00:00.000Z',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex gpt-5.4 (xhigh)',
+      workerAgentId: 'assign_resume',
+      workerRuntimeState: 'worker-running',
+      workerRuntimeDetail: '担当 worker agent がこの作業項目を実行中です。',
+      messages: [
+        {
+          sender: 'user',
+          content: '進めてください',
+          at: '2026-03-23T09:00:00.000Z',
+        },
+      ],
+    });
+    const resumedThread = makeThreadView('thread-resume', '送信中の task', {
+      status: 'review',
+      uiState: 'ai-finished-awaiting-user-confirmation',
+      isWorking: false,
+      lastSender: 'ai',
+      previewText: '[ai] 完了しました',
+      updatedAt: '2026-03-23T09:05:00.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '進めてください',
+          at: '2026-03-23T09:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '完了しました。',
+          at: '2026-03-23T09:05:00.000Z',
+        },
+      ],
+    });
+    const responseState: Parameters<typeof createManagerFetchWithData>[0] = {
+      validToken: 'resume-refresh-token',
+      threads: [initialThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (送信中の task)',
+        currentThreadId: 'thread-resume',
+        currentThreadTitle: '送信中の task',
+      },
+    };
+    const fetchMock = createManagerFetchWithData(responseState);
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'resume-refresh-token');
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('AI作業中');
+    expect(detail.textContent).not.toContain('完了しました。');
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    document.dispatchEvent(
+      new window.Event('visibilitychange', { bubbles: false })
+    );
+    await flushAsync(2);
+
+    responseState.threads = [resumedThread];
+    responseState.status = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中',
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    document.dispatchEvent(
+      new window.Event('visibilitychange', { bubbles: false })
+    );
+    await flushAsync(6);
+
+    expect(detail.textContent).toContain('あなたの確認待ち');
+    expect(detail.textContent).toContain('完了しました。');
+    expect(
+      fetchMock.mock.calls.filter(([input]) => isRoute(String(input), '/live'))
+        .length
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('refreshes the open work-item after a persisted pageshow restore', async () => {
+    const initialThread = makeThreadView('thread-pageshow', '復帰待ちの task', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 続きを進めてください',
+      updatedAt: '2026-03-23T10:00:00.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '続きを進めてください',
+          at: '2026-03-23T10:00:00.000Z',
+        },
+      ],
+    });
+    const resumedThread = makeThreadView('thread-pageshow', '復帰待ちの task', {
+      status: 'review',
+      uiState: 'ai-finished-awaiting-user-confirmation',
+      isWorking: false,
+      lastSender: 'ai',
+      previewText: '[ai] 反映しました',
+      updatedAt: '2026-03-23T10:03:00.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '続きを進めてください',
+          at: '2026-03-23T10:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '反映しました。',
+          at: '2026-03-23T10:03:00.000Z',
+        },
+      ],
+    });
+    const responseState: Parameters<typeof createManagerFetchWithData>[0] = {
+      validToken: 'pageshow-refresh-token',
+      threads: [initialThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (復帰待ちの task)',
+        currentThreadId: 'thread-pageshow',
+        currentThreadTitle: '復帰待ちの task',
+      },
+    };
+    const fetchMock = createManagerFetchWithData(responseState);
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'pageshow-refresh-token');
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('AI作業中');
+    expect(detail.textContent).not.toContain('反映しました。');
+
+    responseState.threads = [resumedThread];
+    responseState.status = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中',
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+
+    const pageShow = new window.PageTransitionEvent('pageshow', {
+      persisted: true,
+    });
+    window.dispatchEvent(pageShow);
+    await flushAsync(6);
+
+    expect(detail.textContent).toContain('あなたの確認待ち');
+    expect(detail.textContent).toContain('反映しました。');
+    expect(
+      fetchMock.mock.calls.filter(([input]) => isRoute(String(input), '/live'))
+        .length
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it('renders the in-flight worker output as the latest AI bubble in detail view', async () => {

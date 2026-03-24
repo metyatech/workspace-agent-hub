@@ -828,6 +828,9 @@ describe('native manager page', () => {
     expect(html).toContain('マネージャー');
     expect(html).toContain('MANAGER_AUTH_REQUIRED');
     expect(html).toContain('<base href="/manager/" />');
+    expect(html).toContain(
+      '<link rel="icon" href="/icon.svg" type="image/svg+xml" />'
+    );
   });
 
   it('also serves manager page at /manager without trailing slash', async () => {

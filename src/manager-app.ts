@@ -34,6 +34,10 @@ type ManagerUiState =
   | 'cancelled-as-superseded'
   | 'done';
 
+type ManagerListSortOrder = 'newest-first' | 'oldest-first';
+
+type ManagerSortPreferenceKey = ManagerUiState | 'priority-lane' | 'tasks';
+
 type ManagerWorkerRuntimeState =
   | 'manager-answering'
   | 'worker-running'
@@ -77,6 +81,13 @@ interface ThreadView {
   queuePriority?: string | null;
 }
 
+type ThreadMutationAction = 'resolve' | 'reopen';
+
+interface PendingThreadMutation {
+  action: ThreadMutationAction;
+  previousThread: ThreadView;
+}
+
 interface Task {
   id: string;
   stage?: string;
@@ -95,7 +106,7 @@ interface ManagerStatusPayload {
   running: boolean;
   configured: boolean;
   builtinBackend: boolean;
-  health?: 'ok' | 'stalled' | 'error';
+  health?: 'ok' | 'error';
   detail?: string;
   pendingCount?: number;
   currentQueueId?: string | null;
@@ -140,6 +151,10 @@ interface ComposerFeedbackEntry {
   status: ComposerFeedbackStatus;
   detail: string;
   items: ManagerRoutingSummaryItem[];
+}
+
+interface StoredComposerFeedbackPayload {
+  entries: ComposerFeedbackEntry[];
 }
 
 interface StyleEntry {
@@ -212,8 +227,11 @@ const GUI_DIR = window.GUI_DIR;
 const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
 const MANAGER_AUTH_STORAGE_KEY =
   window.MANAGER_AUTH_STORAGE_KEY || `workspace-agent-hub.token:${GUI_DIR}`;
+const MANAGER_FEEDBACK_STORAGE_KEY = `workspace-agent-hub.manager-feedback:${GUI_DIR}`;
+const MANAGER_SORT_STORAGE_KEY = `workspace-agent-hub.manager-sort:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
 const MANAGER_HISTORY_KIND = 'workspace-agent-hub-manager';
+const COMPOSER_FEEDBACK_MAX_ENTRIES = 4;
 
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
@@ -224,6 +242,49 @@ const STATE_ORDER: ManagerUiState[] = [
   'cancelled-as-superseded',
   'done',
 ];
+
+const SORTABLE_SECTION_KEYS: ManagerSortPreferenceKey[] = [
+  'priority-lane',
+  ...STATE_ORDER,
+  'tasks',
+];
+
+const DEFAULT_MANAGER_SORT_ORDERS: Record<
+  ManagerSortPreferenceKey,
+  ManagerListSortOrder
+> = {
+  'priority-lane': 'oldest-first',
+  'routing-confirmation-needed': 'oldest-first',
+  'user-reply-needed': 'oldest-first',
+  'ai-finished-awaiting-user-confirmation': 'oldest-first',
+  queued: 'newest-first',
+  'ai-working': 'newest-first',
+  'cancelled-as-superseded': 'newest-first',
+  done: 'newest-first',
+  tasks: 'newest-first',
+};
+
+const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
+  'priority-lane': 'いま読む作業項目',
+  'routing-confirmation-needed': '振り分けの確認が必要です',
+  'user-reply-needed': 'あなたの返信が必要です',
+  'ai-finished-awaiting-user-confirmation': 'あなたの確認待ちです',
+  queued: 'AI の順番待ち',
+  'ai-working': 'AI が作業中です',
+  'cancelled-as-superseded': '置き換えで停止',
+  done: '完了',
+  tasks: '残っている作業メモ',
+};
+
+const STATE_PRIORITY_RANK = Object.fromEntries(
+  STATE_ORDER.map((state, index) => [state, index])
+) as Record<ManagerUiState, number>;
+
+const ACTIONABLE_STATES = new Set<ManagerUiState>([
+  'routing-confirmation-needed',
+  'user-reply-needed',
+  'ai-finished-awaiting-user-confirmation',
+]);
 
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
@@ -292,6 +353,178 @@ const TASK_STAGE_LABELS: Record<string, string> = {
   done: '完了',
 };
 
+function normalizeManagerSortOrder(
+  value: unknown
+): ManagerListSortOrder | null {
+  if (value === 'newest-first' || value === 'oldest-first') {
+    return value;
+  }
+  return null;
+}
+
+function isManagerSortPreferenceKey(
+  value: string | null
+): value is ManagerSortPreferenceKey {
+  return Boolean(value && (SORTABLE_SECTION_KEYS as string[]).includes(value));
+}
+
+function readStoredManagerSortOrders(): Partial<
+  Record<ManagerSortPreferenceKey, ManagerListSortOrder>
+> {
+  try {
+    const raw = window.localStorage.getItem(MANAGER_SORT_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+
+    const next: Partial<
+      Record<ManagerSortPreferenceKey, ManagerListSortOrder>
+    > = {};
+    for (const key of SORTABLE_SECTION_KEYS) {
+      const sortOrder = normalizeManagerSortOrder(parsed[key]);
+      if (sortOrder) {
+        next[key] = sortOrder;
+      }
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+function buildManagerSortOrders(): Record<
+  ManagerSortPreferenceKey,
+  ManagerListSortOrder
+> {
+  const stored = readStoredManagerSortOrders();
+  return Object.fromEntries(
+    SORTABLE_SECTION_KEYS.map((key) => [
+      key,
+      stored[key] ?? DEFAULT_MANAGER_SORT_ORDERS[key],
+    ])
+  ) as Record<ManagerSortPreferenceKey, ManagerListSortOrder>;
+}
+
+function writeStoredManagerSortOrders(
+  sortOrders: Record<ManagerSortPreferenceKey, ManagerListSortOrder>
+): void {
+  try {
+    window.localStorage.setItem(
+      MANAGER_SORT_STORAGE_KEY,
+      JSON.stringify(
+        Object.fromEntries(
+          SORTABLE_SECTION_KEYS.map((key) => [key, sortOrders[key]])
+        )
+      )
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function managerSortOrderLabel(order: ManagerListSortOrder): string {
+  return order === 'newest-first' ? '新しい順' : '古い順';
+}
+
+function managerSortOrderChipLabel(order: ManagerListSortOrder): string {
+  return order === 'newest-first' ? '上: 新しい' : '上: 古い';
+}
+
+function toggleManagerSortOrder(
+  order: ManagerListSortOrder
+): ManagerListSortOrder {
+  return order === 'newest-first' ? 'oldest-first' : 'newest-first';
+}
+
+function threadUpdatedAtUnix(thread: ThreadView): number {
+  const candidate = thread.updatedAt || thread.messages.at(-1)?.at || '';
+  const unix = candidate ? new Date(candidate).getTime() : Number.NaN;
+  return Number.isFinite(unix) ? unix : 0;
+}
+
+function taskUpdatedAtUnix(task: Task): number {
+  const candidate = task.updatedAt || task.createdAt || '';
+  const unix = candidate ? new Date(candidate).getTime() : Number.NaN;
+  return Number.isFinite(unix) ? unix : 0;
+}
+
+function compareThreadsByUpdatedAt(
+  left: ThreadView,
+  right: ThreadView,
+  sortOrder: ManagerListSortOrder
+): number {
+  const leftUnix = threadUpdatedAtUnix(left);
+  const rightUnix = threadUpdatedAtUnix(right);
+  if (leftUnix !== rightUnix) {
+    return sortOrder === 'oldest-first'
+      ? leftUnix - rightUnix
+      : rightUnix - leftUnix;
+  }
+
+  if (left.uiState === 'queued' && right.uiState === 'queued') {
+    const leftQueueOrder = left.queueOrder ?? Number.MAX_SAFE_INTEGER;
+    const rightQueueOrder = right.queueOrder ?? Number.MAX_SAFE_INTEGER;
+    if (leftQueueOrder !== rightQueueOrder) {
+      return sortOrder === 'oldest-first'
+        ? leftQueueOrder - rightQueueOrder
+        : rightQueueOrder - leftQueueOrder;
+    }
+  }
+
+  const stateDiff =
+    STATE_PRIORITY_RANK[left.uiState] - STATE_PRIORITY_RANK[right.uiState];
+  if (stateDiff !== 0) {
+    return stateDiff;
+  }
+
+  const titleDiff = left.title.localeCompare(right.title, 'ja-JP');
+  if (titleDiff !== 0) {
+    return titleDiff;
+  }
+
+  return left.id.localeCompare(right.id, 'ja-JP');
+}
+
+function sortThreadsByUpdatedAt(
+  threads: ThreadView[],
+  sortOrder: ManagerListSortOrder
+): ThreadView[] {
+  return [...threads].sort((left, right) =>
+    compareThreadsByUpdatedAt(left, right, sortOrder)
+  );
+}
+
+function sortTasksByUpdatedAt(
+  tasks: Task[],
+  sortOrder: ManagerListSortOrder
+): Task[] {
+  return [...tasks].sort((left, right) => {
+    const leftUnix = taskUpdatedAtUnix(left);
+    const rightUnix = taskUpdatedAtUnix(right);
+    if (leftUnix !== rightUnix) {
+      return sortOrder === 'oldest-first'
+        ? leftUnix - rightUnix
+        : rightUnix - leftUnix;
+    }
+
+    const leftDescription = left.description || '';
+    const rightDescription = right.description || '';
+    const descriptionDiff = leftDescription.localeCompare(
+      rightDescription,
+      'ja-JP'
+    );
+    if (descriptionDiff !== 0) {
+      return descriptionDiff;
+    }
+
+    return (left.id || '').localeCompare(right.id || '', 'ja-JP');
+  });
+}
+
 function readManagerHistoryState(): ManagerHistoryState | null {
   const state = window.history.state as Partial<ManagerHistoryState> | null;
   if (!state || state.kind !== MANAGER_HISTORY_KIND) {
@@ -357,6 +590,120 @@ function writeStoredAuthToken(token: string): void {
 function clearStoredAuthToken(): void {
   try {
     window.localStorage.removeItem(MANAGER_AUTH_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function normalizeComposerFeedbackStatus(
+  value: unknown
+): ComposerFeedbackStatus | null {
+  if (value === 'sending' || value === 'sent' || value === 'failed') {
+    return value;
+  }
+  return null;
+}
+
+function normalizeRoutingSummaryItem(
+  value: unknown
+): ManagerRoutingSummaryItem | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const item = value as Partial<ManagerRoutingSummaryItem>;
+  if (
+    typeof item.threadId !== 'string' ||
+    typeof item.title !== 'string' ||
+    typeof item.reason !== 'string'
+  ) {
+    return null;
+  }
+  if (
+    item.outcome !== 'attached-existing' &&
+    item.outcome !== 'created-new' &&
+    item.outcome !== 'routing-confirmation' &&
+    item.outcome !== 'resolved-existing'
+  ) {
+    return null;
+  }
+  return {
+    threadId: item.threadId,
+    title: item.title,
+    outcome: item.outcome,
+    reason: item.reason,
+  };
+}
+
+function normalizeComposerFeedbackEntry(
+  value: unknown
+): ComposerFeedbackEntry | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const entry = value as Partial<ComposerFeedbackEntry>;
+  const status = normalizeComposerFeedbackStatus(entry.status);
+  if (
+    !status ||
+    typeof entry.id !== 'string' ||
+    typeof entry.content !== 'string' ||
+    typeof entry.targetLabel !== 'string' ||
+    typeof entry.detail !== 'string'
+  ) {
+    return null;
+  }
+  const items = Array.isArray(entry.items)
+    ? entry.items
+        .map((item) => normalizeRoutingSummaryItem(item))
+        .filter((item): item is ManagerRoutingSummaryItem => item !== null)
+    : [];
+  return {
+    id: entry.id,
+    content: entry.content,
+    targetLabel: entry.targetLabel,
+    status,
+    detail: entry.detail,
+    items,
+  };
+}
+
+function readStoredComposerFeedbackEntries(): ComposerFeedbackEntry[] {
+  try {
+    const raw = window.localStorage.getItem(MANAGER_FEEDBACK_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as
+      | StoredComposerFeedbackPayload
+      | ComposerFeedbackEntry[];
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.entries)
+        ? parsed.entries
+        : [];
+    return entries
+      .map((entry) => normalizeComposerFeedbackEntry(entry))
+      .filter((entry): entry is ComposerFeedbackEntry => entry !== null)
+      .slice(0, COMPOSER_FEEDBACK_MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredComposerFeedbackEntries(
+  entries: ComposerFeedbackEntry[]
+): void {
+  try {
+    if (entries.length === 0) {
+      window.localStorage.removeItem(MANAGER_FEEDBACK_STORAGE_KEY);
+      return;
+    }
+    const payload: StoredComposerFeedbackPayload = {
+      entries: entries.slice(0, COMPOSER_FEEDBACK_MAX_ENTRIES),
+    };
+    window.localStorage.setItem(
+      MANAGER_FEEDBACK_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
   } catch {
     /* ignore */
   }
@@ -1080,9 +1427,9 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
 
 function managerStatusProblem(
   status: ManagerStatusPayload | null
-): 'stalled' | 'error' | null {
+): 'error' | null {
   const health = status?.health ?? 'ok';
-  if (health === 'stalled' || health === 'error') {
+  if (health === 'error') {
     return health;
   }
   return null;
@@ -1090,6 +1437,56 @@ function managerStatusProblem(
 
 function threadStateLocation(thread: ThreadView): string {
   return `一覧では「${STATE_LABELS[thread.uiState]}」にあります`;
+}
+
+function pendingThreadActionLabel(action: ThreadMutationAction): string {
+  return action === 'resolve' ? '完了にしています…' : '開き直しています…';
+}
+
+function applyOptimisticThreadMutation(
+  thread: ThreadView,
+  mutation: PendingThreadMutation
+): ThreadView {
+  if (mutation.action === 'resolve') {
+    return {
+      ...thread,
+      status: 'resolved',
+      uiState: 'done',
+      hiddenByDefault: true,
+      routingConfirmationNeeded: false,
+      queueDepth: 0,
+      isWorking: false,
+      assigneeKind: null,
+      assigneeLabel: null,
+      workerAgentId: null,
+      workerRuntimeState: null,
+      workerRuntimeDetail: null,
+      workerBlockedByThreadIds: [],
+      supersededByThreadId: null,
+    };
+  }
+
+  const nextUiState =
+    thread.lastSender === 'ai'
+      ? 'ai-finished-awaiting-user-confirmation'
+      : 'queued';
+  const nextStatus = thread.lastSender === 'ai' ? 'review' : 'waiting';
+  return {
+    ...thread,
+    status: nextStatus,
+    uiState: nextUiState,
+    hiddenByDefault: false,
+    routingConfirmationNeeded: false,
+    queueDepth: 0,
+    isWorking: false,
+    assigneeKind: null,
+    assigneeLabel: null,
+    workerAgentId: null,
+    workerRuntimeState: null,
+    workerRuntimeDetail: null,
+    workerBlockedByThreadIds: [],
+    supersededByThreadId: null,
+  };
 }
 
 function summarizeRelationTitles(titles: string[]): string {
@@ -1233,6 +1630,60 @@ function composerSendButtonLabel(thread: ThreadView | null): string {
     return '送る';
   }
   return thread.uiState === 'ai-working' ? '追加指示を送る' : '送る';
+}
+
+function composerTargetPillLabel(
+  thread: ThreadView | null,
+  openThread: ThreadView | null
+): string {
+  if (!thread) {
+    return openThread && openThread.uiState !== 'done'
+      ? '送信先: 全体（別件）'
+      : '送信先: 全体（AI が振り分けます）';
+  }
+  if (openThread && thread.id === openThread.id) {
+    return thread.uiState === 'ai-working'
+      ? '送信先: この会話（追加指示）'
+      : '送信先: この会話';
+  }
+  return thread.uiState === 'ai-working'
+    ? `送信先: @${thread.title}（続きなら追加指示）`
+    : `送信先: @${thread.title}`;
+}
+
+function composerTargetClearLabel(
+  thread: ThreadView | null,
+  openThread: ThreadView | null
+): string | null {
+  if (!thread) {
+    return openThread && openThread.uiState !== 'done'
+      ? 'この会話に戻す'
+      : null;
+  }
+  if (openThread && thread.id === openThread.id) {
+    return '別件にする';
+  }
+  return openThread && openThread.uiState !== 'done'
+    ? 'この会話に戻す'
+    : '全体へ戻す';
+}
+
+function feedbackLaneSummaryText(entries: ComposerFeedbackEntry[]): string {
+  const counts = {
+    sending: 0,
+    sent: 0,
+    failed: 0,
+  };
+  for (const entry of entries) {
+    counts[entry.status] += 1;
+  }
+  return [
+    counts.sending > 0 ? `送信中 ${counts.sending}件` : null,
+    counts.sent > 0 ? `送信済み ${counts.sent}件` : null,
+    counts.failed > 0 ? `送信失敗 ${counts.failed}件` : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(' / ');
 }
 
 class ThreadSectionController {
@@ -1515,6 +1966,8 @@ class TaskSectionController {
   #count = document.getElementById('count-tasks');
   #chevron = document.getElementById('chevron-tasks');
   #collapsed = false;
+  #lastTasks: Task[] = [];
+  #lastSortOrder: ManagerListSortOrder = DEFAULT_MANAGER_SORT_ORDERS.tasks;
 
   toggle(): void {
     this.#collapsed = !this.#collapsed;
@@ -1524,9 +1977,14 @@ class TaskSectionController {
     if (this.#chevron) {
       this.#chevron.textContent = this.#collapsed ? '▼' : '▲';
     }
+    if (!this.#collapsed) {
+      this.render(this.#lastTasks, this.#lastSortOrder);
+    }
   }
 
-  render(tasks: Task[]): void {
+  render(tasks: Task[], sortOrder: ManagerListSortOrder): void {
+    this.#lastTasks = tasks;
+    this.#lastSortOrder = sortOrder;
     if (this.#count) {
       this.#count.textContent = tasks.length > 0 ? `(${tasks.length})` : '';
     }
@@ -1548,11 +2006,7 @@ class TaskSectionController {
       return;
     }
 
-    const sorted = [...tasks].sort((left, right) => {
-      const leftAt = left.updatedAt || left.createdAt || '';
-      const rightAt = right.updatedAt || right.createdAt || '';
-      return new Date(rightAt).getTime() - new Date(leftAt).getTime();
-    });
+    const sorted = sortTasksByUpdatedAt(tasks, sortOrder);
 
     for (const task of sorted) {
       const row = document.createElement('div');
@@ -1687,10 +2141,12 @@ class DetailController {
     }
 
     const previousThreadId = this.#currentThreadId;
+    const pendingAction = this.#app.pendingThreadAction(thread.id);
     const nextSignature = JSON.stringify({
       id: thread.id,
       title: thread.title,
       uiState: thread.uiState,
+      pendingAction: pendingAction ?? '',
       updatedAt: thread.updatedAt ?? '',
       queueDepth: thread.queueDepth,
       assigneeLabel: thread.assigneeLabel ?? '',
@@ -1860,36 +2316,6 @@ class DetailController {
       body.appendChild(related);
     }
 
-    const actions = document.createElement('div');
-    actions.className = 'detail-actions';
-
-    const focusComposer = document.createElement('button');
-    focusComposer.className = 'btn btn-secondary';
-    focusComposer.style.width = 'auto';
-    focusComposer.textContent = composerActionLabel(thread);
-    focusComposer.addEventListener('click', () =>
-      this.#app.focusComposerForThread(thread.id)
-    );
-    actions.appendChild(focusComposer);
-
-    const statusButton = document.createElement('button');
-    statusButton.style.width = 'auto';
-    if (thread.uiState === 'done') {
-      statusButton.className = 'btn btn-ghost';
-      statusButton.textContent = 'もう一度開く';
-      statusButton.addEventListener('click', () => {
-        void this.#app.reopenThread(thread.id);
-      });
-    } else {
-      statusButton.className = 'btn btn-secondary';
-      statusButton.textContent = 'この件は完了';
-      statusButton.addEventListener('click', () => {
-        void this.#app.resolveThread(thread.id);
-      });
-    }
-    actions.appendChild(statusButton);
-    body.appendChild(actions);
-
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
     const detailMessages = messagesForDetail(thread);
@@ -1905,6 +2331,32 @@ class DetailController {
       }
     }
     body.appendChild(msgArea);
+
+    const actions = document.createElement('div');
+    actions.className = 'detail-actions';
+
+    const statusButton = document.createElement('button');
+    statusButton.style.width = 'auto';
+    if (pendingAction) {
+      statusButton.className =
+        thread.uiState === 'done' ? 'btn btn-ghost' : 'btn btn-secondary';
+      statusButton.textContent = pendingThreadActionLabel(pendingAction);
+      statusButton.disabled = true;
+    } else if (thread.uiState === 'done') {
+      statusButton.className = 'btn btn-ghost';
+      statusButton.textContent = 'もう一度開く';
+      statusButton.addEventListener('click', () => {
+        void this.#app.reopenThread(thread.id);
+      });
+    } else {
+      statusButton.className = 'btn btn-secondary';
+      statusButton.textContent = 'この件は完了';
+      statusButton.addEventListener('click', () => {
+        void this.#app.resolveThread(thread.id);
+      });
+    }
+    actions.appendChild(statusButton);
+    body.appendChild(actions);
     this.#detailEl.appendChild(body);
 
     if (!sameThread) {
@@ -1943,7 +2395,6 @@ class ManagerApp {
   #liveStreamAbort: AbortController | null = null;
   #liveReconnectTimer: number | null = null;
   #showDone = false;
-  #sending = false;
   #managerStatus: ManagerStatusPayload | null = null;
   #composerDock: HTMLElement | null = null;
   #composerResizeObserver: ResizeObserver | null = null;
@@ -1951,9 +2402,16 @@ class ManagerApp {
   #composerAttachments = new Map<string, ManagerMessageAttachment>();
   #composerAttachmentSerial = 0;
   #composerImageDragDepth = 0;
-  #composerFeedbackEntries: ComposerFeedbackEntry[] = [];
+  #composerFeedbackEntries: ComposerFeedbackEntry[] =
+    readStoredComposerFeedbackEntries();
   #composerFeedbackSerial = 0;
+  #composerFeedbackExpanded = false;
   #pendingHistoryComposerTargetRestore = false;
+  #lifecycleRefreshReady = false;
+  #lastLifecycleRefreshAt = 0;
+  #resumeRefreshInFlight = false;
+  #pendingThreadMutations = new Map<string, PendingThreadMutation>();
+  #sortOrders = buildManagerSortOrders();
 
   constructor() {
     this.#sections = {
@@ -1985,7 +2443,9 @@ class ManagerApp {
     this.#wireActions();
     this.#wireHistory();
     this.#wireAuthPanel();
+    this.#wireLifecycleRefresh();
     this.#renderDoneToggle();
+    this.#renderSortControls();
     this.#renderComposerExpansionState();
     this.#syncComposerDraftUi();
 
@@ -2315,23 +2775,35 @@ class ManagerApp {
   }
 
   async resolveThread(threadId: string): Promise<void> {
+    const mutation = this.#beginThreadMutation(threadId, 'resolve');
+    if (!mutation) {
+      return;
+    }
     const response = await this.apiFetch(`/api/threads/${threadId}/resolve`, {
       method: 'PUT',
     });
-    if (!response) {
+    if (!response || !response.ok) {
+      this.#rollbackThreadMutation(threadId, mutation);
+      void this.loadAll();
       return;
     }
-    await this.loadAll();
+    this.#clearThreadMutation(threadId);
   }
 
   async reopenThread(threadId: string): Promise<void> {
+    const mutation = this.#beginThreadMutation(threadId, 'reopen');
+    if (!mutation) {
+      return;
+    }
     const response = await this.apiFetch(`/api/threads/${threadId}/reopen`, {
       method: 'PUT',
     });
-    if (!response) {
+    if (!response || !response.ok) {
+      this.#rollbackThreadMutation(threadId, mutation);
+      void this.loadAll();
       return;
     }
-    await this.loadAll();
+    this.#clearThreadMutation(threadId);
   }
 
   async apiFetch(
@@ -2382,7 +2854,7 @@ class ManagerApp {
 
   #applyThreadAndTaskSnapshot(threads: ThreadView[], tasks: Task[]): void {
     const previousOpenThread = this.#findThread(this.openThreadId);
-    this.allThreads = threads;
+    this.allThreads = this.#applyPendingThreadMutations(threads);
     this.allTasks = tasks;
 
     if (
@@ -2451,33 +2923,19 @@ class ManagerApp {
       const problem = managerStatusProblem(payload);
       if (dot) {
         dot.style.background =
-          problem === 'error'
-            ? '#ef4444'
-            : problem === 'stalled'
-              ? '#f97316'
-              : busy
-                ? '#f59e0b'
-                : '#22c55e';
+          problem === 'error' ? '#ef4444' : busy ? '#f59e0b' : '#22c55e';
       }
       if (text) {
         text.style.color =
-          problem === 'error'
-            ? '#b91c1c'
-            : problem === 'stalled'
-              ? '#c2410c'
-              : busy
-                ? '#92400e'
-                : '#166534';
+          problem === 'error' ? '#b91c1c' : busy ? '#92400e' : '#166534';
         const label =
           problem === 'error'
             ? 'AI backend で問題が起きています'
-            : problem === 'stalled'
-              ? 'AI backend が止まっている可能性があります'
-              : busy
-                ? payload.currentThreadTitle
-                  ? `AI が「${payload.currentThreadTitle}」を処理中です`
-                  : 'AI が作業中です'
-                : '待機中です';
+            : busy
+              ? payload.currentThreadTitle
+                ? `AI が「${payload.currentThreadTitle}」を処理中です`
+                : 'AI が作業中です'
+              : '待機中です';
         const queueTail = payload.detail
           ? ` — ${payload.detail}`
           : !busy && (payload.pendingCount ?? 0) > 0
@@ -2556,6 +3014,69 @@ class ManagerApp {
     }, delayMs);
   }
 
+  #wireLifecycleRefresh(): void {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this.#stopLiveStream();
+        return;
+      }
+      if (document.visibilityState === 'visible') {
+        this.#requestLifecycleRefresh();
+      }
+    });
+    window.addEventListener('online', () => {
+      this.#requestLifecycleRefresh();
+    });
+    window.addEventListener('focus', () => {
+      this.#requestLifecycleRefresh();
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (!(event as PageTransitionEvent).persisted) {
+        return;
+      }
+      this.#requestLifecycleRefresh();
+    });
+  }
+
+  #armLifecycleRefresh(): void {
+    this.#lifecycleRefreshReady = true;
+  }
+
+  #requestLifecycleRefresh(): void {
+    if (
+      !this.#authToken ||
+      !this.#lifecycleRefreshReady ||
+      document.visibilityState === 'hidden'
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - this.#lastLifecycleRefreshAt < 1200) {
+      return;
+    }
+
+    this.#lastLifecycleRefreshAt = now;
+    void this.#refreshAfterResume();
+  }
+
+  async #refreshAfterResume(): Promise<void> {
+    if (!this.#authToken || this.#resumeRefreshInFlight) {
+      return;
+    }
+
+    this.#resumeRefreshInFlight = true;
+    this.#stopLiveStream();
+    try {
+      await Promise.all([this.loadAll(), this.loadManagerStatus()]);
+    } finally {
+      this.#resumeRefreshInFlight = false;
+      if (this.#authToken) {
+        this.#startLiveStream();
+      }
+    }
+  }
+
   async #consumeLiveStream(signal: AbortSignal): Promise<void> {
     try {
       const response = await apiFetchWithToken(this.#authToken, '/api/live', {
@@ -2628,11 +3149,67 @@ class ManagerApp {
     this.#focusThread(threadId);
   }
 
+  pendingThreadAction(threadId: string): ThreadMutationAction | null {
+    return this.#pendingThreadMutations.get(threadId)?.action ?? null;
+  }
+
   #findThread(threadId: string | null): ThreadView | null {
     if (!threadId) {
       return null;
     }
     return this.allThreads.find((item) => item.id === threadId) ?? null;
+  }
+
+  #applyPendingThreadMutations(threads: ThreadView[]): ThreadView[] {
+    if (this.#pendingThreadMutations.size === 0) {
+      return threads;
+    }
+    return threads.map((thread) => {
+      const mutation = this.#pendingThreadMutations.get(thread.id);
+      return mutation
+        ? applyOptimisticThreadMutation(thread, mutation)
+        : thread;
+    });
+  }
+
+  #beginThreadMutation(
+    threadId: string,
+    action: ThreadMutationAction
+  ): PendingThreadMutation | null {
+    if (this.#pendingThreadMutations.has(threadId)) {
+      return null;
+    }
+    const currentThread = this.#findThread(threadId);
+    if (!currentThread) {
+      return null;
+    }
+    const mutation: PendingThreadMutation = {
+      action,
+      previousThread: currentThread,
+    };
+    this.#pendingThreadMutations.set(threadId, mutation);
+    this.#applyThreadAndTaskSnapshot(this.allThreads, this.allTasks);
+    return mutation;
+  }
+
+  #clearThreadMutation(threadId: string): void {
+    if (!this.#pendingThreadMutations.delete(threadId)) {
+      return;
+    }
+    this.#renderAll();
+  }
+
+  #rollbackThreadMutation(
+    threadId: string,
+    mutation: PendingThreadMutation
+  ): void {
+    this.#pendingThreadMutations.delete(threadId);
+    this.#applyThreadAndTaskSnapshot(
+      this.allThreads.map((thread) =>
+        thread.id === threadId ? mutation.previousThread : thread
+      ),
+      this.allTasks
+    );
   }
 
   #focusThread(threadId: string): void {
@@ -2648,6 +3225,22 @@ class ManagerApp {
     this.#composerTargetThreadId = nextThread?.id ?? null;
   }
 
+  #toggleComposerTargetFromThreadScreen(): void {
+    const openThread = this.#findThread(this.openThreadId);
+    if (openThread && openThread.uiState !== 'done') {
+      this.#setComposerTarget(
+        this.#composerTargetThreadId === openThread.id ? null : openThread.id
+      );
+      this.#renderAll();
+      this.focusComposer();
+      return;
+    }
+
+    this.#setComposerTarget(null);
+    this.#renderAll();
+    this.focusComposer();
+  }
+
   async startManager(): Promise<void> {
     const response = await this.apiFetch('/api/manager/start', {
       method: 'POST',
@@ -2660,7 +3253,14 @@ class ManagerApp {
 
   #composerTargetLabel(): string {
     const targetThread = this.#findThread(this.#composerTargetThreadId);
-    return targetThread ? `送信先: @${targetThread.title}` : '送信先: 全体';
+    return composerTargetPillLabel(
+      targetThread,
+      this.#findThread(this.openThreadId)
+    );
+  }
+
+  #persistComposerFeedbackEntries(): void {
+    writeStoredComposerFeedbackEntries(this.#composerFeedbackEntries);
   }
 
   #queueComposerFeedbackEntry(content: string): string {
@@ -2677,7 +3277,8 @@ class ManagerApp {
     this.#composerFeedbackEntries = [
       entry,
       ...this.#composerFeedbackEntries,
-    ].slice(0, 4);
+    ].slice(0, COMPOSER_FEEDBACK_MAX_ENTRIES);
+    this.#persistComposerFeedbackEntries();
     this.#renderComposerFeedback();
     return entryId;
   }
@@ -2689,6 +3290,40 @@ class ManagerApp {
     this.#composerFeedbackEntries = this.#composerFeedbackEntries.map(
       (entry) => (entry.id === entryId ? { ...entry, ...patch } : entry)
     );
+    this.#persistComposerFeedbackEntries();
+    this.#renderComposerFeedback();
+  }
+
+  #removeComposerFeedbackEntry(entryId: string): void {
+    const nextEntries = this.#composerFeedbackEntries.filter(
+      (entry) => entry.id !== entryId
+    );
+    if (nextEntries.length === this.#composerFeedbackEntries.length) {
+      return;
+    }
+    this.#composerFeedbackEntries = nextEntries;
+    if (nextEntries.length === 0) {
+      this.#composerFeedbackExpanded = false;
+    }
+    this.#persistComposerFeedbackEntries();
+    this.#renderComposerFeedback();
+  }
+
+  #clearComposerFeedbackEntries(): void {
+    if (this.#composerFeedbackEntries.length === 0) {
+      return;
+    }
+    this.#composerFeedbackEntries = [];
+    this.#composerFeedbackExpanded = false;
+    this.#persistComposerFeedbackEntries();
+    this.#renderComposerFeedback();
+  }
+
+  #toggleComposerFeedbackExpanded(): void {
+    if (this.#composerFeedbackEntries.length === 0) {
+      return;
+    }
+    this.#composerFeedbackExpanded = !this.#composerFeedbackExpanded;
     this.#renderComposerFeedback();
   }
 
@@ -2722,7 +3357,7 @@ class ManagerApp {
     }
     const markdown = input.value.replace(/\r\n?/g, '\n').trim();
     const content = this.#serializedComposerContent(markdown);
-    if (!content || this.#sending) {
+    if (!content) {
       if (!markdown) {
         input.focus();
       }
@@ -2730,21 +3365,12 @@ class ManagerApp {
     }
 
     const statusText = document.getElementById('composerStatusText');
-    const sendButton = document.getElementById(
-      'globalComposerSendButton'
-    ) as HTMLButtonElement | null;
-
-    this.#sending = true;
-    if (sendButton) {
-      sendButton.disabled = true;
-    }
     const feedbackEntryId = this.#queueComposerFeedbackEntry(content);
     input.value = '';
     this.#composerAttachments.clear();
     this.#syncComposerDraftUi();
     if (statusText) {
-      statusText.textContent =
-        '前の送信を処理中です。次の内容はこの欄で続けて書けます。';
+      statusText.textContent = '';
     }
     input.focus();
 
@@ -2757,19 +3383,13 @@ class ManagerApp {
       }),
     });
 
-    this.#sending = false;
-    if (sendButton) {
-      sendButton.disabled = false;
-    }
-
     if (!response) {
       if (statusText) {
-        statusText.textContent =
-          '送信できませんでした。上のカードから送信内容を戻せます。';
+        statusText.textContent = '';
       }
       this.#updateComposerFeedbackEntry(feedbackEntryId, {
         status: 'failed',
-        detail: '送信できませんでした。',
+        detail: '送信できませんでした。ここから送信欄へ戻せます。',
         items: [],
       });
       return;
@@ -2777,12 +3397,11 @@ class ManagerApp {
 
     if (!response.ok) {
       if (statusText) {
-        statusText.textContent =
-          '送信できませんでした。上のカードから送信内容を戻せます。';
+        statusText.textContent = '';
       }
       this.#updateComposerFeedbackEntry(feedbackEntryId, {
         status: 'failed',
-        detail: '送信できませんでした。',
+        detail: '送信できませんでした。ここから送信欄へ戻せます。',
         items: [],
       });
       return;
@@ -2826,6 +3445,7 @@ class ManagerApp {
       this.loadAll(),
       this.loadManagerStatus(),
     ]);
+    this.#armLifecycleRefresh();
     if (dataOk || statusOk) {
       this.#startLiveStream();
     }
@@ -2895,6 +3515,18 @@ class ManagerApp {
     });
 
     document.addEventListener('click', (event) => {
+      const sortControl = (event.target as Element | null)?.closest(
+        '[data-sort-control]'
+      );
+      if (sortControl) {
+        const key = sortControl.getAttribute('data-sort-control');
+        if (isManagerSortPreferenceKey(key)) {
+          event.preventDefault();
+          this.#toggleSortOrder(key);
+        }
+        return;
+      }
+
       const header = (event.target as Element | null)?.closest(
         '[data-section-key]'
       );
@@ -2990,9 +3622,19 @@ class ManagerApp {
       'composerTargetClearButton'
     ) as HTMLButtonElement | null;
     composerTargetClear?.addEventListener('click', () => {
-      this.#setComposerTarget(null);
-      this.#renderAll();
-      this.focusComposer();
+      this.#toggleComposerTargetFromThreadScreen();
+    });
+    const feedbackToggleButton = document.getElementById(
+      'routingFeedbackToggleButton'
+    ) as HTMLButtonElement | null;
+    feedbackToggleButton?.addEventListener('click', () => {
+      this.#toggleComposerFeedbackExpanded();
+    });
+    const feedbackClearButton = document.getElementById(
+      'routingFeedbackClearButton'
+    ) as HTMLButtonElement | null;
+    feedbackClearButton?.addEventListener('click', () => {
+      this.#clearComposerFeedbackEntries();
     });
     document.addEventListener('drop', () => {
       this.#resetComposerDropState();
@@ -3022,13 +3664,15 @@ class ManagerApp {
       panel.classList.toggle('hidden', !expanded);
     }
     if (toggle) {
-      toggle.textContent = this.#composerExpanded
-        ? '送信欄を閉じる'
-        : '送信欄を開く';
+      toggle.textContent = '送信欄を開く';
       toggle.setAttribute('aria-expanded', String(expanded));
-      toggle.classList.toggle('hidden', forceExpanded);
+      toggle.classList.toggle('hidden', expanded);
     }
     closeButton?.classList.toggle('hidden', forceExpanded);
+    this.#composerDock?.classList.toggle(
+      'composer-dock-thread-mode',
+      forceExpanded
+    );
     this.#composerDock?.classList.toggle('composer-dock-expanded', expanded);
   }
 
@@ -3075,6 +3719,7 @@ class ManagerApp {
       this.loadAll(),
       this.loadManagerStatus(),
     ]);
+    this.#armLifecycleRefresh();
 
     submitButton?.removeAttribute('disabled');
     if (dataOk || statusOk) {
@@ -3088,6 +3733,8 @@ class ManagerApp {
 
   #clearSavedAuth(): void {
     this.#authToken = null;
+    this.#lifecycleRefreshReady = false;
+    this.#lastLifecycleRefreshAt = 0;
     this.#stopLiveStream();
     clearStoredAuthToken();
     this.#toggleClearAuthButton(false);
@@ -3103,6 +3750,8 @@ class ManagerApp {
 
   #handleAuthFailure(message: string): void {
     this.#authToken = null;
+    this.#lifecycleRefreshReady = false;
+    this.#lastLifecycleRefreshAt = 0;
     clearStoredAuthToken();
     this.#stopLiveStream();
     this.#showAuthPanel(message);
@@ -3160,9 +3809,14 @@ class ManagerApp {
       grouped.get(thread.uiState)?.push(thread);
     }
 
+    this.#renderSortControls();
+
     const onSelect = (threadId: string) => this.openDetail(threadId);
     for (const state of STATE_ORDER) {
-      const threads = grouped.get(state) ?? [];
+      const threads = sortThreadsByUpdatedAt(
+        grouped.get(state) ?? [],
+        this.#sortOrders[state]
+      );
       this.#sections[state].update(
         threads,
         this.openThreadId,
@@ -3183,10 +3837,11 @@ class ManagerApp {
     }
     this.#renderDoneToggle();
 
-    this.#taskSection.render(this.allTasks);
+    this.#taskSection.render(this.allTasks, this.#sortOrders.tasks);
     this.#renderGettingStarted();
     this.#renderActivitySummary();
     this.#renderPriorityLane(threadTitlesById);
+    this.#renderComposerFeedback();
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
@@ -3199,14 +3854,8 @@ class ManagerApp {
           null);
     const inboxScreen = document.getElementById('manager-inbox-screen');
     const threadScreen = document.getElementById('thread-screen');
-    const threadSubtitle = document.getElementById('thread-screen-subtitle');
     inboxScreen?.classList.toggle('hidden', openThread !== null);
     threadScreen?.classList.toggle('hidden', openThread === null);
-    if (threadSubtitle) {
-      threadSubtitle.textContent = openThread
-        ? `この画面で「${openThread.title}」の会話を上から下へ読み、そのまま下の送信欄で続きを送れます。最新の会話は一番下に出ます。`
-        : 'この画面で会話の流れを上から下へ読み、そのまま下の送信欄から続きを送れます。最新の会話は一番下に出ます。';
-    }
     this.#detail.render(
       openThread,
       this.#openThreadMovementNotice,
@@ -3223,13 +3872,9 @@ class ManagerApp {
     }
 
     list.innerHTML = '';
-    const actionableStates = new Set<ManagerUiState>([
-      'routing-confirmation-needed',
-      'user-reply-needed',
-      'ai-finished-awaiting-user-confirmation',
-    ]);
-    const threads = this.allThreads.filter((thread) =>
-      actionableStates.has(thread.uiState)
+    const threads = sortThreadsByUpdatedAt(
+      this.allThreads.filter((thread) => ACTIONABLE_STATES.has(thread.uiState)),
+      this.#sortOrders['priority-lane']
     );
 
     if (threads.length === 0) {
@@ -3280,9 +3925,37 @@ class ManagerApp {
     }
   }
 
+  #toggleSortOrder(key: ManagerSortPreferenceKey): void {
+    this.#sortOrders[key] = toggleManagerSortOrder(this.#sortOrders[key]);
+    writeStoredManagerSortOrders(this.#sortOrders);
+    this.#renderAll();
+  }
+
+  #renderSortControls(): void {
+    for (const key of SORTABLE_SECTION_KEYS) {
+      const button = document.querySelector<HTMLButtonElement>(
+        `[data-sort-control="${key}"]`
+      );
+      if (!button) {
+        continue;
+      }
+      const sortOrder = this.#sortOrders[key];
+      button.dataset.sortOrder = sortOrder;
+      button.textContent = managerSortOrderChipLabel(sortOrder);
+      const label = SORT_CONTROL_LABELS[key];
+      const sortLabel = managerSortOrderLabel(sortOrder);
+      button.title = `${label}: ${sortLabel}`;
+      button.setAttribute(
+        'aria-label',
+        `${label}の表示順を切り替える。現在は${sortLabel}です。`
+      );
+    }
+  }
+
   #renderComposerTargetBar(): void {
     const label = document.getElementById('composerLabel');
     const hint = document.getElementById('composerHint');
+    const targetBar = document.getElementById('composerTargetBar');
     const pill = document.getElementById('composerTargetPill');
     const sendButton = document.getElementById(
       'globalComposerSendButton'
@@ -3290,44 +3963,61 @@ class ManagerApp {
     const clearButton = document.getElementById(
       'composerTargetClearButton'
     ) as HTMLButtonElement | null;
+    const openThread = this.#findThread(this.openThreadId);
+    const setHint = (nextText: string) => {
+      if (!hint) {
+        return;
+      }
+      const normalizedText = nextText.trim();
+      hint.textContent = normalizedText;
+      hint.classList.toggle('hidden', normalizedText.length === 0);
+    };
     if (!pill) {
       return;
     }
     const thread = this.#findThread(this.#composerTargetThreadId);
+    targetBar?.classList.remove('hidden');
     if (!thread) {
       if (label) {
         label.textContent = 'AI へ送る';
       }
-      if (hint) {
-        hint.textContent =
-          this.openThreadId === null
-            ? '一覧を見て、書くときだけ送信欄を開けます。AI が既存の作業項目への追記・新しい作業項目・確認待ちに分けます。'
-            : 'この画面を開いたままでも、全体へ新しい依頼を送れます。AI が作業項目を振り分けます。';
-      }
-      pill.textContent = '送信先: 全体（AI が振り分けます）';
+      setHint(
+        openThread && openThread.uiState !== 'done'
+          ? 'いまは別件として送ります。必要ならこの会話に戻せます。'
+          : ''
+      );
+      pill.textContent = composerTargetPillLabel(null, openThread);
       if (sendButton) {
         sendButton.textContent = composerSendButtonLabel(null);
       }
-      clearButton?.classList.add('hidden');
+      if (clearButton) {
+        const nextClearLabel = composerTargetClearLabel(null, openThread);
+        clearButton.textContent = nextClearLabel ?? '';
+        clearButton.classList.toggle('hidden', nextClearLabel === null);
+      }
       return;
     }
     if (label) {
       label.textContent = composerActionLabel(thread);
     }
-    if (hint) {
-      hint.textContent =
-        thread.uiState === 'ai-working'
+    setHint(
+      openThread && thread.id === openThread.id
+        ? thread.uiState === 'ai-working'
+          ? 'この会話の続きはここから追加指示として送れます。別件は右のボタンで切り替えます。'
+          : ''
+        : thread.uiState === 'ai-working'
           ? 'いま AI がこの作業項目を進めています。この作業項目をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別の作業項目に振り分けます。'
-          : 'いま開いている作業項目をメンション付きのヒントとして全体へ送ります。内容がこの作業項目の続きならここに入り、別件なら AI が別の作業項目に振り分けます。';
-    }
-    pill.textContent =
-      thread.uiState === 'ai-working'
-        ? `送信先: @${thread.title}（続きなら追加指示）`
-        : `送信先: @${thread.title}`;
+          : 'いま開いている作業項目をメンション付きのヒントとして全体へ送ります。内容がこの作業項目の続きならここに入り、別件なら AI が別の作業項目に振り分けます。'
+    );
+    pill.textContent = composerTargetPillLabel(thread, openThread);
     if (sendButton) {
       sendButton.textContent = composerSendButtonLabel(thread);
     }
-    clearButton?.classList.remove('hidden');
+    if (clearButton) {
+      const nextClearLabel = composerTargetClearLabel(thread, openThread);
+      clearButton.textContent = nextClearLabel ?? '';
+      clearButton.classList.toggle('hidden', nextClearLabel === null);
+    }
   }
 
   #renderGettingStarted(): void {
@@ -3365,8 +4055,6 @@ class ManagerApp {
 
     if (problem === 'error') {
       primary.textContent = 'AI backend で問題が起きています';
-    } else if (problem === 'stalled') {
-      primary.textContent = 'AI backend が止まっている可能性があります';
     } else if (busy) {
       primary.textContent = currentThreadTitle
         ? `AI が「${currentThreadTitle}」を進めています`
@@ -3393,10 +4081,6 @@ class ManagerApp {
       detail.textContent = statusErrorMessage
         ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''}`
         : 'AI backend のエラーで処理できていません。';
-    } else if (problem === 'stalled') {
-      detail.textContent = statusErrorMessage
-        ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が進んでいません。` : ''}`
-        : 'しばらく進捗がなく、処理が止まっている可能性があります。';
     } else if (busy) {
       detail.textContent =
         pendingCount > 0
@@ -3484,6 +4168,11 @@ class ManagerApp {
     if (!context) {
       return;
     }
+    if (this.openThreadId !== null) {
+      context.textContent = '';
+      context.classList.add('hidden');
+      return;
+    }
     const thread = this.#findThread(this.#composerTargetThreadId);
     if (thread && thread.uiState !== 'done') {
       context.classList.remove('hidden');
@@ -3498,23 +4187,51 @@ class ManagerApp {
   }
 
   #renderComposerFeedback(): void {
-    const feedback = document.getElementById('composerFeedback');
-    if (!feedback) {
+    const lane = document.getElementById('routingFeedbackLane');
+    const heading = document.getElementById('routingFeedbackHeading');
+    const summary = document.getElementById('routingFeedbackSummary');
+    const entryList = document.getElementById('routingFeedbackList');
+    const toggleButton = document.getElementById(
+      'routingFeedbackToggleButton'
+    ) as HTMLButtonElement | null;
+    const clearButton = document.getElementById(
+      'routingFeedbackClearButton'
+    ) as HTMLButtonElement | null;
+    if (
+      !lane ||
+      !heading ||
+      !summary ||
+      !entryList ||
+      !toggleButton ||
+      !clearButton
+    ) {
       return;
     }
 
-    feedback.innerHTML = '';
+    entryList.innerHTML = '';
     if (this.#composerFeedbackEntries.length === 0) {
-      feedback.classList.add('hidden');
+      lane.classList.add('hidden');
+      entryList.classList.add('hidden');
       return;
     }
 
-    feedback.classList.remove('hidden');
-
-    const heading = document.createElement('div');
-    heading.className = 'composer-feedback-heading';
-    heading.textContent = '送信中と直前の送信';
-    feedback.appendChild(heading);
+    lane.classList.remove('hidden');
+    heading.textContent = '送信状況';
+    summary.textContent = feedbackLaneSummaryText(
+      this.#composerFeedbackEntries
+    );
+    toggleButton.textContent = this.#composerFeedbackExpanded
+      ? '閉じる'
+      : '開く';
+    toggleButton.setAttribute(
+      'aria-expanded',
+      String(this.#composerFeedbackExpanded)
+    );
+    clearButton.classList.remove('hidden');
+    entryList.classList.toggle('hidden', !this.#composerFeedbackExpanded);
+    if (!this.#composerFeedbackExpanded) {
+      return;
+    }
 
     for (const entry of this.#composerFeedbackEntries) {
       const card = document.createElement('section');
@@ -3541,34 +4258,39 @@ class ManagerApp {
       card.appendChild(detail);
 
       if (entry.items.length > 0) {
-        const list = document.createElement('div');
-        list.className = 'composer-feedback-list';
+        const itemList = document.createElement('div');
+        itemList.className = 'composer-feedback-list';
         for (const item of entry.items) {
           const label =
             item.outcome === 'routing-confirmation'
               ? `確認: ${item.title}`
               : item.title;
-          list.appendChild(
+          itemList.appendChild(
             makeFeedbackChip(label, () => {
               this.#focusThread(item.threadId);
             })
           );
         }
-        card.appendChild(list);
+        card.appendChild(itemList);
       }
 
+      const actions = document.createElement('div');
+      actions.className = 'composer-feedback-entry-actions';
       if (entry.status === 'failed') {
-        const actions = document.createElement('div');
-        actions.className = 'composer-feedback-entry-actions';
         actions.appendChild(
           makeFeedbackChip('送信欄に戻す', () => {
             this.#restoreComposerFeedbackEntry(entry.id);
           })
         );
-        card.appendChild(actions);
       }
+      actions.appendChild(
+        makeFeedbackChip('削除', () => {
+          this.#removeComposerFeedbackEntry(entry.id);
+        })
+      );
+      card.appendChild(actions);
 
-      feedback.appendChild(card);
+      entryList.appendChild(card);
     }
   }
 }
