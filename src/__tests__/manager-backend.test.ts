@@ -58,6 +58,7 @@ import {
   sendGlobalToBuiltinManager,
   sendToBuiltinManager,
   shouldUseShellForCodexCommand,
+  updateSession,
   writeSession,
   writeQueue,
 } from '../manager-backend.js';
@@ -1221,6 +1222,89 @@ describe('manager backend codex integration', () => {
     expect(status.detail).toBe('処理中 (Thread thread-stalled)');
     expect(status.errorMessage).toBeNull();
     expect(status.errorAt).toBeNull();
+  });
+
+  it('serializes concurrent session mutations so one assignment update does not drop another', async () => {
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      activeAssignments: [
+        {
+          id: 'assign-a',
+          threadId: 'thread-a',
+          queueEntryIds: ['q_a'],
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/a.ts'],
+          pid: 7001,
+          startedAt: '2026-03-25T10:00:00.000Z',
+          lastProgressAt: '2026-03-25T10:00:01.000Z',
+        },
+        {
+          id: 'assign-b',
+          threadId: 'thread-b',
+          queueEntryIds: ['q_b'],
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/b.ts'],
+          pid: 7002,
+          startedAt: '2026-03-25T10:00:00.000Z',
+          lastProgressAt: '2026-03-25T10:00:02.000Z',
+        },
+      ],
+    });
+
+    let allowFirstUpdate!: () => void;
+    let firstUpdateEntered!: () => void;
+    const firstUpdateReady = new Promise<void>((resolve) => {
+      firstUpdateEntered = resolve;
+    });
+    const firstUpdateBlocked = new Promise<void>((resolve) => {
+      allowFirstUpdate = resolve;
+    });
+
+    const firstMutation = updateSession(tempDir, async (currentSession) => {
+      firstUpdateEntered();
+      await firstUpdateBlocked;
+      return {
+        ...currentSession,
+        activeAssignments: currentSession.activeAssignments.map((assignment) =>
+          assignment.id === 'assign-a'
+            ? {
+                ...assignment,
+                lastProgressAt: '2026-03-25T10:05:00.000Z',
+              }
+            : assignment
+        ),
+      };
+    });
+
+    await firstUpdateReady;
+
+    const secondMutation = updateSession(tempDir, async (currentSession) => {
+      expect(
+        currentSession.activeAssignments.find(
+          (assignment) => assignment.id === 'assign-a'
+        )?.lastProgressAt
+      ).toBe('2026-03-25T10:05:00.000Z');
+      return {
+        ...currentSession,
+        activeAssignments: currentSession.activeAssignments.filter(
+          (assignment) => assignment.id !== 'assign-b'
+        ),
+      };
+    });
+
+    allowFirstUpdate();
+    await Promise.all([firstMutation, secondMutation]);
+
+    const latestSession = await readSession(tempDir);
+    expect(latestSession.activeAssignments).toHaveLength(1);
+    expect(latestSession.activeAssignments[0]?.id).toBe('assign-a');
+    expect(latestSession.activeAssignments[0]?.lastProgressAt).toBe(
+      '2026-03-25T10:05:00.000Z'
+    );
   });
 
   it('reclaims a stale reserved assignment with no pid or progress and redispatches its queued work', async () => {

@@ -478,7 +478,7 @@ async function atomicWrite(filePath: string, content: string): Promise<void> {
   await rename(tmp, filePath);
 }
 
-export async function readSession(dir: string): Promise<ManagerSession> {
+async function readSessionFile(dir: string): Promise<ManagerSession> {
   const filePath = sessionFilePath(dir);
   if (!existsSync(filePath)) return makeDefaultSession(dir);
   try {
@@ -490,37 +490,56 @@ export async function readSession(dir: string): Promise<ManagerSession> {
   }
 }
 
+export async function readSession(dir: string): Promise<ManagerSession> {
+  return readSessionFile(dir);
+}
+
+export async function updateSession(
+  dir: string,
+  updater: (session: ManagerSession) => ManagerSession | Promise<ManagerSession>
+): Promise<ManagerSession> {
+  const filePath = sessionFilePath(dir);
+  const key = `session:${resolvePath(dir)}`;
+  let nextSession: ManagerSession | null = null;
+  let changed = false;
+  await withWriteLock(key, async () => {
+    const currentSession = await readSessionFile(dir);
+    nextSession = normalizeManagerSession(dir, await updater(currentSession));
+    changed = JSON.stringify(nextSession) !== JSON.stringify(currentSession);
+    if (!changed) {
+      return;
+    }
+    await atomicWrite(filePath, JSON.stringify(nextSession, null, 2));
+  });
+  if (changed) {
+    notifyManagerUpdate(dir);
+  }
+  return nextSession ?? readSessionFile(dir);
+}
+
 export async function writeSession(
   dir: string,
   session: ManagerSession
 ): Promise<void> {
-  const filePath = sessionFilePath(dir);
-  const key = `session:${resolvePath(dir)}`;
-  const normalized = normalizeManagerSession(dir, session);
-  await withWriteLock(key, () =>
-    atomicWrite(filePath, JSON.stringify(normalized, null, 2))
-  );
-  notifyManagerUpdate(dir);
+  await updateSession(dir, () => session);
 }
 
 async function touchManagerProgress(dir: string): Promise<void> {
-  const session = await readSession(dir);
-  await writeSession(dir, {
+  await updateSession(dir, (session) => ({
     ...session,
     lastProgressAt: new Date().toISOString(),
-  });
+  }));
 }
 
 async function setManagerRuntimeError(
   dir: string,
   message: string
 ): Promise<void> {
-  const session = await readSession(dir);
-  await writeSession(dir, {
+  await updateSession(dir, (session) => ({
     ...session,
     lastErrorMessage: message,
     lastErrorAt: new Date().toISOString(),
-  });
+  }));
 }
 
 export async function readQueue(dir: string): Promise<QueueEntry[]> {
@@ -732,55 +751,66 @@ function replaceSessionAssignments(
 async function reconcileActiveAssignments(
   dir: string
 ): Promise<ManagerSession> {
-  const session = await readSession(dir);
-  if (session.activeAssignments.length === 0) {
-    return session;
-  }
-
-  const queue = await readQueue(dir);
-  const queueById = new Map(queue.map((entry) => [entry.id, entry]));
-  const survivingAssignments: ManagerActiveAssignment[] = [];
   const droppedAssignments: ManagerActiveAssignment[] = [];
-  let mutated = false;
-  for (const assignment of session.activeAssignments) {
-    const resolvedThreadId =
-      assignment.threadId && assignment.threadId !== 'unknown'
-        ? assignment.threadId
-        : (assignment.queueEntryIds
-            .map((entryId) => queueById.get(entryId)?.threadId ?? null)
-            .find((threadId): threadId is string => Boolean(threadId)) ??
-          assignment.threadId);
-    const normalizedAssignment =
-      resolvedThreadId !== assignment.threadId
-        ? { ...assignment, threadId: resolvedThreadId }
-        : assignment;
-    if (normalizedAssignment !== assignment) {
-      mutated = true;
+  let survivingAssignments: ManagerActiveAssignment[] = [];
+  const nextSession = await updateSession(dir, async (session) => {
+    if (session.activeAssignments.length === 0) {
+      survivingAssignments = [];
+      return session;
     }
 
-    const latestObservedAt =
-      parseMessageTimestamp(normalizedAssignment.lastProgressAt) ??
-      parseMessageTimestamp(normalizedAssignment.startedAt) ??
-      Number.NEGATIVE_INFINITY;
-    const withinGraceWindow =
-      Number.isFinite(latestObservedAt) &&
-      Date.now() - latestObservedAt < MANAGER_RECONCILE_GRACE_MS;
-    const lostProcessReservation =
-      normalizedAssignment.pid === null && !withinGraceWindow;
-    if (
-      lostProcessReservation ||
-      (normalizedAssignment.pid !== null &&
-        !isPidAlive(normalizedAssignment.pid) &&
-        !withinGraceWindow)
-    ) {
-      droppedAssignments.push(normalizedAssignment);
-      continue;
-    }
-    survivingAssignments.push(normalizedAssignment);
-  }
+    const queue = await readQueue(dir);
+    const queueById = new Map(queue.map((entry) => [entry.id, entry]));
+    let mutated = false;
+    survivingAssignments = [];
+    droppedAssignments.length = 0;
 
-  if (droppedAssignments.length === 0 && !mutated) {
-    return session;
+    for (const assignment of session.activeAssignments) {
+      const resolvedThreadId =
+        assignment.threadId && assignment.threadId !== 'unknown'
+          ? assignment.threadId
+          : (assignment.queueEntryIds
+              .map((entryId) => queueById.get(entryId)?.threadId ?? null)
+              .find((threadId): threadId is string => Boolean(threadId)) ??
+            assignment.threadId);
+      const normalizedAssignment =
+        resolvedThreadId !== assignment.threadId
+          ? { ...assignment, threadId: resolvedThreadId }
+          : assignment;
+      if (normalizedAssignment !== assignment) {
+        mutated = true;
+      }
+
+      const latestObservedAt =
+        parseMessageTimestamp(normalizedAssignment.lastProgressAt) ??
+        parseMessageTimestamp(normalizedAssignment.startedAt) ??
+        Number.NEGATIVE_INFINITY;
+      const withinGraceWindow =
+        Number.isFinite(latestObservedAt) &&
+        Date.now() - latestObservedAt < MANAGER_RECONCILE_GRACE_MS;
+      const lostProcessReservation =
+        normalizedAssignment.pid === null && !withinGraceWindow;
+      if (
+        lostProcessReservation ||
+        (normalizedAssignment.pid !== null &&
+          !isPidAlive(normalizedAssignment.pid) &&
+          !withinGraceWindow)
+      ) {
+        droppedAssignments.push(normalizedAssignment);
+        continue;
+      }
+      survivingAssignments.push(normalizedAssignment);
+    }
+
+    if (droppedAssignments.length === 0 && !mutated) {
+      return session;
+    }
+
+    return replaceSessionAssignments(session, survivingAssignments);
+  });
+
+  if (droppedAssignments.length === 0) {
+    return nextSession;
   }
 
   const survivingThreadIds = new Set(
@@ -806,9 +836,7 @@ async function reconcileActiveAssignments(
     );
   }
 
-  const nextSession = replaceSessionAssignments(session, survivingAssignments);
-  await writeSession(dir, nextSession);
-  return readSession(dir);
+  return nextSession;
 }
 
 function mergeQueuedEntryContent(entries: QueueEntry[]): string {
@@ -2102,29 +2130,23 @@ async function reserveAssignment(input: {
   assignment: ManagerActiveAssignment;
   priorityStreak: number;
 }): Promise<void> {
-  const session = await readSession(input.dir);
-  await writeSession(input.dir, {
+  await updateSession(input.dir, (session) => ({
     ...session,
     activeAssignments: [...session.activeAssignments, input.assignment],
     lastMessageAt: new Date().toISOString(),
     priorityStreak: input.priorityStreak,
     lastErrorMessage: null,
     lastErrorAt: null,
-  });
+  }));
 }
 
 async function removeAssignment(
   dir: string,
   assignmentId: string
 ): Promise<ManagerSession> {
-  const session = await readSession(dir);
-  const nextSession = updateSessionAssignment(
-    session,
-    assignmentId,
-    () => null
+  return updateSession(dir, (session) =>
+    updateSessionAssignment(session, assignmentId, () => null)
   );
-  await writeSession(dir, nextSession);
-  return readSession(dir);
 }
 
 async function patchAssignment(
@@ -2132,10 +2154,9 @@ async function patchAssignment(
   assignmentId: string,
   updater: (current: ManagerActiveAssignment) => ManagerActiveAssignment | null
 ): Promise<ManagerSession> {
-  const session = await readSession(dir);
-  const nextSession = updateSessionAssignment(session, assignmentId, updater);
-  await writeSession(dir, nextSession);
-  return readSession(dir);
+  return updateSession(dir, (session) =>
+    updateSessionAssignment(session, assignmentId, updater)
+  );
 }
 
 function parseMessageTimestamp(
@@ -3016,11 +3037,11 @@ export async function sendGlobalToBuiltinManager(
   return withRoutingLock(resolvedDir, async () => {
     const session = await readSession(dir);
     if (session.status === 'not-started') {
-      await writeSession(dir, {
-        ...session,
+      await updateSession(dir, (currentSession) => ({
+        ...currentSession,
         status: 'idle',
-        startedAt: session.startedAt ?? new Date().toISOString(),
-      });
+        startedAt: currentSession.startedAt ?? new Date().toISOString(),
+      }));
     }
 
     const { plan } = await routeFreeformMessage({
@@ -3030,12 +3051,11 @@ export async function sendGlobalToBuiltinManager(
       contextThreadId: options?.contextThreadId ?? null,
     });
 
-    const refreshedSession = await readSession(dir);
-    await writeSession(dir, {
-      ...refreshedSession,
+    await updateSession(dir, (session) => ({
+      ...session,
       routingSessionId: null,
       lastMessageAt: new Date().toISOString(),
-    });
+    }));
 
     const items: ManagerRoutingSummaryItem[] = [];
     let routedCount = 0;
@@ -3343,12 +3363,11 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   if (pending > 0) {
     let latestSession = await readSession(dir);
     if (latestSession.status === 'not-started') {
-      await writeSession(dir, {
-        ...latestSession,
+      latestSession = await updateSession(dir, (currentSession) => ({
+        ...currentSession,
         status: 'idle',
-        startedAt: latestSession.startedAt ?? new Date().toISOString(),
-      });
-      latestSession = await readSession(dir);
+        startedAt: currentSession.startedAt ?? new Date().toISOString(),
+      }));
     }
     void processNextQueued(dir, resolvePath(dir));
     if (latestSession.lastErrorMessage) {
@@ -3420,11 +3439,11 @@ export async function startBuiltinManager(
 ): Promise<{ started: boolean; detail: string }> {
   const session = await readSession(dir);
   if (session.status === 'not-started') {
-    await writeSession(dir, {
-      ...session,
+    await updateSession(dir, (currentSession) => ({
+      ...currentSession,
       status: 'idle',
       startedAt: new Date().toISOString(),
-    });
+    }));
   }
   void processNextQueued(dir, resolvePath(dir));
   return { started: true, detail: 'ビルトインマネージャーを起動しました' };
@@ -3440,11 +3459,11 @@ export async function sendToBuiltinManager(
 ): Promise<void> {
   const session = await readSession(dir);
   if (session.status === 'not-started') {
-    await writeSession(dir, {
-      ...session,
+    await updateSession(dir, (currentSession) => ({
+      ...currentSession,
       status: 'idle',
       startedAt: new Date().toISOString(),
-    });
+    }));
   }
   await enqueueMessage(dir, threadId, content, options);
   void processNextQueued(dir, resolvePath(dir));
