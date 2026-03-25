@@ -49,6 +49,7 @@ import {
   parseManagerReplyPayload,
   parseManagerWorkerResultPayload,
   parseManagerRoutingPlan,
+  parseCodexProgressLine,
   parseCodexOutput,
   pickThreadUserMessage,
   processNextQueued,
@@ -1628,6 +1629,23 @@ describe('manager backend codex integration', () => {
           true
       );
     });
+  });
+
+  it('uses the turn-specific live label when a review session starts', () => {
+    const progress = parseCodexProgressLine(
+      '{"type":"thread.started","thread_id":"manager-review-thread"}',
+      'Manager が worker の成果を確認しています…'
+    );
+
+    expect(progress.sessionId).toBe('manager-review-thread');
+    expect(progress.latestText).toBe(
+      'Manager が worker の成果を確認しています…'
+    );
+    expect(progress.liveEntries).toHaveLength(1);
+    expect(progress.liveEntries[0]?.kind).toBe('status');
+    expect(progress.liveEntries[0]?.text).toBe(
+      'Manager が worker の成果を確認しています…'
+    );
   });
 
   it('marks a queued work item as scope-blocked until the conflicting worker finishes', async () => {

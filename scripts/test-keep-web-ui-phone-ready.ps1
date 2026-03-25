@@ -9,6 +9,73 @@ $mockEnsurePath = Join-Path $tempRoot 'mock-ensure.ps1'
 
 [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
 
+function Get-FreeTcpPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return ([int]$listener.LocalEndpoint.Port)
+    } finally {
+        $listener.Stop()
+    }
+}
+
+function Start-MockManagerStatusServer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [Parameter(Mandatory = $true)]
+        [string]$StatusJson
+    )
+
+    $job = Start-Job -ArgumentList $PortNumber, $StatusJson -ScriptBlock {
+        param(
+            [int]$PortNumber,
+            [string]$StatusJson
+        )
+
+        Add-Type -AssemblyName System.Net.HttpListener
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://127.0.0.1:$PortNumber/")
+        $listener.Start()
+        try {
+            while ($true) {
+                $context = $listener.GetContext()
+                try {
+                    if ($context.Request.Url.AbsolutePath -eq '/manager/api/manager/status') {
+                        $body = [Text.Encoding]::UTF8.GetBytes($StatusJson)
+                        $context.Response.StatusCode = 200
+                        $context.Response.ContentType = 'application/json; charset=utf-8'
+                        $context.Response.ContentLength64 = $body.Length
+                        $context.Response.OutputStream.Write($body, 0, $body.Length)
+                    } else {
+                        $context.Response.StatusCode = 404
+                    }
+                } finally {
+                    $context.Response.OutputStream.Close()
+                    $context.Response.Close()
+                }
+            }
+        } finally {
+            $listener.Stop()
+            $listener.Close()
+        }
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        try {
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:$PortNumber/manager/api/manager/status" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+                return $job
+            }
+        } catch {
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw 'Expected the mock Manager status server to become ready.'
+}
+
 $mockEnsureContent = @'
 param(
     [int]$Port = 3360,
@@ -53,8 +120,34 @@ if (-not $StatePath) {
 
 $previousCounterPath = $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH
 $firstProcess = $null
+$managerStatusJob = $null
 
 try {
+    $activeStatePath = Join-Path $tempRoot 'active-state\hub.json'
+    $activeCounterPath = Join-Path $tempRoot 'active-counter.txt'
+    $activeStatusPort = Get-FreeTcpPort
+    $managerStatusJob = Start-MockManagerStatusServer -PortNumber $activeStatusPort -StatusJson '{"running":true,"configured":true,"builtinBackend":true,"currentQueueId":"q_active_watchdog"}'
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $activeStatePath)) | Out-Null
+    [pscustomobject]@{
+        ListenUrl = "http://127.0.0.1:$activeStatusPort/"
+        AuthDisabled = $true
+        RequestedPhoneReady = $true
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $activeStatePath -Encoding utf8
+
+    $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $activeCounterPath
+    & $scriptPath `
+        -EnsureScriptPath $mockEnsurePath `
+        -StatePath $activeStatePath `
+        -IntervalSeconds 1 `
+        -MaxIterations 1
+
+    if (Test-Path -Path $activeCounterPath) {
+        $activeCountRaw = (Get-Content -Path $activeCounterPath -Raw -Encoding utf8).Trim()
+        if ($activeCountRaw -and [int]$activeCountRaw -ne 0) {
+            throw "Expected watchdog to skip ensure-web-ui-running.ps1 while Manager has an active assignment. Got $activeCountRaw."
+        }
+    }
+
     $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $counterPath
 
     & $scriptPath `
@@ -122,6 +215,17 @@ try {
             if (-not $firstProcess.HasExited) {
                 Stop-Process -Id $firstProcess.Id -Force -ErrorAction Stop
             }
+        } catch {
+        }
+    }
+
+    if ($managerStatusJob) {
+        try {
+            Stop-Job -Job $managerStatusJob -ErrorAction Stop | Out-Null
+        } catch {
+        }
+        try {
+            Remove-Job -Job $managerStatusJob -Force -ErrorAction Stop | Out-Null
         } catch {
         }
     }

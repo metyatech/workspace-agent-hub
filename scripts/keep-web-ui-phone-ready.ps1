@@ -24,6 +24,28 @@ function Resolve-StatePath {
     return (Get-DefaultStatePath)
 }
 
+function Read-State {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    if (-not (Test-Path -Path $TargetStatePath)) {
+        return $null
+    }
+
+    $raw = Get-Content -Path $TargetStatePath -Raw -Encoding utf8
+    if ($null -eq $raw) {
+        $raw = ''
+    }
+    $raw = $raw.Trim()
+    if (-not $raw) {
+        return $null
+    }
+
+    return ($raw | ConvertFrom-Json)
+}
+
 function Ensure-DirectoryExists {
     param(
         [Parameter(Mandatory = $true)]
@@ -60,6 +82,64 @@ function Write-WatchdogLog {
     Ensure-DirectoryExists -TargetPath $LogPath
     $timestamp = (Get-Date).ToUniversalTime().ToString('o')
     Add-Content -Path $LogPath -Value ("[{0}] {1}" -f $timestamp, $Message) -Encoding utf8
+}
+
+function Test-ManagerHasActiveAssignment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    if (-not $state) {
+        return $false
+    }
+
+    $listenUrl = if (
+        $state.PSObject.Properties.Match('ListenUrl').Count -gt 0 -and
+        $state.ListenUrl
+    ) {
+        [string]$state.ListenUrl
+    } else {
+        ''
+    }
+    if (-not $listenUrl.Trim()) {
+        return $false
+    }
+
+    $headers = @{}
+    $authDisabled = if (
+        $state.PSObject.Properties.Match('AuthDisabled').Count -gt 0
+    ) {
+        [bool]$state.AuthDisabled
+    } else {
+        $false
+    }
+    if (
+        -not $authDisabled -and
+        $state.PSObject.Properties.Match('AccessCode').Count -gt 0 -and
+        $state.AccessCode
+    ) {
+        $headers['X-Workspace-Agent-Hub-Token'] = [string]$state.AccessCode
+    }
+
+    try {
+        $status = Invoke-RestMethod -Uri ($listenUrl.TrimEnd('/') + '/manager/api/manager/status') -Headers $headers -Method Get -TimeoutSec 3 -ErrorAction Stop
+    } catch {
+        return $false
+    }
+
+    $currentQueueId = if (
+        $status -and
+        $status.PSObject.Properties.Match('currentQueueId').Count -gt 0 -and
+        $status.currentQueueId
+    ) {
+        [string]$status.currentQueueId
+    } else {
+        ''
+    }
+
+    return [bool]$currentQueueId.Trim()
 }
 
 function Get-MutexName {
@@ -109,19 +189,23 @@ try {
     $iteration = 0
     while ($true) {
         try {
-            $arguments = @{
-                Port = $Port
-                StatePath = $resolvedStatePath
-                PhoneReady = $true
-            }
-            if ($AuthToken -and $AuthToken.Trim()) {
-                $arguments['AuthToken'] = $AuthToken.Trim()
-            }
-            if ($OpenBrowser -and $iteration -eq 0) {
-                $arguments['OpenBrowser'] = $true
-            }
+            if (Test-ManagerHasActiveAssignment -TargetStatePath $resolvedStatePath) {
+                Write-WatchdogLog -LogPath $watchdogLogPath -Message 'Skipping ensure-web-ui-running.ps1 because Manager still has an active assignment.'
+            } else {
+                $arguments = @{
+                    Port = $Port
+                    StatePath = $resolvedStatePath
+                    PhoneReady = $true
+                }
+                if ($AuthToken -and $AuthToken.Trim()) {
+                    $arguments['AuthToken'] = $AuthToken.Trim()
+                }
+                if ($OpenBrowser -and $iteration -eq 0) {
+                    $arguments['OpenBrowser'] = $true
+                }
 
-            & $resolvedEnsureScriptPath @arguments | Out-Null
+                & $resolvedEnsureScriptPath @arguments | Out-Null
+            }
         } catch {
             Write-WatchdogLog -LogPath $watchdogLogPath -Message $_.Exception.Message
         }

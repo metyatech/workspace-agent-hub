@@ -1375,7 +1375,10 @@ export function parseCodexOutput(stdout: string): {
   return { text: latestText, sessionId };
 }
 
-function parseCodexProgressLine(line: string): CodexProgressState {
+export function parseCodexProgressLine(
+  line: string,
+  threadStartedText = 'AI が担当 worker を起動しました。内容を整理しています…'
+): CodexProgressState {
   const trimmed = line.trim();
   if (!trimmed) {
     return { sessionId: null, latestText: null, liveEntries: [] };
@@ -1387,15 +1390,13 @@ function parseCodexProgressLine(line: string): CodexProgressState {
       parsed['type'] === 'thread.started' &&
       typeof parsed['thread_id'] === 'string'
     ) {
-      const latestText =
-        'AI が担当 worker を起動しました。内容を整理しています…';
       return {
         sessionId: parsed['thread_id'] as string,
-        latestText,
+        latestText: threadStartedText,
         liveEntries: [
           {
             at: new Date().toISOString(),
-            text: latestText,
+            text: threadStartedText,
             kind: 'status',
           },
         ],
@@ -1707,6 +1708,7 @@ async function runCodexTurn(input: {
   resolvedDir: string;
   prompt: string;
   sessionId: string | null;
+  threadStartedText?: string;
   imagePaths?: string[];
   onSpawn?: (pid: number | null) => void | Promise<void>;
   onProgress?: (state: CodexProgressState) => void | Promise<void>;
@@ -1744,7 +1746,7 @@ async function runCodexTurn(input: {
   };
 
   const handleProgressLine = (line: string): void => {
-    const progress = parseCodexProgressLine(line);
+    const progress = parseCodexProgressLine(line, input.threadStartedText);
     if (progress.sessionId) {
       latestProgressSessionId = progress.sessionId;
     }
@@ -2383,6 +2385,7 @@ async function runQueuedAssignment(input: {
       resolvedDir,
       prompt: turn.prompt,
       sessionId: turn.sessionId,
+      threadStartedText: turn.initialLiveOutput,
       imagePaths,
       onSpawn: async (pid) => {
         await patchAssignment(dir, assignment.id, (current) => ({
