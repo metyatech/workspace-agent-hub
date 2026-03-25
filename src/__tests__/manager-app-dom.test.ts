@@ -3821,6 +3821,121 @@ describe('manager-app live updates', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
+  it('still refreshes after visibility resume when a recent focus refresh already ran', async () => {
+    const initialThread = makeThreadView('thread-race', '競合する復帰 task', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 進めてください',
+      updatedAt: '2026-03-23T09:00:00.000Z',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex gpt-5.4 (xhigh)',
+      workerAgentId: 'assign_race',
+      workerRuntimeState: 'worker-running',
+      workerRuntimeDetail: '担当 worker agent がこの作業項目を実行中です。',
+      messages: [
+        {
+          sender: 'user',
+          content: '進めてください',
+          at: '2026-03-23T09:00:00.000Z',
+        },
+      ],
+    });
+    const resumedThread = makeThreadView('thread-race', '競合する復帰 task', {
+      status: 'review',
+      uiState: 'ai-finished-awaiting-user-confirmation',
+      isWorking: false,
+      lastSender: 'ai',
+      previewText: '[ai] 完了しました',
+      updatedAt: '2026-03-23T09:05:00.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '進めてください',
+          at: '2026-03-23T09:00:00.000Z',
+        },
+        {
+          sender: 'ai',
+          content: '完了しました。',
+          at: '2026-03-23T09:05:00.000Z',
+        },
+      ],
+    });
+    const responseState: Parameters<typeof createManagerFetchWithData>[0] = {
+      validToken: 'resume-race-token',
+      threads: [initialThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (競合する復帰 task)',
+        currentThreadId: 'thread-race',
+        currentThreadTitle: '競合する復帰 task',
+      },
+    };
+    const fetchMock = createManagerFetchWithData(responseState);
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'resume-race-token');
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('AI作業中');
+
+    const initialLiveCalls = fetchMock.mock.calls.filter(([input]) =>
+      isRoute(String(input), '/live')
+    ).length;
+    window.dispatchEvent(new window.Event('focus'));
+    await flushAsync(4);
+
+    const focusLiveCalls = fetchMock.mock.calls.filter(([input]) =>
+      isRoute(String(input), '/live')
+    ).length;
+    expect(focusLiveCalls).toBeGreaterThan(initialLiveCalls);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    document.dispatchEvent(
+      new window.Event('visibilitychange', { bubbles: false })
+    );
+    await flushAsync(2);
+
+    responseState.threads = [resumedThread];
+    responseState.status = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中',
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    document.dispatchEvent(
+      new window.Event('visibilitychange', { bubbles: false })
+    );
+    await flushAsync(6);
+
+    expect(detail.textContent).toContain('あなたの確認待ち');
+    expect(detail.textContent).toContain('完了しました。');
+    expect(
+      fetchMock.mock.calls.filter(([input]) => isRoute(String(input), '/live'))
+        .length
+    ).toBeGreaterThan(focusLiveCalls);
+  });
+
   it('refreshes the open work-item after a persisted pageshow restore', async () => {
     const initialThread = makeThreadView('thread-pageshow', '復帰待ちの task', {
       status: 'active',
@@ -3907,6 +4022,69 @@ describe('manager-app live updates', () => {
       fetchMock.mock.calls.filter(([input]) => isRoute(String(input), '/live'))
         .length
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('exposes manager diagnostics for stale-state investigations', async () => {
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'diagnostics-token',
+      threads: [],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'diagnostics-token');
+      },
+    });
+
+    const diagnosticsBefore = (
+      window as Window & {
+        __workspaceAgentHubManagerDiagnostics?: () => {
+          authTokenPresent: boolean;
+          lastLiveEventKind: string | null;
+          recentEvents: Array<{ event: string }>;
+        };
+      }
+    ).__workspaceAgentHubManagerDiagnostics?.();
+    expect(diagnosticsBefore?.authTokenPresent).toBe(true);
+    expect(diagnosticsBefore?.lastLiveEventKind).toBe('snapshot');
+    expect(
+      diagnosticsBefore?.recentEvents.some(
+        (entry) => entry.event === 'live:start'
+      )
+    ).toBe(true);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    document.dispatchEvent(
+      new window.Event('visibilitychange', { bubbles: false })
+    );
+    await flushAsync(2);
+
+    const diagnosticsAfter = (
+      window as Window & {
+        __workspaceAgentHubManagerDiagnostics?: () => {
+          liveStreamConnected: boolean;
+          resumeRefreshPending: boolean;
+          recentEvents: Array<{ event: string }>;
+        };
+      }
+    ).__workspaceAgentHubManagerDiagnostics?.();
+    expect(diagnosticsAfter?.liveStreamConnected).toBe(false);
+    expect(diagnosticsAfter?.resumeRefreshPending).toBe(true);
+    expect(
+      diagnosticsAfter?.recentEvents.some(
+        (entry) => entry.event === 'visibility:hidden'
+      )
+    ).toBe(true);
   });
 
   it('renders the in-flight worker output as the latest AI bubble in detail view', async () => {

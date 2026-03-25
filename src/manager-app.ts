@@ -14,6 +14,7 @@ declare global {
     MANAGER_AUTH_REQUIRED?: boolean;
     MANAGER_AUTH_STORAGE_KEY?: string;
     MANAGER_API_BASE?: string;
+    __workspaceAgentHubManagerDiagnostics?: () => ManagerClientDiagnostics;
   }
 }
 
@@ -124,6 +125,29 @@ interface ManagerLiveSnapshotPayload {
   status: ManagerStatusPayload;
 }
 
+interface ManagerLifecycleDebugEntry {
+  at: string;
+  event: string;
+  detail: string | null;
+}
+
+interface ManagerClientDiagnostics {
+  generatedAt: string;
+  visibilityState: DocumentVisibilityState;
+  authTokenPresent: boolean;
+  lifecycleRefreshReady: boolean;
+  resumeRefreshPending: boolean;
+  resumeRefreshInFlight: boolean;
+  liveStreamConnected: boolean;
+  liveReconnectScheduled: boolean;
+  openThreadId: string | null;
+  managerCurrentThreadId: string | null;
+  lastLifecycleRefreshAt: string | null;
+  lastLiveEventAt: string | null;
+  lastLiveEventKind: string | null;
+  recentEvents: ManagerLifecycleDebugEntry[];
+}
+
 interface ManagerRoutingSummaryItem {
   threadId: string;
   title: string;
@@ -232,6 +256,8 @@ const MANAGER_SORT_STORAGE_KEY = `workspace-agent-hub.manager-sort:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
 const MANAGER_HISTORY_KIND = 'workspace-agent-hub-manager';
 const COMPOSER_FEEDBACK_MAX_ENTRIES = 4;
+const LIVE_STREAM_STALE_TIMEOUT_MS = 45000;
+const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
@@ -2394,6 +2420,7 @@ class ManagerApp {
   #authToken = readStoredAuthToken();
   #liveStreamAbort: AbortController | null = null;
   #liveReconnectTimer: number | null = null;
+  #liveStaleTimer: number | null = null;
   #showDone = false;
   #managerStatus: ManagerStatusPayload | null = null;
   #composerDock: HTMLElement | null = null;
@@ -2409,7 +2436,11 @@ class ManagerApp {
   #pendingHistoryComposerTargetRestore = false;
   #lifecycleRefreshReady = false;
   #lastLifecycleRefreshAt = 0;
+  #resumeRefreshPending = false;
   #resumeRefreshInFlight = false;
+  #lastLiveEventAt = 0;
+  #lastLiveEventKind: string | null = null;
+  #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
   #sortOrders = buildManagerSortOrders();
 
@@ -2438,6 +2469,7 @@ class ManagerApp {
 
   init(): void {
     this.#consumeHashToken();
+    this.#installDiagnosticsBridge();
     this.#composerDock = document.getElementById('global-composer-dock');
     this.#wireComposerDockReserve();
     this.#wireActions();
@@ -2974,67 +3006,100 @@ class ManagerApp {
   }
 
   #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): void {
+    this.#resumeRefreshPending = false;
     this.#applyThreadAndTaskSnapshot(snapshot.threads, snapshot.tasks);
     this.#applyManagerStatus(snapshot.status);
   }
 
-  #startLiveStream(): void {
-    this.#stopLiveStream();
+  #startLiveStream(reason = 'start'): void {
+    this.#stopLiveStream('restart');
     if (!this.#authToken) {
       return;
     }
+    this.#recordDiagnosticEvent('live:start', reason);
     const controller = new AbortController();
     this.#liveStreamAbort = controller;
 
     void this.#consumeLiveStream(controller.signal);
   }
 
-  #stopLiveStream(): void {
+  #stopLiveStream(reason = 'stop'): void {
+    const hadReconnectTimer = this.#liveReconnectTimer !== null;
     if (this.#liveReconnectTimer !== null) {
       window.clearTimeout(this.#liveReconnectTimer);
       this.#liveReconnectTimer = null;
     }
+    const hadLiveStaleTimer = this.#liveStaleTimer !== null;
+    if (this.#liveStaleTimer !== null) {
+      window.clearTimeout(this.#liveStaleTimer);
+      this.#liveStaleTimer = null;
+    }
+    const hadLiveStream = this.#liveStreamAbort !== null;
     if (this.#liveStreamAbort) {
       this.#liveStreamAbort.abort();
       this.#liveStreamAbort = null;
     }
+    if (hadReconnectTimer || hadLiveStaleTimer || hadLiveStream) {
+      this.#recordDiagnosticEvent('live:stop', reason);
+    }
   }
 
-  #scheduleLiveReconnect(delayMs = 1000): void {
+  #scheduleLiveReconnect(delayMs = 1000, reason = 'reconnect'): void {
     if (
       this.#liveReconnectTimer !== null ||
       !this.#authToken ||
+      document.visibilityState === 'hidden' ||
       typeof window === 'undefined'
     ) {
       return;
     }
+    this.#recordDiagnosticEvent('live:reconnect-scheduled', reason);
     this.#liveReconnectTimer = window.setTimeout(() => {
       this.#liveReconnectTimer = null;
-      this.#startLiveStream();
+      this.#startLiveStream(`reconnect:${reason}`);
     }, delayMs);
   }
 
   #wireLifecycleRefresh(): void {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
-        this.#stopLiveStream();
+        this.#resumeRefreshPending = true;
+        this.#recordDiagnosticEvent('visibility:hidden');
+        this.#stopLiveStream('visibility-hidden');
         return;
       }
       if (document.visibilityState === 'visible') {
-        this.#requestLifecycleRefresh();
+        this.#recordDiagnosticEvent('visibility:visible');
+        this.#requestLifecycleRefresh({
+          force: this.#resumeRefreshPending,
+          reason: 'visibility-visible',
+        });
       }
     });
     window.addEventListener('online', () => {
-      this.#requestLifecycleRefresh();
+      this.#recordDiagnosticEvent('network:online');
+      this.#requestLifecycleRefresh({
+        force: true,
+        reason: 'network-online',
+      });
     });
     window.addEventListener('focus', () => {
-      this.#requestLifecycleRefresh();
+      this.#recordDiagnosticEvent('window:focus');
+      this.#requestLifecycleRefresh({
+        force: this.#resumeRefreshPending,
+        reason: 'window-focus',
+      });
     });
     window.addEventListener('pageshow', (event) => {
       if (!(event as PageTransitionEvent).persisted) {
         return;
       }
-      this.#requestLifecycleRefresh();
+      this.#resumeRefreshPending = true;
+      this.#recordDiagnosticEvent('window:pageshow-persisted');
+      this.#requestLifecycleRefresh({
+        force: true,
+        reason: 'pageshow-persisted',
+      });
     });
   }
 
@@ -3042,7 +3107,7 @@ class ManagerApp {
     this.#lifecycleRefreshReady = true;
   }
 
-  #requestLifecycleRefresh(): void {
+  #requestLifecycleRefresh(input?: { force?: boolean; reason?: string }): void {
     if (
       !this.#authToken ||
       !this.#lifecycleRefreshReady ||
@@ -3051,28 +3116,53 @@ class ManagerApp {
       return;
     }
 
+    const force = Boolean(input?.force);
+    const reason = input?.reason ?? 'unknown';
     const now = Date.now();
-    if (now - this.#lastLifecycleRefreshAt < 1200) {
+    if (!force && now - this.#lastLifecycleRefreshAt < 1200) {
+      this.#recordDiagnosticEvent('lifecycle:refresh-throttled', reason);
       return;
     }
 
     this.#lastLifecycleRefreshAt = now;
-    void this.#refreshAfterResume();
+    this.#recordDiagnosticEvent(
+      'lifecycle:refresh-requested',
+      force ? `${reason} (forced)` : reason
+    );
+    void this.#refreshAfterResume(reason);
   }
 
-  async #refreshAfterResume(): Promise<void> {
+  async #refreshAfterResume(reason = 'resume'): Promise<void> {
     if (!this.#authToken || this.#resumeRefreshInFlight) {
       return;
     }
 
     this.#resumeRefreshInFlight = true;
-    this.#stopLiveStream();
+    this.#recordDiagnosticEvent('lifecycle:refresh-start', reason);
+    this.#stopLiveStream(`refresh:${reason}`);
     try {
-      await Promise.all([this.loadAll(), this.loadManagerStatus()]);
+      const [dataOk, statusOk] = await Promise.all([
+        this.loadAll(),
+        this.loadManagerStatus(),
+      ]);
+      this.#resumeRefreshPending = !(dataOk || statusOk);
+      this.#recordDiagnosticEvent(
+        this.#resumeRefreshPending
+          ? 'lifecycle:refresh-partial'
+          : 'lifecycle:refresh-success',
+        reason
+      );
+    } catch (error) {
+      this.#resumeRefreshPending = true;
+      this.#recordDiagnosticEvent(
+        'lifecycle:refresh-error',
+        error instanceof Error ? `${reason}: ${error.message}` : reason
+      );
+      throw error;
     } finally {
       this.#resumeRefreshInFlight = false;
       if (this.#authToken) {
-        this.#startLiveStream();
+        this.#startLiveStream(`resume:${reason}`);
       }
     }
   }
@@ -3088,10 +3178,11 @@ class ManagerApp {
         !response.body ||
         !contentType.includes('application/x-ndjson')
       ) {
-        this.#scheduleLiveReconnect();
+        this.#scheduleLiveReconnect(1000, 'invalid-live-response');
         return;
       }
 
+      this.#noteLiveEvent('open');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -3115,7 +3206,10 @@ class ManagerApp {
               | ManagerLiveSnapshotPayload
               | { kind?: string };
             if (payload.kind === 'snapshot') {
+              this.#noteLiveEvent('snapshot');
               this.#applyLiveSnapshot(payload as ManagerLiveSnapshotPayload);
+            } else if (payload.kind === 'ping') {
+              this.#noteLiveEvent('ping');
             }
           } catch {
             /* ignore malformed live payloads */
@@ -3123,22 +3217,106 @@ class ManagerApp {
         }
       }
       if (!signal.aborted) {
-        this.#scheduleLiveReconnect();
+        this.#recordDiagnosticEvent('live:stream-ended');
+        this.#scheduleLiveReconnect(1000, 'stream-ended');
       }
     } catch (error) {
       if (signal.aborted) {
         return;
       }
       if (error instanceof AuthRequiredError) {
+        this.#recordDiagnosticEvent('live:auth-required');
         this.#handleAuthFailure('アクセスコードを入力してください');
         return;
       }
-      this.#scheduleLiveReconnect();
+      this.#recordDiagnosticEvent(
+        'live:error',
+        error instanceof Error ? error.message : String(error)
+      );
+      this.#scheduleLiveReconnect(1000, 'stream-error');
     } finally {
       if (this.#liveStreamAbort?.signal === signal) {
         this.#liveStreamAbort = null;
       }
     }
+  }
+
+  #noteLiveEvent(kind: string): void {
+    this.#lastLiveEventAt = Date.now();
+    this.#lastLiveEventKind = kind;
+    if (kind !== 'ping') {
+      this.#recordDiagnosticEvent(`live:${kind}`);
+    }
+    this.#armLiveStaleTimer();
+  }
+
+  #armLiveStaleTimer(): void {
+    if (this.#liveStaleTimer !== null) {
+      window.clearTimeout(this.#liveStaleTimer);
+      this.#liveStaleTimer = null;
+    }
+    if (
+      !this.#authToken ||
+      typeof window === 'undefined' ||
+      document.visibilityState === 'hidden'
+    ) {
+      return;
+    }
+    this.#liveStaleTimer = window.setTimeout(() => {
+      this.#liveStaleTimer = null;
+      if (
+        !this.#authToken ||
+        this.#resumeRefreshInFlight ||
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
+      this.#resumeRefreshPending = true;
+      this.#recordDiagnosticEvent('live:stale-timeout');
+      this.#requestLifecycleRefresh({
+        force: true,
+        reason: 'live-stale-timeout',
+      });
+    }, LIVE_STREAM_STALE_TIMEOUT_MS);
+  }
+
+  #recordDiagnosticEvent(event: string, detail: string | null = null): void {
+    this.#diagnosticEvents = [
+      ...this.#diagnosticEvents,
+      {
+        at: new Date().toISOString(),
+        event,
+        detail,
+      },
+    ].slice(-MANAGER_DIAGNOSTIC_EVENT_LIMIT);
+  }
+
+  #installDiagnosticsBridge(): void {
+    window.__workspaceAgentHubManagerDiagnostics = () =>
+      this.#buildDiagnosticsSnapshot();
+  }
+
+  #buildDiagnosticsSnapshot(): ManagerClientDiagnostics {
+    return {
+      generatedAt: new Date().toISOString(),
+      visibilityState: document.visibilityState,
+      authTokenPresent: Boolean(this.#authToken),
+      lifecycleRefreshReady: this.#lifecycleRefreshReady,
+      resumeRefreshPending: this.#resumeRefreshPending,
+      resumeRefreshInFlight: this.#resumeRefreshInFlight,
+      liveStreamConnected: this.#liveStreamAbort !== null,
+      liveReconnectScheduled: this.#liveReconnectTimer !== null,
+      openThreadId: this.openThreadId,
+      managerCurrentThreadId: this.#managerStatus?.currentThreadId ?? null,
+      lastLifecycleRefreshAt: this.#lastLifecycleRefreshAt
+        ? new Date(this.#lastLifecycleRefreshAt).toISOString()
+        : null,
+      lastLiveEventAt: this.#lastLiveEventAt
+        ? new Date(this.#lastLiveEventAt).toISOString()
+        : null,
+      lastLiveEventKind: this.#lastLiveEventKind,
+      recentEvents: [...this.#diagnosticEvents],
+    };
   }
 
   openDetail(threadId: string): void {
@@ -3735,10 +3913,17 @@ class ManagerApp {
     this.#authToken = null;
     this.#lifecycleRefreshReady = false;
     this.#lastLifecycleRefreshAt = 0;
-    this.#stopLiveStream();
+    this.#resumeRefreshPending = false;
+    this.#lastLiveEventAt = 0;
+    this.#lastLiveEventKind = null;
+    this.#recordDiagnosticEvent('auth:cleared');
+    this.#stopLiveStream('auth-cleared');
     clearStoredAuthToken();
     this.#toggleClearAuthButton(false);
     this.#setAuthError('');
+    this.#resumeRefreshPending = false;
+    this.#lastLiveEventAt = 0;
+    this.#lastLiveEventKind = null;
     const input = document.getElementById(
       'auth-token-input'
     ) as HTMLInputElement | null;
@@ -3753,7 +3938,8 @@ class ManagerApp {
     this.#lifecycleRefreshReady = false;
     this.#lastLifecycleRefreshAt = 0;
     clearStoredAuthToken();
-    this.#stopLiveStream();
+    this.#recordDiagnosticEvent('auth:failed', message);
+    this.#stopLiveStream('auth-failed');
     this.#showAuthPanel(message);
   }
 

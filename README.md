@@ -472,8 +472,14 @@ Important behavior:
   conversation now shows a growing live worker log while a result is still
   running.
 - When a phone or browser returns from screen lock, backgrounding, or a
-  persisted page restore, the Manager now forces one fresh state fetch and then
-  reopens the live snapshot stream so `送信中…`-style states do not stay stale.
+  persisted page restore, the Manager now always forces one fresh authoritative
+  state fetch and then reopens the live snapshot stream so `送信中…`-style
+  states do not stay stale, even if another lifecycle refresh fired shortly
+  before the page went hidden.
+- For stale-state investigations, the Manager page exposes
+  `window.__workspaceAgentHubManagerDiagnostics()` in the browser console so a
+  report can include recent visibility/live-stream events plus the last
+  received live payload timing.
 - The Hub session browser now uses the same live snapshot model (`/api/live`)
   as its primary update path for session list ordering and selected-session
   transcript output, driven by authoritative session-catalog/session-live file
