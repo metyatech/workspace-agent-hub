@@ -29,6 +29,13 @@ This repository provides the workspace-level AI session fabric that supports PC/
 Run the full verification suite before each commit:
 
 - `npm run verify`
+
+`npm ci` installs the repository git hooks automatically. The pre-commit
+hook runs the same `npm run verify` entrypoint as CI, then refreshes the
+generated instruction files with `compose-agentsmd --compose` and stages them.
+
+Use the component commands only when you need to rerun a specific phase:
+
 - `npm run test:e2e`
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lint.ps1`
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1`

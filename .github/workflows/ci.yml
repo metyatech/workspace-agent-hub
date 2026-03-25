@@ -36,15 +36,6 @@ jobs:
           wsl.exe --import Ubuntu $installPath $rootfsPath --version 2
           wsl.exe -d Ubuntu -- bash -lc 'apt-get update'
           wsl.exe -d Ubuntu -- bash -lc 'DEBIAN_FRONTEND=noninteractive apt-get install -y tmux'
-      - name: Lint
+      - name: Verify
         shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lint.ps1
-      - name: Test
-        shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
-      - name: Build
-        shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
-      - name: Launcher smoke test
-        shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent-session-launcher.ps1 -SmokeTest
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1

@@ -26,6 +26,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-hooks.ps1",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "pretest:e2e": "npm run build && playwright install chromium",
@@ -35,7 +36,7 @@
     "lint": "npm run typecheck",
     "format": "prettier --write \"src/**/*.ts\" \"public/**/*.{html,js,webmanifest}\" \"*.{json,md,ts}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"public/**/*.{html,js,webmanifest}\" \"*.{json,md,ts}\"",
-    "verify": "npm run format:check && npm run lint && npm run build && npm run test",
+    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1",
     "web-ui": "node dist/cli.js web-ui"
   },
   "dependencies": {

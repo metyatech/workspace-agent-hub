@@ -28,22 +28,23 @@ It provides:
 
 ## Install / setup
 
-1. Configure git hooks:
+1. Install Node dependencies. This also configures the repository's git hooks
+   automatically through the `prepare` script:
+
+   ```powershell
+   npm ci
+   ```
+
+2. If your local `core.hooksPath` was overridden earlier, repair it manually:
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-hooks.ps1
    ```
 
-2. Refresh agent rules for this repository:
+3. Refresh agent rules for this repository:
 
    ```powershell
    compose-agentsmd
-   ```
-
-3. Install Node dependencies:
-
-   ```powershell
-   npm ci
    ```
 
 4. Install the WSL mobile-login hook from inside WSL:
@@ -535,11 +536,17 @@ Lint:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/lint.ps1
 ```
 
-Node-layer verify only:
+Repository-standard verify:
 
 ```powershell
 npm run verify
 ```
+
+`npm run verify` is the same verification entrypoint used by CI. It runs
+formatting, lint/typecheck, the full test suite, the build, and the launcher
+smoke test. The repository pre-commit hook runs that same entrypoint, then
+refreshes the generated instruction files with `compose-agentsmd --compose`
+and stages them.
 
 Real-browser web UI verification only:
 
@@ -559,7 +566,7 @@ Add the Android emulator path:
 $env:WORKSPACE_AGENT_HUB_RUN_ANDROID_MOBILE_E2E='1'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
-Regenerate agent rules:
+Build and regenerate agent rules:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
