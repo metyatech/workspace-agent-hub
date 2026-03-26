@@ -20,7 +20,7 @@
  */
 
 import { spawn } from 'child_process';
-import { readFile, writeFile, appendFile, rename } from 'fs/promises';
+import { readFile, writeFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { createHash } from 'crypto';
 import { dirname, join, resolve as resolvePath } from 'path';
@@ -41,6 +41,7 @@ import {
   readManagerThreadMeta,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
+import { writeFileAtomically } from './atomic-file.js';
 import { materializeManagerPromptImages } from './manager-message-files.js';
 import {
   buildManagerMessagePromptContent,
@@ -473,9 +474,7 @@ async function withWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * Prevents a crash mid-write from leaving a partial/empty file.
  */
 async function atomicWrite(filePath: string, content: string): Promise<void> {
-  const tmp = `${filePath}.tmp`;
-  await writeFile(tmp, content, 'utf-8');
-  await rename(tmp, filePath);
+  await writeFileAtomically(filePath, content);
 }
 
 async function readSessionFile(dir: string): Promise<ManagerSession> {

@@ -42,3 +42,4 @@
 {"id":"WW23HYmV","description":"Fix the Manager self-rerun loop that still requeues the CI/pre-commit alignment task after manager review","stage":"committed","createdAt":"2026-03-25T12:15:44.030Z","updatedAt":"2026-03-25T12:54:50.416Z","committedEventId":"yHitLf7ajIvHSeZ8"}
 {"id":"M77QqdWT","description":"Investigate workspace-agent-hub history/logs/data for unresolved issues after heavy dogfood","stage":"done","createdAt":"2026-03-25T12:57:08.882Z","updatedAt":"2026-03-26T03:14:35.169Z"}
 {"id":"CixbG-Gl","description":"Dogfood workspace-agent-hub and investigate any remaining bugs or operational problems","stage":"done","createdAt":"2026-03-25T16:41:04.332Z","updatedAt":"2026-03-26T03:14:35.293Z"}
+{"id":"2pYPtsSj","description":"Fix remaining workspace-agent-hub bugs found in dogfood pass","stage":"committed","createdAt":"2026-03-26T03:51:29.598Z","updatedAt":"2026-03-26T04:08:02.881Z","committedEventId":"fMeHi2X-DEjkmmsU"}

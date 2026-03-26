@@ -2247,7 +2247,6 @@ class DetailController {
       thread.updatedAt ? `更新: ${formatDate(thread.updatedAt)}` : '',
       thread.queueDepth > 0 ? `キュー: ${thread.queueDepth}` : '',
       thread.assigneeLabel ? `担当: ${thread.assigneeLabel}` : '',
-      thread.workerAgentId ? `担当 worker: ${thread.workerAgentId}` : '',
       workerRuntimeLabel(thread)
         ? `実行状態: ${workerRuntimeLabel(thread)}`
         : '',
@@ -2268,13 +2267,6 @@ class DetailController {
         threadTitlesById
       );
       body.appendChild(note);
-    }
-
-    if (thread.workerWriteScopes.length > 0) {
-      const scopeNote = document.createElement('div');
-      scopeNote.className = 'detail-note';
-      scopeNote.textContent = `書き込み範囲: ${thread.workerWriteScopes.join(', ')}`;
-      body.appendChild(scopeNote);
     }
 
     const noteText = describeThreadState(thread);
@@ -2607,6 +2599,17 @@ class ManagerApp {
   #syncComposerDraftUi(): void {
     const markdown = this.#composerInput()?.value.replace(/\r\n?/g, '\n') ?? '';
     this.#renderComposerAttachmentList(markdown);
+    this.#renderComposerSendAvailability(markdown);
+  }
+
+  #renderComposerSendAvailability(markdown: string): void {
+    const sendButton = document.getElementById(
+      'globalComposerSendButton'
+    ) as HTMLButtonElement | null;
+    if (!sendButton) {
+      return;
+    }
+    sendButton.disabled = markdown.trim().length === 0;
   }
 
   #renderComposerAttachmentList(markdown: string): void {

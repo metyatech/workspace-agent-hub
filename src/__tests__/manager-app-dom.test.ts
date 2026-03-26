@@ -715,6 +715,7 @@ describe('manager-app DOM auth state matrix', () => {
       '#globalComposerInput'
     )!;
     composer.value = 'AAして、BBして';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     document
       .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
@@ -2008,6 +2009,7 @@ describe('manager-app DOM auth state matrix', () => {
       '#globalComposerInput'
     )!;
     composer.value = 'この task を続けて';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     document
       .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
@@ -2189,6 +2191,7 @@ describe('manager-app DOM auth state matrix', () => {
       '#globalComposerSendButton'
     )!;
     composer.value = '通知を確認したいです';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     sendButton.click();
     await flushAsync(2);
 
@@ -2203,7 +2206,7 @@ describe('manager-app DOM auth state matrix', () => {
     )!;
 
     expect(composer.value).toBe('');
-    expect(sendButton.disabled).toBe(false);
+    expect(sendButton.disabled).toBe(true);
     expect(sendButton.textContent).toBe('送る');
     expect(feedback.classList.contains('hidden')).toBe(false);
     expect(feedback.textContent).toContain('送信状況');
@@ -2219,7 +2222,7 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(resolveSends).toHaveLength(2);
     expect(composer.value).toBe('');
-    expect(sendButton.disabled).toBe(false);
+    expect(sendButton.disabled).toBe(true);
     expect(sendButton.textContent).toBe('送る');
     expect(feedback.textContent).toContain('送信中 2件');
     expect(feedback.textContent).not.toContain('通知を確認したいです');
@@ -2263,7 +2266,7 @@ describe('manager-app DOM auth state matrix', () => {
     );
     await flushAsync(6);
 
-    expect(sendButton.disabled).toBe(false);
+    expect(sendButton.disabled).toBe(true);
     expect(sendButton.textContent).toBe('送る');
     expect(composer.value).toBe('');
     expect(feedback.textContent).toContain('送信状況');
@@ -2279,6 +2282,43 @@ describe('manager-app DOM auth state matrix', () => {
     expect(feedback.textContent).toContain('1件を実行キューに回しました');
     expect(feedback.textContent).toContain('通知を確認したいです');
     expect(feedback.textContent).toContain('次に送りたい内容です');
+  });
+
+  it('disables the global composer send button until the draft has non-empty content', async () => {
+    const fetchMock = createManagerFetch('empty-send-token');
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'empty-send-token');
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    const sendButton = document.querySelector<HTMLButtonElement>(
+      '#globalComposerSendButton'
+    )!;
+
+    expect(sendButton.disabled).toBe(true);
+
+    composer.value = '   ';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await flushAsync(1);
+    expect(sendButton.disabled).toBe(true);
+
+    composer.value = '進めてください';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await flushAsync(1);
+    expect(sendButton.disabled).toBe(false);
+
+    sendButton.click();
+    await flushAsync(4);
+    expect(sendButton.disabled).toBe(true);
   });
 
   it('lets the user restore a failed send from the separate feedback lane', async () => {
@@ -2344,6 +2384,7 @@ describe('manager-app DOM auth state matrix', () => {
       '#globalComposerInput'
     )!;
     composer.value = '失敗する送信です';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     document
       .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
@@ -2462,6 +2503,7 @@ describe('manager-app DOM auth state matrix', () => {
       '#globalComposerInput'
     )!;
     composer.value = '消えずに残したい送信';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     document
       .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
@@ -2606,10 +2648,12 @@ describe('manager-app DOM auth state matrix', () => {
     )!;
 
     composer.value = '最初の送信';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     sendButton.click();
     await flushAsync(6);
 
     composer.value = '次の送信';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
     sendButton.click();
     await flushAsync(6);
 
@@ -4162,17 +4206,15 @@ describe('manager-app live updates', () => {
 
     const detail = document.querySelector<HTMLElement>('#thread-detail')!;
     expect(detail.textContent).toContain('担当: Codex gpt-5.4 (xhigh)');
-    expect(detail.textContent).toContain('担当 worker: assign_thread-live');
     expect(detail.textContent).toContain('実行状態: Worker agent 実行中');
-    expect(detail.textContent).toContain(
-      '書き込み範囲: workspace-agent-hub/src/manager-backend.ts'
-    );
     expect(detail.textContent).toContain(
       'AI が担当 worker を起動しました。内容を整理しています…'
     );
     expect(detail.textContent).toContain(
       'いま src/manager-backend.ts を見ています。'
     );
+    expect(detail.textContent).not.toContain('担当 worker:');
+    expect(detail.textContent).not.toContain('書き込み範囲:');
     expect(
       detail.querySelector<HTMLElement>('.bubble-live .bubble-sender')
         ?.textContent

@@ -15,6 +15,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
+$effectiveCliPath = if (
+    $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -and
+    $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim())
+} else {
+    $distCliPath
+}
 
 if (-not (Test-Path -Path $packageJsonPath)) {
     throw "Missing package.json: $packageJsonPath"
@@ -29,7 +37,10 @@ try {
         }
     }
 
-    if (-not (Test-Path -Path $distCliPath)) {
+    if (-not (Test-Path -Path $effectiveCliPath)) {
+        if ($effectiveCliPath -ne $distCliPath) {
+            throw "Missing CLI entrypoint: $effectiveCliPath"
+        }
         npm run build
         if ($LASTEXITCODE -ne 0) {
             throw 'npm run build failed.'
@@ -64,7 +75,7 @@ try {
     }
 
     $arguments = @(
-        $distCliPath,
+        $effectiveCliPath,
         'web-ui',
         '--host', $effectiveListenHost,
         '--port', [string]$Port
@@ -86,8 +97,10 @@ try {
     }
 
     & node @arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Workspace Agent Hub web UI exited with an error.'
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        [Console]::Error.WriteLine("Workspace Agent Hub web UI exited with code $exitCode.")
+        exit $exitCode
     }
 } finally {
     Pop-Location

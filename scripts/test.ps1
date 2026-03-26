@@ -154,6 +154,12 @@ if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
     exit 1
 }
 
+$wrapperFailureOutput = & (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1')
+if (($wrapperFailureOutput | Out-String).Trim() -notmatch 'OK') {
+    Write-Error 'Expected the PowerShell start-web-ui wrapper to preserve child stderr and report a concrete exit code on failure.'
+    exit 1
+}
+
 $shortcutInstallOutput = & (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1')
 if (($shortcutInstallOutput | Out-String).Trim() -notmatch 'PASS') {
     Write-Error 'Expected the shortcut installer to create Workspace Agent Hub shortcuts and remove stale AI Agent Sessions shortcuts.'

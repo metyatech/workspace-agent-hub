@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import type { Thread } from '@metyatech/thread-inbox';
 import type { QueueEntry, ManagerSession } from './manager-backend.js';
+import { writeFileAtomically } from './atomic-file.js';
 import {
   buildQueueDispatchPlan,
   type ManagerQueuePriority,
@@ -84,14 +85,8 @@ type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
 
 const metaWriteLocks = new Map<string, Promise<void>>();
 
-function atomicTmpPath(filePath: string): string {
-  return `${filePath}.tmp`;
-}
-
 async function atomicWrite(filePath: string, content: string): Promise<void> {
-  const tmp = atomicTmpPath(filePath);
-  await writeFile(tmp, content, 'utf-8');
-  await rename(tmp, filePath);
+  await writeFileAtomically(filePath, content);
 }
 
 async function withMetaWriteLock<T>(
