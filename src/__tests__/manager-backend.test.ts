@@ -37,9 +37,9 @@ vi.mock('@metyatech/thread-inbox', () => ({
 
 vi.mock('../manager-worktree.js', () => ({
   createWorkerWorktree: vi.fn().mockResolvedValue({
-    worktreePath: null,
-    branchName: null,
-    targetRepoRoot: null,
+    worktreePath: '',
+    branchName: '',
+    targetRepoRoot: '',
   }),
   mergeWorktreeToMain: vi.fn().mockResolvedValue({
     success: true,
@@ -56,6 +56,16 @@ vi.mock('../manager-worktree.js', () => ({
   pushWithRetry: vi
     .fn()
     .mockResolvedValue({ success: true, detail: 'mock push' }),
+  validateWorktreeReadyForMerge: vi.fn().mockResolvedValue({
+    ready: true,
+    detail: 'mock delivery ready',
+    aheadCommitCount: 1,
+  }),
+  runPostMergeDeliveryChain: vi.fn().mockResolvedValue({
+    success: true,
+    detail: 'mock delivery chain',
+    performed: [],
+  }),
   removeWorktree: vi.fn().mockResolvedValue(undefined),
   resolveTargetRepoRoot: vi
     .fn()
@@ -100,6 +110,13 @@ import {
   readManagerThreadMeta,
   writeManagerThreadMeta,
 } from '../manager-thread-state.js';
+import {
+  createWorkerWorktree,
+  mergeWorktreeToMain,
+  pushWithRetry,
+  runPostMergeDeliveryChain,
+  validateWorktreeReadyForMerge,
+} from '../manager-worktree.js';
 
 interface FakeProc extends EventEmitter {
   pid: number;
@@ -198,6 +215,36 @@ beforeEach(async () => {
   listThreadsMock.mockResolvedValue([]);
   reopenThreadMock.mockResolvedValue(undefined);
   resolveThreadMock.mockResolvedValue(undefined);
+  vi.mocked(createWorkerWorktree).mockReset();
+  vi.mocked(createWorkerWorktree).mockResolvedValue({
+    worktreePath: '',
+    branchName: '',
+    targetRepoRoot: '',
+  });
+  vi.mocked(mergeWorktreeToMain).mockReset();
+  vi.mocked(mergeWorktreeToMain).mockResolvedValue({
+    success: true,
+    conflicted: false,
+    conflictFiles: [],
+    detail: 'mock merge',
+  });
+  vi.mocked(pushWithRetry).mockReset();
+  vi.mocked(pushWithRetry).mockResolvedValue({
+    success: true,
+    detail: 'mock push',
+  });
+  vi.mocked(validateWorktreeReadyForMerge).mockReset();
+  vi.mocked(validateWorktreeReadyForMerge).mockResolvedValue({
+    ready: true,
+    detail: 'mock delivery ready',
+    aheadCommitCount: 1,
+  });
+  vi.mocked(runPostMergeDeliveryChain).mockReset();
+  vi.mocked(runPostMergeDeliveryChain).mockResolvedValue({
+    success: true,
+    detail: 'mock delivery chain',
+    performed: [],
+  });
 });
 
 afterEach(async () => {
@@ -303,7 +350,7 @@ describe('manager backend codex integration', () => {
     });
     const reviewPrompt = buildManagerReviewPrompt({
       resolvedDir: 'D:\\ghws',
-      worktreePath: null,
+      worktreePath: 'C:\\temp\\wah-wt-review',
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
       thread: {
         id: 'thread-a',
@@ -340,6 +387,8 @@ describe('manager backend codex integration', () => {
     expect(workerFirst).toContain('Please implement the task.');
     expect(reviewPrompt).toContain('built-in manager reviewer');
     expect(reviewPrompt).toContain('commit, push');
+    expect(reviewPrompt).toContain('release or publish path as well');
+    expect(reviewPrompt).toContain('Do not return status "review"');
     expect(reviewPrompt).toContain('src/manager-backend.ts');
     expect(reviewPrompt).toContain('npm run verify PASS');
   });
@@ -2286,6 +2335,90 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'no usable assistant reply could be parsed'
     );
+  });
+
+  it('does not mark a worker task complete when push fails after merge', async () => {
+    const workerProc = makeProc(8401);
+    const reviewProc = makeProc(8402);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-push-fail',
+      branchName: 'wah-worker-assign_thread-push-fail',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(pushWithRetry).mockResolvedValueOnce({
+      success: false,
+      detail: 'remote rejected',
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-push-fail', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-push-fail',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-push-fail',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runPostMergeDeliveryChain)).not.toHaveBeenCalled();
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-push-fail');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('push');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
+  });
+
+  it('runs the post-merge delivery chain before posting a successful review result', async () => {
+    const workerProc = makeProc(8501);
+    const reviewProc = makeProc(8502);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-release',
+      branchName: 'wah-worker-assign_thread-release',
+      targetRepoRoot: tempDir,
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-release', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-release',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-release',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-release');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('review done');
   });
 
   it('consumes the queue entry even if writing a successful reply back to thread storage fails', async () => {

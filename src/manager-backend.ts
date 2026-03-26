@@ -73,6 +73,8 @@ import {
   resolveTargetRepoRoot,
   cleanupOrphanedWorktrees,
   execGit,
+  runPostMergeDeliveryChain,
+  validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
@@ -1219,7 +1221,7 @@ export function buildManagerReviewPrompt(input: {
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
 
   const deliveryInstruction = input.worktreePath
-    ? 'Commit your verified changes in this worktree branch. Do NOT push, release, or publish. The Manager backend will merge to the main branch, resolve any conflicts, verify, and push.'
+    ? 'Commit your verified changes in this worktree branch. If this repository normally requires release or publish for completion, prepare that release metadata in this branch now (for example version/changelog updates) so the Manager backend can finish the post-merge delivery chain. Do NOT push, release, or publish yourself. Do not return status "review" unless the branch is left fully committed and ready for the Manager backend to merge to the main branch, push, and run any required release/publish follow-through.'
     : '';
 
   const structuralSection =
@@ -2887,6 +2889,9 @@ async function runQueuedAssignment(input: {
         ? primaryResult.parsed.text
         : null;
     let reviewStepAttempted = false;
+    let latestReportedChangedFiles: string[] = [];
+    let deliveryReadinessDetail: string | null = null;
+    let deliveryAheadCommitCount = 0;
 
     if (
       assignment.assigneeKind === 'worker' &&
@@ -2901,6 +2906,7 @@ async function runQueuedAssignment(input: {
         changedFiles: [],
         verificationSummary: null,
       };
+      latestReportedChangedFiles = workerResult.changedFiles;
       workerSessionId = nextWorkerSessionId;
       await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
       reviewStepAttempted = true;
@@ -2965,6 +2971,16 @@ async function runQueuedAssignment(input: {
       currentFallbackReply,
       reviewStepAttempted
     );
+    if (approved && reviewStepAttempted && assignment.worktreePath) {
+      const readiness = await validateWorktreeReadyForMerge({
+        targetRepoRoot,
+        worktreePath: assignment.worktreePath,
+        reportedChangedFiles: latestReportedChangedFiles,
+      });
+      deliveryReadinessDetail = readiness.detail;
+      deliveryAheadCommitCount = readiness.aheadCommitCount;
+      approved = readiness.ready;
+    }
 
     // -----------------------------------------------------------------------
     // Recovery loop — Manager decides how to handle review failures
@@ -2972,7 +2988,9 @@ async function runQueuedAssignment(input: {
 
     if (!approved && reviewStepAttempted) {
       let recoveryErrorContext: string;
-      if (finalResult.code !== 0) {
+      if (deliveryReadinessDetail) {
+        recoveryErrorContext = `Delivery readiness check failed:\n${deliveryReadinessDetail}`;
+      } else if (finalResult.code !== 0) {
         recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 500)}` : ''}`;
       } else if (currentParsedReply?.status === 'needs-reply') {
         recoveryErrorContext = `Review returned needs-reply:\n${currentParsedReply.reply}`;
@@ -3175,6 +3193,7 @@ async function runQueuedAssignment(input: {
           changedFiles: [],
           verificationSummary: null,
         };
+        latestReportedChangedFiles = fixWorkerResult.changedFiles;
         const reStructuralWarnings = await runStructuralChecks(
           workerCwd,
           fixWorkerResult.changedFiles
@@ -3221,6 +3240,22 @@ async function runQueuedAssignment(input: {
             true
           )
         ) {
+          if (assignment.worktreePath) {
+            const readiness = await validateWorktreeReadyForMerge({
+              targetRepoRoot,
+              worktreePath: assignment.worktreePath,
+              reportedChangedFiles: latestReportedChangedFiles,
+            });
+            deliveryReadinessDetail = readiness.detail;
+            deliveryAheadCommitCount = readiness.aheadCommitCount;
+            if (!readiness.ready) {
+              recoveryErrorContext = `Delivery readiness check failed:\n${readiness.detail}`;
+              continue;
+            }
+          } else {
+            deliveryReadinessDetail = null;
+            deliveryAheadCommitCount = 0;
+          }
           // Recovery succeeded — update reply for the success path
           currentParsedReply = reReviewParsed;
           currentFallbackReply = reReviewFallback;
@@ -3375,11 +3410,7 @@ async function runQueuedAssignment(input: {
           workerWriteScopes: assignment.writeScopes,
         });
         const pushResult = await pushWithRetry({ targetRepoRoot });
-        if (!pushResult.success) {
-          console.error(
-            `[manager-backend] push after merge failed: ${pushResult.detail}`
-          );
-        }
+        const pushFailureDetail = pushResult.success ? null : pushResult.detail;
 
         // Clean up worktree.
         await removeWorktree({
@@ -3387,6 +3418,98 @@ async function runQueuedAssignment(input: {
           worktreePath: assignment.worktreePath,
           branchName: assignment.worktreeBranch,
         }).catch(() => {});
+
+        if (pushFailureDetail) {
+          const errMsg = `[Manager] コミットは反映されましたが、リモートへの push に失敗しました: ${pushFailureDetail}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              errMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await updateQueueLocked(dir, (queue) =>
+            queue.filter(
+              (entry) => !assignment.queueEntryIds.includes(entry.id)
+            )
+          );
+          await clearWorkerLiveOutput(
+            resolvedDir,
+            thread.id,
+            assignment.assigneeKind,
+            assignment.assigneeLabel,
+            {
+              workerAgentId: assignment.id,
+              runtimeState: null,
+              runtimeDetail: null,
+              workerWriteScopes: assignment.writeScopes,
+              workerBlockedByThreadIds: [],
+              supersededByThreadId: null,
+            }
+          );
+          await removeAssignment(dir, assignment.id);
+          void processNextQueued(dir, resolvedDir);
+          return;
+        }
+
+        if (deliveryAheadCommitCount > 0) {
+          await appendWorkerLiveOutput({
+            dir: resolvedDir,
+            threadId: thread.id,
+            text: 'push 完了。必要な release / publish を続けて実行しています…',
+            kind: 'status',
+            assigneeKind: 'manager',
+            assigneeLabel: defaultAssigneeLabel('manager'),
+            workerSessionId,
+            workerAgentId: assignment.id,
+            runtimeState: 'manager-answering',
+            runtimeDetail: 'release / publish の最終確認中…',
+            workerWriteScopes: assignment.writeScopes,
+          });
+          const deliveryResult = await runPostMergeDeliveryChain({
+            targetRepoRoot,
+          });
+          if (!deliveryResult.success) {
+            const errMsg = `[Manager] コミットと push は完了しましたが、release / publish の完了前に停止しました: ${deliveryResult.detail}`;
+            try {
+              await addMessage(
+                resolvedDir,
+                thread.id,
+                errMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            await updateQueueLocked(dir, (queue) =>
+              queue.filter(
+                (entry) => !assignment.queueEntryIds.includes(entry.id)
+              )
+            );
+            await clearWorkerLiveOutput(
+              resolvedDir,
+              thread.id,
+              assignment.assigneeKind,
+              assignment.assigneeLabel,
+              {
+                workerAgentId: assignment.id,
+                runtimeState: null,
+                runtimeDetail: null,
+                workerWriteScopes: assignment.writeScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+              }
+            );
+            await removeAssignment(dir, assignment.id);
+            void processNextQueued(dir, resolvedDir);
+            return;
+          }
+        }
       }
 
       await updateQueueLocked(dir, (queue) =>

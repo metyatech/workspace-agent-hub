@@ -102,7 +102,8 @@ acceptance:
   state
 - After a worker completes acceptable implementation work, own the in-scope
   delivery chain for that work item: commit, push, and release/publish when
-  that repository normally requires it for completion
+  that repository normally requires it for completion; do not mark the work
+  item review-ready while any required delivery stage is still failing
 
 ### Worker responsibilities
 

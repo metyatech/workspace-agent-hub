@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { spawnMock } = vi.hoisted(() => ({
@@ -17,6 +20,8 @@ import {
   pushWithRetry,
   removeWorktree,
   resolveTargetRepoRoot,
+  runPostMergeDeliveryChain,
+  validateWorktreeReadyForMerge,
 } from '../manager-worktree.js';
 
 /**
@@ -211,6 +216,96 @@ describe('pushWithRetry', () => {
     const result = await pushWithRetry({ targetRepoRoot: '/repo' });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe('validateWorktreeReadyForMerge', () => {
+  it('rejects approval when the review step left uncommitted changes', async () => {
+    const calls = [gitResult(0, ' M src/manager-backend.ts')];
+    let callIndex = 0;
+    spawnMock.mockImplementation(() => {
+      const factory = calls[callIndex] ?? gitResult(0, '');
+      callIndex++;
+      return factory();
+    });
+
+    const result = await validateWorktreeReadyForMerge({
+      targetRepoRoot: '/repo',
+      worktreePath: '/tmp/wah-wt-test',
+      reportedChangedFiles: ['src/manager-backend.ts'],
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.detail).toContain(
+      'approved the worktree before all changes were committed'
+    );
+  });
+});
+
+describe('runPostMergeDeliveryChain', () => {
+  it('runs the npm release/publish chain for a metyatech-owned package', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'wah-release-chain-'));
+    try {
+      await writeFile(
+        join(repoDir, 'package.json'),
+        JSON.stringify(
+          {
+            name: '@metyatech/workspace-agent-hub',
+            version: '1.2.3',
+            bin: {
+              'workspace-agent-hub': 'dist/cli.js',
+            },
+            repository: {
+              type: 'git',
+              url: 'git+https://github.com/metyatech/workspace-agent-hub.git',
+            },
+          },
+          null,
+          2
+        )
+      );
+
+      const calls = [
+        gitResult(0, 'https://github.com/metyatech/workspace-agent-hub.git'),
+        gitResult(0, 'audit ok'),
+        gitResult(0, 'pack ok'),
+        gitResult(1, '', 'E404'),
+        gitResult(0, ''),
+        gitResult(0, ''),
+        gitResult(1, '', 'release not found'),
+        gitResult(0, ''),
+        gitResult(0, ''),
+        gitResult(0, '+ @metyatech/workspace-agent-hub@1.2.3'),
+        gitResult(0, 'release created'),
+        gitResult(0, '"1.2.3"'),
+        gitResult(0, '1.2.3'),
+      ];
+      let callIndex = 0;
+      spawnMock.mockImplementation(() => {
+        const factory = calls[callIndex] ?? gitResult(0, '');
+        callIndex++;
+        return factory();
+      });
+
+      const result = await runPostMergeDeliveryChain({
+        targetRepoRoot: repoDir,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.detail).toContain('@metyatech/workspace-agent-hub@1.2.3');
+      expect(result.performed).toEqual([
+        'npm audit --omit=dev',
+        'npm pack --dry-run',
+        'git tag v1.2.3',
+        'git push origin v1.2.3',
+        'npm publish',
+        'gh release create v1.2.3',
+        'npm view @metyatech/workspace-agent-hub version --json',
+        'npx @metyatech/workspace-agent-hub@latest --version',
+      ]);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -166,7 +166,11 @@ if (($shortcutInstallOutput | Out-String).Trim() -notmatch 'PASS') {
     exit 1
 }
 
-& (Join-Path $PSScriptRoot 'test-ensure-web-ui-running.ps1')
+$ensureSwapOutput = & (Join-Path $PSScriptRoot 'test-ensure-web-ui-running-swap.ps1')
+if (($ensureSwapOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected ensure-web-ui-running.ps1 to keep the previous listener available until the replacement instance is ready.'
+    exit 1
+}
 
 $phoneReadyWatchdogOutput = & (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')
 if (($phoneReadyWatchdogOutput | Out-String).Trim() -notmatch 'PASS') {

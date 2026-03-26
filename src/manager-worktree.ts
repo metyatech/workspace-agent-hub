@@ -10,6 +10,7 @@
 
 import { spawn } from 'child_process';
 import { existsSync, symlinkSync, unlinkSync, rmSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
 
@@ -28,6 +29,18 @@ export interface MergeResult {
   conflicted: boolean;
   conflictFiles: string[];
   detail: string;
+}
+
+export interface WorktreeDeliveryReadiness {
+  ready: boolean;
+  detail: string;
+  aheadCommitCount: number;
+}
+
+export interface PostMergeDeliveryResult {
+  success: boolean;
+  detail: string;
+  performed: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +101,171 @@ export function execGit(
       resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code });
     });
   });
+}
+
+function resolveExternalCommand(command: 'npm' | 'npx' | 'gh'): string {
+  if (process.platform !== 'win32') {
+    return command;
+  }
+  if (command === 'npm' || command === 'npx') {
+    return `${command}.cmd`;
+  }
+  return command;
+}
+
+async function execCommand(
+  cwd: string,
+  command: 'npm' | 'npx' | 'gh',
+  args: string[],
+  options?: { timeoutMs?: number }
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(resolveExternalCommand(command), args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: options?.timeoutMs ?? 300_000,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code });
+    });
+  });
+}
+
+function summarizeCommandFailure(
+  label: string,
+  result: { stdout: string; stderr: string; code: number | null }
+): string {
+  const detail =
+    result.stderr ||
+    result.stdout ||
+    `${label} exited with code ${result.code ?? '?'}.`;
+  return `${label} failed: ${detail}`;
+}
+
+function normalizeGitHubRepoSlug(
+  raw: string | null | undefined
+): string | null {
+  if (!raw) {
+    return null;
+  }
+  const value = raw.trim().replace(/^git\+/, '');
+  if (!value) {
+    return null;
+  }
+
+  const httpsMatch = value.match(
+    /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/)?$/i
+  );
+  if (httpsMatch) {
+    return httpsMatch[1] ?? null;
+  }
+
+  const sshMatch = value.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return sshMatch[1] ?? null;
+  }
+
+  return null;
+}
+
+interface PublishablePackageInfo {
+  name: string;
+  version: string;
+  repoSlug: string | null;
+  binCommand: string | null;
+}
+
+async function readPublishablePackageInfo(
+  targetRepoRoot: string
+): Promise<PublishablePackageInfo | null> {
+  const packageJsonPath = join(targetRepoRoot, 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    return null;
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(await readFile(packageJsonPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return null;
+  }
+
+  if (parsed.private === true) {
+    return null;
+  }
+
+  const name =
+    typeof parsed.name === 'string' && parsed.name.trim()
+      ? parsed.name.trim()
+      : null;
+  const version =
+    typeof parsed.version === 'string' && parsed.version.trim()
+      ? parsed.version.trim()
+      : null;
+  if (!name || !version) {
+    return null;
+  }
+
+  const repositoryField = parsed.repository;
+  const repositoryUrl =
+    typeof repositoryField === 'string'
+      ? repositoryField
+      : repositoryField &&
+          typeof repositoryField === 'object' &&
+          typeof (repositoryField as { url?: unknown }).url === 'string'
+        ? ((repositoryField as { url: string }).url ?? null)
+        : null;
+
+  const remoteResult = await execGit(targetRepoRoot, [
+    'remote',
+    'get-url',
+    'origin',
+  ]).catch(() => null);
+  const repoSlug =
+    normalizeGitHubRepoSlug(
+      remoteResult?.code === 0 ? remoteResult.stdout : repositoryUrl
+    ) ?? normalizeGitHubRepoSlug(repositoryUrl);
+
+  const binField = parsed.bin;
+  const binCommand =
+    typeof binField === 'string'
+      ? (name.split('/').pop() ?? null)
+      : binField && typeof binField === 'object'
+        ? (Object.keys(binField).find((key) => key.trim().length > 0) ?? null)
+        : null;
+
+  return {
+    name,
+    version,
+    repoSlug,
+    binCommand,
+  };
+}
+
+function isUserOwnedPublishablePackage(
+  pkg: PublishablePackageInfo | null
+): pkg is PublishablePackageInfo {
+  if (!pkg) {
+    return false;
+  }
+  return (
+    pkg.name.startsWith('@metyatech/') ||
+    (pkg.repoSlug !== null && pkg.repoSlug.startsWith('metyatech/'))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +570,374 @@ export async function pushWithRetry(input: {
   }
 
   return { success: false, detail: 'max push retries exceeded' };
+}
+
+// ---------------------------------------------------------------------------
+// Worktree delivery readiness
+// ---------------------------------------------------------------------------
+
+export async function validateWorktreeReadyForMerge(input: {
+  targetRepoRoot: string;
+  worktreePath: string;
+  reportedChangedFiles: string[];
+}): Promise<WorktreeDeliveryReadiness> {
+  const statusResult = await execGit(input.worktreePath, [
+    'status',
+    '--porcelain',
+  ]);
+  if (statusResult.code !== 0) {
+    return {
+      ready: false,
+      detail: summarizeCommandFailure('git status --porcelain', statusResult),
+      aheadCommitCount: 0,
+    };
+  }
+
+  if (statusResult.stdout.trim()) {
+    return {
+      ready: false,
+      detail: `The review step approved the worktree before all changes were committed.\n${statusResult.stdout}`,
+      aheadCommitCount: 0,
+    };
+  }
+
+  const baseHead = await execGit(input.targetRepoRoot, ['rev-parse', 'HEAD']);
+  if (baseHead.code !== 0 || !baseHead.stdout.trim()) {
+    return {
+      ready: false,
+      detail: summarizeCommandFailure('git rev-parse HEAD', baseHead),
+      aheadCommitCount: 0,
+    };
+  }
+
+  const aheadResult = await execGit(input.worktreePath, [
+    'rev-list',
+    '--count',
+    'HEAD',
+    `^${baseHead.stdout.trim()}`,
+  ]);
+  if (aheadResult.code !== 0) {
+    return {
+      ready: false,
+      detail: summarizeCommandFailure(
+        'git rev-list --count HEAD ^<target-head>',
+        aheadResult
+      ),
+      aheadCommitCount: 0,
+    };
+  }
+
+  const aheadCommitCount = Number.parseInt(aheadResult.stdout.trim(), 10);
+  if (!Number.isFinite(aheadCommitCount)) {
+    return {
+      ready: false,
+      detail: `Could not parse ahead commit count: ${aheadResult.stdout}`,
+      aheadCommitCount: 0,
+    };
+  }
+
+  const reportedChanges = input.reportedChangedFiles.some(
+    (path) => path.trim().length > 0
+  );
+  if (reportedChanges && aheadCommitCount === 0) {
+    return {
+      ready: false,
+      detail:
+        'The worker reported changed files, but the review step did not create a commit for them before approval.',
+      aheadCommitCount,
+    };
+  }
+
+  return {
+    ready: true,
+    detail:
+      aheadCommitCount > 0
+        ? `Ready to merge with ${aheadCommitCount} commit(s) ahead of the target repository.`
+        : 'Ready to merge; no repository changes need to be delivered.',
+    aheadCommitCount,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Post-merge release / publish delivery
+// ---------------------------------------------------------------------------
+
+export async function runPostMergeDeliveryChain(input: {
+  targetRepoRoot: string;
+}): Promise<PostMergeDeliveryResult> {
+  const pkg = await readPublishablePackageInfo(input.targetRepoRoot);
+  if (!isUserOwnedPublishablePackage(pkg)) {
+    return {
+      success: true,
+      detail:
+        'No release/publish delivery chain is required for this repository.',
+      performed: [],
+    };
+  }
+
+  if (!pkg.repoSlug) {
+    return {
+      success: false,
+      detail:
+        'Release/publish is required, but the GitHub repository slug could not be determined from package.json or the origin remote.',
+      performed: [],
+    };
+  }
+
+  const performed: string[] = [];
+  const tagName = `v${pkg.version}`;
+
+  const auditResult = await execCommand(input.targetRepoRoot, 'npm', [
+    'audit',
+    '--omit=dev',
+  ]);
+  if (auditResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure('npm audit --omit=dev', auditResult),
+      performed,
+    };
+  }
+  performed.push('npm audit --omit=dev');
+
+  const packResult = await execCommand(input.targetRepoRoot, 'npm', [
+    'pack',
+    '--dry-run',
+  ]);
+  if (packResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure('npm pack --dry-run', packResult),
+      performed,
+    };
+  }
+  performed.push('npm pack --dry-run');
+
+  const existingVersion = await execCommand(input.targetRepoRoot, 'npm', [
+    'view',
+    `${pkg.name}@${pkg.version}`,
+    'version',
+    '--json',
+  ]);
+  if (existingVersion.code === 0) {
+    return {
+      success: false,
+      detail: `Version ${pkg.version} of ${pkg.name} is already published. Prepare a new version before approving release/publish.`,
+      performed,
+    };
+  }
+  const packageNotFound =
+    /E404|404|No match found for version|not in this registry/i.test(
+      `${existingVersion.stdout}\n${existingVersion.stderr}`
+    );
+  if (!packageNotFound) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `npm view ${pkg.name}@${pkg.version} version --json`,
+        existingVersion
+      ),
+      performed,
+    };
+  }
+
+  const localTagResult = await execGit(input.targetRepoRoot, [
+    'tag',
+    '--list',
+    tagName,
+  ]);
+  if (localTagResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `git tag --list ${tagName}`,
+        localTagResult
+      ),
+      performed,
+    };
+  }
+  if (
+    localTagResult.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .includes(tagName)
+  ) {
+    return {
+      success: false,
+      detail: `Git tag ${tagName} already exists locally. Prepare a new version before approving release/publish.`,
+      performed,
+    };
+  }
+
+  const remoteTagResult = await execGit(input.targetRepoRoot, [
+    'ls-remote',
+    '--tags',
+    'origin',
+    tagName,
+  ]);
+  if (remoteTagResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `git ls-remote --tags origin ${tagName}`,
+        remoteTagResult
+      ),
+      performed,
+    };
+  }
+  if (remoteTagResult.stdout.trim()) {
+    return {
+      success: false,
+      detail: `Git tag ${tagName} already exists on origin. Prepare a new version before approving release/publish.`,
+      performed,
+    };
+  }
+
+  const releaseView = await execCommand(input.targetRepoRoot, 'gh', [
+    'release',
+    'view',
+    tagName,
+    '--repo',
+    pkg.repoSlug,
+  ]);
+  if (releaseView.code === 0) {
+    return {
+      success: false,
+      detail: `GitHub release ${tagName} already exists for ${pkg.repoSlug}. Prepare a new version before approving release/publish.`,
+      performed,
+    };
+  }
+  const releaseMissing = /not found|404/i.test(
+    `${releaseView.stdout}\n${releaseView.stderr}`
+  );
+  if (!releaseMissing) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `gh release view ${tagName} --repo ${pkg.repoSlug}`,
+        releaseView
+      ),
+      performed,
+    };
+  }
+
+  const createTagResult = await execGit(input.targetRepoRoot, ['tag', tagName]);
+  if (createTagResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(`git tag ${tagName}`, createTagResult),
+      performed,
+    };
+  }
+  performed.push(`git tag ${tagName}`);
+
+  const pushTagResult = await execGit(input.targetRepoRoot, [
+    'push',
+    'origin',
+    tagName,
+  ]);
+  if (pushTagResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `git push origin ${tagName}`,
+        pushTagResult
+      ),
+      performed,
+    };
+  }
+  performed.push(`git push origin ${tagName}`);
+
+  const publishResult = await execCommand(input.targetRepoRoot, 'npm', [
+    'publish',
+  ]);
+  if (publishResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure('npm publish', publishResult),
+      performed,
+    };
+  }
+  performed.push('npm publish');
+
+  const releaseCreateResult = await execCommand(input.targetRepoRoot, 'gh', [
+    'release',
+    'create',
+    tagName,
+    '--repo',
+    pkg.repoSlug,
+    '--title',
+    tagName,
+    '--notes',
+    'See CHANGELOG.md',
+  ]);
+  if (releaseCreateResult.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `gh release create ${tagName} --repo ${pkg.repoSlug}`,
+        releaseCreateResult
+      ),
+      performed,
+    };
+  }
+  performed.push(`gh release create ${tagName}`);
+
+  const registryVerify = await execCommand(input.targetRepoRoot, 'npm', [
+    'view',
+    pkg.name,
+    'version',
+    '--json',
+  ]);
+  if (registryVerify.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `npm view ${pkg.name} version --json`,
+        registryVerify
+      ),
+      performed,
+    };
+  }
+  if (!registryVerify.stdout.includes(pkg.version)) {
+    return {
+      success: false,
+      detail: `Registry verification did not return version ${pkg.version} for ${pkg.name}: ${registryVerify.stdout}`,
+      performed,
+    };
+  }
+  performed.push(`npm view ${pkg.name} version --json`);
+
+  const npxVerify = await execCommand(
+    input.targetRepoRoot,
+    'npx',
+    [`${pkg.name}@latest`, '--version'],
+    { timeoutMs: 300_000 }
+  );
+  if (npxVerify.code !== 0) {
+    return {
+      success: false,
+      detail: summarizeCommandFailure(
+        `npx ${pkg.name}@latest --version`,
+        npxVerify
+      ),
+      performed,
+    };
+  }
+  if (!`${npxVerify.stdout}\n${npxVerify.stderr}`.includes(pkg.version)) {
+    return {
+      success: false,
+      detail: `Fresh-install verification did not print version ${pkg.version}. Output: ${npxVerify.stdout || npxVerify.stderr}`,
+      performed,
+    };
+  }
+  performed.push(`npx ${pkg.name}@latest --version`);
+
+  return {
+    success: true,
+    detail: `Completed release/publish delivery for ${pkg.name}@${pkg.version}.`,
+    performed,
+  };
 }
 
 // ---------------------------------------------------------------------------

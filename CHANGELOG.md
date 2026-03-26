@@ -18,6 +18,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Hardened the Manager delivery chain so worker-reviewed tasks no longer surface
+  as complete when `push` fails, and user-owned publishable npm repositories
+  now continue through the post-merge release/publish verification path before
+  completion
 - Refreshed both the Hub and native Manager pages with a more modern dark
   glass design system, updated typography, richer status hierarchy, and more
   consistent desktop/mobile visual treatment

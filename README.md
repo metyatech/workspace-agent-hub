@@ -63,7 +63,9 @@ It provides:
    after Windows sign-in. The watchdog keeps the same Hub and Manager reachable
    from a smartphone without using Remote Desktop while the PC stays on and the
    Windows user session remains signed in, and it recreates the web UI
-   automatically if that background process exits.
+   automatically if that background process exits. It now waits on the managed
+   Hub PID so unexpected exits trigger an immediate restart instead of waiting
+   for the next periodic health pass.
 
    This is the canonical day-to-day entrypoint. The installer also removes the
    old `AI Agent Sessions` shortcut if it still exists on this PC.
@@ -153,6 +155,11 @@ available for phone access without reopening the PC UI:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1 -PhoneReady
 ```
+
+When it needs to replace an existing phone-ready instance, it now starts the
+replacement in the background, waits for it to become healthy, and only then
+stops the previous managed process. That keeps the stable Tailscale-facing Hub
+URL available across the handoff instead of creating a stop-first gap.
 
 Keep a self-healing phone-ready watchdog running in the background for the
 current signed-in Windows session:
@@ -494,7 +501,9 @@ Important behavior:
   finishes, the Manager itself reviews that result inside the repository and,
   when the result is acceptable, owns the in-scope commit/push chain plus
   release/publish follow-through when that repository normally requires it for
-  completion.
+  completion. Review-ready completion is now blocked until `push` succeeds, and
+  user-owned publishable npm repositories must also clear the post-merge
+  release/publish verification chain before the task is surfaced as complete.
 - If a worker cannot start because another running work item owns an
   overlapping write scope, the work item stays visible with an explicit
   scope-blocked runtime reason until that conflict clears.

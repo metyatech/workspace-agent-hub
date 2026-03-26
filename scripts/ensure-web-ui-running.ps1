@@ -381,7 +381,8 @@ function Wait-ForWebUiReady {
 function Stop-ManagedProcessIfPresent {
     param(
         $ExistingState,
-        [int]$FallbackProcessId = 0
+        [int]$FallbackProcessId = 0,
+        [int[]]$ExcludeProcessIds = @()
     )
 
     $candidateProcessIds = [System.Collections.Generic.List[int]]::new()
@@ -397,6 +398,9 @@ function Stop-ManagedProcessIfPresent {
     }
 
     foreach ($candidateProcessId in $candidateProcessIds) {
+        if ($ExcludeProcessIds -contains $candidateProcessId) {
+            continue
+        }
         try {
             $process = Get-Process -Id $candidateProcessId -ErrorAction Stop
             Stop-Process -Id $process.Id -Force -ErrorAction Stop
@@ -570,6 +574,41 @@ function Get-ProcessLaunchDetail {
     return 'No process output captured.'
 }
 
+function Build-StateFromLaunchInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$LaunchInfo,
+        [Parameter(Mandatory = $true)]
+        [string]$LocalListenUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$ResolvedToken,
+        [Parameter(Mandatory = $true)]
+        [string]$ResolvedStatePath,
+        [Parameter(Mandatory = $true)]
+        [bool]$RequestedPhoneReady,
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId,
+        [string]$StdOutPath = '',
+        [string]$StdErrPath = ''
+    )
+
+    return [pscustomobject]@{
+        ListenUrl = $LocalListenUrl
+        PreferredConnectUrl = [string]$LaunchInfo.preferredConnectUrl
+        PreferredConnectUrlSource = [string]$LaunchInfo.preferredConnectUrlSource
+        AccessCode = if ([bool]$LaunchInfo.authRequired) { [string]$LaunchInfo.accessCode } else { $null }
+        AuthDisabled = -not [bool]$LaunchInfo.authRequired
+        OneTapPairingLink = [string]$LaunchInfo.oneTapPairingLink
+        ProcessId = [int]$ProcessId
+        BrowserUrl = Get-BrowserUrl -ListenUrl $LocalListenUrl -Token $ResolvedToken
+        StatePath = $ResolvedStatePath
+        RequestedPhoneReady = $RequestedPhoneReady
+        StdOutPath = $StdOutPath
+        StdErrPath = $StdErrPath
+        UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
 $requestedPhoneReady = $true
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
@@ -643,35 +682,40 @@ if (
     } else {
         $null
     }
-    Stop-ManagedProcessIfPresent -ExistingState $existingState -FallbackProcessId $fallbackProcessId
     $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -RequestedPhoneReady $requestedPhoneReady -TargetStatePath $resolvedStatePath
-    $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
-    $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
-    $ready = Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken -TimeoutMilliseconds 90000
-    if (-not $ready) {
-        throw "Workspace Agent Hub web UI did not become ready at $localListenUrl. $(Get-ProcessLaunchDetail -ProcessInfo $started)"
-    }
-    $actualProcessId = Get-ListenerProcessId -ListenUrl $localListenUrl
-    if (-not $actualProcessId) {
-        $actualProcessId = [int]$started.Process.Id
+    try {
+        $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
+        $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
+        $ready = Wait-ForWebUiReady -ListenUrl $localListenUrl -Token $resolvedToken -TimeoutMilliseconds 90000
+        if (-not $ready) {
+            throw "Workspace Agent Hub web UI did not become ready at $localListenUrl. $(Get-ProcessLaunchDetail -ProcessInfo $started)"
+        }
+        $actualProcessId = Get-ListenerProcessId -ListenUrl $localListenUrl
+        if (-not $actualProcessId) {
+            $actualProcessId = [int]$started.Process.Id
+        }
+
+        $finalState = Build-StateFromLaunchInfo `
+            -LaunchInfo $launchInfo `
+            -LocalListenUrl $localListenUrl `
+            -ResolvedToken $resolvedToken `
+            -ResolvedStatePath $resolvedStatePath `
+            -RequestedPhoneReady $requestedPhoneReady `
+            -ProcessId $actualProcessId `
+            -StdOutPath $started.StdOutPath `
+            -StdErrPath $started.StdErrPath
+        Write-State -TargetStatePath $resolvedStatePath -State $finalState
+    } catch {
+        Stop-ManagedProcessIfPresent `
+            -ExistingState $null `
+            -FallbackProcessId ([int]$started.Process.Id)
+        throw
     }
 
-    $finalState = [pscustomobject]@{
-        ListenUrl = $localListenUrl
-        PreferredConnectUrl = [string]$launchInfo.preferredConnectUrl
-        PreferredConnectUrlSource = [string]$launchInfo.preferredConnectUrlSource
-        AccessCode = if ([bool]$launchInfo.authRequired) { [string]$launchInfo.accessCode } else { $null }
-        AuthDisabled = -not [bool]$launchInfo.authRequired
-        OneTapPairingLink = [string]$launchInfo.oneTapPairingLink
-        ProcessId = [int]$actualProcessId
-        BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
-        StatePath = $resolvedStatePath
-        RequestedPhoneReady = $requestedPhoneReady
-        StdOutPath = $started.StdOutPath
-        StdErrPath = $started.StdErrPath
-        UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    }
-    Write-State -TargetStatePath $resolvedStatePath -State $finalState
+    Stop-ManagedProcessIfPresent `
+        -ExistingState $existingState `
+        -FallbackProcessId $fallbackProcessId `
+        -ExcludeProcessIds @([int]$finalState.ProcessId)
 }
 
 if ($OpenBrowser) {

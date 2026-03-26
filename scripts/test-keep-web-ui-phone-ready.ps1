@@ -107,6 +107,40 @@ if (-not $StatePath) {
     throw 'Expected watchdog to pass a state path.'
 }
 
+$writeStateWithSleeper = [Environment]::GetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER', 'Process')
+if ($writeStateWithSleeper -eq '1') {
+    $sleepMillisecondsRaw = [Environment]::GetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS', 'Process')
+    $sleepMilliseconds = if ([string]::IsNullOrWhiteSpace($sleepMillisecondsRaw)) {
+        1200
+    } else {
+        [int]$sleepMillisecondsRaw
+    }
+    $nodePath = (Get-Command 'node.exe' -ErrorAction Stop).Source
+    $sleeper = Start-Process -FilePath $nodePath -ArgumentList @(
+        '-e',
+        "setTimeout(() => process.exit(0), $sleepMilliseconds);"
+    ) -WindowStyle Hidden -PassThru
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $unusedPort = [int]$listener.LocalEndpoint.Port
+    } finally {
+        $listener.Stop()
+    }
+
+    $stateDirectory = Split-Path -Parent $StatePath
+    if ($stateDirectory -and -not (Test-Path -Path $stateDirectory)) {
+        [void](New-Item -ItemType Directory -Path $stateDirectory -Force)
+    }
+
+    [pscustomobject]@{
+        ListenUrl = "http://127.0.0.1:$unusedPort"
+        AuthDisabled = $true
+        RequestedPhoneReady = $true
+        ProcessId = [int]$sleeper.Id
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8
+}
+
 [pscustomobject]@{
     listenUrl = 'http://127.0.0.1:3360'
     preferredConnectUrl = 'https://agent-hub.example.ts.net'
@@ -119,6 +153,8 @@ if (-not $StatePath) {
 [System.IO.File]::WriteAllText($mockEnsurePath, $mockEnsureContent, [Text.Encoding]::UTF8)
 
 $previousCounterPath = $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH
+$previousWriteStateWithSleeper = $env:WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER
+$previousSleeperMs = $env:WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS
 $firstProcess = $null
 $managerStatusJob = $null
 
@@ -209,6 +245,30 @@ try {
     if ($finalCount -ne 4) {
         throw "Expected the duplicate watchdog attempt not to add extra ensure loops. Got $finalCount."
     }
+
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER', '1', 'Process')
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS', '1200', 'Process')
+    Set-Content -Path $counterPath -Value '0' -Encoding utf8
+    if (Test-Path -Path $statePath) {
+        [IO.File]::SetAttributes($statePath, [IO.FileAttributes]::Normal)
+        [IO.File]::Delete($statePath)
+    }
+
+    $fastRecoveryStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    & $scriptPath `
+        -EnsureScriptPath $mockEnsurePath `
+        -StatePath $statePath `
+        -IntervalSeconds 30 `
+        -MaxIterations 2
+    $fastRecoveryStopwatch.Stop()
+
+    $fastRecoveryCount = [int]((Get-Content -Path $counterPath -Raw -Encoding utf8).Trim())
+    if ($fastRecoveryCount -ne 2) {
+        throw "Expected process-exit wake-up mode to rerun ensure-web-ui-running.ps1 twice. Got $fastRecoveryCount."
+    }
+    if ($fastRecoveryStopwatch.Elapsed.TotalSeconds -ge 10) {
+        throw "Expected watchdog to rerun shortly after process exit instead of waiting the full interval. Elapsed: $($fastRecoveryStopwatch.Elapsed.TotalSeconds)s"
+    }
 } finally {
     if ($firstProcess) {
         try {
@@ -234,6 +294,28 @@ try {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH', $null, 'Process')
     } else {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH', $previousCounterPath, 'Process')
+    }
+
+    if ($null -eq $previousWriteStateWithSleeper) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER', $null, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER', $previousWriteStateWithSleeper, 'Process')
+    }
+
+    if ($null -eq $previousSleeperMs) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS', $null, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS', $previousSleeperMs, 'Process')
+    }
+
+    if (Test-Path -Path $statePath) {
+        try {
+            $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($state.ProcessId) {
+                Stop-Process -Id ([int]$state.ProcessId) -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+        }
     }
 
     if ([System.IO.Directory]::Exists($tempRoot)) {

@@ -165,11 +165,106 @@ function Wait-ForApiReady {
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-open-web-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
 $statePath = Join-Path $testDirectory 'state.json'
+$mockCliPath = Join-Path $testDirectory 'mock-web-ui.mjs'
 $port = Get-FreeTcpPort
 $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
+$originalCliPath = $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH
+
+$mockCliContent = @'
+import http from "node:http";
+
+const args = process.argv.slice(2);
+let host = "127.0.0.1";
+let port = 3360;
+let authToken = "auto";
+
+for (let index = 0; index < args.length; index += 1) {
+  const current = args[index];
+  if (current === "--host") {
+    host = args[index + 1] ?? host;
+    index += 1;
+  } else if (current === "--port") {
+    port = Number(args[index + 1] ?? port);
+    index += 1;
+  } else if (current === "--auth-token") {
+    authToken = args[index + 1] ?? authToken;
+    index += 1;
+  }
+}
+
+const authRequired = authToken !== "none";
+const accessCode = authRequired ? authToken : null;
+
+function tryListen(targetPort) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      if (req.url?.startsWith("/api/sessions")) {
+        if (authRequired) {
+          const tokenHeader = req.headers["x-workspace-agent-hub-token"];
+          const authHeader = req.headers.authorization;
+          const bearerToken =
+            typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+              ? authHeader.slice("Bearer ".length)
+              : "";
+          if (tokenHeader !== accessCode && bearerToken !== accessCode) {
+            res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ error: "Access code required" }));
+            return;
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end("[]");
+        return;
+      }
+
+      if (req.url === "/api/shutdown" && req.method === "POST") {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ shutting_down: true }));
+        setTimeout(() => {
+          server.close(() => process.exit(0));
+        }, 10);
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("ok");
+    });
+
+    server.once("error", (error) => {
+      if (error && error.code === "EADDRINUSE") {
+        resolve(tryListen(targetPort + 1));
+        return;
+      }
+      reject(error);
+    });
+
+    server.listen(targetPort, host, () => {
+      resolve({ actualPort: targetPort });
+    });
+  });
+}
+
+const { actualPort } = await tryListen(port);
+const preferredConnectUrl = "https://desktop-dr5v76c.tail5a2d2d.ts.net";
+console.log(
+  JSON.stringify({
+    listenUrl: `http://${host}:${actualPort}`,
+    preferredConnectUrl,
+    preferredConnectUrlSource: "tailscale-serve",
+    authRequired,
+    accessCode,
+    oneTapPairingLink: authRequired
+      ? `${preferredConnectUrl}#accessCode=${encodeURIComponent(accessCode)}`
+      : preferredConnectUrl,
+  })
+);
+'@
+
+[IO.File]::WriteAllText($mockCliPath, $mockCliContent, [Text.UTF8Encoding]::new($false))
 
 try {
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
@@ -186,6 +281,12 @@ try {
 
     $firstPort = ([Uri][string]$first.ListenUrl).Port
     Wait-ForApiReady -PortNumber $firstPort -Token ''
+    if ([string]$first.PreferredConnectUrlSource -eq 'tailscale-serve') {
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$firstPort
+"@
+    }
 
     $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'second' -TargetDirectory $testDirectory
     $second = Wait-ForLaunchMetadata -ProcessInfo $secondRun
@@ -211,6 +312,13 @@ try {
     $legacyUpgrade = Wait-ForLaunchMetadata -ProcessInfo $legacyUpgradeRun
     Wait-ForProcessSuccess -ProcessInfo $legacyUpgradeRun
     Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token ''
+    if ([string]$legacyUpgrade.PreferredConnectUrlSource -eq 'tailscale-serve') {
+        $legacyUpgradePort = ([Uri][string]$legacyUpgrade.ListenUrl).Port
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$legacyUpgradePort
+"@
+    }
 
     if ([int]$legacyUpgrade.ProcessId -eq [int]$first.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to restart when the saved state predates the required PhoneReady marker.'
@@ -244,9 +352,8 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     Wait-ForProcessSuccess -ProcessInfo $serveHealthyRun
     $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
     Wait-ForApiReady -PortNumber $serveHealthyPort -Token ''
-
-    if ([string]$serveHealthy.ListenUrl -ne [string]$legacyUpgrade.ListenUrl) {
-        throw 'Expected ensure-web-ui-running.ps1 to preserve the existing listen URL when the saved Tailscale Serve target still matches the listener port.'
+    if ([string]$serveHealthy.PreferredConnectUrlSource -ne 'tailscale-serve') {
+        throw 'Expected ensure-web-ui-running.ps1 to keep the Tailscale Serve smartphone path when the saved proxy target still matches the listener port.'
     }
 
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
@@ -314,6 +421,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -ErrorAction SilentlyContinue
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = $originalTailscaleServeStatusText
+    }
+    if ($null -eq $originalCliPath) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH = $originalCliPath
     }
     if (Test-Path -Path $testDirectory) {
         Start-Sleep -Milliseconds 200

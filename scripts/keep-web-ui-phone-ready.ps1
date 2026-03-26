@@ -71,6 +71,30 @@ function Get-WatchdogLogPath {
     return (Join-Path $directory 'workspace-agent-hub-phone-ready.log')
 }
 
+function Get-ManagedProcessId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    if (
+        -not $state -or
+        $state.PSObject.Properties.Match('ProcessId').Count -eq 0 -or
+        -not $state.ProcessId
+    ) {
+        return $null
+    }
+
+    $processId = [int]$state.ProcessId
+    try {
+        [void](Get-Process -Id $processId -ErrorAction Stop)
+        return $processId
+    } catch {
+        return $null
+    }
+}
+
 function Write-WatchdogLog {
     param(
         [Parameter(Mandatory = $true)]
@@ -160,6 +184,40 @@ function Get-MutexName {
     return ('Local\WorkspaceAgentHubPhoneReady-' + $hex)
 }
 
+function Wait-ForNextEnsureWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath,
+        [Parameter(Mandatory = $true)]
+        [int]$WaitSeconds,
+        [Parameter(Mandatory = $true)]
+        [string]$LogPath
+    )
+
+    $watchProcessId = Get-ManagedProcessId -TargetStatePath $TargetStatePath
+    if (-not $watchProcessId) {
+        Start-Sleep -Seconds $WaitSeconds
+        return
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+    try {
+        Wait-Process -Id $watchProcessId -Timeout $WaitSeconds -ErrorAction Stop
+        Write-WatchdogLog -LogPath $LogPath -Message "Managed Hub process $watchProcessId exited; rerunning ensure-web-ui-running.ps1 immediately."
+        return
+    } catch [System.TimeoutException] {
+        return
+    } catch {
+        $remainingMilliseconds = [math]::Max(
+            0,
+            [int][math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        )
+        if ($remainingMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $remainingMilliseconds
+        }
+    }
+}
+
 $resolvedEnsureScriptPath = if ($EnsureScriptPath -and $EnsureScriptPath.Trim()) {
     [IO.Path]::GetFullPath($EnsureScriptPath.Trim())
 } else {
@@ -215,7 +273,7 @@ try {
             break
         }
 
-        Start-Sleep -Seconds $IntervalSeconds
+        Wait-ForNextEnsureWindow -TargetStatePath $resolvedStatePath -WaitSeconds $IntervalSeconds -LogPath $watchdogLogPath
     }
 } finally {
     if ($lockAcquired) {
