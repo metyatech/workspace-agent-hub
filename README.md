@@ -394,10 +394,10 @@ Important behavior:
   before sending, and the larger text area only opens when they choose to
   write.
 - When Manager splits a freeform message into tasks, the default granularity is
-  one new user turn per work item. Follow-ups to existing work items are
-  normally stored as new derived work items with `derived_from` parent links
-  and parent context embedded into the stored user message, while only direct
-  replies to an outstanding confirmation stay inside the same work item.
+  one user goal per work item, but clear follow-ups, status checks, and direct
+  answers for an existing work item stay in that same work item instead of
+  being split out automatically. Recently resolved work items also remain valid
+  routing targets when the user naturally returns to that earlier topic.
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
@@ -415,11 +415,12 @@ Important behavior:
   browser back button return to the Manager list before leaving Hub. That
   conversation screen keeps the input area as a compact bottom bar instead of
   reusing the larger inbox composer chrome.
-- The current built-in Manager routes each global send with a fresh Codex
-  routing turn so old router-chat context does not blur distinct tasks, then
-  executes each actionable task with its own persisted Codex worker
-  continuation so routed requests do real repository work instead of stopping
-  at inbox acknowledgements.
+- The current built-in Manager keeps one continuing Codex routing session
+  across global sends so references like earlier XX / yesterday YY can be
+  interpreted with conversation continuity while still grounding every send in
+  the latest recent-topic list, then executes each actionable task with its
+  own persisted Codex worker continuation so routed requests do real repository
+  work instead of stopping at inbox acknowledgements.
 - The global send dock now shows an explicit send target: either the whole
   inbox or a selected work item mention hint, so follow-up messages can keep
   that work item attached without bypassing the normal routing pass.
@@ -501,7 +502,7 @@ Important behavior:
   running descendant, the older work item is stopped and shown as
   `cancelled-as-superseded` instead of silently disappearing.
 - Manager continuity is persisted in two layers:
-  - one stateless routing Codex turn per freeform inbox send for triage
+  - one workspace-level routing Codex session for global inbox triage across sends
   - one worker Codex session per work item for actual task execution across
     turns and server restarts
 - Thread storage remains compatible with `thread-inbox` data files, but the
