@@ -334,6 +334,25 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
       }
 
       const packageRoot = resolvePackageRoot();
+
+      console.log('Installing dependencies...');
+      await new Promise<void>((resolvePromise, reject) => {
+        const install = nodeSpawn('npm', ['install'], {
+          cwd: packageRoot,
+          stdio: 'inherit',
+          shell: true,
+          windowsHide: true,
+        });
+        install.on('close', (code) => {
+          if (code === 0) {
+            resolvePromise();
+          } else {
+            reject(new Error(`npm install failed with exit code ${code}`));
+          }
+        });
+        install.on('error', reject);
+      });
+
       console.log('Building...');
       await new Promise<void>((resolvePromise, reject) => {
         const build = nodeSpawn('npm', ['run', 'build'], {

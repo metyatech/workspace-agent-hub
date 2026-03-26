@@ -76,6 +76,7 @@ import {
   runPostMergeDeliveryChain,
   validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
+import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -3472,6 +3473,27 @@ async function runQueuedAssignment(input: {
           workerWriteScopes: assignment.writeScopes,
         });
 
+        // Snapshot the current build before merge so we can rollback if needed.
+        try {
+          await snapshotBuild(resolvePackageRoot());
+        } catch (snapshotErr) {
+          console.error(
+            '[manager-backend] Pre-merge build snapshot failed:',
+            snapshotErr instanceof Error ? snapshotErr.message : snapshotErr
+          );
+        }
+
+        // Mark queue entries as processed before merge for crash safety.
+        // If the process crashes after merge but before cleanup, these entries
+        // won't be re-dispatched on restart.
+        await updateQueueLocked(dir, (queue) =>
+          queue.map((entry) =>
+            assignment.queueEntryIds.includes(entry.id)
+              ? { ...entry, processed: true }
+              : entry
+          )
+        );
+
         let mergeResult = await mergeWorktreeToMain({
           targetRepoRoot,
           branchName: assignment.worktreeBranch,
@@ -4436,6 +4458,17 @@ export async function sendGlobalToBuiltinManager(
       detail: detailParts.join(' / '),
     };
   });
+}
+
+// ── Eager reconciliation (called at server startup) ────────────────────────
+
+/**
+ * Run assignment reconciliation immediately.  Intended to be called once at
+ * server startup so that dead assignments left over from a previous crash are
+ * cleaned up without waiting for the next queue tick.
+ */
+export async function eagerReconcile(dir: string): Promise<void> {
+  await reconcileActiveAssignments(dir);
 }
 
 // ── Public API (consumed by manager-adapter.ts) ────────────────────────────

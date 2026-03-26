@@ -555,6 +555,27 @@ function Test-WebUiReady {
     }
 }
 
+function Test-ManagerHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ListenUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$Token
+    )
+
+    try {
+        $headers = @{}
+        $effectiveAccessCode = Get-EffectiveAccessCode -TokenOption $Token
+        if ($effectiveAccessCode) {
+            $headers['X-Workspace-Agent-Hub-Token'] = $effectiveAccessCode
+        }
+        $response = Invoke-WebRequest -Uri ($ListenUrl.TrimEnd('/') + '/manager/api/manager/status') -Method Get -Headers $headers -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
 function Wait-ForWebUiReady {
     param(
         [Parameter(Mandatory = $true)]
@@ -1177,7 +1198,8 @@ if (
     $existingListenUrl -and
     (Test-RequestedAuthMatches -ExistingState $existingState -RequestedTokenOption $resolvedToken) -and
     (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady) -and
-    (Wait-ForFrontDoorReady -ListenUrl $frontDoorInfo.ListenUrl -TimeoutMilliseconds 3000)
+    (Wait-ForFrontDoorReady -ListenUrl $frontDoorInfo.ListenUrl -TimeoutMilliseconds 3000) -and
+    (Test-ManagerHealthy -ListenUrl $existingListenUrl -Token $resolvedToken)
 ) {
     $existingListenerProcessId = if ($existingProcessAlive) {
         [int]$existingState.ProcessId

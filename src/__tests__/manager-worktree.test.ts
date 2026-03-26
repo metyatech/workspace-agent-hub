@@ -13,6 +13,7 @@ vi.mock('child_process', () => ({
 }));
 
 import {
+  abortStaleMerge,
   cleanupOrphanedWorktrees,
   execGit,
   findGitRoot,
@@ -376,5 +377,31 @@ describe('cleanupOrphanedWorktrees', () => {
     await cleanupOrphanedWorktrees('/repo', ['active-id']);
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('abortStaleMerge', () => {
+  let tempDir: string;
+
+  it('returns false when no MERGE_HEAD exists', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'wah-merge-'));
+    const result = await abortStaleMerge(tempDir);
+    expect(result).toBe(false);
+    expect(spawnMock).not.toHaveBeenCalled();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('aborts and returns true when MERGE_HEAD exists', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'wah-merge-'));
+    const gitDir = join(tempDir, '.git');
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(gitDir, { recursive: true });
+    await writeFile(join(gitDir, 'MERGE_HEAD'), 'abc123\n');
+
+    spawnMock.mockImplementation(gitResult(0, ''));
+    const result = await abortStaleMerge(tempDir);
+    expect(result).toBe(true);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await rm(tempDir, { recursive: true, force: true });
   });
 });

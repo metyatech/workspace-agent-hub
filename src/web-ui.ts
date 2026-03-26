@@ -1178,7 +1178,7 @@ async function gracefulShutdown(server: Server): Promise<void> {
 export async function startWebUi(
   options: StartWebUiOptions = {}
 ): Promise<void> {
-  const { server, port, host, authConfig, connectInfo } =
+  const { server, port, host, authConfig, bridge, connectInfo } =
     await createWebUiServer(options);
   const launchInfo = buildWebUiLaunchInfo({
     host,
@@ -1263,6 +1263,13 @@ export async function startWebUi(
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
+
+  // Eager reconciliation: clean up dead assignments left over from a crash.
+  setImmediate(() => {
+    void import('./manager-backend.js')
+      .then(({ eagerReconcile }) => eagerReconcile(bridge.getWorkspaceRoot()))
+      .catch(() => {});
+  });
 
   await new Promise<void>((resolvePromise) => {
     server.on('close', () => resolvePromise());

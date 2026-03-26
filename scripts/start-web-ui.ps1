@@ -79,22 +79,43 @@ if (-not (Test-Path -Path $packageJsonPath)) {
 
 Push-Location $repoRoot
 try {
-    if (-not (Test-Path -Path (Join-Path $repoRoot 'node_modules'))) {
+    $nodeModulesOk = $false
+    if (Test-Path -Path (Join-Path $repoRoot 'node_modules')) {
+        # Verify node_modules integrity by importing a critical dependency
+        & node -e "require('commander')" 2>$null
+        $nodeModulesOk = ($LASTEXITCODE -eq 0)
+        if (-not $nodeModulesOk) {
+            [Console]::Error.WriteLine('[start-web-ui] node_modules integrity check failed; auto-repairing via npm ci.')
+        }
+    }
+    if (-not $nodeModulesOk) {
         $npmExitCode = Invoke-NpmCommand -Arguments @('ci')
         if ($npmExitCode -ne 0) {
             throw 'npm ci failed.'
         }
     }
 
+    $buildNeeded = $false
     if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths)) {
-        $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
-        if ($npmExitCode -ne 0) {
-            throw 'npm run build failed.'
-        }
+        $buildNeeded = $true
     } elseif (-not (Test-Path -Path $effectiveCliPath)) {
         if ($effectiveCliPath -ne $distCliPath) {
             throw "Missing CLI entrypoint: $effectiveCliPath"
         }
+        $buildNeeded = $true
+    }
+
+    # Even if timestamps look fresh, verify the dist can actually be imported
+    if (-not $buildNeeded -and (Test-Path -Path $effectiveCliPath)) {
+        $distFileUrl = ([Uri]::new($effectiveCliPath)).AbsoluteUri
+        & node -e "import('$distFileUrl').catch(()=>process.exit(1))" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            [Console]::Error.WriteLine('[start-web-ui] dist integrity check failed; auto-repairing via rebuild.')
+            $buildNeeded = $true
+        }
+    }
+
+    if ($buildNeeded) {
         $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
         if ($npmExitCode -ne 0) {
             throw 'npm run build failed.'

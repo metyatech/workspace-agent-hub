@@ -35,6 +35,19 @@ vi.mock('@metyatech/thread-inbox', () => ({
   resolveThread: resolveThreadMock,
 }));
 
+vi.mock('../build-archive.js', () => ({
+  snapshotBuild: vi.fn().mockResolvedValue({
+    commitHash: 'abc1234',
+    commitHashFull: 'abc1234567890',
+    commitMessage: 'mock snapshot',
+    commitDate: new Date().toISOString(),
+    archivedAt: new Date().toISOString(),
+    version: '0.0.0',
+    distPath: '/mock/dist',
+  }),
+  resolvePackageRoot: vi.fn().mockReturnValue('/mock/package-root'),
+}));
+
 vi.mock('../manager-worktree.js', () => ({
   createWorkerWorktree: vi.fn().mockResolvedValue({
     worktreePath: '',

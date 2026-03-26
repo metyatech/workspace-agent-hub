@@ -382,6 +382,24 @@ export async function createWorkerWorktree(input: {
 }
 
 // ---------------------------------------------------------------------------
+// abortStaleMerge — recover from a crash that left MERGE_HEAD behind
+// ---------------------------------------------------------------------------
+
+export async function abortStaleMerge(
+  targetRepoRoot: string
+): Promise<boolean> {
+  const mergeHeadPath = join(targetRepoRoot, '.git', 'MERGE_HEAD');
+  if (!existsSync(mergeHeadPath)) {
+    return false;
+  }
+  console.error(
+    `[manager-worktree] Stale MERGE_HEAD detected in ${targetRepoRoot}; aborting leftover merge.`
+  );
+  await execGit(targetRepoRoot, ['merge', '--abort']).catch(() => {});
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // mergeWorktreeToMain
 // ---------------------------------------------------------------------------
 
@@ -397,6 +415,9 @@ export async function mergeWorktreeToMain(input: {
   const { targetRepoRoot, branchName } = input;
 
   return withMergeLock(targetRepoRoot, async () => {
+    // Recover from a previous crash that may have left a stale merge state.
+    await abortStaleMerge(targetRepoRoot);
+
     const result = await execGit(targetRepoRoot, [
       'merge',
       '--no-ff',
