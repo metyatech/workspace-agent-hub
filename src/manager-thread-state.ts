@@ -25,6 +25,7 @@ export type ManagerUiState =
 
 export type ManagerWorkerRuntimeState =
   | 'manager-answering'
+  | 'manager-recovery'
   | 'worker-running'
   | 'blocked-by-scope'
   | 'cancelled-as-superseded';

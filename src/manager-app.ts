@@ -41,6 +41,7 @@ type ManagerSortPreferenceKey = ManagerUiState | 'priority-lane' | 'tasks';
 
 type ManagerWorkerRuntimeState =
   | 'manager-answering'
+  | 'manager-recovery'
   | 'worker-running'
   | 'blocked-by-scope'
   | 'cancelled-as-superseded';
@@ -1414,6 +1415,12 @@ function describeThreadState(thread: ThreadView): string | null {
       'Manager がこの作業項目を直接処理しています。'
     );
   }
+  if (thread.workerRuntimeState === 'manager-recovery') {
+    return (
+      thread.workerRuntimeDetail ??
+      'Manager がレビュー結果を分析し、回復方法を決定しています。'
+    );
+  }
   if (thread.workerRuntimeState === 'worker-running') {
     return (
       thread.workerRuntimeDetail ??
@@ -1601,6 +1608,8 @@ function workerRuntimeLabel(thread: ThreadView): string | null {
   switch (thread.workerRuntimeState) {
     case 'manager-answering':
       return 'Manager が直接処理中';
+    case 'manager-recovery':
+      return 'Manager が回復対応中';
     case 'worker-running':
       return 'Worker agent 実行中';
     case 'blocked-by-scope':

@@ -40,12 +40,9 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
-  isThreadInBackoff,
   type ManagerWorkerLiveEntry,
   type ManagerWorkerRuntimeState,
   readManagerThreadMeta,
-  recordThreadFailure,
-  resetThreadFailures,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
 import { writeFileAtomically } from './atomic-file.js';
@@ -1244,6 +1241,127 @@ export function buildManagerReviewPrompt(input: {
     `verificationSummary:\n${verificationSummary}`,
     `declaredWriteScopes: ${declaredWriteScopes}`,
     ...(structuralSection ? [structuralSection] : []),
+  ].join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// Recovery routing — Manager decides how to handle review failures
+// ---------------------------------------------------------------------------
+
+const MANAGER_RECOVERY_SYSTEM_PROMPT =
+  'You are the Manager recovery router for Workspace Agent Hub. ' +
+  'The review step for this work item did not approve the result. ' +
+  'Analyse the error context, the original request, and the current repository state to decide the best recovery action. ' +
+  'Return strict JSON: {"decision":"fix-self"|"retry-worker"|"restart"|"escalate","reason":"...","instructions":"..."}. ' +
+  'decision meanings: ' +
+  'fix-self — the issue is quick to fix (a few lines, a config tweak, a missed file); you will fix it yourself in the next turn. ' +
+  'retry-worker — the issue needs more work but the current approach is on the right track; a worker should continue or redo the fix. ' +
+  'restart — the approach is fundamentally wrong; clean up and start fresh from scratch. ' +
+  'escalate — this genuinely needs human input or cannot be resolved automatically. ' +
+  'instructions: describe what exactly needs to be fixed (for fix-self and retry-worker). ' +
+  'Prefer fix-self for trivial issues, retry-worker for moderate issues, restart only when the direction is wrong, and escalate only as a last resort. ' +
+  'Do not wrap JSON in markdown fences.';
+
+const MANAGER_RECOVERY_FIX_SYSTEM_PROMPT =
+  'You are the Manager for Workspace Agent Hub. ' +
+  "The review found issues with the worker's output. " +
+  'Fix the specified issues in this workspace. Run verification after your fix. ' +
+  'Write the user-facing reply in plain, natural Japanese. ' +
+  'Do not wrap JSON in markdown fences.';
+
+export interface ManagerRecoveryDecision {
+  decision: 'fix-self' | 'retry-worker' | 'restart' | 'escalate';
+  reason: string;
+  instructions: string | null;
+}
+
+export function parseManagerRecoveryDecision(
+  text: string
+): ManagerRecoveryDecision | null {
+  const normalized = stripMarkdownCodeFence(text);
+  try {
+    const parsed = JSON.parse(normalized) as Partial<ManagerRecoveryDecision>;
+    const decision = parsed.decision;
+    if (
+      decision !== 'fix-self' &&
+      decision !== 'retry-worker' &&
+      decision !== 'restart' &&
+      decision !== 'escalate'
+    ) {
+      return null;
+    }
+    return {
+      decision,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      instructions:
+        typeof parsed.instructions === 'string' && parsed.instructions.trim()
+          ? parsed.instructions.trim()
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildManagerRecoveryPrompt(input: {
+  thread: Thread;
+  errorContext: string;
+  resolvedDir: string;
+  worktreePath: string | null;
+}): string {
+  const workspace = input.worktreePath ?? input.resolvedDir;
+  return [
+    MANAGER_RECOVERY_SYSTEM_PROMPT,
+    `Workspace: ${workspace}`,
+    `[Work item: ${input.thread.title}]`,
+    'Recent work-item history:',
+    formatThreadHistory(input.thread),
+    'Error / review output:',
+    input.errorContext,
+  ].join('\n\n');
+}
+
+function buildManagerRecoveryFixPrompt(input: {
+  instructions: string;
+  thread: Thread;
+  resolvedDir: string;
+  worktreePath: string | null;
+  writeScopes: string[];
+}): string {
+  const workspace = input.worktreePath ?? input.resolvedDir;
+  const declaredWriteScopes =
+    input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+  return [
+    MANAGER_RECOVERY_FIX_SYSTEM_PROMPT,
+    MANAGER_WORKER_JSON_RULES,
+    `Workspace: ${workspace}`,
+    `[Work item: ${input.thread.title}]`,
+    `declaredWriteScopes: ${declaredWriteScopes}`,
+    'Fix instructions:',
+    input.instructions,
+  ].join('\n\n');
+}
+
+function buildWorkerRetryPrompt(input: {
+  instructions: string;
+  thread: Thread;
+  resolvedDir: string;
+  worktreePath: string | null;
+}): string {
+  const workspace = input.worktreePath ?? input.resolvedDir;
+  const worktreeNotice = input.worktreePath
+    ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
+    : '';
+  return [
+    MANAGER_WORKER_SYSTEM_PROMPT,
+    MANAGER_WORKER_JSON_RULES,
+    `Workspace: ${workspace}`,
+    ...(worktreeNotice ? [worktreeNotice] : []),
+    `[Topic: ${input.thread.title}]`,
+    'Topic history:',
+    formatThreadHistory(input.thread),
+    'Previous attempt had issues found during review. Please address the following:',
+    input.instructions,
   ].join('\n\n');
 }
 
@@ -2771,8 +2889,351 @@ async function runQueuedAssignment(input: {
           : null;
     }
 
-    if (finalResult.code === 0 && (finalParsedReply || finalFallbackReply)) {
-      // Merge worktree branch to main, resolve conflicts, and push.
+    // -----------------------------------------------------------------------
+    // Determine if the result is approved
+    // -----------------------------------------------------------------------
+
+    let currentParsedReply = finalParsedReply;
+    let currentFallbackReply = finalFallbackReply;
+    const isResultApproved = (
+      code: number | null,
+      parsed: ManagerReplyPayload | null,
+      fallback: string | null,
+      reviewed: boolean
+    ): boolean =>
+      code === 0 &&
+      (parsed !== null || fallback !== null) &&
+      (!reviewed || parsed?.status === 'review' || (!parsed && !!fallback));
+
+    let approved = isResultApproved(
+      finalResult.code,
+      currentParsedReply,
+      currentFallbackReply,
+      reviewStepAttempted
+    );
+
+    // -----------------------------------------------------------------------
+    // Recovery loop — Manager decides how to handle review failures
+    // -----------------------------------------------------------------------
+
+    if (!approved && reviewStepAttempted) {
+      let recoveryErrorContext: string;
+      if (finalResult.code !== 0) {
+        recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 500)}` : ''}`;
+      } else if (currentParsedReply?.status === 'needs-reply') {
+        recoveryErrorContext = `Review returned needs-reply:\n${currentParsedReply.reply}`;
+      } else {
+        recoveryErrorContext =
+          'The review reply could not be parsed as valid Manager JSON.';
+      }
+
+      const MAX_RECOVERY_ATTEMPTS = 10;
+      for (
+        let recoveryAttempt = 0;
+        recoveryAttempt < MAX_RECOVERY_ATTEMPTS;
+        recoveryAttempt++
+      ) {
+        const stillTrackedRecovery = (
+          await readSession(dir)
+        ).activeAssignments.some((current) => current.id === assignment.id);
+        if (!stillTrackedRecovery) {
+          return;
+        }
+
+        // --- Recovery decision turn ---
+        const recoveryDecisionResult = await runTurn({
+          prompt: buildManagerRecoveryPrompt({
+            thread: promptThread,
+            errorContext: recoveryErrorContext,
+            resolvedDir,
+            worktreePath: assignment.worktreePath,
+          }),
+          sessionId: null,
+          assigneeKind: 'manager',
+          assigneeLabel: defaultAssigneeLabel('manager'),
+          runtimeState: 'manager-recovery',
+          runtimeDetail: `Manager がレビュー結果を分析し回復方法を決定中（試行 ${recoveryAttempt + 1}/${MAX_RECOVERY_ATTEMPTS}）`,
+          initialLiveOutput:
+            'Manager がレビュー結果の回復方法を判断しています…',
+          clearLiveLog: false,
+          preserveWorkerSessionId: true,
+        });
+
+        const decision = parseManagerRecoveryDecision(
+          recoveryDecisionResult.parsed.text
+        );
+
+        // --- Escalate: cannot recover automatically ---
+        if (!decision || decision.decision === 'escalate') {
+          const escalateMsg = decision?.reason
+            ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
+            : `[Manager] 回復判断を解釈できませんでした。\n\n元のエラー:\n${recoveryErrorContext}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              escalateMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await updateQueueLocked(dir, (queue) =>
+            queue.filter(
+              (entry) => !assignment.queueEntryIds.includes(entry.id)
+            )
+          );
+          if (isSessionInvalidError(finalCombinedOutput)) {
+            await writeWorkerSessionId(resolvedDir, thread.id, null);
+          }
+          await clearWorkerLiveOutput(
+            resolvedDir,
+            thread.id,
+            assignment.assigneeKind,
+            assignment.assigneeLabel,
+            {
+              workerAgentId: assignment.id,
+              runtimeState: null,
+              runtimeDetail: null,
+              workerWriteScopes: assignment.writeScopes,
+              workerBlockedByThreadIds: [],
+              supersededByThreadId: null,
+            }
+          );
+          await removeAssignment(dir, assignment.id);
+          if (assignment.worktreePath && assignment.worktreeBranch) {
+            await removeWorktree({
+              targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+              worktreePath: assignment.worktreePath,
+              branchName: assignment.worktreeBranch,
+            }).catch(() => {});
+          }
+          void processNextQueued(dir, resolvedDir);
+          return;
+        }
+
+        // --- Restart: clean up and re-queue from scratch ---
+        if (decision.decision === 'restart') {
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              `[Manager] アプローチをリセットして最初からやり直します。\n理由: ${decision.reason}`,
+              'ai',
+              'active'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await clearWorkerLiveOutput(
+            resolvedDir,
+            thread.id,
+            assignment.assigneeKind,
+            assignment.assigneeLabel,
+            {
+              workerAgentId: assignment.id,
+              runtimeState: null,
+              runtimeDetail: null,
+              workerWriteScopes: assignment.writeScopes,
+              workerBlockedByThreadIds: [],
+              supersededByThreadId: null,
+            }
+          );
+          await removeAssignment(dir, assignment.id);
+          if (assignment.worktreePath && assignment.worktreeBranch) {
+            await removeWorktree({
+              targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+              worktreePath: assignment.worktreePath,
+              branchName: assignment.worktreeBranch,
+            }).catch(() => {});
+          }
+          // Queue entries are NOT removed — they will be re-dispatched
+          await writeWorkerSessionId(resolvedDir, thread.id, null);
+          void processNextQueued(dir, resolvedDir);
+          return;
+        }
+
+        // --- fix-self or retry-worker: execute fix then re-review ---
+        let fixResult;
+        if (decision.decision === 'fix-self') {
+          fixResult = await runTurn({
+            prompt: buildManagerRecoveryFixPrompt({
+              instructions: decision.instructions ?? recoveryErrorContext,
+              thread: promptThread,
+              resolvedDir,
+              worktreePath: assignment.worktreePath,
+              writeScopes: assignment.writeScopes,
+            }),
+            sessionId: null,
+            assigneeKind: 'manager',
+            assigneeLabel: defaultAssigneeLabel('manager'),
+            runtimeState: 'manager-answering',
+            runtimeDetail: 'Manager がレビューで発見した問題を直接修正中…',
+            initialLiveOutput: 'Manager が問題を修正しています…',
+            clearLiveLog: false,
+            preserveWorkerSessionId: true,
+          });
+        } else {
+          // retry-worker
+          fixResult = await runTurn({
+            prompt: buildWorkerRetryPrompt({
+              instructions: decision.instructions ?? recoveryErrorContext,
+              thread: promptThread,
+              resolvedDir,
+              worktreePath: assignment.worktreePath,
+            }),
+            sessionId: null,
+            assigneeKind: 'worker',
+            assigneeLabel: assignment.assigneeLabel,
+            runtimeState: 'worker-running',
+            runtimeDetail: 'Worker がレビュー指摘の修正を実行中…',
+            initialLiveOutput: 'Worker がレビュー指摘を修正しています…',
+            clearLiveLog: false,
+            preserveWorkerSessionId: false,
+          });
+        }
+
+        const stillTrackedAfterFix = (
+          await readSession(dir)
+        ).activeAssignments.some((current) => current.id === assignment.id);
+        if (!stillTrackedAfterFix) {
+          return;
+        }
+
+        // Parse fix result — if fix itself produced no usable output, loop
+        const fixParsedReply = parseManagerReplyPayload(fixResult.parsed.text);
+        if (fixResult.code !== 0 || !fixParsedReply) {
+          recoveryErrorContext =
+            `Recovery attempt ${recoveryAttempt + 1} (${decision.decision}) failed: ` +
+            (fixResult.code !== 0
+              ? `exited with code ${fixResult.code}.${fixResult.stderr ? `\n${fixResult.stderr.slice(0, 300)}` : ''}`
+              : 'No parseable reply from fix attempt.');
+          continue;
+        }
+
+        // Re-review the fix
+        const fixWorkerResult = parseManagerWorkerResultPayload(
+          fixResult.parsed.text
+        ) ?? {
+          status: fixParsedReply.status,
+          reply: fixParsedReply.reply,
+          changedFiles: [],
+          verificationSummary: null,
+        };
+        const reStructuralWarnings = await runStructuralChecks(
+          workerCwd,
+          fixWorkerResult.changedFiles
+        );
+        const reReviewResult = await runTurn({
+          prompt: buildManagerReviewPrompt({
+            thread: promptThread,
+            workerResult: fixWorkerResult,
+            resolvedDir,
+            worktreePath: assignment.worktreePath,
+            writeScopes: assignment.writeScopes,
+            structuralWarnings: reStructuralWarnings,
+          }),
+          sessionId: null,
+          assigneeKind: 'manager',
+          assigneeLabel: defaultAssigneeLabel('manager'),
+          runtimeState: 'manager-answering',
+          runtimeDetail: 'Manager が修正結果をレビュー中…',
+          initialLiveOutput: 'Manager が修正結果を確認しています…',
+          clearLiveLog: false,
+          preserveWorkerSessionId: true,
+        });
+
+        const stillTrackedAfterReReview = (
+          await readSession(dir)
+        ).activeAssignments.some((current) => current.id === assignment.id);
+        if (!stillTrackedAfterReReview) {
+          return;
+        }
+
+        const reReviewParsed = parseManagerReplyPayload(
+          reReviewResult.parsed.text
+        );
+        const reReviewFallback =
+          reReviewResult.code === 0 && reReviewResult.parsed.text
+            ? reReviewResult.parsed.text
+            : null;
+
+        if (
+          isResultApproved(
+            reReviewResult.code,
+            reReviewParsed,
+            reReviewFallback,
+            true
+          )
+        ) {
+          // Recovery succeeded — update reply for the success path
+          currentParsedReply = reReviewParsed;
+          currentFallbackReply = reReviewFallback;
+          approved = true;
+          break;
+        }
+
+        // Not approved yet — update error context and loop
+        if (reReviewParsed?.status === 'needs-reply') {
+          recoveryErrorContext = `Re-review returned needs-reply:\n${reReviewParsed.reply}`;
+        } else if (reReviewResult.code !== 0) {
+          recoveryErrorContext = `Re-review exited with code ${reReviewResult.code}.${reReviewResult.stderr ? `\n${reReviewResult.stderr.slice(0, 300)}` : ''}`;
+        } else {
+          recoveryErrorContext =
+            'Re-review reply could not be parsed as valid Manager JSON.';
+        }
+      }
+
+      // Exhausted all recovery attempts — escalate
+      if (!approved) {
+        const exhaustedMsg = `[Manager] ${MAX_RECOVERY_ATTEMPTS} 回の回復試行で解決できませんでした。ユーザーの確認が必要です。\n\n最終エラー:\n${recoveryErrorContext}`;
+        try {
+          await addMessage(
+            resolvedDir,
+            thread.id,
+            exhaustedMsg,
+            'ai',
+            'needs-reply'
+          );
+        } catch {
+          /* thread may have been deleted */
+        }
+        await updateQueueLocked(dir, (queue) =>
+          queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
+        );
+        await clearWorkerLiveOutput(
+          resolvedDir,
+          thread.id,
+          assignment.assigneeKind,
+          assignment.assigneeLabel,
+          {
+            workerAgentId: assignment.id,
+            runtimeState: null,
+            runtimeDetail: null,
+            workerWriteScopes: assignment.writeScopes,
+            workerBlockedByThreadIds: [],
+            supersededByThreadId: null,
+          }
+        );
+        await removeAssignment(dir, assignment.id);
+        if (assignment.worktreePath && assignment.worktreeBranch) {
+          await removeWorktree({
+            targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+          }).catch(() => {});
+        }
+        void processNextQueued(dir, resolvedDir);
+        return;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Success path — merge, push, post reply, clean up
+    // -----------------------------------------------------------------------
+
+    if (approved) {
       if (assignment.worktreePath && assignment.worktreeBranch) {
         await appendWorkerLiveOutput({
           dir: resolvedDir,
@@ -2784,7 +3245,7 @@ async function runQueuedAssignment(input: {
           workerSessionId,
           workerAgentId: assignment.id,
           runtimeState: 'manager-answering',
-          runtimeDetail: 'マージ中…',
+          runtimeDetail: 'メインブランチへマージ中…',
           workerWriteScopes: assignment.writeScopes,
         });
 
@@ -2804,7 +3265,7 @@ async function runQueuedAssignment(input: {
             workerSessionId,
             workerAgentId: assignment.id,
             runtimeState: 'manager-answering',
-            runtimeDetail: 'コンフリクト解消中…',
+            runtimeDetail: 'マージコンフリクト解消中…',
             workerWriteScopes: assignment.writeScopes,
           });
           mergeResult = await resolveConflictAndVerify({
@@ -2849,14 +3310,14 @@ async function runQueuedAssignment(input: {
         await appendWorkerLiveOutput({
           dir: resolvedDir,
           threadId: thread.id,
-          text: 'マージ完了。push しています…',
+          text: 'マージ完了。リモートへ push しています…',
           kind: 'status',
           assigneeKind: 'manager',
           assigneeLabel: defaultAssigneeLabel('manager'),
           workerSessionId,
           workerAgentId: assignment.id,
           runtimeState: 'manager-answering',
-          runtimeDetail: 'push 中…',
+          runtimeDetail: 'リモートへ push 中…',
           workerWriteScopes: assignment.writeScopes,
         });
         const pushResult = await pushWithRetry({ targetRepoRoot });
@@ -2881,9 +3342,9 @@ async function runQueuedAssignment(input: {
         await addMessage(
           resolvedDir,
           thread.id,
-          finalParsedReply?.reply ?? finalFallbackReply ?? '',
+          currentParsedReply?.reply ?? currentFallbackReply ?? '',
           'ai',
-          finalParsedReply?.status ?? MANAGER_REPLY_STATUS
+          currentParsedReply?.status ?? MANAGER_REPLY_STATUS
         );
       } catch {
         /* thread may have been deleted */
@@ -2907,26 +3368,24 @@ async function runQueuedAssignment(input: {
         }
       );
       await removeAssignment(dir, assignment.id);
-      await resetThreadFailures(resolvedDir, thread.id);
       void processNextQueued(dir, resolvedDir);
       return;
     }
 
+    // -----------------------------------------------------------------------
+    // Non-review failure (worker or manager turn failed before review)
+    // -----------------------------------------------------------------------
+
     const errMsg =
       finalResult.code === 0
-        ? reviewStepAttempted
-          ? '[Manager error] worker は結果を返しましたが、manager review の返答を解釈できませんでした。'
-          : '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.'
-        : reviewStepAttempted
-          ? `[Manager error] manager review exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`
-          : `[Manager error] codex CLI exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
+        ? '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.'
+        : `[Manager error] codex CLI exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
     try {
       await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
     } catch {
       /* thread may have been deleted */
     }
     await setManagerRuntimeError(dir, errMsg);
-    await recordThreadFailure(resolvedDir, thread.id);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
@@ -2974,7 +3433,6 @@ async function runQueuedAssignment(input: {
       /* thread may have been deleted */
     }
     await setManagerRuntimeError(dir, errMsg);
-    await recordThreadFailure(resolvedDir, thread.id);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
@@ -3067,11 +3525,6 @@ export async function processNextQueued(
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
         );
-        continue;
-      }
-
-      // Skip threads in backoff from consecutive failures.
-      if (isThreadInBackoff(meta[next.threadId] ?? null)) {
         continue;
       }
 
