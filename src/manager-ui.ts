@@ -32,6 +32,12 @@ import {
 } from './manager-live-updates.js';
 import { isWebUiAuthorized, type WebUiAuthConfig } from './web-auth.js';
 import { activeSseConnections } from './sse-connections.js';
+import {
+  getGitInfo,
+  listBuilds,
+  resolvePackageRoot,
+  restoreBuild,
+} from './build-archive.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -459,6 +465,47 @@ export async function handleManagerUiRequest(input: {
             : null,
       })
     );
+    return true;
+  }
+
+  if (localPath === '/api/builds' && input.method === 'GET') {
+    const builds = await listBuilds();
+    let currentHash = '';
+    try {
+      currentHash = (await getGitInfo(resolvePackageRoot())).hashFull;
+    } catch {
+      /* ignore */
+    }
+    sendJson(input.res, { builds, currentHash });
+    return true;
+  }
+
+  if (localPath === '/api/builds/rollback' && input.method === 'POST') {
+    const body = await parseBody(input.req);
+    const commitHash =
+      typeof body.commitHash === 'string' ? body.commitHash.trim() : '';
+    if (!commitHash) {
+      sendError(input.res, 'commitHash is required');
+      return true;
+    }
+
+    const packageRoot = resolvePackageRoot();
+    const restored = await restoreBuild(commitHash, packageRoot);
+    if (!restored) {
+      sendError(input.res, `No archived build matching "${commitHash}"`, 404);
+      return true;
+    }
+
+    sendJson(input.res, {
+      success: true,
+      commitHash: restored.commitHash,
+      commitMessage: restored.commitMessage,
+    });
+
+    // Trigger restart after responding
+    setImmediate(() => {
+      process.exit(0);
+    });
     return true;
   }
 

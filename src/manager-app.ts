@@ -2059,6 +2059,151 @@ class TaskSectionController {
   }
 }
 
+interface BuildEntry {
+  commitHash: string;
+  commitHashFull: string;
+  commitMessage: string;
+  commitDate: string;
+  archivedAt: string;
+  version: string;
+  distPath: string;
+}
+
+interface BuildsPayload {
+  builds: BuildEntry[];
+  currentHash: string;
+}
+
+class BuildSectionController {
+  #body = document.getElementById('body-builds');
+  #count = document.getElementById('count-builds');
+  #chevron = document.getElementById('chevron-builds');
+  #collapsed = true;
+  #payload: BuildsPayload | null = null;
+  #loaded = false;
+  #onRollback: ((commitHash: string) => void) | null = null;
+  #fetcher:
+    | ((input: string, init?: RequestInit) => Promise<Response | null>)
+    | null = null;
+
+  setOnRollback(handler: (commitHash: string) => void): void {
+    this.#onRollback = handler;
+  }
+
+  setFetcher(
+    fetcher: (input: string, init?: RequestInit) => Promise<Response | null>
+  ): void {
+    this.#fetcher = fetcher;
+  }
+
+  toggle(): void {
+    this.#collapsed = !this.#collapsed;
+    if (this.#body) {
+      this.#body.style.display = this.#collapsed ? 'none' : '';
+    }
+    if (this.#chevron) {
+      this.#chevron.textContent = this.#collapsed ? '▼' : '▲';
+    }
+    if (!this.#collapsed && !this.#loaded && this.#fetcher) {
+      this.#loaded = true;
+      void this.load(this.#fetcher);
+    }
+  }
+
+  async load(
+    fetcher: (input: string, init?: RequestInit) => Promise<Response | null>
+  ): Promise<void> {
+    try {
+      const response = await fetcher('/api/builds');
+      if (!response || !response.ok) {
+        return;
+      }
+      this.#payload = (await response.json()) as BuildsPayload;
+      this.render();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  render(): void {
+    const payload = this.#payload;
+    if (this.#count) {
+      this.#count.textContent =
+        payload && payload.builds.length > 0
+          ? `(${payload.builds.length})`
+          : '';
+    }
+    if (!this.#body || this.#collapsed || !payload) {
+      return;
+    }
+
+    this.#body.innerHTML = '';
+
+    if (payload.builds.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'section-empty';
+      empty.textContent =
+        'アーカイブされたビルドはまだありません。restart で自動的に保存されます。';
+      this.#body.appendChild(empty);
+      return;
+    }
+
+    for (const build of payload.builds) {
+      const isCurrent = build.commitHashFull === payload.currentHash;
+      const row = document.createElement('div');
+      row.className = isCurrent ? 'build-row build-current' : 'build-row';
+
+      const info = document.createElement('div');
+      info.className = 'build-info';
+
+      const topLine = document.createElement('div');
+      const hash = document.createElement('span');
+      hash.className = 'build-hash';
+      hash.textContent = build.commitHash;
+      topLine.appendChild(hash);
+
+      if (isCurrent) {
+        const badge = document.createElement('span');
+        badge.className = 'build-current-badge';
+        badge.textContent = ' (現在)';
+        topLine.appendChild(badge);
+      }
+      info.appendChild(topLine);
+
+      const msg = document.createElement('div');
+      msg.className = 'build-message';
+      msg.textContent = build.commitMessage;
+      info.appendChild(msg);
+
+      const date = document.createElement('div');
+      date.className = 'build-date';
+      date.textContent = new Date(build.archivedAt).toLocaleString();
+      info.appendChild(date);
+
+      row.appendChild(info);
+
+      if (!isCurrent) {
+        const btn = document.createElement('button');
+        btn.className = 'btn-rollback';
+        btn.textContent = 'ロールバック';
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (
+            confirm(
+              `ビルド ${build.commitHash} にロールバックしますか？\n${build.commitMessage}\n\nサーバーが再起動されます。`
+            )
+          ) {
+            this.#onRollback?.(build.commitHashFull);
+          }
+        });
+        row.appendChild(btn);
+      }
+
+      this.#body.appendChild(row);
+    }
+  }
+}
+
 class DetailController {
   #detailEl: HTMLElement;
   #app: ManagerApp;
@@ -2408,6 +2553,7 @@ class ManagerApp {
 
   #sections: Record<ManagerUiState, ThreadSectionController>;
   #taskSection: TaskSectionController;
+  #buildSection: BuildSectionController;
   #detail: DetailController;
   #authToken = readStoredAuthToken();
   #liveStreamAbort: AbortController | null = null;
@@ -2453,6 +2599,9 @@ class ManagerApp {
       done: new ThreadSectionController('done'),
     };
     this.#taskSection = new TaskSectionController();
+    this.#buildSection = new BuildSectionController();
+    this.#buildSection.setOnRollback((hash) => void this.#rollbackBuild(hash));
+    this.#buildSection.setFetcher((input, init) => this.apiFetch(input, init));
     this.#detail = new DetailController(
       document.getElementById('thread-detail') as HTMLElement,
       this
@@ -3531,6 +3680,31 @@ class ManagerApp {
     input.focus();
   }
 
+  async #rollbackBuild(commitHash: string): Promise<void> {
+    try {
+      const response = await this.apiFetch('/api/builds/rollback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commitHash }),
+      });
+      if (!response || !response.ok) {
+        const data = (await response?.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        alert(`ロールバック失敗: ${data?.error ?? 'unknown error'}`);
+        return;
+      }
+      alert(
+        'ロールバック成功。サーバーが再起動されます。ページを再読み込みしてください。'
+      );
+      setTimeout(() => {
+        location.reload();
+      }, 3000);
+    } catch {
+      alert('ロールバックリクエストの送信に失敗しました。');
+    }
+  }
+
   async sendGlobalMessage(): Promise<void> {
     const input = this.#composerInput();
     if (!input) {
@@ -3707,6 +3881,10 @@ class ManagerApp {
       }
       if (key === 'tasks') {
         this.#taskSection.toggle();
+        return;
+      }
+      if (key === 'builds') {
+        this.#buildSection.toggle();
         return;
       }
       if ((STATE_ORDER as string[]).includes(key)) {

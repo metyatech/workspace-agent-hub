@@ -9,6 +9,12 @@ import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
 import { readManagerWorkItems } from './manager-work-items.js';
 import { startWebUi } from './web-ui.js';
+import {
+  listBuilds,
+  resolvePackageRoot,
+  restoreBuild,
+  snapshotBuild,
+} from './build-archive.js';
 
 type StartWebUiCommand = typeof startWebUi;
 
@@ -112,6 +118,45 @@ async function waitForPortClosed(
     }
     await new Promise<void>((r) => setTimeout(r, 300));
   }
+  return false;
+}
+
+async function spawnAndWaitForReady(
+  packageRoot: string,
+  state: WebUiState | null
+): Promise<boolean> {
+  const args = ['run', 'start', '--', '--json'];
+  if (state?.AuthDisabled) {
+    args.push('--auth-token', 'none');
+  } else if (state?.AccessCode) {
+    args.push('--auth-token', state.AccessCode);
+  }
+
+  const child = nodeSpawn('npm', args, {
+    cwd: packageRoot,
+    detached: true,
+    stdio: 'ignore',
+    shell: true,
+    windowsHide: true,
+  });
+  child.unref();
+
+  const port = state?.ListenUrl ? Number(new URL(state.ListenUrl).port) : 3360;
+  const host = state?.ListenUrl
+    ? new URL(state.ListenUrl).hostname
+    : '127.0.0.1';
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    await new Promise<void>((r) => setTimeout(r, 500));
+    if (await isPortOpen(host, port)) {
+      console.log(`Workspace Agent Hub listening on http://${host}:${port}`);
+      return true;
+    }
+  }
+
+  console.error(
+    `Workspace Agent Hub did not become ready within 30 seconds on port ${port}.`
+  );
   return false;
 }
 
@@ -258,24 +303,17 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
       'Stop, rebuild, and restart the Workspace Agent Hub web UI with the same options'
     )
     .action(async () => {
-      // 1. Read current state before stopping
       const state = await readWebUiState();
       const { stopped, listenUrl } = await stopWebUi();
       if (listenUrl) {
-        if (stopped) {
-          console.log(`Stopped existing instance at ${listenUrl}.`);
-        } else {
-          console.error(
-            `Warning: could not confirm stop of ${listenUrl}. Continuing anyway.`
-          );
-        }
+        console.log(
+          stopped
+            ? `Stopped existing instance at ${listenUrl}.`
+            : `Warning: could not confirm stop of ${listenUrl}. Continuing anyway.`
+        );
       }
 
-      // 2. Build
-      const packageRoot = resolve(
-        new URL('.', import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1'),
-        '..'
-      );
+      const packageRoot = resolvePackageRoot();
       console.log('Building...');
       await new Promise<void>((resolvePromise, reject) => {
         const build = nodeSpawn('npm', ['run', 'build'], {
@@ -294,49 +332,92 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
         build.on('error', reject);
       });
 
-      // 3. Start new instance
-      console.log('Starting new instance...');
-      const args = ['run', 'start', '--', '--json'];
-      if (state?.AuthDisabled) {
-        args.push('--auth-token', 'none');
-      } else if (state?.AccessCode) {
-        args.push('--auth-token', state.AccessCode);
-      }
-
-      const child = nodeSpawn('npm', args, {
-        cwd: packageRoot,
-        detached: true,
-        stdio: 'ignore',
-        shell: true,
-        windowsHide: true,
-      });
-      child.unref();
-
-      // 4. Wait for health check
-      const port = state?.ListenUrl
-        ? Number(new URL(state.ListenUrl).port)
-        : 3360;
-      const host = state?.ListenUrl
-        ? new URL(state.ListenUrl).hostname
-        : '127.0.0.1';
-      const deadline = Date.now() + 30000;
-      let ready = false;
-      while (Date.now() < deadline) {
-        await new Promise<void>((r) => setTimeout(r, 500));
-        if (await isPortOpen(host, port)) {
-          ready = true;
-          break;
-        }
-      }
-
-      if (ready) {
+      // Archive the new build
+      try {
+        const archived = await snapshotBuild(packageRoot);
         console.log(
-          `Workspace Agent Hub restarted and listening on http://${host}:${port}`
+          `Archived build ${archived.commitHash} (${archived.commitMessage})`
         );
-      } else {
+      } catch (error) {
         console.error(
-          `Workspace Agent Hub did not become ready within 30 seconds on port ${port}.`
+          'Warning: failed to archive build:',
+          error instanceof Error ? error.message : error
         );
+      }
+
+      console.log('Starting new instance...');
+      const ready = await spawnAndWaitForReady(packageRoot, state);
+      if (!ready) {
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('rollback')
+    .description(
+      'List archived builds, or restore a previous build and restart'
+    )
+    .argument('[hash]', 'Commit hash (or prefix) to rollback to')
+    .action(async (hash?: string) => {
+      if (!hash) {
+        // List mode
+        const builds = await listBuilds();
+        if (builds.length === 0) {
+          console.log('No archived builds found.');
+          return;
+        }
+
+        let currentHash = '';
+        try {
+          const packageRoot = resolvePackageRoot();
+          const { getGitInfo } = await import('./build-archive.js');
+          currentHash = (await getGitInfo(packageRoot)).hashFull;
+        } catch {
+          /* ignore */
+        }
+
+        console.log('Available builds:\n');
+        for (const build of builds) {
+          const isCurrent = currentHash && build.commitHashFull === currentHash;
+          const marker = isCurrent ? ' (現在)' : '';
+          const date = new Date(build.archivedAt).toLocaleString();
+          console.log(
+            `  ${build.commitHash}${marker}  ${date}  ${build.commitMessage}`
+          );
+        }
+        console.log(
+          '\nRun: workspace-agent-hub rollback <hash> to restore a build.'
+        );
+        return;
+      }
+
+      // Restore mode
+      const state = await readWebUiState();
+      const { stopped, listenUrl } = await stopWebUi();
+      if (listenUrl) {
+        console.log(
+          stopped
+            ? `Stopped existing instance at ${listenUrl}.`
+            : `Warning: could not confirm stop of ${listenUrl}. Continuing anyway.`
+        );
+      }
+
+      const packageRoot = resolvePackageRoot();
+      console.log(`Restoring build ${hash}...`);
+      const restored = await restoreBuild(hash, packageRoot);
+      if (!restored) {
+        console.error(
+          `No archived build matching "${hash}" found. Run: workspace-agent-hub rollback`
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(
+        `Restored ${restored.commitHash} (${restored.commitMessage}). Starting...`
+      );
+      const ready = await spawnAndWaitForReady(packageRoot, state);
+      if (!ready) {
         process.exitCode = 1;
       }
     });

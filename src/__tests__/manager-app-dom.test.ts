@@ -139,6 +139,12 @@ function createManagerFetch(validToken: string) {
       ]);
     }
 
+    if (isRoute(url, '/builds')) {
+      return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+        status: 200,
+      });
+    }
+
     return new Response('{}', { status: 200 });
   });
 }
@@ -224,6 +230,12 @@ function createManagerFetchWithData(input: {
           },
         },
       ]);
+    }
+
+    if (isRoute(url, '/builds')) {
+      return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+        status: 200,
+      });
     }
 
     return new Response('{}', { status: 200 });
