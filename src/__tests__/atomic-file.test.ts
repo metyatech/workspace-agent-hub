@@ -72,4 +72,52 @@ describe('writeFileAtomically', () => {
     );
     expect(unlinkMock).toHaveBeenCalledWith('C:\\temp\\manager-meta.json.tmp');
   });
+
+  it('retries the in-place fallback write when Windows keeps the target file busy', async () => {
+    const writeFileMock = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('target busy'), { code: 'EPERM' })
+      )
+      .mockResolvedValueOnce(undefined);
+    const renameMock = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('busy'), { code: 'EPERM' }));
+    const unlinkMock = vi.fn().mockResolvedValue(undefined);
+    const sleepMock = vi.fn().mockResolvedValue(undefined);
+
+    await writeFileAtomically('C:\\temp\\manager-meta.json', 'payload', {
+      renameRetryCount: 1,
+      operations: {
+        writeFile: writeFileMock as typeof writeFileMock,
+        rename: renameMock as typeof renameMock,
+        unlink: unlinkMock as typeof unlinkMock,
+        sleep: sleepMock,
+      },
+    });
+
+    expect(renameMock).toHaveBeenCalledTimes(2);
+    expect(writeFileMock).toHaveBeenCalledTimes(3);
+    expect(writeFileMock).toHaveBeenNthCalledWith(
+      1,
+      'C:\\temp\\manager-meta.json.tmp',
+      'payload',
+      'utf-8'
+    );
+    expect(writeFileMock).toHaveBeenNthCalledWith(
+      2,
+      'C:\\temp\\manager-meta.json',
+      'payload',
+      'utf-8'
+    );
+    expect(writeFileMock).toHaveBeenNthCalledWith(
+      3,
+      'C:\\temp\\manager-meta.json',
+      'payload',
+      'utf-8'
+    );
+    expect(sleepMock).toHaveBeenCalledTimes(2);
+    expect(unlinkMock).toHaveBeenCalledWith('C:\\temp\\manager-meta.json.tmp');
+  });
 });

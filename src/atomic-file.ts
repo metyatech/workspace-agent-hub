@@ -58,6 +58,32 @@ async function bestEffortCleanupTempFile(
   }
 }
 
+async function writeFileWithRetry(
+  filePath: string,
+  content: string,
+  operations: AtomicWriteOperations,
+  retryCount: number,
+  retryDelayMs: number
+): Promise<void> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      await operations.writeFile(filePath, content, 'utf-8');
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRenameError(error) || attempt === retryCount) {
+        break;
+      }
+      await operations.sleep(retryDelayMs * (attempt + 1));
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Failed to write ${filePath}.`);
+}
+
 export async function writeFileAtomically(
   filePath: string,
   content: string,
@@ -98,9 +124,20 @@ export async function writeFileAtomically(
   }
 
   if (isRetryableRenameError(lastError)) {
-    await operations.writeFile(filePath, content, 'utf-8');
-    await bestEffortCleanupTempFile(tmpPath, operations);
-    return;
+    try {
+      await writeFileWithRetry(
+        filePath,
+        content,
+        operations,
+        renameRetryCount,
+        renameRetryDelayMs
+      );
+      await bestEffortCleanupTempFile(tmpPath, operations);
+      return;
+    } catch (writeError) {
+      await bestEffortCleanupTempFile(tmpPath, operations);
+      throw writeError;
+    }
   }
 
   await bestEffortCleanupTempFile(tmpPath, operations);
