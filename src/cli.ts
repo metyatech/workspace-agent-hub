@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
 import { readManagerWorkItems } from './manager-work-items.js';
 import { startWebUi } from './web-ui.js';
+import { startWebUiFrontDoor } from './web-ui-front-door.js';
 import {
   listBuilds,
   resolvePackageRoot,
@@ -274,6 +275,25 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
           authToken: options.authToken,
           jsonOutput: Boolean(options.json),
           openBrowser: options.openBrowser,
+        });
+      }
+    );
+
+  program
+    .command('web-ui-front-door')
+    .description('Start the stable phone-ready front door proxy')
+    .requiredOption(
+      '--state-path <path>',
+      'Workspace Agent Hub state file path'
+    )
+    .option('--host <host>', 'Host to bind', '127.0.0.1')
+    .option('--port <port>', 'Port to bind', '0')
+    .action(
+      async (options: { host: string; port: string; statePath: string }) => {
+        await startWebUiFrontDoor({
+          host: options.host,
+          port: Number(options.port),
+          statePath: options.statePath,
         });
       }
     );

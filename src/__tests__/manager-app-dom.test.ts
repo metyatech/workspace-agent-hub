@@ -4236,7 +4236,10 @@ describe('manager-app live updates', () => {
     expect(
       detail.querySelector<HTMLElement>('.bubble-live .bubble-sender')
         ?.textContent
-    ).toContain('AI');
+    ).toContain('Worker');
+    expect(
+      detail.querySelector<HTMLElement>('.bubble-live .bubble-ts')?.textContent
+    ).toContain('仮表示');
   });
 
   it('shows superseded work items in their own visible bucket with the cancel reason', async () => {

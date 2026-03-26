@@ -248,6 +248,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
+  delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -2419,6 +2421,55 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-release');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('review done');
+  });
+
+  it('adopts the latest structured review reply when Codex stalls before close', async () => {
+    process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS =
+      '50';
+    process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS = '5000';
+
+    const workerProc = makeProc(8601);
+    const reviewProc = makeProc(8602);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-stalled-review',
+      branchName: 'wah-worker-assign_thread-stalled-review',
+      targetRepoRoot: tempDir,
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-stalled-review', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-stalled-review-worker',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    reviewProc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-stalled-review-manager"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"status\\":\\"review\\",\\"reply\\":\\"review done after stall\\"}"}}',
+        ].join('\n')
+      )
+    );
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-stalled-review');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'review done after stall'
+    );
   });
 
   it('consumes the queue entry even if writing a successful reply back to thread storage fails', async () => {

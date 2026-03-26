@@ -23,6 +23,8 @@ interface Msg {
   content: string;
   at?: string;
   live?: boolean;
+  provisional?: boolean;
+  senderLabel?: string;
   key?: string;
 }
 
@@ -1281,14 +1283,16 @@ function makeBubble(
 
   const sender = document.createElement('span');
   sender.className = `bubble-sender ${ai ? 'bubble-sender-ai' : 'bubble-sender-user'}`;
-  sender.textContent = ai ? 'AI' : 'あなた';
+  sender.textContent = message.senderLabel ?? (ai ? 'AI' : 'あなた');
 
   const timestamp = document.createElement('span');
   timestamp.className = 'bubble-ts';
   timestamp.textContent = message.live
     ? message.at
-      ? `更新中 / ${formatDate(message.at)}`
-      : '更新中'
+      ? `${message.provisional ? '仮表示 / ' : ''}更新中 / ${formatDate(message.at)}`
+      : message.provisional
+        ? '仮表示 / 更新中'
+        : '更新中'
     : formatDate(message.at);
 
   const content = document.createElement('div');
@@ -1330,6 +1334,13 @@ function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
     content,
     at: thread.workerLiveAt ?? thread.updatedAt,
     live: true,
+    provisional: true,
+    senderLabel:
+      thread.assigneeKind === 'manager'
+        ? 'Manager'
+        : thread.assigneeKind === 'worker'
+          ? 'Worker'
+          : 'AI',
     key: `live:${thread.id}`,
   };
 }

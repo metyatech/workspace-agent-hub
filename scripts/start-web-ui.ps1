@@ -4,6 +4,7 @@ param(
     [string]$AuthToken,
     [string]$PublicUrl,
     [switch]$TailscaleServe,
+    [switch]$DisableTailscaleServe,
     [switch]$PhoneReady,
     [switch]$JsonOutput,
     [switch]$NoOpenBrowser
@@ -15,6 +16,12 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
+$sourcePaths = @(
+    (Join-Path $repoRoot 'src\cli.ts'),
+    (Join-Path $repoRoot 'src\web-ui.ts'),
+    (Join-Path $repoRoot 'src\manager-app.ts'),
+    (Join-Path $repoRoot 'src\web-app.ts')
+)
 $effectiveCliPath = if (
     $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -and
     $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim()
@@ -22,6 +29,31 @@ $effectiveCliPath = if (
     [IO.Path]::GetFullPath($env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim())
 } else {
     $distCliPath
+}
+
+function Test-BuildRequired {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistPath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$CandidateSourcePaths
+    )
+
+    if (-not (Test-Path -Path $DistPath)) {
+        return $true
+    }
+
+    $distWriteTimeUtc = (Get-Item -LiteralPath $DistPath).LastWriteTimeUtc
+    foreach ($candidatePath in $CandidateSourcePaths) {
+        if (-not (Test-Path -LiteralPath $candidatePath)) {
+            continue
+        }
+        if ((Get-Item -LiteralPath $candidatePath).LastWriteTimeUtc -gt $distWriteTimeUtc) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 if (-not (Test-Path -Path $packageJsonPath)) {
@@ -37,7 +69,12 @@ try {
         }
     }
 
-    if (-not (Test-Path -Path $effectiveCliPath)) {
+    if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths)) {
+        npm run build
+        if ($LASTEXITCODE -ne 0) {
+            throw 'npm run build failed.'
+        }
+    } elseif (-not (Test-Path -Path $effectiveCliPath)) {
         if ($effectiveCliPath -ne $distCliPath) {
             throw "Missing CLI entrypoint: $effectiveCliPath"
         }
@@ -86,7 +123,7 @@ try {
     if ($null -ne $resolvedPublicUrl -and $resolvedPublicUrl -ne '') {
         $arguments += @('--public-url', $resolvedPublicUrl)
     }
-    if ($TailscaleServe -or $PhoneReady) {
+    if (($TailscaleServe -or $PhoneReady) -and -not $DisableTailscaleServe) {
         $arguments += '--tailscale-serve'
     }
     if ($JsonOutput) {

@@ -11,14 +11,114 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-$startScriptPath = Join-Path $PSScriptRoot 'start-web-ui.ps1'
-if (-not (Test-Path -Path $startScriptPath)) {
-    throw "Missing script: $startScriptPath"
+$packageJsonPath = Join-Path $repoRoot 'package.json'
+$distCliPath = Join-Path $repoRoot 'dist\cli.js'
+$buildSourcePaths = @(
+    (Join-Path $repoRoot 'src\cli.ts'),
+    (Join-Path $repoRoot 'src\web-ui.ts'),
+    (Join-Path $repoRoot 'src\web-ui-front-door.ts'),
+    (Join-Path $repoRoot 'src\manager-app.ts'),
+    (Join-Path $repoRoot 'src\web-app.ts')
+)
+if (-not (Test-Path -Path $packageJsonPath)) {
+    throw "Missing package.json: $packageJsonPath"
 }
 
 function Get-DefaultStatePath {
     $stateDirectory = Join-Path $env:USERPROFILE 'agent-handoff'
     return (Join-Path $stateDirectory 'workspace-agent-hub-web-ui.json')
+}
+
+function Test-BuildRequired {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DistPath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$CandidateSourcePaths
+    )
+
+    if (-not (Test-Path -Path $DistPath)) {
+        return $true
+    }
+
+    $distWriteTimeUtc = (Get-Item -LiteralPath $DistPath).LastWriteTimeUtc
+    foreach ($candidatePath in $CandidateSourcePaths) {
+        if (-not (Test-Path -LiteralPath $candidatePath)) {
+            continue
+        }
+        if ((Get-Item -LiteralPath $candidatePath).LastWriteTimeUtc -gt $distWriteTimeUtc) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Ensure-WorkspaceCliReady {
+    param(
+        [switch]$AllowTestCliOverride
+    )
+
+    $effectiveCliPath = if (
+        $AllowTestCliOverride -and
+        $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -and
+        $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim()
+    ) {
+        [IO.Path]::GetFullPath($env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim())
+    } else {
+        $distCliPath
+    }
+
+    Push-Location $repoRoot
+    try {
+        if (-not (Test-Path -Path (Join-Path $repoRoot 'node_modules'))) {
+            npm ci
+            if ($LASTEXITCODE -ne 0) {
+                throw 'npm ci failed.'
+            }
+        }
+
+        if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $buildSourcePaths)) {
+            npm run build
+            if ($LASTEXITCODE -ne 0) {
+                throw 'npm run build failed.'
+            }
+        } elseif (-not (Test-Path -Path $effectiveCliPath)) {
+            if ($effectiveCliPath -ne $distCliPath) {
+                throw "Missing CLI entrypoint: $effectiveCliPath"
+            }
+            npm run build
+            if ($LASTEXITCODE -ne 0) {
+                throw 'npm run build failed.'
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+
+    return $effectiveCliPath
+}
+
+function Start-NodeCliProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)]
+        [string]$StdOutPath,
+        [Parameter(Mandatory = $true)]
+        [string]$StdErrPath
+    )
+
+    $nodePath = (Get-Command 'node.exe' -ErrorAction Stop).Source
+    $process = Start-Process `
+        -FilePath $nodePath `
+        -ArgumentList $ArgumentList `
+        -WorkingDirectory $repoRoot `
+        -WindowStyle Hidden `
+        -PassThru `
+        -RedirectStandardOutput $StdOutPath `
+        -RedirectStandardError $StdErrPath
+    return $process
 }
 
 function Ensure-StateDirectory {
@@ -228,6 +328,82 @@ function Get-BrowserUrl {
     return $builder.Uri.AbsoluteUri
 }
 
+function Get-StateString {
+    param(
+        $State,
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    if (
+        -not $State -or
+        $State.PSObject.Properties.Match($PropertyName).Count -eq 0 -or
+        $null -eq $State.$PropertyName
+    ) {
+        return ''
+    }
+
+    return ([string]$State.$PropertyName).Trim()
+}
+
+function Get-StateInt {
+    param(
+        $State,
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    $raw = Get-StateString -State $State -PropertyName $PropertyName
+    if (-not $raw) {
+        return $null
+    }
+
+    $parsed = 0
+    if ([int]::TryParse($raw, [ref]$parsed)) {
+        return $parsed
+    }
+
+    return $null
+}
+
+function Get-FreeTcpPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        $listener.Stop()
+    }
+}
+
+function Test-TcpPortListening {
+    param(
+        [int]$PortNumber
+    )
+
+    if ($PortNumber -le 0) {
+        return $false
+    }
+
+    $connectAsync = $null
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $connectAsync = $client.BeginConnect('127.0.0.1', $PortNumber, $null, $null)
+        if (-not $connectAsync.AsyncWaitHandle.WaitOne(500)) {
+            return $false
+        }
+        $client.EndConnect($connectAsync)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($connectAsync -and $connectAsync.AsyncWaitHandle) {
+            $connectAsync.AsyncWaitHandle.Close()
+        }
+        $client.Dispose()
+    }
+}
+
 function Get-LocalReachableUrl {
     param(
         [Parameter(Mandatory = $true)]
@@ -314,7 +490,11 @@ function Test-TailscaleServeTargetMatchesListenUrl {
     }
 
     try {
-        $listenUri = [Uri]$ListenUrl
+        $expectedProxyUrl = Get-FrontDoorListenUrl -State $ExistingState
+        if (-not $expectedProxyUrl) {
+            $expectedProxyUrl = $ListenUrl
+        }
+        $listenUri = [Uri]$expectedProxyUrl
         $statusText = Get-TailscaleServeStatusText
         if (-not $statusText) {
             return $false
@@ -376,6 +556,162 @@ function Wait-ForWebUiReady {
     } while ([DateTime]::UtcNow -lt $deadline)
 
     return $false
+}
+
+function Test-ProcessAliveById {
+    param(
+        [int]$ProcessId
+    )
+
+    if ($ProcessId -le 0) {
+        return $false
+    }
+
+    try {
+        [void](Get-Process -Id $ProcessId -ErrorAction Stop)
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-FrontDoorListenUrl {
+    param(
+        $State
+    )
+
+    return (Get-StateString -State $State -PropertyName 'FrontDoorListenUrl')
+}
+
+function Get-FrontDoorProcessId {
+    param(
+        $State
+    )
+
+    return (Get-StateInt -State $State -PropertyName 'FrontDoorProcessId')
+}
+
+function Test-FrontDoorReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ListenUrl
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri ($ListenUrl.TrimEnd('/') + '/api/front-door/health') -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -eq 200 -or $response.StatusCode -eq 503)
+    } catch {
+        if (
+            $null -ne $_.Exception.Response -and
+            $null -ne $_.Exception.Response.StatusCode -and
+            [int]$_.Exception.Response.StatusCode -eq 503
+        ) {
+            return $true
+        }
+        return $false
+    }
+}
+
+function Wait-ForFrontDoorReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ListenUrl,
+        [int]$TimeoutMilliseconds = 30000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (Test-FrontDoorReady -ListenUrl $ListenUrl) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $false
+}
+
+function Get-TailscaleDnsName {
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_DNS_NAME -and
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_DNS_NAME.Trim()
+    ) {
+        return $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_DNS_NAME.Trim().TrimEnd('.')
+    }
+
+    try {
+        $statusJson = (& tailscale status --json 2>&1 | Out-String)
+        if (-not $statusJson.Trim()) {
+            return ''
+        }
+        $status = $statusJson | ConvertFrom-Json
+        if (
+            $status -and
+            $status.PSObject.Properties.Match('Self').Count -gt 0 -and
+            $status.Self -and
+            $status.Self.PSObject.Properties.Match('DNSName').Count -gt 0 -and
+            $status.Self.DNSName
+        ) {
+            return ([string]$status.Self.DNSName).Trim().TrimEnd('.')
+        }
+    } catch {
+    }
+
+    return ''
+}
+
+function Test-UrlReachable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-TailscaleServeTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$FrontDoorPort
+    )
+
+    $dnsName = Get-TailscaleDnsName
+    if (-not $dnsName) {
+        return [pscustomobject]@{
+            PreferredConnectUrl = ''
+            PreferredConnectUrlSource = 'listen-url'
+            OneTapPairingLink = ''
+        }
+    }
+
+    $directConnectUrl = "http://${dnsName}:$FrontDoorPort"
+    $secureConnectUrl = "https://$dnsName"
+
+    $serveHealthy = $false
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -and
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+    ) {
+        $serveHealthy = $true
+        $secureConnectUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+    } else {
+        try {
+            & tailscale serve --bg --yes "http://127.0.0.1:$FrontDoorPort" | Out-Null
+            $serveHealthy = Test-UrlReachable -Url $secureConnectUrl
+        } catch {
+            $serveHealthy = $false
+        }
+    }
+
+    return [pscustomobject]@{
+        PreferredConnectUrl = if ($serveHealthy) { $secureConnectUrl } else { $directConnectUrl }
+        PreferredConnectUrlSource = if ($serveHealthy) { 'tailscale-serve' } else { 'tailscale-direct' }
+        OneTapPairingLink = if ($serveHealthy) { $secureConnectUrl } else { $directConnectUrl }
+    }
 }
 
 function Stop-ManagedProcessIfPresent {
@@ -452,6 +788,35 @@ function Resolve-LogPath {
     }
 }
 
+function Try-ParseLastJsonLine {
+    param(
+        [string]$RawText
+    )
+
+    if ($null -eq $RawText) {
+        return $null
+    }
+
+    $trimmedText = $RawText.Trim()
+    if (-not $trimmedText) {
+        return $null
+    }
+
+    $lines = $trimmedText -split "\r?\n"
+    for ($index = $lines.Length - 1; $index -ge 0; $index -= 1) {
+        $candidate = $lines[$index].Trim()
+        if (-not $candidate) {
+            continue
+        }
+        try {
+            return ($candidate | ConvertFrom-Json)
+        } catch {
+        }
+    }
+
+    return $null
+}
+
 function Wait-ForLaunchInfo {
     param(
         [Parameter(Mandatory = $true)]
@@ -463,15 +828,9 @@ function Wait-ForLaunchInfo {
     do {
         if (Test-Path -Path $StdOutPath) {
             $raw = Get-Content -Path $StdOutPath -Raw -Encoding utf8
-            if ($null -eq $raw) {
-                $raw = ''
-            }
-            $trimmed = $raw.Trim()
-            if ($trimmed) {
-                try {
-                    return ($trimmed | ConvertFrom-Json)
-                } catch {
-                }
+            $parsed = Try-ParseLastJsonLine -RawText $raw
+            if ($parsed) {
+                return $parsed
             }
         }
         Start-Sleep -Milliseconds 200
@@ -489,45 +848,108 @@ function Start-WebUiProcess {
         [Parameter(Mandatory = $true)]
         [bool]$RequestedPhoneReady,
         [Parameter(Mandatory = $true)]
-        [string]$TargetStatePath
+        [string]$TargetStatePath,
+        [string]$PublicUrl = '',
+        [switch]$DisableTailscaleServe
     )
 
     Ensure-StateDirectory -TargetStatePath $TargetStatePath
     $stateDirectory = Split-Path -Parent $TargetStatePath
     $stdoutPath = Resolve-LogPath -CandidatePath (Join-Path $stateDirectory 'workspace-agent-hub-web-ui.stdout.log')
     $stderrPath = Resolve-LogPath -CandidatePath (Join-Path $stateDirectory 'workspace-agent-hub-web-ui.stderr.log')
-
-    $shellPath = Get-PowerShellPath
+    $effectiveCliPath = Ensure-WorkspaceCliReady -AllowTestCliOverride
     $argumentList = @(
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        $startScriptPath,
-        '-PhoneReady',
-        '-NoOpenBrowser',
-        '-JsonOutput',
-        '-Port',
+        $effectiveCliPath,
+        'web-ui',
+        '--host',
+        '0.0.0.0',
+        '--port',
         [string]$PreferredPort,
-        '-AuthToken',
-        $Token
+        '--auth-token',
+        $Token,
+        '--json',
+        '--no-open-browser'
     )
-    if (
+    $effectivePublicUrl = if ($PublicUrl -and $PublicUrl.Trim()) {
+        $PublicUrl.Trim()
+    } elseif (
         $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -and
         $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
     ) {
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+    } else {
+        ''
+    }
+    if ($effectivePublicUrl) {
         $argumentList += @(
-            '-PublicUrl',
-            $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL.Trim()
+            '--public-url',
+            $effectivePublicUrl
         )
     }
+    if (-not $DisableTailscaleServe) {
+        $argumentList += '--tailscale-serve'
+    }
 
-    $process = Start-Process -FilePath $shellPath -ArgumentList $argumentList -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $process = Start-NodeCliProcess -ArgumentList $argumentList -StdOutPath $stdoutPath -StdErrPath $stderrPath
     return [pscustomobject]@{
         Process = $process
         StdOutPath = $stdoutPath
         StdErrPath = $stderrPath
     }
+}
+
+function Start-WebUiFrontDoorProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath,
+        [Parameter(Mandatory = $true)]
+        [int]$PreferredPort
+    )
+
+    Ensure-StateDirectory -TargetStatePath $TargetStatePath
+    $stateDirectory = Split-Path -Parent $TargetStatePath
+    $stdoutPath = Resolve-LogPath -CandidatePath (Join-Path $stateDirectory 'workspace-agent-hub-front-door.stdout.log')
+    $stderrPath = Resolve-LogPath -CandidatePath (Join-Path $stateDirectory 'workspace-agent-hub-front-door.stderr.log')
+    $frontDoorCliPath = Ensure-WorkspaceCliReady
+    $argumentList = @(
+        $frontDoorCliPath,
+        'web-ui-front-door',
+        '--state-path',
+        ([IO.Path]::GetFullPath($TargetStatePath)),
+        '--host',
+        '127.0.0.1',
+        '--port',
+        [string]$PreferredPort
+    )
+
+    $process = Start-NodeCliProcess -ArgumentList $argumentList -StdOutPath $stdoutPath -StdErrPath $stderrPath
+    return [pscustomobject]@{
+        Process = $process
+        StdOutPath = $stdoutPath
+        StdErrPath = $stderrPath
+    }
+}
+
+function Wait-ForFrontDoorLaunchInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StdOutPath,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path -Path $StdOutPath) {
+            $raw = Get-Content -Path $StdOutPath -Raw -Encoding utf8
+            $parsed = Try-ParseLastJsonLine -RawText $raw
+            if ($parsed) {
+                return $parsed
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Timed out waiting for Workspace Agent Hub front door launch info in $StdOutPath."
 }
 
 function Get-ReadyListenerProcessId {
@@ -588,19 +1010,45 @@ function Build-StateFromLaunchInfo {
         [bool]$RequestedPhoneReady,
         [Parameter(Mandatory = $true)]
         [int]$ProcessId,
+        [string]$FrontDoorListenUrl = '',
+        [int]$FrontDoorProcessId = 0,
+        [string]$FrontDoorStdOutPath = '',
+        [string]$FrontDoorStdErrPath = '',
+        [string]$PreferredConnectUrl = '',
+        [string]$PreferredConnectUrlSource = '',
         [string]$StdOutPath = '',
         [string]$StdErrPath = ''
     )
 
+    $effectivePreferredConnectUrl = if ($PreferredConnectUrl -and $PreferredConnectUrl.Trim()) {
+        $PreferredConnectUrl.Trim()
+    } else {
+        [string]$LaunchInfo.preferredConnectUrl
+    }
+    $effectivePreferredConnectUrlSource = if ($PreferredConnectUrlSource -and $PreferredConnectUrlSource.Trim()) {
+        $PreferredConnectUrlSource.Trim()
+    } else {
+        [string]$LaunchInfo.preferredConnectUrlSource
+    }
+    $effectiveBrowserListenUrl = if ($FrontDoorListenUrl -and $FrontDoorListenUrl.Trim()) {
+        $FrontDoorListenUrl.Trim()
+    } else {
+        $LocalListenUrl
+    }
+
     return [pscustomobject]@{
         ListenUrl = $LocalListenUrl
-        PreferredConnectUrl = [string]$LaunchInfo.preferredConnectUrl
-        PreferredConnectUrlSource = [string]$LaunchInfo.preferredConnectUrlSource
+        FrontDoorListenUrl = if ($FrontDoorListenUrl -and $FrontDoorListenUrl.Trim()) { $FrontDoorListenUrl.Trim() } else { $null }
+        FrontDoorProcessId = if ($FrontDoorProcessId -gt 0) { [int]$FrontDoorProcessId } else { $null }
+        FrontDoorStdOutPath = if ($FrontDoorStdOutPath -and $FrontDoorStdOutPath.Trim()) { $FrontDoorStdOutPath.Trim() } else { $null }
+        FrontDoorStdErrPath = if ($FrontDoorStdErrPath -and $FrontDoorStdErrPath.Trim()) { $FrontDoorStdErrPath.Trim() } else { $null }
+        PreferredConnectUrl = $effectivePreferredConnectUrl
+        PreferredConnectUrlSource = $effectivePreferredConnectUrlSource
         AccessCode = if ([bool]$LaunchInfo.authRequired) { [string]$LaunchInfo.accessCode } else { $null }
         AuthDisabled = -not [bool]$LaunchInfo.authRequired
-        OneTapPairingLink = [string]$LaunchInfo.oneTapPairingLink
+        OneTapPairingLink = if ($effectivePreferredConnectUrl) { $effectivePreferredConnectUrl } else { [string]$LaunchInfo.oneTapPairingLink }
         ProcessId = [int]$ProcessId
-        BrowserUrl = Get-BrowserUrl -ListenUrl $LocalListenUrl -Token $ResolvedToken
+        BrowserUrl = Get-BrowserUrl -ListenUrl $effectiveBrowserListenUrl -Token $ResolvedToken
         StatePath = $ResolvedStatePath
         RequestedPhoneReady = $RequestedPhoneReady
         StdOutPath = $StdOutPath
@@ -609,10 +1057,95 @@ function Build-StateFromLaunchInfo {
     }
 }
 
+function Resolve-FrontDoorPort {
+    param(
+        $ExistingState
+    )
+
+    $existingFrontDoorListenUrl = Get-FrontDoorListenUrl -State $ExistingState
+    if ($existingFrontDoorListenUrl) {
+        try {
+            $candidatePort = ([Uri]$existingFrontDoorListenUrl).Port
+            if (-not (Test-TcpPortListening -PortNumber $candidatePort)) {
+                return $candidatePort
+            }
+        } catch {
+        }
+    }
+
+    $statusText = Get-TailscaleServeStatusText
+    if ($statusText) {
+        $proxyTarget = Get-TailscaleServeProxyTarget -StatusText $statusText
+        if ($proxyTarget) {
+            try {
+                $proxyUri = [Uri]$proxyTarget
+                if ($proxyUri.Scheme -eq 'http') {
+                    $candidatePort = $proxyUri.Port
+                    if (-not (Test-TcpPortListening -PortNumber $candidatePort)) {
+                        return $candidatePort
+                    }
+                }
+            } catch {
+            }
+        }
+    }
+
+    return (Get-FreeTcpPort)
+}
+
+function Ensure-FrontDoorRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath,
+        $ExistingState
+    )
+
+    $existingFrontDoorListenUrl = Get-FrontDoorListenUrl -State $ExistingState
+    $existingFrontDoorProcessId = Get-FrontDoorProcessId -State $ExistingState
+    if (
+        $existingFrontDoorListenUrl -and
+        $existingFrontDoorProcessId -and
+        (Test-ProcessAliveById -ProcessId $existingFrontDoorProcessId) -and
+        (Wait-ForFrontDoorReady -ListenUrl $existingFrontDoorListenUrl -TimeoutMilliseconds 3000)
+    ) {
+        return [pscustomobject]@{
+            ListenUrl = $existingFrontDoorListenUrl
+            ProcessId = $existingFrontDoorProcessId
+            StdOutPath = Get-StateString -State $ExistingState -PropertyName 'FrontDoorStdOutPath'
+            StdErrPath = Get-StateString -State $ExistingState -PropertyName 'FrontDoorStdErrPath'
+        }
+    }
+
+    if ($existingFrontDoorProcessId -and (Test-ProcessAliveById -ProcessId $existingFrontDoorProcessId)) {
+        try {
+            Stop-Process -Id $existingFrontDoorProcessId -Force -ErrorAction Stop
+        } catch {
+        }
+    }
+
+    $frontDoorPort = Resolve-FrontDoorPort -ExistingState $ExistingState
+    $started = Start-WebUiFrontDoorProcess -TargetStatePath $TargetStatePath -PreferredPort $frontDoorPort
+    $launchInfo = Wait-ForFrontDoorLaunchInfo -StdOutPath $started.StdOutPath
+    $frontDoorListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
+    if (-not (Wait-ForFrontDoorReady -ListenUrl $frontDoorListenUrl -TimeoutMilliseconds 30000)) {
+        throw "Workspace Agent Hub front door did not become ready at $frontDoorListenUrl."
+    }
+
+    return [pscustomobject]@{
+        ListenUrl = $frontDoorListenUrl
+        ProcessId = [int]$started.Process.Id
+        StdOutPath = $started.StdOutPath
+        StdErrPath = $started.StdErrPath
+    }
+}
+
 $requestedPhoneReady = $true
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
 $resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady
+$frontDoorInfo = Ensure-FrontDoorRunning -TargetStatePath $resolvedStatePath -ExistingState $existingState
+$frontDoorPort = ([Uri]$frontDoorInfo.ListenUrl).Port
+$preferredPhoneReadyConnectInfo = Ensure-TailscaleServeTarget -FrontDoorPort $frontDoorPort
 $existingProcessAlive = Test-ManagedProcessAlive -ExistingState $existingState
 $existingListenUrl = if ($existingState -and $existingState.ListenUrl) {
     Get-LocalReachableUrl -ListenUrl ([string]$existingState.ListenUrl)
@@ -626,7 +1159,8 @@ if (
     $existingState -and
     $existingListenUrl -and
     (Test-RequestedAuthMatches -ExistingState $existingState -RequestedTokenOption $resolvedToken) -and
-    (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady)
+    (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady) -and
+    (Wait-ForFrontDoorReady -ListenUrl $frontDoorInfo.ListenUrl -TimeoutMilliseconds 3000)
 ) {
     $existingListenerProcessId = if ($existingProcessAlive) {
         [int]$existingState.ProcessId
@@ -658,13 +1192,17 @@ if (
     }
     $finalState = [pscustomobject]@{
         ListenUrl = $localListenUrl
-        PreferredConnectUrl = [string]$existingState.PreferredConnectUrl
-        PreferredConnectUrlSource = [string]$existingState.PreferredConnectUrlSource
+        FrontDoorListenUrl = [string]$frontDoorInfo.ListenUrl
+        FrontDoorProcessId = [int]$frontDoorInfo.ProcessId
+        FrontDoorStdOutPath = [string]$frontDoorInfo.StdOutPath
+        FrontDoorStdErrPath = [string]$frontDoorInfo.StdErrPath
+        PreferredConnectUrl = if ($preferredPhoneReadyConnectInfo.PreferredConnectUrl) { [string]$preferredPhoneReadyConnectInfo.PreferredConnectUrl } else { [string]$existingState.PreferredConnectUrl }
+        PreferredConnectUrlSource = if ($preferredPhoneReadyConnectInfo.PreferredConnectUrlSource) { [string]$preferredPhoneReadyConnectInfo.PreferredConnectUrlSource } else { [string]$existingState.PreferredConnectUrlSource }
         AccessCode = $reusedAccessCode
         AuthDisabled = $reusedAuthDisabled
-        OneTapPairingLink = [string]$existingState.OneTapPairingLink
+        OneTapPairingLink = if ($preferredPhoneReadyConnectInfo.OneTapPairingLink) { [string]$preferredPhoneReadyConnectInfo.OneTapPairingLink } else { [string]$existingState.OneTapPairingLink }
         ProcessId = [int]$existingListenerProcessId
-        BrowserUrl = Get-BrowserUrl -ListenUrl $localListenUrl -Token $resolvedToken
+        BrowserUrl = Get-BrowserUrl -ListenUrl ([string]$frontDoorInfo.ListenUrl) -Token $resolvedToken
         StatePath = $resolvedStatePath
         RequestedPhoneReady = $requestedPhoneReady
         StdOutPath = [string]$existingState.StdOutPath
@@ -682,7 +1220,13 @@ if (
     } else {
         $null
     }
-    $started = Start-WebUiProcess -Token $resolvedToken -PreferredPort $Port -RequestedPhoneReady $requestedPhoneReady -TargetStatePath $resolvedStatePath
+    $started = Start-WebUiProcess `
+        -Token $resolvedToken `
+        -PreferredPort $Port `
+        -RequestedPhoneReady $requestedPhoneReady `
+        -TargetStatePath $resolvedStatePath `
+        -PublicUrl ([string]$preferredPhoneReadyConnectInfo.PreferredConnectUrl) `
+        -DisableTailscaleServe
     try {
         $launchInfo = Wait-ForLaunchInfo -StdOutPath $started.StdOutPath
         $localListenUrl = Get-LocalReachableUrl -ListenUrl ([string]$launchInfo.listenUrl)
@@ -702,6 +1246,12 @@ if (
             -ResolvedStatePath $resolvedStatePath `
             -RequestedPhoneReady $requestedPhoneReady `
             -ProcessId $actualProcessId `
+            -FrontDoorListenUrl ([string]$frontDoorInfo.ListenUrl) `
+            -FrontDoorProcessId ([int]$frontDoorInfo.ProcessId) `
+            -FrontDoorStdOutPath ([string]$frontDoorInfo.StdOutPath) `
+            -FrontDoorStdErrPath ([string]$frontDoorInfo.StdErrPath) `
+            -PreferredConnectUrl ([string]$preferredPhoneReadyConnectInfo.PreferredConnectUrl) `
+            -PreferredConnectUrlSource ([string]$preferredPhoneReadyConnectInfo.PreferredConnectUrlSource) `
             -StdOutPath $started.StdOutPath `
             -StdErrPath $started.StdErrPath
         Write-State -TargetStatePath $resolvedStatePath -State $finalState
@@ -715,7 +1265,7 @@ if (
     Stop-ManagedProcessIfPresent `
         -ExistingState $existingState `
         -FallbackProcessId $fallbackProcessId `
-        -ExcludeProcessIds @([int]$finalState.ProcessId)
+        -ExcludeProcessIds @([int]$finalState.ProcessId, [int]$frontDoorInfo.ProcessId)
 }
 
 if ($OpenBrowser) {

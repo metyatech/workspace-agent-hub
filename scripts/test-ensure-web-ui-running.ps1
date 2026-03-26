@@ -100,7 +100,24 @@ function Wait-ForLaunchMetadata {
             try {
                 $raw = Get-Content -Path $ProcessInfo.StdOutPath -Raw -Encoding utf8
                 if ($raw -and $raw.Trim()) {
-                    return ($raw | ConvertFrom-Json)
+                    $trimmed = $raw.Trim()
+                    try {
+                        return ($trimmed | ConvertFrom-Json)
+                    } catch {
+                    }
+
+                    $lines = $trimmed -split "\r?\n"
+                    for ($index = $lines.Length - 1; $index -ge 0; $index -= 1) {
+                        $candidateLines = $lines[$index..($lines.Length - 1)]
+                        $candidate = ($candidateLines -join [Environment]::NewLine).Trim()
+                        if (-not $candidate) {
+                            continue
+                        }
+                        try {
+                            return ($candidate | ConvertFrom-Json)
+                        } catch {
+                        }
+                    }
                 }
             } catch {
             }
@@ -169,6 +186,7 @@ $mockCliPath = Join-Path $testDirectory 'mock-web-ui.mjs'
 $port = Get-FreeTcpPort
 $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
+$originalPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
 $originalCliPath = $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH
 
 $mockCliContent = @'
@@ -265,12 +283,16 @@ console.log(
 
 try {
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL', 'https://desktop-dr5v76c.tail5a2d2d.ts.net', 'Process')
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
     if (-not $first.ListenUrl) {
         throw 'Expected ensure-web-ui-running.ps1 to return a listen URL.'
+    }
+    if (-not $first.FrontDoorListenUrl) {
+        throw 'Expected ensure-web-ui-running.ps1 to return a stable front-door listen URL.'
     }
     if ($null -ne $first.AccessCode) {
         throw 'Expected ensure-web-ui-running.ps1 to default to no access code in PhoneReady mode.'
@@ -280,11 +302,12 @@ try {
     }
 
     $firstPort = ([Uri][string]$first.ListenUrl).Port
+    $firstFrontDoorPort = ([Uri][string]$first.FrontDoorListenUrl).Port
     Wait-ForApiReady -PortNumber $firstPort -Token ''
     if ([string]$first.PreferredConnectUrlSource -eq 'tailscale-serve') {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
-|-- / proxy http://127.0.0.1:$firstPort
+|-- / proxy http://127.0.0.1:$firstFrontDoorPort
 "@
     }
 
@@ -313,10 +336,10 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     Wait-ForProcessSuccess -ProcessInfo $legacyUpgradeRun
     Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token ''
     if ([string]$legacyUpgrade.PreferredConnectUrlSource -eq 'tailscale-serve') {
-        $legacyUpgradePort = ([Uri][string]$legacyUpgrade.ListenUrl).Port
+        $legacyUpgradeFrontDoorPort = ([Uri][string]$legacyUpgrade.FrontDoorListenUrl).Port
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
-|-- / proxy http://127.0.0.1:$legacyUpgradePort
+|-- / proxy http://127.0.0.1:$legacyUpgradeFrontDoorPort
 "@
     }
 
@@ -342,9 +365,10 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $tailscaleState.PreferredConnectUrlSource = 'tailscale-serve'
     $tailscaleState.PreferredConnectUrl = 'https://desktop-dr5v76c.tail5a2d2d.ts.net'
     ($tailscaleState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
+    $legacyUpgradeFrontDoorPort = ([Uri][string]$tailscaleState.FrontDoorListenUrl).Port
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
-|-- / proxy http://127.0.0.1:$([Uri][string]$legacyUpgrade.ListenUrl).Port
+|-- / proxy http://127.0.0.1:$legacyUpgradeFrontDoorPort
 "@
 
     $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'serve-healthy' -TargetDirectory $testDirectory
@@ -365,6 +389,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $serveMismatch = Wait-ForLaunchMetadata -ProcessInfo $serveMismatchRun
     Wait-ForProcessSuccess -ProcessInfo $serveMismatchRun
     $serveMismatchPort = ([Uri][string]$serveMismatch.ListenUrl).Port
+    $serveMismatchFrontDoorPort = ([Uri][string]$serveMismatch.FrontDoorListenUrl).Port
     Wait-ForApiReady -PortNumber $serveMismatchPort -Token ''
 
     if ([int]$serveMismatch.ProcessId -eq [int]$first.ProcessId) {
@@ -373,7 +398,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
-|-- / proxy http://127.0.0.1:$serveMismatchPort
+|-- / proxy http://127.0.0.1:$serveMismatchFrontDoorPort
 "@
 
     $corruptedState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -405,14 +430,19 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 } finally {
     if (Test-Path -Path $statePath) {
         $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
-        if ($state.ProcessId) {
-            try {
-                Stop-Process -Id ([int]$state.ProcessId) -Force -ErrorAction Stop
-            } catch {
-            }
-            try {
-                Wait-Process -Id ([int]$state.ProcessId) -Timeout 5 -ErrorAction Stop
-            } catch {
+        foreach ($propertyName in @('ProcessId', 'FrontDoorProcessId')) {
+            if (
+                $state.PSObject.Properties.Match($propertyName).Count -gt 0 -and
+                $state.$propertyName
+            ) {
+                try {
+                    Stop-Process -Id ([int]$state.$propertyName) -Force -ErrorAction Stop
+                } catch {
+                }
+                try {
+                    Wait-Process -Id ([int]$state.$propertyName) -Timeout 5 -ErrorAction Stop
+                } catch {
+                }
             }
         }
     }
@@ -421,6 +451,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -ErrorAction SilentlyContinue
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = $originalTailscaleServeStatusText
+    }
+    if ($null -eq $originalPublicUrl) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL = $originalPublicUrl
     }
     if ($null -eq $originalCliPath) {
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -ErrorAction SilentlyContinue

@@ -6,6 +6,7 @@ $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("wah-phone-ready-" + [G
 $statePath = Join-Path $tempRoot 'state\hub.json'
 $counterPath = Join-Path $tempRoot 'counter.txt'
 $mockEnsurePath = Join-Path $tempRoot 'mock-ensure.ps1'
+$mockServerPath = Join-Path $tempRoot 'mock-http-server.mjs'
 
 [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
 
@@ -19,6 +20,56 @@ function Get-FreeTcpPort {
     }
 }
 
+function Start-MockHttpServer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [int]$StatusCode,
+        [Parameter(Mandatory = $true)]
+        [string]$Body
+    )
+
+    $nodePath = (Get-Command 'node.exe' -ErrorAction Stop).Source
+    $bodyPath = Join-Path $tempRoot ("mock-http-body-" + [guid]::NewGuid().ToString('N') + '.json')
+    [System.IO.File]::WriteAllText($bodyPath, $Body, [Text.UTF8Encoding]::new($false))
+    $process = Start-Process -FilePath $nodePath -ArgumentList @(
+        $mockServerPath,
+        '--port', [string]$PortNumber,
+        '--path', $Path,
+        '--status', [string]$StatusCode,
+        '--body-file', $bodyPath
+    ) -PassThru -WindowStyle Hidden
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        try {
+            $response = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}{1}" -f $PortNumber, $Path) -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            if ($response.StatusCode -eq $StatusCode) {
+                return $process
+            }
+        } catch {
+            if (
+                $null -ne $_.Exception.Response -and
+                $null -ne $_.Exception.Response.StatusCode -and
+                [int]$_.Exception.Response.StatusCode -eq $StatusCode
+            ) {
+                return $process
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    try {
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    } catch {
+    }
+
+    throw "Expected the mock HTTP server for $Path to become ready."
+}
+
 function Start-MockManagerStatusServer {
     param(
         [Parameter(Mandatory = $true)]
@@ -27,53 +78,25 @@ function Start-MockManagerStatusServer {
         [string]$StatusJson
     )
 
-    $job = Start-Job -ArgumentList $PortNumber, $StatusJson -ScriptBlock {
-        param(
-            [int]$PortNumber,
-            [string]$StatusJson
-        )
+    return (Start-MockHttpServer `
+        -PortNumber $PortNumber `
+        -Path '/manager/api/manager/status' `
+        -StatusCode 200 `
+        -Body $StatusJson)
+}
 
-        Add-Type -AssemblyName System.Net.HttpListener
-        $listener = [System.Net.HttpListener]::new()
-        $listener.Prefixes.Add("http://127.0.0.1:$PortNumber/")
-        $listener.Start()
-        try {
-            while ($true) {
-                $context = $listener.GetContext()
-                try {
-                    if ($context.Request.Url.AbsolutePath -eq '/manager/api/manager/status') {
-                        $body = [Text.Encoding]::UTF8.GetBytes($StatusJson)
-                        $context.Response.StatusCode = 200
-                        $context.Response.ContentType = 'application/json; charset=utf-8'
-                        $context.Response.ContentLength64 = $body.Length
-                        $context.Response.OutputStream.Write($body, 0, $body.Length)
-                    } else {
-                        $context.Response.StatusCode = 404
-                    }
-                } finally {
-                    $context.Response.OutputStream.Close()
-                    $context.Response.Close()
-                }
-            }
-        } finally {
-            $listener.Stop()
-            $listener.Close()
-        }
-    }
+function Start-MockFrontDoorServer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [int]$StatusCode = 200
+    )
 
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    do {
-        try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:$PortNumber/manager/api/manager/status" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-            if ($response.StatusCode -eq 200) {
-                return $job
-            }
-        } catch {
-        }
-        Start-Sleep -Milliseconds 100
-    } while ([DateTime]::UtcNow -lt $deadline)
-
-    throw 'Expected the mock Manager status server to become ready.'
+    return (Start-MockHttpServer `
+        -PortNumber $PortNumber `
+        -Path '/api/front-door/health' `
+        -StatusCode $StatusCode `
+        -Body '{"ok":true}')
 }
 
 $mockEnsureContent = @'
@@ -150,26 +173,90 @@ if ($writeStateWithSleeper -eq '1') {
 } | ConvertTo-Json -Depth 4
 '@
 
+$mockServerContent = @'
+import http from "node:http";
+import { readFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+let port = 0;
+let path = "/";
+let status = 200;
+let body = "{}";
+let bodyFile = "";
+
+for (let index = 0; index < args.length; index += 1) {
+  const current = args[index];
+  if (current === "--port") {
+    port = Number(args[index + 1] ?? port);
+    index += 1;
+  } else if (current === "--path") {
+    path = args[index + 1] ?? path;
+    index += 1;
+  } else if (current === "--status") {
+    status = Number(args[index + 1] ?? status);
+    index += 1;
+  } else if (current === "--body-file") {
+    bodyFile = args[index + 1] ?? bodyFile;
+    index += 1;
+  }
+}
+
+if (bodyFile) {
+  body = readFileSync(bodyFile, "utf8");
+}
+
+const server = http.createServer((req, res) => {
+  if ((req.url ?? "") === path) {
+    const payload = body;
+    res.writeHead(status, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(port, "127.0.0.1");
+'@
+
 [System.IO.File]::WriteAllText($mockEnsurePath, $mockEnsureContent, [Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($mockServerPath, $mockServerContent, [Text.Encoding]::UTF8)
 
 $previousCounterPath = $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH
 $previousWriteStateWithSleeper = $env:WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER
 $previousSleeperMs = $env:WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS
+$previousTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
+$testPassed = $false
 $firstProcess = $null
 $managerStatusJob = $null
+$staleServeManagerJob = $null
+$frontDoorHealthyJob = $null
+$frontDoorStaleServeJob = $null
 
 try {
     $activeStatePath = Join-Path $tempRoot 'active-state\hub.json'
     $activeCounterPath = Join-Path $tempRoot 'active-counter.txt'
     $activeStatusPort = Get-FreeTcpPort
+    $activeFrontDoorPort = Get-FreeTcpPort
     $managerStatusJob = Start-MockManagerStatusServer -PortNumber $activeStatusPort -StatusJson '{"running":true,"configured":true,"builtinBackend":true,"currentQueueId":"q_active_watchdog"}'
+    $frontDoorHealthyJob = Start-MockFrontDoorServer -PortNumber $activeFrontDoorPort -StatusCode 200
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $activeStatePath)) | Out-Null
     [pscustomobject]@{
         ListenUrl = "http://127.0.0.1:$activeStatusPort/"
+        FrontDoorListenUrl = "http://127.0.0.1:$activeFrontDoorPort/"
+        PreferredConnectUrlSource = 'tailscale-serve'
         AuthDisabled = $true
         RequestedPhoneReady = $true
     } | ConvertTo-Json -Depth 4 | Set-Content -Path $activeStatePath -Encoding utf8
 
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://agent-hub.example.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$activeFrontDoorPort
+"@
     $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $activeCounterPath
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
@@ -184,7 +271,39 @@ try {
         }
     }
 
+    $staleServeStatePath = Join-Path $tempRoot 'stale-serve-state\hub.json'
+    $staleServeCounterPath = Join-Path $tempRoot 'stale-serve-counter.txt'
+    $staleServeStatusPort = Get-FreeTcpPort
+    $staleServeFrontDoorPort = Get-FreeTcpPort
+    $staleServeManagerJob = Start-MockManagerStatusServer -PortNumber $staleServeStatusPort -StatusJson '{"running":true,"configured":true,"builtinBackend":true,"currentQueueId":"q_stale_serve"}'
+    $frontDoorStaleServeJob = Start-MockFrontDoorServer -PortNumber $staleServeFrontDoorPort -StatusCode 200
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $staleServeStatePath)) | Out-Null
+    [pscustomobject]@{
+        ListenUrl = "http://127.0.0.1:$staleServeStatusPort/"
+        FrontDoorListenUrl = "http://127.0.0.1:$staleServeFrontDoorPort/"
+        PreferredConnectUrlSource = 'tailscale-serve'
+        AuthDisabled = $true
+        RequestedPhoneReady = $true
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $staleServeStatePath -Encoding utf8
+
+    $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $staleServeCounterPath
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
+https://agent-hub.example.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:57921
+'@
+    & $scriptPath `
+        -EnsureScriptPath $mockEnsurePath `
+        -StatePath $staleServeStatePath `
+        -IntervalSeconds 1 `
+        -MaxIterations 1
+
+    $staleServeCount = [int]((Get-Content -Path $staleServeCounterPath -Raw -Encoding utf8).Trim())
+    if ($staleServeCount -ne 1) {
+        throw "Expected watchdog to rerun ensure-web-ui-running.ps1 when Tailscale Serve drifts away from the front door. Got $staleServeCount."
+    }
+
     $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $counterPath
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $null, 'Process')
 
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
@@ -269,6 +388,8 @@ try {
     if ($fastRecoveryStopwatch.Elapsed.TotalSeconds -ge 10) {
         throw "Expected watchdog to rerun shortly after process exit instead of waiting the full interval. Elapsed: $($fastRecoveryStopwatch.Elapsed.TotalSeconds)s"
     }
+
+    $testPassed = $true
 } finally {
     if ($firstProcess) {
         try {
@@ -281,11 +402,7 @@ try {
 
     if ($managerStatusJob) {
         try {
-            Stop-Job -Job $managerStatusJob -ErrorAction Stop | Out-Null
-        } catch {
-        }
-        try {
-            Remove-Job -Job $managerStatusJob -Force -ErrorAction Stop | Out-Null
+            Stop-Process -Id $managerStatusJob.Id -Force -ErrorAction Stop
         } catch {
         }
     }
@@ -308,6 +425,12 @@ try {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS', $previousSleeperMs, 'Process')
     }
 
+    if ($null -eq $previousTailscaleServeStatusText) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $null, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $previousTailscaleServeStatusText, 'Process')
+    }
+
     if (Test-Path -Path $statePath) {
         try {
             $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -318,7 +441,21 @@ try {
         }
     }
 
-    if ([System.IO.Directory]::Exists($tempRoot)) {
+    foreach ($job in @($staleServeManagerJob, $frontDoorHealthyJob, $frontDoorStaleServeJob)) {
+        if (-not $job) {
+            continue
+        }
+        try {
+            Stop-Process -Id $job.Id -Force -ErrorAction Stop
+        } catch {
+        }
+    }
+
+    $keepTempOnFailure = (
+        -not $testPassed -and
+        [Environment]::GetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_KEEP_TEMP_ON_FAILURE', 'Process') -eq '1'
+    )
+    if ([System.IO.Directory]::Exists($tempRoot) -and -not $keepTempOnFailure) {
         [System.IO.Directory]::Delete($tempRoot, $true)
     }
 }

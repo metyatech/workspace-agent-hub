@@ -313,6 +313,32 @@ export async function killAllActiveChildProcesses(): Promise<void> {
   activeChildProcesses.clear();
 }
 
+function parseEnvDurationMs(name: string, fallbackMs: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallbackMs;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallbackMs;
+  }
+  return parsed;
+}
+
+function codexIdleTimeoutMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS',
+    10 * 60_000
+  );
+}
+
+function codexStructuredReplyCloseGraceMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS',
+    30_000
+  );
+}
+
 export interface QueueEntry {
   id: string;
   threadId: string;
@@ -335,6 +361,7 @@ interface CodexProgressState {
   sessionId: string | null;
   latestText: string | null;
   liveEntries: ManagerWorkerLiveEntry[];
+  structuredReply: ManagerReplyPayload | null;
 }
 
 /** Derive a stable 16-char hex key from an absolute workspace path. */
@@ -1689,7 +1716,12 @@ export function parseCodexProgressLine(
 ): CodexProgressState {
   const trimmed = line.trim();
   if (!trimmed) {
-    return { sessionId: null, latestText: null, liveEntries: [] };
+    return {
+      sessionId: null,
+      latestText: null,
+      liveEntries: [],
+      structuredReply: null,
+    };
   }
 
   try {
@@ -1708,16 +1740,27 @@ export function parseCodexProgressLine(
             kind: 'status',
           },
         ],
+        structuredReply: null,
       };
     }
 
     if (parsed['type'] !== 'item.completed') {
-      return { sessionId: null, latestText: null, liveEntries: [] };
+      return {
+        sessionId: null,
+        latestText: null,
+        liveEntries: [],
+        structuredReply: null,
+      };
     }
 
     const item = parsed['item'];
     if (!item || typeof item !== 'object') {
-      return { sessionId: null, latestText: null, liveEntries: [] };
+      return {
+        sessionId: null,
+        latestText: null,
+        liveEntries: [],
+        structuredReply: null,
+      };
     }
 
     const typedItem = item as Record<string, unknown>;
@@ -1745,6 +1788,7 @@ export function parseCodexProgressLine(
                   kind: 'output',
                 },
               ],
+        structuredReply: parsedReply,
       };
     }
 
@@ -1759,9 +1803,15 @@ export function parseCodexProgressLine(
           kind: 'status',
         },
       ],
+      structuredReply: null,
     };
   } catch {
-    return { sessionId: null, latestText: null, liveEntries: [] };
+    return {
+      sessionId: null,
+      latestText: null,
+      liveEntries: [],
+      structuredReply: null,
+    };
   }
 }
 
@@ -2024,7 +2074,73 @@ async function runCodexTurn(input: {
   let pendingStdout = '';
   let latestProgressText: string | null = null;
   let latestProgressSessionId: string | null = input.sessionId;
+  let sawStructuredReply = false;
   let progressChain = Promise.resolve();
+  let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+  let structuredReplyTimeout: ReturnType<typeof setTimeout> | null = null;
+  let forcedExitResult: { code: number | null; stderrSuffix: string } | null =
+    null;
+  const idleTimeoutMs = codexIdleTimeoutMs();
+  const structuredReplyCloseGraceMs = codexStructuredReplyCloseGraceMs();
+
+  let resolveExitCode!: (code: number | null) => void;
+  let rejectExitCode!: (error: unknown) => void;
+  const exitCodePromise = new Promise<number | null>(
+    (resolvePromise, reject) => {
+      resolveExitCode = resolvePromise;
+      rejectExitCode = reject;
+    }
+  );
+
+  const clearStallTimers = (): void => {
+    if (idleTimeout !== null) {
+      clearTimeout(idleTimeout);
+      idleTimeout = null;
+    }
+    if (structuredReplyTimeout !== null) {
+      clearTimeout(structuredReplyTimeout);
+      structuredReplyTimeout = null;
+    }
+  };
+
+  const forceCodexCompletion = async (
+    code: number | null,
+    stderrSuffix: string
+  ): Promise<void> => {
+    if (forcedExitResult) {
+      return;
+    }
+    forcedExitResult = { code, stderrSuffix };
+    clearStallTimers();
+    if (proc.pid != null) {
+      await killProcessTree(proc.pid).catch(() => {});
+    }
+    activeChildProcesses.delete(proc);
+    resolveExitCode(code);
+  };
+
+  const armStallTimers = (): void => {
+    clearStallTimers();
+    idleTimeout = setTimeout(() => {
+      void forceCodexCompletion(
+        124,
+        `[Manager error] Codex produced no progress for ${Math.round(
+          idleTimeoutMs / 1000
+        )} seconds and was terminated as stalled.`
+      );
+    }, idleTimeoutMs);
+
+    if (sawStructuredReply) {
+      structuredReplyTimeout = setTimeout(() => {
+        void forceCodexCompletion(
+          0,
+          `[Manager notice] Codex emitted a structured final reply but did not exit within ${Math.round(
+            structuredReplyCloseGraceMs / 1000
+          )} seconds. The process was terminated and the latest structured reply was adopted.`
+        );
+      }, structuredReplyCloseGraceMs);
+    }
+  };
 
   const enqueueProgress = (state: CodexProgressState): void => {
     progressChain = progressChain
@@ -2041,14 +2157,19 @@ async function runCodexTurn(input: {
     if (progress.sessionId) {
       latestProgressSessionId = progress.sessionId;
     }
+    if (progress.structuredReply) {
+      sawStructuredReply = true;
+    }
     if (progress.latestText) {
       latestProgressText = progress.latestText;
       enqueueProgress({
         sessionId: latestProgressSessionId,
         latestText: latestProgressText,
         liveEntries: progress.liveEntries,
+        structuredReply: progress.structuredReply,
       });
     }
+    armStallTimers();
   };
 
   proc.stdout?.on('data', (chunk: Buffer) => {
@@ -2074,6 +2195,7 @@ async function runCodexTurn(input: {
     } catch {
       /* keep waiting for the rest of the line */
     }
+    armStallTimers();
   });
   proc.stderr?.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
@@ -2089,8 +2211,10 @@ async function runCodexTurn(input: {
             kind: 'status',
           },
         ],
+        structuredReply: null,
       });
     }
+    armStallTimers();
   });
   proc.stdin?.on('error', () => {
     /* ignore prompt pipe teardown races */
@@ -2098,25 +2222,35 @@ async function runCodexTurn(input: {
   proc.stdin?.write(input.prompt);
   proc.stdin?.end();
 
-  const exitCode = await new Promise<number | null>(
-    (resolvePromise, reject) => {
-      proc.on('error', (error) => {
-        reject(error);
-      });
-      proc.on('close', (code) => {
-        resolvePromise(code);
-      });
-    }
-  );
+  proc.on('error', (error) => {
+    clearStallTimers();
+    rejectExitCode(error);
+  });
+  proc.on('close', (code) => {
+    clearStallTimers();
+    resolveExitCode(code);
+  });
+  armStallTimers();
+
+  const exitCode = await exitCodePromise;
 
   if (pendingStdout.trim()) {
     handleProgressLine(pendingStdout);
   }
 
   await progressChain;
+  clearStallTimers();
+
+  const finalForcedExitResult = forcedExitResult as {
+    code: number | null;
+    stderrSuffix: string;
+  } | null;
+  if (finalForcedExitResult !== null) {
+    stderr = `${stderr}\n${finalForcedExitResult.stderrSuffix}`.trim();
+  }
 
   return {
-    code: exitCode,
+    code: finalForcedExitResult?.code ?? exitCode,
     stdout,
     stderr,
     parsed: parseCodexOutput(stdout),

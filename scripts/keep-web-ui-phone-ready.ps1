@@ -95,6 +95,129 @@ function Get-ManagedProcessId {
     }
 }
 
+function Test-FrontDoorHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    if (
+        -not $state -or
+        $state.PSObject.Properties.Match('FrontDoorListenUrl').Count -eq 0 -or
+        -not $state.FrontDoorListenUrl
+    ) {
+        return $false
+    }
+
+    $listenUrl = ([string]$state.FrontDoorListenUrl).Trim()
+    if (-not $listenUrl) {
+        return $false
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri ($listenUrl.TrimEnd('/') + '/api/front-door/health') -Method Get -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
+function Get-StateString {
+    param(
+        $State,
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    if (
+        -not $State -or
+        $State.PSObject.Properties.Match($PropertyName).Count -eq 0 -or
+        $null -eq $State.$PropertyName
+    ) {
+        return ''
+    }
+
+    return ([string]$State.$PropertyName).Trim()
+}
+
+function Get-TailscaleServeProxyTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StatusText
+    )
+
+    $match = [regex]::Match(
+        $StatusText,
+        '(?im)^\|--\s+/\s+proxy\s+(\S+)\s*$'
+    )
+    if ($match.Success) {
+        return $match.Groups[1].Value.Trim()
+    }
+
+    return ''
+}
+
+function Get-TailscaleServeStatusText {
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT -and
+        $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT.Trim()
+    ) {
+        return $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT.Trim()
+    }
+
+    try {
+        return (& tailscale serve status 2>&1 | Out-String).Trim()
+    } catch {
+        return ''
+    }
+}
+
+function Test-TailscaleServeTargetsFrontDoor {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    if (-not $state) {
+        return $false
+    }
+
+    $preferredConnectUrlSource = Get-StateString -State $state -PropertyName 'PreferredConnectUrlSource'
+    if ($preferredConnectUrlSource -ne 'tailscale-serve') {
+        return $true
+    }
+
+    $frontDoorListenUrl = Get-StateString -State $state -PropertyName 'FrontDoorListenUrl'
+    if (-not $frontDoorListenUrl) {
+        return $false
+    }
+
+    $statusText = Get-TailscaleServeStatusText
+    if (-not $statusText) {
+        return $false
+    }
+
+    $proxyTarget = Get-TailscaleServeProxyTarget -StatusText $statusText
+    if (-not $proxyTarget) {
+        return $false
+    }
+
+    try {
+        $expectedUri = [Uri]$frontDoorListenUrl
+        $proxyUri = [Uri]$proxyTarget
+        $loopbackHosts = @('127.0.0.1', 'localhost', '::1', '[::1]')
+        return (
+            $proxyUri.Scheme -eq 'http' -and
+            $loopbackHosts -contains $proxyUri.Host.ToLowerInvariant() -and
+            $proxyUri.Port -eq $expectedUri.Port
+        )
+    } catch {
+        return $false
+    }
+}
+
 function Write-WatchdogLog {
     param(
         [Parameter(Mandatory = $true)]
@@ -247,9 +370,19 @@ try {
     $iteration = 0
     while ($true) {
         try {
-            if (Test-ManagerHasActiveAssignment -TargetStatePath $resolvedStatePath) {
+            $managerBusy = Test-ManagerHasActiveAssignment -TargetStatePath $resolvedStatePath
+            $frontDoorHealthy = Test-FrontDoorHealthy -TargetStatePath $resolvedStatePath
+            $tailscaleServeHealthy = Test-TailscaleServeTargetsFrontDoor -TargetStatePath $resolvedStatePath
+            if ($managerBusy -and $frontDoorHealthy -and $tailscaleServeHealthy) {
                 Write-WatchdogLog -LogPath $watchdogLogPath -Message 'Skipping ensure-web-ui-running.ps1 because Manager still has an active assignment.'
             } else {
+                if ($managerBusy) {
+                    Write-WatchdogLog -LogPath $watchdogLogPath -Message (
+                        'Manager still has an active assignment, but ingress needs reconciliation. frontDoorHealthy={0}; tailscaleServeHealthy={1}' -f
+                        $frontDoorHealthy,
+                        $tailscaleServeHealthy
+                    )
+                }
                 $arguments = @{
                     Port = $Port
                     StatePath = $resolvedStatePath
