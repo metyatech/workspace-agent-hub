@@ -143,6 +143,9 @@ function Wait-ForPortClosed {
 
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-swap-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$frontDoorSourcePath = Join-Path $repoRoot 'src\web-ui-front-door.ts'
+$originalFrontDoorSourceWriteTimeUtc = (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc
 $statePath = Join-Path $testDirectory 'state.json'
 $stdoutPath = Join-Path $testDirectory 'swap.stdout.log'
 $stderrPath = Join-Path $testDirectory 'swap.stderr.log'
@@ -249,6 +252,7 @@ console.log(
 [IO.File]::WriteAllText($mockCliPath, $mockCliContent, [Text.UTF8Encoding]::new($false))
 
 try {
+    (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1)
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SWAP_DELAY_MS', '0', 'Process')
 
@@ -298,6 +302,10 @@ try {
 
     Wait-ForPortClosed -PortNumber $firstPort
 } finally {
+    if (Test-Path -LiteralPath $frontDoorSourcePath) {
+        (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc = $originalFrontDoorSourceWriteTimeUtc
+    }
+
     if (Test-Path -Path $statePath) {
         try {
             $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
