@@ -41,6 +41,23 @@ function Test-BuildRequired {
     return $false
 }
 
+function Invoke-NpmCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    & npm @Arguments 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            [Console]::Error.WriteLine($_.ToString())
+        } else {
+            [Console]::Error.WriteLine([string]$_)
+        }
+    }
+
+    return $LASTEXITCODE
+}
+
 if (-not (Test-Path -Path $packageJsonPath)) {
     throw "Missing package.json: $packageJsonPath"
 }
@@ -48,15 +65,15 @@ if (-not (Test-Path -Path $packageJsonPath)) {
 Push-Location $repoRoot
 try {
     if (-not (Test-Path -Path (Join-Path $repoRoot 'node_modules'))) {
-        npm ci
-        if ($LASTEXITCODE -ne 0) {
+        $npmExitCode = Invoke-NpmCommand -Arguments @('ci')
+        if ($npmExitCode -ne 0) {
             throw 'npm ci failed.'
         }
     }
 
     if (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths) {
-        npm run build
-        if ($LASTEXITCODE -ne 0) {
+        $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
+        if ($npmExitCode -ne 0) {
             throw 'npm run build failed.'
         }
     }

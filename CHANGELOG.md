@@ -18,6 +18,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Kept the Web UI replacement/swap path machine-readable during automatic
+  rebuilds by redirecting PowerShell wrapper `npm` build output away from
+  stdout, so phone-ready restarts can keep the previous listener alive until
+  the replacement is ready
 - Hardened the Manager delivery chain so worker-reviewed tasks no longer surface
   as complete when `push` fails, and user-owned publishable npm repositories
   now continue through the post-merge release/publish verification path before
