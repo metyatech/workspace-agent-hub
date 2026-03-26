@@ -1338,22 +1338,22 @@
       .composer-shell {
         max-width: 1120px;
         margin: 0 auto;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px 12px;
+        align-items: center;
       }
 
-      .composer-rail {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        border-radius: 26px;
-        border: 1px solid rgba(122, 158, 125, 0.18);
-        background: rgba(255, 255, 255, 0.96);
-        box-shadow: var(--shadow);
-        padding: 12px 14px;
+      #composerHint {
+        min-width: 0;
+      }
+
+      #composerToggleButton {
+        justify-self: end;
+      }
+
+      #composerPanel {
+        grid-column: 1 / -1;
       }
 
       .composer-dock-thread-mode {
@@ -1366,42 +1366,8 @@
         );
       }
 
-      .composer-rail-main {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        flex-wrap: wrap;
-        flex: 1;
-        min-width: 0;
-      }
-
-      .composer-rail-copy {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        flex: 1;
-        min-width: min(260px, 100%);
-      }
-
-      .composer-rail-controls {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-      }
-
-      .composer-dock-thread-mode .composer-rail {
-        padding: 8px 10px;
-        border-radius: 20px;
-      }
-
-      .composer-dock-thread-mode .composer-rail-copy {
-        gap: 2px;
-      }
-
-      .composer-dock-thread-mode .composer-rail-controls {
-        gap: 6px;
+      .composer-dock-thread-mode .composer-shell {
+        gap: 8px 10px;
       }
 
       .composer-card {
@@ -1672,7 +1638,6 @@
           border-radius: 20px;
         }
 
-        .composer-rail,
         .composer-card {
           padding: 10px;
         }
@@ -1682,25 +1647,25 @@
           justify-content: center;
         }
 
-        .composer-rail {
-          align-items: stretch;
+        .composer-shell {
+          grid-template-columns: 1fr;
+          gap: 10px;
         }
 
-        .composer-rail-main,
-        .composer-rail-controls,
         .composer-actions,
         .composer-tools {
           width: 100%;
         }
 
-        .composer-rail-controls,
         .composer-actions {
           justify-content: stretch;
         }
 
-        .composer-rail-controls .btn,
+        #composerToggleButton,
+        .composer-actions #globalComposerSendButton,
         .composer-tools .btn {
           flex: 1;
+          width: 100%;
         }
 
         .composer-actions #globalComposerSendButton {
@@ -2159,26 +2124,17 @@
       aria-labelledby="composerLabel"
     >
       <div class="composer-shell">
-        <div class="composer-rail">
-          <div class="composer-rail-main">
-            <div class="composer-rail-copy">
-              <div id="composerHint" class="composer-hint hidden"></div>
-            </div>
-          </div>
-          <div class="composer-rail-controls">
-            <span id="composerStatusText" class="composer-hint"></span>
-            <button
-              id="composerToggleButton"
-              data-action="toggle-composer"
-              class="btn btn-primary"
-              style="width: auto"
-              aria-expanded="false"
-              aria-controls="composerPanel"
-            >
-              送信欄を開く
-            </button>
-          </div>
-        </div>
+        <div id="composerHint" class="composer-hint hidden"></div>
+        <button
+          id="composerToggleButton"
+          data-action="toggle-composer"
+          class="btn btn-primary"
+          style="width: auto"
+          aria-expanded="false"
+          aria-controls="composerPanel"
+        >
+          送信欄を開く
+        </button>
         <div id="composerPanel" class="composer-card hidden">
           <div class="composer-card-top">
             <div id="composerLabel" class="composer-label">AI へ送る</div>

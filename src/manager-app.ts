@@ -3542,14 +3542,10 @@ class ManagerApp {
       return;
     }
 
-    const statusText = document.getElementById('composerStatusText');
     const feedbackEntryId = this.#queueComposerFeedbackEntry(content);
     input.value = '';
     this.#composerAttachments.clear();
     this.#syncComposerDraftUi();
-    if (statusText) {
-      statusText.textContent = '';
-    }
     input.focus();
 
     const response = await this.apiFetch('/api/manager/global-send', {
@@ -3562,9 +3558,6 @@ class ManagerApp {
     });
 
     if (!response) {
-      if (statusText) {
-        statusText.textContent = '';
-      }
       this.#updateComposerFeedbackEntry(feedbackEntryId, {
         status: 'failed',
         detail: '送信できませんでした。ここから送信欄へ戻せます。',
@@ -3574,9 +3567,6 @@ class ManagerApp {
     }
 
     if (!response.ok) {
-      if (statusText) {
-        statusText.textContent = '';
-      }
       this.#updateComposerFeedbackEntry(feedbackEntryId, {
         status: 'failed',
         detail: '送信できませんでした。ここから送信欄へ戻せます。',
@@ -3586,9 +3576,6 @@ class ManagerApp {
     }
 
     const summary = (await response.json()) as ManagerRoutingSummary;
-    if (statusText) {
-      statusText.textContent = '';
-    }
     await Promise.all([this.loadAll(), this.loadManagerStatus()]);
     this.#updateComposerFeedbackEntry(feedbackEntryId, {
       status: 'sent',

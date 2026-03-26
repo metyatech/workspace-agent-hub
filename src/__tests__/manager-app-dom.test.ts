@@ -301,6 +301,17 @@ function textList(document: Document, selector: string): string[] {
     .filter(Boolean);
 }
 
+function visibleComposerShellChildIds(document: Document): string[] {
+  const shell = document.querySelector<HTMLElement>('.composer-shell');
+  if (!shell) {
+    return [];
+  }
+  return Array.from(shell.children)
+    .filter((element) => !(element as HTMLElement).classList.contains('hidden'))
+    .map((element) => (element as HTMLElement).id)
+    .filter(Boolean);
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -356,6 +367,8 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).not.toContain(
       'まず一覧を見て、書くときだけ送信欄を開けます。'
     );
+    expect(managerHtml).not.toContain('composer-rail');
+    expect(managerHtml).not.toContain('composerStatusText');
     expect(managerHtml).toContain(
       'id="composerHint" class="composer-hint hidden"'
     );
@@ -720,9 +733,6 @@ describe('manager-app DOM auth state matrix', () => {
     expect(feedbackLane.textContent).toContain('送信状況');
     expect(feedbackLane.textContent).toContain('送信済み 1件');
     expect(feedbackList.classList.contains('hidden')).toBe(true);
-    expect(
-      document.querySelector<HTMLElement>('#composerStatusText')!.textContent
-    ).toBe('');
     expect(
       document
         .querySelector<HTMLElement>('#composerPanel')!
@@ -1992,6 +2002,7 @@ describe('manager-app DOM auth state matrix', () => {
         .querySelector<HTMLElement>('#composerPanel')!
         .classList.contains('hidden')
     ).toBe(false);
+    expect(visibleComposerShellChildIds(document)).toEqual(['composerPanel']);
 
     const composer = document.querySelector<HTMLTextAreaElement>(
       '#globalComposerInput'
@@ -2181,9 +2192,6 @@ describe('manager-app DOM auth state matrix', () => {
     sendButton.click();
     await flushAsync(2);
 
-    const statusText = document.querySelector<HTMLElement>(
-      '#composerStatusText'
-    )!;
     const feedback = document.querySelector<HTMLElement>(
       '#routingFeedbackLane'
     )!;
@@ -2197,7 +2205,6 @@ describe('manager-app DOM auth state matrix', () => {
     expect(composer.value).toBe('');
     expect(sendButton.disabled).toBe(false);
     expect(sendButton.textContent).toBe('送る');
-    expect(statusText.textContent).toBe('');
     expect(feedback.classList.contains('hidden')).toBe(false);
     expect(feedback.textContent).toContain('送信状況');
     expect(feedback.textContent).toContain('送信中 1件');
@@ -2259,7 +2266,6 @@ describe('manager-app DOM auth state matrix', () => {
     expect(sendButton.disabled).toBe(false);
     expect(sendButton.textContent).toBe('送る');
     expect(composer.value).toBe('');
-    expect(statusText.textContent).toBe('');
     expect(feedback.textContent).toContain('送信状況');
     expect(feedback.textContent).toContain('送信済み 2件');
     expect(feedbackList.classList.contains('hidden')).toBe(true);
@@ -2667,6 +2673,9 @@ describe('manager-app DOM auth state matrix', () => {
     expect(panel.classList.contains('hidden')).toBe(true);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.classList.contains('hidden')).toBe(false);
+    expect(visibleComposerShellChildIds(document)).toEqual([
+      'composerToggleButton',
+    ]);
 
     toggle.click();
     await flushAsync(2);
@@ -2679,6 +2688,7 @@ describe('manager-app DOM auth state matrix', () => {
         .querySelector<HTMLButtonElement>('#composerCloseButton')!
         .classList.contains('hidden')
     ).toBe(false);
+    expect(visibleComposerShellChildIds(document)).toEqual(['composerPanel']);
 
     document.querySelector<HTMLButtonElement>('#composerCloseButton')!.click();
     await flushAsync(2);
@@ -2686,6 +2696,9 @@ describe('manager-app DOM auth state matrix', () => {
     expect(panel.classList.contains('hidden')).toBe(true);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(toggle.classList.contains('hidden')).toBe(false);
+    expect(visibleComposerShellChildIds(document)).toEqual([
+      'composerToggleButton',
+    ]);
   });
 
   it('uses real line breaks in the composer placeholder instead of literal \\n text', async () => {
