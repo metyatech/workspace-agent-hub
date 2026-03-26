@@ -3908,9 +3908,6 @@ class ManagerApp {
     clearStoredAuthToken();
     this.#toggleClearAuthButton(false);
     this.#setAuthError('');
-    this.#resumeRefreshPending = false;
-    this.#lastLiveEventAt = 0;
-    this.#lastLiveEventKind = null;
     const input = document.getElementById(
       'auth-token-input'
     ) as HTMLInputElement | null;
@@ -3924,6 +3921,9 @@ class ManagerApp {
     this.#authToken = null;
     this.#lifecycleRefreshReady = false;
     this.#lastLifecycleRefreshAt = 0;
+    this.#resumeRefreshPending = false;
+    this.#lastLiveEventAt = 0;
+    this.#lastLiveEventKind = null;
     clearStoredAuthToken();
     this.#recordDiagnosticEvent('auth:failed', message);
     this.#stopLiveStream('auth-failed');
