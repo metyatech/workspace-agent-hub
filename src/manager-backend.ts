@@ -5,11 +5,11 @@
  * per-work-item worker-agent execution.
  * Maintains per-workspace state in two workspace-local files (not committed):
  *
- *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, legacy routing field, PID)
+ *   .workspace-agent-hub-manager.json        — runtime state (idle/busy, routing continuity, PID)
  *   .workspace-agent-hub-manager-queue.jsonl — persistent message queue
  *
  * Key design rules:
- *  - One stateless Codex routing turn per freeform inbox send
+ *  - One persistent Codex routing session per workspace inbox
  *  - One Codex worker-agent session per Manager work item, persisted in thread meta
  *  - Manager-assigned replies and worker-agent tasks share one persistent queue
  *  - Worker-agent assignments can run in parallel when their repo-relative
@@ -40,6 +40,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  type ManagerThreadMeta,
   type ManagerWorkerLiveEntry,
   type ManagerWorkerRuntimeState,
   readManagerThreadMeta,
@@ -90,13 +91,13 @@ export const MANAGER_REASONING_EFFORT = 'xhigh';
 export const MANAGER_REPLY_STATUS = 'review' as const;
 
 /**
- * System context embedded in each stateless routing turn.
+ * System context embedded in the first routing turn.
  */
 const MANAGER_ROUTER_SYSTEM_PROMPT =
   'You are a manager AI assistant for this software workspace. ' +
   'Help coordinate work across multiple threads. ' +
-  'Judge each incoming user message on its own against the currently open topics instead of relying on older router-chat memory. ' +
-  'Default to a new topic for each new user turn unless the message is directly answering a blocking question already asked inside an existing topic. ' +
+  'Keep using the same routing conversation across global sends so you can understand follow-up references like earlier XX/YY while still grounding each decision in the latest topic list. ' +
+  'Prefer attach-existing when the user is clearly continuing, checking on, refining, or answering an existing topic, and create-new only when the message is genuinely separate or the user explicitly wants a split topic. ' +
   'Route requests into the right topic, ask for clarification only when routing is truly ambiguous, and keep stored user wording as close to the original as possible.';
 
 const MANAGER_REPLY_JSON_RULES =
@@ -144,11 +145,11 @@ const MANAGER_ROUTING_JSON_RULES =
   'For "attach-existing" and "resolve-existing", include topicRef and content. ' +
   'For "create-new", include title and content. ' +
   'Treat contextThreadId only as a hint; create a new topic unless the current message clearly belongs to that existing topic. ' +
-  'Default granularity is one user turn per topic. When the message is a follow-up or additional instruction about an existing topic, prefer a fresh topic with standalone context instead of attach-existing. Reserve attach-existing for direct answers to an outstanding blocking question or routing-confirmation request that already exists inside that topic. ' +
+  'Default granularity is one user goal per topic. When the message clearly continues, checks on, refines, or answers an existing topic, prefer attach-existing and keep it in that same topic. Create a new topic only when the message is clearly separate or the user explicitly asks to split it out. Resolved topics can still be valid attach-existing targets when the user is clearly returning to that earlier topic. ' +
   'Do not attach to an existing topic just because it is broadly similar or was discussed recently; attach only when the current message clearly reads as a continuation of that exact topic. ' +
   'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
-  'Use topicRef exactly as shown in Existing open topics, and never mention topicRef, threadId, or any other internal ID in user-facing titles, reasons, questions, or stored content. ' +
+  'Use topicRef exactly as shown in Recent topics, and never mention topicRef, threadId, or any other internal ID in user-facing titles, reasons, questions, or stored content. ' +
   'content is the user message text that will be stored in that target topic. For "create-new" and "routing-confirmation", content must stand on its own inside that topic: keep it as close to the original wording as possible, but add the smallest missing context needed so the topic still makes sense when read alone. If the original wording already stands alone, make content match originalText. ' +
   'Split confident intents immediately and leave only the ambiguous parts for confirmation. ' +
   'Do not wrap JSON in markdown fences.';
@@ -215,7 +216,7 @@ export interface ManagerSession {
   status: 'idle' | 'busy' | 'not-started';
   /** Legacy workspace-level worker continuity; new execution turns use per-thread meta. */
   sessionId: string | null;
-  /** Legacy field kept for on-disk compatibility; routing now runs statelessly per send. */
+  /** Persisted routing continuity for workspace-level global sends. */
   routingSessionId: string | null;
   /** PID of the currently running codex process, or null */
   pid: number | null;
@@ -1516,7 +1517,7 @@ function buildRoutingPrompt(input: {
   prompt: string;
   threadIdByTopicRef: Map<string, string>;
 } {
-  const topicRefs = input.threads.slice(0, 40).map((thread, index) => ({
+  const topicRefs = input.threads.map((thread, index) => ({
     thread,
     topicRef: `topic-${index + 1}`,
   }));
@@ -1525,7 +1526,7 @@ function buildRoutingPrompt(input: {
   );
   const threadSummary =
     topicRefs.length === 0
-      ? 'No existing open topics.'
+      ? 'No recent topics.'
       : topicRefs
           .map((entry) => {
             const thread = entry.thread;
@@ -1549,7 +1550,7 @@ function buildRoutingPrompt(input: {
       : (topicRefs.find((entry) => entry.thread.id === input.contextThreadId)
           ?.thread ?? null);
   const contextBlock = contextThread
-    ? `Current open topic mention hint: @${contextThread.title}. If you decide this really belongs to that topic, use its topicRef from the Existing open topics list. Treat this like a user mention hint, not a forced destination.`
+    ? `Current open topic mention hint: @${contextThread.title}. If you decide this really belongs to that topic, use its topicRef from the Recent topics list. Treat this like a user mention hint, not a forced destination.`
     : input.contextThreadId
       ? 'There is a currently open topic, but its metadata was unavailable. Treat that only as a weak continuation hint and never mention internal IDs.'
       : 'No current open topic mention hint.';
@@ -1559,7 +1560,7 @@ function buildRoutingPrompt(input: {
     MANAGER_ROUTING_JSON_RULES,
     `Workspace: ${input.resolvedDir}`,
     contextBlock,
-    'Existing open topics:',
+    'Recent topics:',
     threadSummary,
     'User message:',
     buildManagerMessagePromptContent(input.content).text,
@@ -1987,27 +1988,6 @@ function buildDerivedThreadUserMessage(input: {
   });
 }
 
-async function shouldKeepUserMessageInSameTopic(input: {
-  dir: string;
-  resolvedDir: string;
-  threadId: string;
-}): Promise<{
-  keepSameTopic: boolean;
-  thread: Thread | null;
-}> {
-  const [thread, meta] = await Promise.all([
-    getThread(input.dir, input.threadId),
-    readManagerThreadMeta(input.resolvedDir),
-  ]);
-  const threadMeta = meta[input.threadId] ?? null;
-  return {
-    keepSameTopic:
-      Boolean(threadMeta?.routingConfirmationNeeded) ||
-      thread?.status === 'needs-reply',
-    thread,
-  };
-}
-
 async function runCodexTurn(input: {
   dir: string;
   resolvedDir: string;
@@ -2147,6 +2127,7 @@ const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
 const MAX_RERUN_DEPTH = 5;
 const routingLocks = new Map<string, Promise<void>>();
+const MAX_ROUTING_TOPIC_CANDIDATES = 40;
 
 function makeFallbackThreadTitle(content: string): string {
   const normalized = extractManagerMessagePlainText(content);
@@ -2154,6 +2135,79 @@ function makeFallbackThreadTitle(content: string): string {
     return '新しい話題';
   }
   return normalized.slice(0, 48);
+}
+
+function threadUpdatedAtMs(thread: Thread): number {
+  const updatedAt = new Date(thread.updatedAt).getTime();
+  return Number.isNaN(updatedAt) ? 0 : updatedAt;
+}
+
+function pickRoutingCandidateThreads(
+  threads: Thread[],
+  contextThreadId?: string | null
+): Thread[] {
+  const sorted = [...threads].sort((left, right) => {
+    const updatedDiff = threadUpdatedAtMs(right) - threadUpdatedAtMs(left);
+    if (updatedDiff !== 0) {
+      return updatedDiff;
+    }
+    if (left.status === right.status) {
+      return 0;
+    }
+    return left.status === 'resolved' ? 1 : -1;
+  });
+
+  if (!contextThreadId) {
+    return sorted.slice(0, MAX_ROUTING_TOPIC_CANDIDATES);
+  }
+
+  const contextThread = sorted.find((thread) => thread.id === contextThreadId);
+  const withoutContext = sorted.filter(
+    (thread) => thread.id !== contextThreadId
+  );
+  return (
+    contextThread ? [contextThread, ...withoutContext] : withoutContext
+  ).slice(0, MAX_ROUTING_TOPIC_CANDIDATES);
+}
+
+function managerThreadMetaHasContent(meta: ManagerThreadMeta): boolean {
+  return Object.values(meta).some((value) => {
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+    return value !== null && value !== undefined && value !== '';
+  });
+}
+
+async function clearThreadRoutingStatePreservingContinuity(
+  dir: string,
+  threadId: string
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    if (!current) {
+      return null;
+    }
+
+    const next: ManagerThreadMeta = { ...current };
+    delete next.routingConfirmationNeeded;
+    delete next.routingHint;
+    delete next.lastRoutingAt;
+    delete next.assigneeKind;
+    delete next.assigneeLabel;
+    delete next.workerAgentId;
+    delete next.workerRuntimeState;
+    delete next.workerRuntimeDetail;
+    delete next.workerWriteScopes;
+    delete next.workerBlockedByThreadIds;
+    delete next.supersededByThreadId;
+    delete next.workerLiveLog;
+    delete next.workerLiveOutput;
+    delete next.workerLiveAt;
+    delete next.consecutiveFailures;
+    delete next.nextRetryAfter;
+
+    return managerThreadMetaHasContent(next) ? next : null;
+  });
 }
 
 async function withRoutingLock<T>(
@@ -3770,28 +3824,49 @@ async function routeFreeformMessage(input: {
   contextThreadId?: string | null;
 }): Promise<{
   plan: ManagerRoutingPlan;
+  routingSessionId: string | null;
 }> {
-  const openThreads = (await listThreads(input.dir)).filter(
-    (thread) => thread.status !== 'resolved'
+  const allThreads = await listThreads(input.dir);
+  const routingThreads = pickRoutingCandidateThreads(
+    allThreads,
+    input.contextThreadId
   );
-  const { prompt, threadIdByTopicRef } = buildRoutingPrompt({
-    content: input.content,
-    resolvedDir: input.resolvedDir,
-    threads: openThreads,
-    contextThreadId: input.contextThreadId,
-    isFirstTurn: true,
-  });
+  const session = await readSession(input.dir);
+  let routingSessionId = session.routingSessionId?.trim() || null;
   const promptImages = await materializeManagerPromptImages({
     workspaceKey: workspaceKey(input.dir),
     message: input.content,
   });
-  const runResult = await runCodexTurn({
-    dir: input.dir,
-    resolvedDir: input.resolvedDir,
-    prompt,
-    sessionId: null,
-    imagePaths: promptImages.map((image) => image.path),
-  });
+  let threadIdByTopicRef = new Map<string, string>();
+  const runRoutingTurn = async (sessionId: string | null) => {
+    const promptData = buildRoutingPrompt({
+      content: input.content,
+      resolvedDir: input.resolvedDir,
+      threads: routingThreads,
+      contextThreadId: input.contextThreadId,
+      isFirstTurn: sessionId === null,
+    });
+    threadIdByTopicRef = promptData.threadIdByTopicRef;
+    return runCodexTurn({
+      dir: input.dir,
+      resolvedDir: input.resolvedDir,
+      prompt: promptData.prompt,
+      sessionId,
+      imagePaths: promptImages.map((image) => image.path),
+    });
+  };
+  let runResult = await runRoutingTurn(routingSessionId);
+  let combinedOutput = `${runResult.stdout}\n${runResult.stderr}`;
+
+  if (
+    runResult.code !== 0 &&
+    routingSessionId &&
+    isSessionInvalidError(combinedOutput)
+  ) {
+    routingSessionId = null;
+    runResult = await runRoutingTurn(null);
+    combinedOutput = `${runResult.stdout}\n${runResult.stderr}`;
+  }
 
   if (runResult.code !== 0) {
     throw new Error(
@@ -3801,6 +3876,7 @@ async function routeFreeformMessage(input: {
     );
   }
 
+  const nextRoutingSessionId = runResult.parsed.sessionId ?? routingSessionId;
   const parsedPlan = parseManagerRoutingPlan(runResult.parsed.text);
   if (!parsedPlan) {
     return {
@@ -3815,6 +3891,7 @@ async function routeFreeformMessage(input: {
           },
         ],
       },
+      routingSessionId: nextRoutingSessionId,
     };
   }
 
@@ -3849,6 +3926,7 @@ async function routeFreeformMessage(input: {
           },
         ],
       },
+      routingSessionId: nextRoutingSessionId,
     };
   }
 
@@ -3856,6 +3934,7 @@ async function routeFreeformMessage(input: {
     plan: {
       actions: resolvedActions,
     },
+    routingSessionId: nextRoutingSessionId,
   };
 }
 
@@ -3878,7 +3957,7 @@ export async function sendGlobalToBuiltinManager(
       }));
     }
 
-    const { plan } = await routeFreeformMessage({
+    const { plan, routingSessionId } = await routeFreeformMessage({
       dir,
       resolvedDir,
       content,
@@ -3887,7 +3966,7 @@ export async function sendGlobalToBuiltinManager(
 
     await updateSession(dir, (session) => ({
       ...session,
-      routingSessionId: null,
+      routingSessionId,
       lastMessageAt: new Date().toISOString(),
     }));
 
@@ -3906,61 +3985,16 @@ export async function sendGlobalToBuiltinManager(
           if (!action.threadId) {
             break;
           }
-          const { keepSameTopic, thread: parentThread } =
-            await shouldKeepUserMessageInSameTopic({
-              dir,
-              resolvedDir,
-              threadId: action.threadId,
-            });
-          if (!keepSameTopic && parentThread) {
-            const derivedUserMessage = buildDerivedThreadUserMessage({
-              fullInput: content,
-              action,
-              totalActions: plan.actions.length,
-              parentThread,
-            });
-            const createdThread = await createThread(
-              resolvedDir,
-              makeDerivedThreadTitle(parentThread.title, action.content)
-            );
-            await addMessage(
-              resolvedDir,
-              createdThread.id,
-              derivedUserMessage,
-              'user',
-              'waiting'
-            );
-            await updateManagerThreadMeta(
-              resolvedDir,
-              createdThread.id,
-              () => ({
-                derivedFromThreadIds: [parentThread.id],
-                routingHint: `派生元: 「${parentThread.title}」から分けた task です。`,
-              })
-            );
-            await sendToBuiltinManager(
-              resolvedDir,
-              createdThread.id,
-              derivedUserMessage,
-              { dispatchMode: 'manager-evaluate' }
-            );
-            items.push({
-              threadId: createdThread.id,
-              title: createdThread.title,
-              outcome: 'created-new',
-              reason: `「${parentThread.title}」から派生した新しい話題として分け、そのまま実行に回しました。`,
-            });
-            routedCount += 1;
-            break;
-          }
-
           const userMessage = pickThreadUserMessage(
             content,
             action,
             plan.actions.length
           );
           await ensureThreadReadyForUserMessage(dir, action.threadId);
-          await clearManagerThreadMeta(resolvedDir, action.threadId);
+          await clearThreadRoutingStatePreservingContinuity(
+            resolvedDir,
+            action.threadId
+          );
           await addMessage(
             resolvedDir,
             action.threadId,
@@ -3976,13 +4010,14 @@ export async function sendGlobalToBuiltinManager(
               dispatchMode: 'manager-evaluate',
             }
           );
+          const attachedThread = await getThread(dir, action.threadId);
           items.push({
             threadId: action.threadId,
-            title: parentThread?.title ?? action.threadId,
+            title: attachedThread?.title ?? action.threadId,
             outcome: 'attached-existing',
             reason:
               action.reason ??
-              'この話題で待っていた確認への返答として扱い、そのまま実行に回しました。',
+              'この話題の続きとして扱い、そのまま実行に回しました。',
           });
           routedCount += 1;
           break;

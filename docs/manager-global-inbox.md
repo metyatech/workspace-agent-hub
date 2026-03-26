@@ -105,10 +105,11 @@ work item before sending and makes fragmented work harder to capture quickly.
   user's freeform message, the stored user-side message should keep that
   original wording instead of being immediately rewritten into AI-normalized
   prose
-- Default granularity is one new user turn per work item. When the user is
-  following up on an earlier work item, create a new derived work item with enough
-  parent context embedded into the stored user message so that the derived
-  work item still makes sense on its own
+- Default granularity is one user goal per work item. When the user is clearly
+  following up on, checking on, or answering an earlier work item, keep that
+  message in the same work item instead of auto-splitting it into a derived
+  one. Recently resolved work items should still be eligible when the user is
+  clearly returning to that earlier topic
 - For brand-new work items, the stored user-side message should still be
   readable on its own inside that work item: keep the user's wording as much
   as possible,
@@ -129,9 +130,9 @@ Given a freeform message such as:
 the Manager should:
 
 1. split the message into candidate intents
-2. create a new work item for each resulting user-turn task, and if an intent
-   is a follow-up to an existing work item, usually create a derived work item
-   instead of appending directly to the old one
+2. create a new work item for each clearly separate task, but if an intent is
+   a follow-up to an existing work item, keep it in that same work item,
+   including recently resolved ones that the user is reopening naturally
 3. ask for confirmation only for the ambiguous intent(s)
 4. write replies back into the resulting work item(s), not only as one top-level
    combined answer

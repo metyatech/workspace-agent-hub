@@ -513,7 +513,7 @@ describe('manager backend codex integration', () => {
     ).toBe(true);
   });
 
-  it('routes each global send with a fresh routing turn instead of resuming older router context', async () => {
+  it('reuses one routing session across global sends while keeping topic context current', async () => {
     const routingProcOne = makeProc(8601);
     const dispatchProcOne = makeProc(8602);
     const workerProcOne = makeProc(8603);
@@ -583,10 +583,12 @@ describe('manager backend codex integration', () => {
 
     const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
     await waitFor(() => spawnMock.mock.calls.length === 5);
-    expect(spawnMock.mock.calls[4]?.[1]).not.toContain('resume');
+    expect(spawnMock.mock.calls[4]?.[1]).toEqual(
+      expect.arrayContaining(['exec', 'resume', 'routing-thread-1'])
+    );
 
     completeCodexTurn(routingProcTwo, {
-      sessionId: 'routing-thread-2',
+      sessionId: 'routing-thread-1',
       text: JSON.stringify({
         actions: [
           {
@@ -625,7 +627,90 @@ describe('manager backend codex integration', () => {
     });
 
     const session = await readSession(tempDir);
-    expect(session.routingSessionId).toBeNull();
+    expect(session.routingSessionId).toBe('routing-thread-1');
+  });
+
+  it('retries routing once with a fresh session after an invalid stored routing session', async () => {
+    const failingRoutingProc = makeProc(8609);
+    const recoveredRoutingProc = makeProc(8610);
+    const dispatchProc = makeProc(8611);
+    const workerProc = makeProc(8612);
+    const reviewProc = makeProc(8613);
+    spawnMock
+      .mockReturnValueOnce(failingRoutingProc)
+      .mockReturnValueOnce(recoveredRoutingProc)
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      status: 'idle',
+      routingSessionId: 'routing-thread-stale',
+    });
+    listThreadsMock.mockResolvedValue([]);
+    createThreadMock.mockResolvedValueOnce({
+      id: 'thread-recovered',
+      title: 'Recovered task',
+    });
+
+    const sendPromise = sendGlobalToBuiltinManager(tempDir, 'recover routing');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual(
+      expect.arrayContaining(['exec', 'resume', 'routing-thread-stale'])
+    );
+
+    failingRoutingProc.stderr.emit(
+      'data',
+      Buffer.from('resume failed: session not found for routing-thread-stale')
+    );
+    failingRoutingProc.emit('close', 1);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(spawnMock.mock.calls[1]?.[1]).not.toContain('resume');
+
+    completeCodexTurn(recoveredRoutingProc, {
+      sessionId: 'routing-thread-recovered',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'create-new',
+            title: 'Recovered task',
+            content: 'recover routing as a standalone topic request',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-thread-recovered',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-recovered',
+      text: '{"status":"review","reply":"recovered route done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-recovered',
+      text: '{"status":"review","reply":"recovered route done"}',
+    });
+
+    await sendPromise;
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
+
+    const session = await readSession(tempDir);
+    expect(session.routingSessionId).toBe('routing-thread-recovered');
   });
 
   it('passes the open topic as a mention-style routing hint instead of forcing the destination', async () => {
@@ -752,7 +837,7 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('これは別件です');
   });
 
-  it('turns ordinary follow-ups to existing topics into new derived topics', async () => {
+  it('keeps ordinary follow-ups on the same topic, preserves worker continuity, and reopens resolved topics', async () => {
     const routingProc = makeProc(8621);
     const dispatchProc = makeProc(8622);
     const workerProc = makeProc(8623);
@@ -767,7 +852,7 @@ describe('manager backend codex integration', () => {
       {
         id: '_bX_UpQR',
         title: '支払いUIの修正',
-        status: 'active',
+        status: 'resolved',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         messages: [
@@ -779,16 +864,12 @@ describe('manager backend codex integration', () => {
         ],
       },
     ]);
-    createThreadMock.mockResolvedValueOnce({
-      id: 'thread-derived',
-      title: '続きをお願いします（「支払いUIの修正」から派生）',
-    });
     getThreadMock.mockImplementation(
       async (_dir: string, threadId: string) => ({
         id: threadId,
         title:
           threadId === '_bX_UpQR' ? '支払いUIの修正' : `Thread ${threadId}`,
-        status: 'active',
+        status: threadId === '_bX_UpQR' ? 'resolved' : 'active',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         messages: [
@@ -800,15 +881,40 @@ describe('manager backend codex integration', () => {
         ],
       })
     );
+    await writeManagerThreadMeta(tempDir, {
+      _bX_UpQR: {
+        workerSessionId: 'codex-thread-existing',
+        workerLastStartedAt: '2026-03-26T00:00:00.000Z',
+        routingConfirmationNeeded: true,
+        routingHint: '古い routing hint',
+        assigneeKind: 'worker',
+        assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+        workerRuntimeState: 'worker-running',
+        workerRuntimeDetail: '前回の続き',
+        workerWriteScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+        workerLiveLog: [
+          {
+            at: '2026-03-26T00:00:01.000Z',
+            text: 'stale output',
+            kind: 'output',
+          },
+        ],
+        workerLiveOutput: 'stale output',
+        workerLiveAt: '2026-03-26T00:00:01.000Z',
+      },
+    });
 
     const sendPromise = sendGlobalToBuiltinManager(
       tempDir,
-      '続きをお願いします'
+      '昨日の支払いUIの件、続きどうなってる？'
     );
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
     expect(routingProc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('- topicRef: topic-1')
+      expect.stringContaining('Recent topics:')
+    );
+    expect(routingProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('status: resolved')
     );
     expect(routingProc.stdin.write).not.toHaveBeenCalledWith(
       expect.stringContaining('_bX_UpQR')
@@ -821,8 +927,8 @@ describe('manager backend codex integration', () => {
           {
             kind: 'attach-existing',
             topicRef: 'topic-1',
-            content: '続きをお願いします',
-            reason: '既存 topic の続きです',
+            content: '昨日の支払いUIの件、続きどうなってる？',
+            reason: '同じ支払いUIの修正 topic の続きです',
           },
         ],
       }),
@@ -838,8 +944,12 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 3);
+    const workerArgs = spawnMock.mock.calls[2]?.[1] as string[];
+    expect(workerArgs).toEqual(
+      expect.arrayContaining(['exec', 'resume', 'codex-thread-existing'])
+    );
     completeCodexTurn(workerProc, {
-      sessionId: 'worker-topic-ref',
+      sessionId: 'codex-thread-existing',
       text: '{"status":"review","reply":"対応しました"}',
     });
 
@@ -856,20 +966,21 @@ describe('manager backend codex integration', () => {
       return queue.length === 0 && session.status === 'idle';
     });
 
-    expect(createThreadMock).toHaveBeenCalledWith(
-      tempDir,
-      '続きをお願いします（「支払いUIの修正」から派生）'
+    expect(reopenThreadMock).toHaveBeenCalledWith(tempDir, '_bX_UpQR');
+    expect(createThreadMock).not.toHaveBeenCalled();
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('_bX_UpQR');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe(
+      '昨日の支払いUIの件、続きどうなってる？'
     );
-    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-derived');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
-      '派生元作業項目: 「支払いUIの修正」'
-    );
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('続きをお願いします');
     expect(summary.items[0]).toMatchObject({
-      threadId: 'thread-derived',
-      title: '続きをお願いします（「支払いUIの修正」から派生）',
-      outcome: 'created-new',
+      threadId: '_bX_UpQR',
+      title: '支払いUIの修正',
+      outcome: 'attached-existing',
     });
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['_bX_UpQR']?.workerSessionId).toBe('codex-thread-existing');
+    expect(meta['_bX_UpQR']?.routingConfirmationNeeded).toBeUndefined();
+    expect(meta['_bX_UpQR']?.workerLiveOutput).toBeNull();
   });
 
   it('keeps direct replies to needs-reply topics in the same topic instead of splitting them', async () => {
