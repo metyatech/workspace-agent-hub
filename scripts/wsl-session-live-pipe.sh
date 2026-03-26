@@ -13,4 +13,8 @@ cleanup() {
 }
 
 trap cleanup EXIT
-cat >> "${transcript_path}"
+
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  printf '%s\n' "${line}" >> "${transcript_path}"
+  date -Is > "${event_path}" 2>/dev/null || true
+done

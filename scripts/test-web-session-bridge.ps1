@@ -2,6 +2,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $bridgeScriptPath = Join-Path $PSScriptRoot 'session-web-bridge.ps1'
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$workspaceRoot = Split-Path -Parent $repoRoot
 $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
 $codexSessionLabel = 'web-codex-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -123,7 +125,7 @@ try {
         '-Type', 'shell',
         '-SessionName', $sessionLabel,
         '-TitlePath', $titlePayloadPath,
-        '-WorkingDirectory', 'D:\ghws',
+        '-WorkingDirectory', $workspaceRoot,
         '-Json'
     )
 
@@ -220,7 +222,7 @@ try {
         '-Type', 'codex',
         '-SessionName', $codexSessionLabel,
         '-Title', 'Codex Web Sync',
-        '-WorkingDirectory', 'D:\ghws',
+        '-WorkingDirectory', $workspaceRoot,
         '-Json'
     )
 

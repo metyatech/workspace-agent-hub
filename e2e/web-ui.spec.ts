@@ -3,12 +3,16 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { AxeResults } from 'axe-core';
 import type { Server } from 'node:http';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PowerShellSessionBridge } from '../src/session-bridge.js';
 import { createWebUiServer } from '../src/web-ui.js';
 
 let baseUrl = '';
 const authToken = 'playwright-token';
 const titlePrefix = 'Playwright E2E';
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const workspaceRoot = resolve(repoRoot, '..');
 
 let server: Server;
 let bridge: PowerShellSessionBridge;
@@ -150,7 +154,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
 }) => {
   test.setTimeout(600000);
   const title = `${titlePrefix} ${Date.now()}-${test.info().repeatEachIndex}`;
-  const workingDirectory = 'D:\\ghws\\workspace-agent-hub';
+  const workingDirectory = repoRoot;
 
   try {
     await cleanupPlaywrightSessions();
@@ -169,7 +173,7 @@ test('authenticates and manages a shell session from the browser UI', async ({
       page.getByRole('heading', { name: '最初にやること' })
     ).toBeVisible();
     await expect(page.locator('#workingDirectoryInput')).toHaveValue(
-      'D:\\ghws'
+      workspaceRoot
     );
     await expect(page.locator('#connectionHint')).toContainText('接続');
     await expect(page.locator('#installHint')).toContainText('ホーム画面');

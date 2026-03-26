@@ -53,7 +53,29 @@ function Write-Utf8File {
         [string]$Value
     )
 
-    [System.IO.File]::WriteAllText($Path, $Value, $utf8Encoding)
+    $bytes = $utf8Encoding.GetBytes($Value)
+    for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
+        try {
+            $stream = [System.IO.File]::Open(
+                $Path,
+                [System.IO.FileMode]::Create,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite
+            )
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush()
+            } finally {
+                $stream.Dispose()
+            }
+            return
+        } catch [System.IO.IOException] {
+            if ($attempt -ge 9) {
+                throw
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    }
 }
 
 function Write-SessionLiveEventStamp {
