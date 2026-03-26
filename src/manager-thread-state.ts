@@ -53,6 +53,8 @@ export interface ManagerThreadMeta {
   workerLiveLog?: ManagerWorkerLiveEntry[] | null;
   workerLiveOutput?: string | null;
   workerLiveAt?: string | null;
+  consecutiveFailures?: number;
+  nextRetryAfter?: string | null;
 }
 
 export interface ManagerThreadView extends Thread {
@@ -439,4 +441,58 @@ export function deriveManagerThreadViews(input: {
   });
 
   return views.sort(compareByPriority);
+}
+
+// ---------------------------------------------------------------------------
+// Thread fail counter — exponential backoff for consecutive failures
+// ---------------------------------------------------------------------------
+
+const FAIL_BACKOFF_BASE_MS = 15_000; // 15 seconds
+const FAIL_BACKOFF_MAX_MS = 5 * 60_000; // 5 minutes
+const FAIL_MAX_CONSECUTIVE = 3;
+
+export async function recordThreadFailure(
+  dir: string,
+  threadId: string
+): Promise<{ consecutiveFailures: number; shouldPause: boolean }> {
+  let failures = 0;
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    failures = (current?.consecutiveFailures ?? 0) + 1;
+    const backoffMs = Math.min(
+      FAIL_BACKOFF_BASE_MS * Math.pow(2, failures - 1),
+      FAIL_BACKOFF_MAX_MS
+    );
+    return {
+      ...current,
+      consecutiveFailures: failures,
+      nextRetryAfter: new Date(Date.now() + backoffMs).toISOString(),
+    };
+  });
+  return {
+    consecutiveFailures: failures,
+    shouldPause: failures >= FAIL_MAX_CONSECUTIVE,
+  };
+}
+
+export async function resetThreadFailures(
+  dir: string,
+  threadId: string
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    if (!current || (!current.consecutiveFailures && !current.nextRetryAfter)) {
+      return current;
+    }
+    return {
+      ...current,
+      consecutiveFailures: 0,
+      nextRetryAfter: null,
+    };
+  });
+}
+
+export function isThreadInBackoff(meta: ManagerThreadMeta | null): boolean {
+  if (!meta?.nextRetryAfter) {
+    return false;
+  }
+  return new Date(meta.nextRetryAfter).getTime() > Date.now();
 }

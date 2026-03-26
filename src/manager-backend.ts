@@ -36,9 +36,12 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  isThreadInBackoff,
   type ManagerWorkerLiveEntry,
   type ManagerWorkerRuntimeState,
   readManagerThreadMeta,
+  recordThreadFailure,
+  resetThreadFailures,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
 import { writeFileAtomically } from './atomic-file.js';
@@ -59,6 +62,16 @@ import {
   type ManagerQueuePriority,
 } from './manager-queue-priority.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
+import {
+  createWorkerWorktree,
+  mergeWorktreeToMain,
+  pushWithRetry,
+  removeWorktree,
+  resolveConflictAndVerify,
+  resolveTargetRepoRoot,
+  cleanupOrphanedWorktrees,
+  execGit,
+} from './manager-worktree.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -230,6 +243,9 @@ export interface ManagerActiveAssignment {
   pid: number | null;
   startedAt: string;
   lastProgressAt: string | null;
+  worktreePath: string | null;
+  worktreeBranch: string | null;
+  targetRepoRoot: string | null;
 }
 
 export type ManagerHealth = 'ok' | 'error';
@@ -376,6 +392,18 @@ function normalizeActiveAssignment(
       typeof record['lastProgressAt'] === 'string' && record['lastProgressAt']
         ? record['lastProgressAt']
         : null,
+    worktreePath:
+      typeof record['worktreePath'] === 'string' && record['worktreePath']
+        ? record['worktreePath']
+        : null,
+    worktreeBranch:
+      typeof record['worktreeBranch'] === 'string' && record['worktreeBranch']
+        ? record['worktreeBranch']
+        : null,
+    targetRepoRoot:
+      typeof record['targetRepoRoot'] === 'string' && record['targetRepoRoot']
+        ? record['targetRepoRoot']
+        : null,
   };
 }
 
@@ -420,6 +448,9 @@ function normalizeManagerSession(
               session.lastProgressAt.trim()
                 ? session.lastProgressAt
                 : null,
+            worktreePath: null,
+            worktreeBranch: null,
+            targetRepoRoot: null,
           },
         ]
       : [];
@@ -816,6 +847,14 @@ async function reconcileActiveAssignments(
     survivingAssignments.map((assignment) => assignment.threadId)
   );
   for (const assignment of droppedAssignments) {
+    // Clean up worktree for dropped assignment.
+    if (assignment.worktreePath && assignment.worktreeBranch) {
+      await removeWorktree({
+        targetRepoRoot: assignment.targetRepoRoot ?? dir,
+        worktreePath: assignment.worktreePath,
+        branchName: assignment.worktreeBranch,
+      }).catch(() => {});
+    }
     if (survivingThreadIds.has(assignment.threadId)) {
       continue;
     }
@@ -834,6 +873,10 @@ async function reconcileActiveAssignments(
       }
     );
   }
+
+  // Clean up orphaned worktrees whose assignment IDs are no longer active.
+  const activeIds = survivingAssignments.map((a) => a.id);
+  await cleanupOrphanedWorktrees(dir, activeIds).catch(() => {});
 
   return nextSession;
 }
@@ -1069,9 +1112,11 @@ export function buildWorkerExecutionPrompt(input: {
   content: string;
   thread: Thread;
   resolvedDir: string;
+  worktreePath: string | null;
   isFirstTurn: boolean;
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
+  const workspace = input.worktreePath ?? input.resolvedDir;
   if (!input.isFirstTurn) {
     return [
       `[Topic: ${input.thread.title}]`,
@@ -1080,10 +1125,15 @@ export function buildWorkerExecutionPrompt(input: {
     ].join('\n\n');
   }
 
+  const worktreeNotice = input.worktreePath
+    ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
+    : '';
+
   return [
     MANAGER_WORKER_SYSTEM_PROMPT,
     MANAGER_WORKER_JSON_RULES,
-    `Workspace: ${input.resolvedDir}`,
+    `Workspace: ${workspace}`,
+    ...(worktreeNotice ? [worktreeNotice] : []),
     `[Topic: ${input.thread.title}]`,
     'Topic history:',
     formatThreadHistory(input.thread),
@@ -1096,8 +1146,11 @@ export function buildManagerReviewPrompt(input: {
   thread: Thread;
   workerResult: ManagerWorkerResultPayload;
   resolvedDir: string;
+  worktreePath: string | null;
   writeScopes: string[];
+  structuralWarnings?: string[];
 }): string {
+  const workspace = input.worktreePath ?? input.resolvedDir;
   const changedFiles =
     input.workerResult.changedFiles.length > 0
       ? input.workerResult.changedFiles.map((path) => `- ${path}`).join('\n')
@@ -1108,10 +1161,20 @@ export function buildManagerReviewPrompt(input: {
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
 
+  const deliveryInstruction = input.worktreePath
+    ? 'Commit your verified changes in this worktree branch. Do NOT push, release, or publish. The Manager backend will merge to the main branch, resolve any conflicts, verify, and push.'
+    : '';
+
+  const structuralSection =
+    input.structuralWarnings && input.structuralWarnings.length > 0
+      ? `STRUCTURAL REVIEW WARNINGS (must address before approving):\n${input.structuralWarnings.map((w) => `⚠ ${w}`).join('\n')}`
+      : '';
+
   return [
     MANAGER_REVIEW_SYSTEM_PROMPT,
     MANAGER_WORKER_JSON_RULES,
-    `Workspace: ${input.resolvedDir}`,
+    `Workspace: ${workspace}`,
+    ...(deliveryInstruction ? [deliveryInstruction] : []),
     `[Work item: ${input.thread.title}]`,
     'Recent work-item history:',
     formatThreadHistory(input.thread),
@@ -1121,7 +1184,73 @@ export function buildManagerReviewPrompt(input: {
     `changedFiles:\n${changedFiles}`,
     `verificationSummary:\n${verificationSummary}`,
     `declaredWriteScopes: ${declaredWriteScopes}`,
+    ...(structuralSection ? [structuralSection] : []),
   ].join('\n\n');
+}
+
+/**
+ * Run lightweight structural checks on changed files to detect common
+ * quality regressions (skipped tests, verification script changes, etc.).
+ */
+export async function runStructuralChecks(
+  cwd: string,
+  changedFiles: string[]
+): Promise<string[]> {
+  const warnings: string[] = [];
+  if (changedFiles.length === 0) {
+    return warnings;
+  }
+
+  // Check for .skip / .todo in test files.
+  const testFiles = changedFiles.filter(
+    (f) =>
+      f.includes('.test.') || f.includes('.spec.') || f.includes('__tests__')
+  );
+  if (testFiles.length > 0) {
+    const diffResult = await execGit(cwd, ['diff', 'HEAD', '--', ...testFiles]);
+    const addedLines = diffResult.stdout
+      .split('\n')
+      .filter((line) => line.startsWith('+') && !line.startsWith('+++'));
+    const skipCount = addedLines.filter((line) =>
+      /\.(skip|todo)\s*\(/.test(line)
+    ).length;
+    if (skipCount > 0) {
+      warnings.push(
+        `${skipCount} new .skip() or .todo() call(s) added to test files. Ensure tests are not being weakened.`
+      );
+    }
+  }
+
+  // Check for verification/hook script changes.
+  const sensitiveFiles = changedFiles.filter(
+    (f) =>
+      f.includes('verify.ps1') ||
+      f.includes('pre-commit') ||
+      f.includes('.githooks/')
+  );
+  if (sensitiveFiles.length > 0) {
+    warnings.push(
+      `Verification/hook scripts modified: ${sensitiveFiles.join(', ')}. Review changes carefully.`
+    );
+  }
+
+  // Check for excessive mock overrides.
+  const diffAll = await execGit(cwd, ['diff', 'HEAD']);
+  const mockLines = diffAll.stdout
+    .split('\n')
+    .filter(
+      (line) =>
+        line.startsWith('+') &&
+        !line.startsWith('+++') &&
+        /jest\.mock|vi\.mock|\.mockImplementation|\.mockReturnValue/.test(line)
+    );
+  if (mockLines.length > 10) {
+    warnings.push(
+      `${mockLines.length} new mock override lines detected. Excessive mocking may mask real failures.`
+    );
+  }
+
+  return warnings;
 }
 
 function buildDispatchPrompt(input: {
@@ -1834,6 +1963,8 @@ async function runCodexTurn(input: {
 // Per-workspace in-flight guard (module-level singleton, safe for single server process).
 const inFlight = new Set<string>();
 const rerunRequested = new Set<string>();
+const rerunDepth = new Map<string, number>();
+const MAX_RERUN_DEPTH = 5;
 const routingLocks = new Map<string, Promise<void>>();
 
 function makeFallbackThreadTitle(content: string): string {
@@ -2295,6 +2426,13 @@ async function stopSupersededAssignments(input: {
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
     await removeAssignment(input.dir, assignment.id);
+    if (assignment.worktreePath && assignment.worktreeBranch) {
+      await removeWorktree({
+        targetRepoRoot: assignment.targetRepoRoot ?? input.dir,
+        worktreePath: assignment.worktreePath,
+        branchName: assignment.worktreeBranch,
+      }).catch(() => {});
+    }
     await clearWorkerLiveOutput(
       input.dir,
       assignment.threadId,
@@ -2333,6 +2471,8 @@ async function runQueuedAssignment(input: {
   entries: QueueEntry[];
 }): Promise<void> {
   const { dir, resolvedDir, assignment, thread, entries } = input;
+  const workerCwd = assignment.worktreePath ?? resolvedDir;
+  const targetRepoRoot = assignment.targetRepoRoot ?? resolvedDir;
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
   let workerSessionId = await readWorkerSessionId(resolvedDir, thread.id);
@@ -2381,7 +2521,7 @@ async function runQueuedAssignment(input: {
 
     return runCodexTurn({
       dir,
-      resolvedDir,
+      resolvedDir: workerCwd,
       prompt: turn.prompt,
       sessionId: turn.sessionId,
       threadStartedText: turn.initialLiveOutput,
@@ -2456,6 +2596,7 @@ async function runQueuedAssignment(input: {
               content: promptContent,
               thread: promptThread,
               resolvedDir,
+              worktreePath: assignment.worktreePath,
               isFirstTurn,
             }),
       sessionId: currentSessionId,
@@ -2528,12 +2669,18 @@ async function runQueuedAssignment(input: {
       workerSessionId = nextWorkerSessionId;
       await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
       reviewStepAttempted = true;
+      const structuralWarnings = await runStructuralChecks(
+        workerCwd,
+        workerResult.changedFiles
+      );
       finalResult = await runTurn({
         prompt: buildManagerReviewPrompt({
           thread: promptThread,
           workerResult,
           resolvedDir,
+          worktreePath: assignment.worktreePath,
           writeScopes: assignment.writeScopes,
+          structuralWarnings,
         }),
         sessionId: null,
         assigneeKind: 'manager',
@@ -2562,6 +2709,108 @@ async function runQueuedAssignment(input: {
     }
 
     if (finalResult.code === 0 && (finalParsedReply || finalFallbackReply)) {
+      // Merge worktree branch to main, resolve conflicts, and push.
+      if (assignment.worktreePath && assignment.worktreeBranch) {
+        await appendWorkerLiveOutput({
+          dir: resolvedDir,
+          threadId: thread.id,
+          text: 'Worker の変更をメインブランチにマージしています…',
+          kind: 'status',
+          assigneeKind: 'manager',
+          assigneeLabel: defaultAssigneeLabel('manager'),
+          workerSessionId,
+          workerAgentId: assignment.id,
+          runtimeState: 'manager-answering',
+          runtimeDetail: 'マージ中…',
+          workerWriteScopes: assignment.writeScopes,
+        });
+
+        let mergeResult = await mergeWorktreeToMain({
+          targetRepoRoot,
+          branchName: assignment.worktreeBranch,
+        });
+
+        if (!mergeResult.success && mergeResult.conflicted) {
+          await appendWorkerLiveOutput({
+            dir: resolvedDir,
+            threadId: thread.id,
+            text: `コンフリクト検出（${mergeResult.conflictFiles.length} ファイル）。Manager が解消中…`,
+            kind: 'status',
+            assigneeKind: 'manager',
+            assigneeLabel: defaultAssigneeLabel('manager'),
+            workerSessionId,
+            workerAgentId: assignment.id,
+            runtimeState: 'manager-answering',
+            runtimeDetail: 'コンフリクト解消中…',
+            workerWriteScopes: assignment.writeScopes,
+          });
+          mergeResult = await resolveConflictAndVerify({
+            targetRepoRoot,
+            conflictFiles: mergeResult.conflictFiles,
+            runCodexTurnFn: async (prompt, cwd) => {
+              const result = await runCodexTurn({
+                dir,
+                resolvedDir: cwd,
+                prompt,
+                sessionId: null,
+              });
+              return { code: result.code, stderr: result.stderr };
+            },
+          });
+        }
+
+        if (!mergeResult.success) {
+          const errMsg = `[Manager] マージに失敗しました: ${mergeResult.detail}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              errMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await removeWorktree({
+            targetRepoRoot,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+          }).catch(() => {});
+          await removeAssignment(dir, assignment.id);
+          void processNextQueued(dir, resolvedDir);
+          return;
+        }
+
+        // Push after successful merge.
+        await appendWorkerLiveOutput({
+          dir: resolvedDir,
+          threadId: thread.id,
+          text: 'マージ完了。push しています…',
+          kind: 'status',
+          assigneeKind: 'manager',
+          assigneeLabel: defaultAssigneeLabel('manager'),
+          workerSessionId,
+          workerAgentId: assignment.id,
+          runtimeState: 'manager-answering',
+          runtimeDetail: 'push 中…',
+          workerWriteScopes: assignment.writeScopes,
+        });
+        const pushResult = await pushWithRetry({ targetRepoRoot });
+        if (!pushResult.success) {
+          console.error(
+            `[manager-backend] push after merge failed: ${pushResult.detail}`
+          );
+        }
+
+        // Clean up worktree.
+        await removeWorktree({
+          targetRepoRoot,
+          worktreePath: assignment.worktreePath,
+          branchName: assignment.worktreeBranch,
+        }).catch(() => {});
+      }
+
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
@@ -2595,6 +2844,7 @@ async function runQueuedAssignment(input: {
         }
       );
       await removeAssignment(dir, assignment.id);
+      await resetThreadFailures(resolvedDir, thread.id);
       void processNextQueued(dir, resolvedDir);
       return;
     }
@@ -2613,6 +2863,7 @@ async function runQueuedAssignment(input: {
       /* thread may have been deleted */
     }
     await setManagerRuntimeError(dir, errMsg);
+    await recordThreadFailure(resolvedDir, thread.id);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
@@ -2634,6 +2885,13 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
+    if (assignment.worktreePath && assignment.worktreeBranch) {
+      await removeWorktree({
+        targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+        worktreePath: assignment.worktreePath,
+        branchName: assignment.worktreeBranch,
+      }).catch(() => {});
+    }
     void processNextQueued(dir, resolvedDir);
   } catch (error) {
     const stillTracked = (await readSession(dir)).activeAssignments.some(
@@ -2653,6 +2911,7 @@ async function runQueuedAssignment(input: {
       /* thread may have been deleted */
     }
     await setManagerRuntimeError(dir, errMsg);
+    await recordThreadFailure(resolvedDir, thread.id);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
@@ -2671,6 +2930,13 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
+    if (assignment.worktreePath && assignment.worktreeBranch) {
+      await removeWorktree({
+        targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+        worktreePath: assignment.worktreePath,
+        branchName: assignment.worktreeBranch,
+      }).catch(() => {});
+    }
     void processNextQueued(dir, resolvedDir);
   }
 }
@@ -2738,6 +3004,11 @@ export async function processNextQueued(
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
         );
+        continue;
+      }
+
+      // Skip threads in backoff from consecutive failures.
+      if (isThreadInBackoff(meta[next.threadId] ?? null)) {
         continue;
       }
 
@@ -2882,7 +3153,41 @@ export async function processNextQueued(
         pid: null,
         startedAt: new Date().toISOString(),
         lastProgressAt: null,
+        worktreePath: null,
+        worktreeBranch: null,
+        targetRepoRoot: null,
       };
+
+      // Create isolated worktree for worker assignments.
+      if (dispatch.assignee === 'worker') {
+        const targetRepo = resolveTargetRepoRoot(
+          resolvedDir,
+          assignmentWriteScopes
+        );
+        try {
+          const wt = await createWorkerWorktree({
+            targetRepoRoot: targetRepo,
+            assignmentId: assignment.id,
+          });
+          assignment.worktreePath = wt.worktreePath;
+          assignment.worktreeBranch = wt.branchName;
+          assignment.targetRepoRoot = wt.targetRepoRoot;
+        } catch (wtErr) {
+          const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              errMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          continue;
+        }
+      }
 
       await reserveAssignment({
         dir,
@@ -2926,7 +3231,18 @@ export async function processNextQueued(
     inFlight.delete(resolvedDir);
     if (rerunRequested.has(resolvedDir)) {
       rerunRequested.delete(resolvedDir);
-      void processNextQueued(dir, resolvedDir);
+      const depth = (rerunDepth.get(resolvedDir) ?? 0) + 1;
+      if (depth > MAX_RERUN_DEPTH) {
+        rerunDepth.delete(resolvedDir);
+        console.error(
+          `[manager-backend] processNextQueued rerun depth exceeded (${MAX_RERUN_DEPTH}) for ${resolvedDir}; breaking loop`
+        );
+      } else {
+        rerunDepth.set(resolvedDir, depth);
+        void processNextQueued(dir, resolvedDir);
+      }
+    } else {
+      rerunDepth.delete(resolvedDir);
     }
   }
 }

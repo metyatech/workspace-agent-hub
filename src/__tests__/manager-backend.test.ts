@@ -35,6 +35,35 @@ vi.mock('@metyatech/thread-inbox', () => ({
   resolveThread: resolveThreadMock,
 }));
 
+vi.mock('../manager-worktree.js', () => ({
+  createWorkerWorktree: vi.fn().mockResolvedValue({
+    worktreePath: null,
+    branchName: null,
+    targetRepoRoot: null,
+  }),
+  mergeWorktreeToMain: vi.fn().mockResolvedValue({
+    success: true,
+    conflicted: false,
+    conflictFiles: [],
+    detail: 'mock merge',
+  }),
+  resolveConflictAndVerify: vi.fn().mockResolvedValue({
+    success: true,
+    conflicted: false,
+    conflictFiles: [],
+    detail: 'mock conflict resolution',
+  }),
+  pushWithRetry: vi
+    .fn()
+    .mockResolvedValue({ success: true, detail: 'mock push' }),
+  removeWorktree: vi.fn().mockResolvedValue(undefined),
+  resolveTargetRepoRoot: vi
+    .fn()
+    .mockImplementation((resolvedDir: string) => resolvedDir),
+  cleanupOrphanedWorktrees: vi.fn().mockResolvedValue(undefined),
+  execGit: vi.fn().mockResolvedValue({ stdout: '', stderr: '', code: 0 }),
+}));
+
 import {
   buildCodexSpawnOptions,
   buildCodexSpawnSpec,
@@ -255,6 +284,7 @@ describe('manager backend codex integration', () => {
     const workerFirst = buildWorkerExecutionPrompt({
       content: 'Implement the task',
       resolvedDir: 'D:\\ghws',
+      worktreePath: null,
       isFirstTurn: true,
       thread: {
         id: 'thread-a',
@@ -273,6 +303,7 @@ describe('manager backend codex integration', () => {
     });
     const reviewPrompt = buildManagerReviewPrompt({
       resolvedDir: 'D:\\ghws',
+      worktreePath: null,
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
       thread: {
         id: 'thread-a',
@@ -1212,6 +1243,9 @@ describe('manager backend codex integration', () => {
           pid: process.pid,
           startedAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
           lastProgressAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+          worktreePath: null,
+          worktreeBranch: null,
+          targetRepoRoot: null,
         },
       ],
     });
@@ -1241,6 +1275,9 @@ describe('manager backend codex integration', () => {
           pid: 7001,
           startedAt: '2026-03-25T10:00:00.000Z',
           lastProgressAt: '2026-03-25T10:00:01.000Z',
+          worktreePath: null,
+          worktreeBranch: null,
+          targetRepoRoot: null,
         },
         {
           id: 'assign-b',
@@ -1252,6 +1289,9 @@ describe('manager backend codex integration', () => {
           pid: 7002,
           startedAt: '2026-03-25T10:00:00.000Z',
           lastProgressAt: '2026-03-25T10:00:02.000Z',
+          worktreePath: null,
+          worktreeBranch: null,
+          targetRepoRoot: null,
         },
       ],
     });
@@ -1342,6 +1382,9 @@ describe('manager backend codex integration', () => {
           pid: null,
           startedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
           lastProgressAt: null,
+          worktreePath: null,
+          worktreeBranch: null,
+          targetRepoRoot: null,
         },
       ],
     });
@@ -1797,6 +1840,9 @@ describe('manager backend codex integration', () => {
           pid: null,
           startedAt: new Date().toISOString(),
           lastProgressAt: new Date().toISOString(),
+          worktreePath: null,
+          worktreeBranch: null,
+          targetRepoRoot: null,
         },
       ],
     });
