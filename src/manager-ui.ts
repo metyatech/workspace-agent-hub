@@ -31,6 +31,7 @@ import {
   subscribeManagerUpdates,
 } from './manager-live-updates.js';
 import { isWebUiAuthorized, type WebUiAuthConfig } from './web-auth.js';
+import { activeSseConnections } from './sse-connections.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -266,6 +267,7 @@ export async function handleManagerUiRequest(input: {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
+    activeSseConnections.add(input.res);
 
     let closed = false;
     let writeChain = Promise.resolve();
@@ -307,6 +309,7 @@ export async function handleManagerUiRequest(input: {
         return;
       }
       closed = true;
+      activeSseConnections.delete(input.res);
       clearInterval(heartbeat);
       unsubscribe();
       if (!input.res.writableEnded) {

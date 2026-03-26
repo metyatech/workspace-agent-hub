@@ -25,6 +25,9 @@ import type {
   TailscaleConnectInfo,
 } from './types.js';
 
+import { killAllActiveChildProcesses } from './manager-backend.js';
+import { activeSseConnections } from './sse-connections.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -805,6 +808,14 @@ export async function createWebUiServer(
           return;
         }
 
+        if (method === 'POST' && pathname === '/api/shutdown') {
+          sendJson(res, { shutting_down: true });
+          setImmediate(() => {
+            void gracefulShutdown(server);
+          });
+          return;
+        }
+
         if (method === 'GET' && pathname === '/api/pairing-qr') {
           const connectBaseUrl =
             connectInfo.preferredConnectUrl ||
@@ -856,6 +867,7 @@ export async function createWebUiServer(
             Connection: 'keep-alive',
             'X-Accel-Buffering': 'no',
           });
+          activeSseConnections.add(res);
 
           let closed = false;
           let writeChain = Promise.resolve();
@@ -928,6 +940,7 @@ export async function createWebUiServer(
               return;
             }
             closed = true;
+            activeSseConnections.delete(res);
             clearInterval(heartbeat);
             unsubscribe();
             if (!res.writableEnded) {
@@ -1128,6 +1141,40 @@ export async function createWebUiServer(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+
+let shuttingDown = false;
+
+async function gracefulShutdown(server: Server): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+
+  // 1. Stop accepting new connections
+  server.close();
+
+  // 2. Destroy all active SSE connections
+  for (const sseRes of activeSseConnections) {
+    try {
+      sseRes.destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+  activeSseConnections.clear();
+
+  // 3. Kill all managed child processes
+  await killAllActiveChildProcesses();
+
+  // 4. Allow up to 3 seconds for cleanup
+  await new Promise<void>((r) => setTimeout(r, 500));
+
+  process.exit(0);
+}
+
 export async function startWebUi(
   options: StartWebUiOptions = {}
 ): Promise<void> {
@@ -1209,6 +1256,13 @@ export async function startWebUi(
     });
     openBrowser(localBrowserUrl);
   }
+
+  // Register signal handlers for graceful shutdown
+  const onSignal = () => {
+    void gracefulShutdown(server);
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
 
   await new Promise<void>((resolvePromise) => {
     server.on('close', () => resolvePromise());

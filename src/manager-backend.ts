@@ -19,7 +19,11 @@
  *  - Requires: Codex CLI (`npm install -g @openai/codex`)
  */
 
-import { spawn } from 'child_process';
+import {
+  spawn,
+  type ChildProcess,
+  execFile as execFileCb,
+} from 'child_process';
 import { readFile, writeFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { createHash } from 'crypto';
@@ -253,6 +257,61 @@ const MANAGER_RECONCILE_GRACE_MS = 15 * 1000;
 const MAX_PARALLEL_WORKER_AGENTS = 3;
 const MAX_PARALLEL_MANAGER_ASSIGNMENTS = 1;
 const UNIVERSAL_WRITE_SCOPE = '*';
+
+// ---------------------------------------------------------------------------
+// Child process tracking — for graceful shutdown
+// ---------------------------------------------------------------------------
+
+const activeChildProcesses = new Set<ChildProcess>();
+
+function killProcessTree(pid: number): Promise<void> {
+  return new Promise<void>((resolvePromise) => {
+    if (process.platform === 'win32') {
+      const kill = execFileCb(
+        'taskkill',
+        ['/F', '/T', '/PID', String(pid)],
+        { windowsHide: true },
+        () => resolvePromise()
+      );
+      kill.on('error', () => resolvePromise());
+    } else {
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch {
+        /* already exited */
+      }
+      resolvePromise();
+    }
+  });
+}
+
+export async function killAllActiveChildProcesses(): Promise<void> {
+  const pids = [...activeChildProcesses]
+    .map((proc) => proc.pid)
+    .filter((pid): pid is number => pid != null);
+
+  if (pids.length === 0) {
+    return;
+  }
+
+  await Promise.allSettled(pids.map((pid) => killProcessTree(pid)));
+
+  // Wait up to 5 seconds for processes to exit
+  const deadline = Date.now() + 5000;
+  while (activeChildProcesses.size > 0 && Date.now() < deadline) {
+    await new Promise<void>((r) => setTimeout(r, 200));
+  }
+
+  // Force kill any survivors
+  for (const proc of activeChildProcesses) {
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      /* already exited */
+    }
+  }
+  activeChildProcesses.clear();
+}
 
 export interface QueueEntry {
   id: string;
@@ -1854,6 +1913,10 @@ async function runCodexTurn(input: {
   );
   const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
   const proc = spawn(spawnSpec.command, spawnSpec.args, spawnSpec.spawnOptions);
+  activeChildProcesses.add(proc);
+  proc.on('close', () => {
+    activeChildProcesses.delete(proc);
+  });
   await input.onSpawn?.(proc.pid ?? null);
 
   let stdout = '';
