@@ -37,7 +37,7 @@ type ManagerUiState =
 
 type ManagerListSortOrder = 'newest-first' | 'oldest-first';
 
-type ManagerSortPreferenceKey = ManagerUiState | 'priority-lane' | 'tasks';
+type ManagerSortPreferenceKey = ManagerUiState | 'tasks';
 
 type ManagerWorkerRuntimeState =
   | 'manager-answering'
@@ -271,7 +271,6 @@ const STATE_ORDER: ManagerUiState[] = [
 ];
 
 const SORTABLE_SECTION_KEYS: ManagerSortPreferenceKey[] = [
-  'priority-lane',
   ...STATE_ORDER,
   'tasks',
 ];
@@ -280,7 +279,6 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
   ManagerSortPreferenceKey,
   ManagerListSortOrder
 > = {
-  'priority-lane': 'oldest-first',
   'routing-confirmation-needed': 'oldest-first',
   'user-reply-needed': 'oldest-first',
   'ai-finished-awaiting-user-confirmation': 'oldest-first',
@@ -292,7 +290,6 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
 };
 
 const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
-  'priority-lane': 'いま読む作業項目',
   'routing-confirmation-needed': '振り分けの確認が必要です',
   'user-reply-needed': 'あなたの返信が必要です',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ちです',
@@ -306,12 +303,6 @@ const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
 const STATE_PRIORITY_RANK = Object.fromEntries(
   STATE_ORDER.map((state, index) => [state, index])
 ) as Record<ManagerUiState, number>;
-
-const ACTIONABLE_STATES = new Set<ManagerUiState>([
-  'routing-confirmation-needed',
-  'user-reply-needed',
-  'ai-finished-awaiting-user-confirmation',
-]);
 
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
@@ -1726,10 +1717,11 @@ class ThreadSectionController {
   #body: HTMLElement | null;
   #count: HTMLElement | null;
   #chevron: HTMLElement | null;
-  #collapsed = false;
+  #collapsed = true;
   #rows = new Map<string, HTMLElement>();
   #orderedIds: string[] = [];
   #lastThreads: ThreadView[] = [];
+  #lastThreadCount = 0;
   #lastOpenThreadId: string | null = null;
   #lastTargetThreadId: string | null = null;
   #lastSelectHandler: ((id: string) => void) | null = null;
@@ -1741,6 +1733,7 @@ class ThreadSectionController {
     this.#body = document.getElementById(`body-${key}`);
     this.#count = document.getElementById(`count-${key}`);
     this.#chevron = document.getElementById(`chevron-${key}`);
+    this.setCollapsed(true);
   }
 
   getRow(threadId: string): HTMLElement | null {
@@ -1785,6 +1778,14 @@ class ThreadSectionController {
     this.#lastSelectHandler = onSelect;
     this.#lastThreadTitlesById = threadTitlesById;
     this.#lastThreadsById = threadsById;
+    const previousCount = this.#lastThreadCount;
+    this.#lastThreadCount = threads.length;
+
+    if (threads.length === 0 && previousCount > 0) {
+      this.setCollapsed(true);
+    } else if (threads.length > 0 && previousCount === 0) {
+      this.setCollapsed(false);
+    }
 
     if (this.#count) {
       this.#count.textContent = threads.length > 0 ? `(${threads.length})` : '';
@@ -4203,7 +4204,6 @@ class ManagerApp {
     this.#taskSection.render(this.allTasks, this.#sortOrders.tasks);
     this.#renderGettingStarted();
     this.#renderActivitySummary();
-    this.#renderPriorityLane(threadTitlesById);
     this.#renderComposerFeedback();
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
@@ -4225,67 +4225,6 @@ class ManagerApp {
       threadTitlesById,
       threadsById
     );
-  }
-
-  #renderPriorityLane(threadTitlesById: Map<string, string>): void {
-    const list = document.getElementById('priority-lane-list');
-    const copy = document.getElementById('priority-lane-copy');
-    if (!list || !copy) {
-      return;
-    }
-
-    list.innerHTML = '';
-    const threads = sortThreadsByUpdatedAt(
-      this.allThreads.filter((thread) => ACTIONABLE_STATES.has(thread.uiState)),
-      this.#sortOrders['priority-lane']
-    );
-
-    if (threads.length === 0) {
-      const hasBackgroundWork = this.allThreads.some(
-        (thread) =>
-          thread.uiState === 'queued' || thread.uiState === 'ai-working'
-      );
-      copy.textContent = hasBackgroundWork
-        ? 'いま自分が返すものはありません。AI の順番待ちや作業中のものは下の一覧で確認できます。'
-        : 'まだ見るべき作業項目はありません。下の送信ボタンからまとめて送ると、ここに優先順で並びます。';
-      const empty = document.createElement('div');
-      empty.className = 'focus-empty';
-      empty.textContent = hasBackgroundWork
-        ? 'いま優先して読む作業項目はありません。'
-        : 'いま優先して見る作業項目はありません。';
-      list.appendChild(empty);
-      return;
-    }
-
-    copy.textContent =
-      'まずは上から開けば、いま返すべきものや確認すべきものだけを作業項目画面で順に見ていけます。';
-
-    for (const thread of threads.slice(0, 4)) {
-      const button = document.createElement('button');
-      button.className = 'focus-list-item btn-ghost';
-      button.type = 'button';
-      button.classList.toggle('current', thread.id === this.openThreadId);
-      button.addEventListener('click', () => {
-        this.#focusThread(thread.id);
-      });
-
-      const top = document.createElement('div');
-      top.className = 'focus-list-item-top';
-      top.append(
-        makeStateBadge(thread.uiState),
-        Object.assign(document.createElement('div'), {
-          className: 'focus-list-item-title',
-          textContent: thread.title,
-        })
-      );
-
-      const meta = document.createElement('div');
-      meta.className = 'focus-list-item-meta';
-      meta.textContent = `${humanizeThreadReferenceText(thread.previewText, threadTitlesById)} / ${threadStateLocation(thread)} / 更新 ${formatAge(thread.updatedAt)}`;
-
-      button.append(top, meta);
-      list.appendChild(button);
-    }
   }
 
   #toggleSortOrder(key: ManagerSortPreferenceKey): void {
@@ -4447,8 +4386,8 @@ class ManagerApp {
     } else if (busy) {
       detail.textContent =
         pendingCount > 0
-          ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると一覧の上へ上がります。`
-          : 'いまの作業項目を実行中です。返答できる状態になると一覧の上へ上がります。';
+          ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると対応する一覧に出ます。`
+          : 'いまの作業項目を実行中です。返答できる状態になると対応する一覧に出ます。';
     } else if (running) {
       detail.textContent =
         pendingCount > 0
@@ -4457,12 +4396,15 @@ class ManagerApp {
     } else if (configured) {
       detail.textContent =
         'まだ始まっていません。下の送信ボタンを開いて送れば自動で起動します。';
+    } else if (counts['routing-confirmation-needed'] > 0) {
+      detail.textContent =
+        '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';
     } else if (counts['user-reply-needed'] > 0) {
       detail.textContent =
-        '上から順に開けば、いま返した方がいい作業項目から見られます。';
+        '「あなたの返信が必要です」の一覧を上から順に開けば、いま返した方がいい作業項目から見られます。';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
-        'AI が返答済みです。確認したいものから順に開いてください。';
+        'AI が返答済みです。「あなたの確認待ちです」の一覧から順に開いてください。';
     } else if (counts['queued'] > 0) {
       detail.textContent =
         'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';

@@ -401,15 +401,14 @@ Important behavior:
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
-- The Manager page keeps a `まず見る` priority lane near the top, but limits
-  that lane to items the human can actually act on now. `AI の順番待ち` and
-  `AI作業中` remain in the inbox buckets instead of cluttering the read-next
-  lane.
-- Each Manager list now has its own `新しい順 / 古い順` toggle. The read-first
-  lane plus the three human-review buckets default to oldest-first so older
-  waiting items surface first, while AI-only buckets default to newest-first.
-  In `AI の順番待ち`, that toggle changes only the visible display order; the
-  actual dispatch queue still follows the backend priority/FIFO rules.
+- Empty Manager sections now start collapsed automatically and reopen
+  themselves when matching work items arrive, so buckets with nothing in them
+  stop taking space while still surfacing new arrivals immediately.
+- Each Manager list now has its own `新しい順 / 古い順` toggle. The three
+  human-review buckets default to oldest-first so older waiting items surface
+  first, while AI-only buckets default to newest-first. In `AI の順番待ち`,
+  that toggle changes only the visible display order; the actual dispatch queue
+  still follows the backend priority/FIFO rules.
 - Opening a work item now moves into a dedicated conversation screen with the
   message history in chat order and the newest message at the bottom, scrolls
   that conversation to the latest message when the work item opens, and lets the

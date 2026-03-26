@@ -211,10 +211,13 @@ worker stopped, rather than disappearing without context.
 
 Each visible list can flip between `oldest-first` and `newest-first`.
 
-- `what to read first`, `routing-confirmation-needed`, `user-reply-needed`, and
+- `routing-confirmation-needed`, `user-reply-needed`, and
   `ai-finished-awaiting-user-confirmation` default to `oldest-first`
 - `queued`, `ai-working`, `cancelled-as-superseded`, and `done` default to
   `newest-first`
+- Empty sections should start collapsed and automatically reopen when matching
+  work items appear, so new actionable items surface without leaving empty
+  buckets expanded.
 
 For `queued`, the list sort is only the human-facing display order. Actual
 dispatch still follows the queue policy below, where two user intents can
@@ -223,7 +226,7 @@ legitimately jump ahead:
 - explicit priority requests such as `優先して` or `先に答えて`
 - question-only items that should be answered before ordinary backlog
 
-If multiple queued items are in the same priority lane, they stay FIFO. The
+If multiple queued items are in the same priority tier, they stay FIFO. The
 queue must also include a fairness cap so older ordinary work is periodically
 drained instead of being starved forever by a stream of priority/question
 follow-ups.
@@ -254,9 +257,9 @@ The Manager screen must make these points obvious without external explanation:
 
 - A single urgency-ordered inbox view
 - One global composer anchored consistently across the screen
-- A small `what to read first` lane near the top that surfaces the highest
-  urgency tasks the human can act on now without making the user scan every
-  section
+- Urgency buckets that can stand on their own without a separate read-first
+  lane, with empty buckets collapsed by default so the screen stays compact
+  until something actionable appears there
 - Opening a task switches into that task's own conversation screen instead of
   expanding detail inline inside the inbox
 - The conversation screen should keep the input at the bottom like a normal

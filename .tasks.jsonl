@@ -44,3 +44,4 @@
 {"id":"CixbG-Gl","description":"Dogfood workspace-agent-hub and investigate any remaining bugs or operational problems","stage":"done","createdAt":"2026-03-25T16:41:04.332Z","updatedAt":"2026-03-26T03:14:35.293Z"}
 {"id":"2pYPtsSj","description":"Fix remaining workspace-agent-hub bugs found in dogfood pass","stage":"committed","createdAt":"2026-03-26T03:51:29.598Z","updatedAt":"2026-03-26T04:08:02.881Z","committedEventId":"fMeHi2X-DEjkmmsU"}
 {"id":"_6LsaD2z","description":"Implement worker worktree isolation for Manager backend","stage":"in-progress","createdAt":"2026-03-26T04:15:26.064Z","updatedAt":"2026-03-26T04:15:37.452Z"}
+{"id":"cVK4H_Px","description":"Remove Manager current read work-item area and auto-collapse empty sections in workspace-agent-hub","stage":"committed","createdAt":"2026-03-26T07:16:43.951Z","updatedAt":"2026-03-26T07:43:55.963Z","committedEventId":"jDooXgdgH9cS_mgt"}

@@ -310,69 +310,6 @@
         font-weight: 700;
       }
 
-      .focus-card {
-        padding: 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        background: linear-gradient(
-          145deg,
-          rgba(255, 255, 255, 0.96),
-          rgba(243, 250, 244, 0.96)
-        );
-      }
-
-      .focus-eyebrow {
-        display: inline-flex;
-        align-items: center;
-        width: fit-content;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: rgba(6, 199, 85, 0.1);
-        border: 1px solid rgba(6, 199, 85, 0.14);
-        color: var(--accent);
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
-      }
-
-      .focus-title-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .focus-title-actions {
-        margin-left: auto;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-shrink: 0;
-      }
-
-      .focus-title {
-        flex: 1;
-        min-width: 0;
-        font-size: 1.02rem;
-        font-weight: 800;
-        line-height: 1.35;
-        letter-spacing: -0.02em;
-      }
-
-      .focus-meta {
-        color: var(--text-soft);
-        font-size: 0.76rem;
-        line-height: 1.6;
-      }
-
-      .focus-empty {
-        color: var(--text-muted);
-        font-size: 0.8rem;
-        line-height: 1.7;
-      }
-
       .focus-move {
         color: #92400e;
         background: rgba(254, 243, 199, 0.92);
@@ -381,12 +318,6 @@
         padding: 10px 12px;
         font-size: 0.76rem;
         line-height: 1.6;
-      }
-
-      .focus-list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
       }
 
       .thread-screen {
@@ -398,63 +329,6 @@
       .thread-screen-top {
         display: flex;
         justify-content: flex-start;
-      }
-
-      .focus-list-item {
-        width: 100%;
-        text-align: left;
-        background: linear-gradient(
-          145deg,
-          rgba(15, 23, 42, 0.58),
-          rgba(8, 17, 32, 0.52)
-        );
-        border: 1px solid rgba(148, 163, 184, 0.12);
-        border-radius: 18px;
-        padding: 12px 13px;
-        color: var(--dark-card-text);
-      }
-
-      .focus-list-item:hover {
-        background: linear-gradient(
-          145deg,
-          rgba(15, 23, 42, 0.82),
-          rgba(8, 17, 32, 0.76)
-        );
-        border-color: rgba(56, 189, 248, 0.24);
-      }
-
-      .focus-list-item.current {
-        border-color: rgba(34, 197, 94, 0.32);
-        background: linear-gradient(
-          145deg,
-          rgba(18, 48, 37, 0.96),
-          rgba(9, 30, 31, 0.92)
-        );
-      }
-
-      .focus-list-item-top {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .focus-list-item-title {
-        flex: 1;
-        min-width: 0;
-        font-size: 0.82rem;
-        font-weight: 700;
-        color: var(--dark-card-text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .focus-list-item-meta {
-        color: var(--dark-card-muted);
-        font-size: 0.7rem;
-        line-height: 1.55;
-        margin-top: 6px;
       }
 
       #auth-panel {
@@ -912,18 +786,6 @@
           rgba(250, 254, 250, 0.98),
           rgba(240, 248, 242, 0.98)
         );
-      }
-
-      .focus-card .detail-card,
-      .thread-row .detail-card {
-        min-height: 0;
-        border-radius: 18px;
-        background: linear-gradient(
-          155deg,
-          rgba(247, 253, 248, 0.98),
-          rgba(237, 247, 239, 0.98)
-        );
-        box-shadow: none;
       }
 
       .thread-screen .detail-card {
@@ -1747,11 +1609,6 @@
           max-height: 132px;
         }
 
-        .focus-list-item-top {
-          align-items: flex-start;
-        }
-
-        .focus-list-item-title,
         .thread-title {
           white-space: normal;
           overflow: visible;
@@ -1781,7 +1638,7 @@
         </h1>
         <p id="auth-context-copy" class="auth-copy">
           ここでは思いついたことをまとめて送れます。どの task にするかは AI
-          が整理し、返信が必要なものや確認すべきものが上に並びます。整理した
+          が整理し、返信が必要なものや確認すべきものは一覧ごとに分かれて並びます。整理した
           task は、そのまま実際の作業まで進めます。
         </p>
         <div class="auth-row">
@@ -1886,32 +1743,12 @@
             <div id="activity-counts" class="activity-counts"></div>
           </section>
 
-          <section id="priority-lane" class="card focus-card">
-            <div class="focus-eyebrow">まず見る</div>
-            <div class="focus-title-row">
-              <div class="focus-title">いま読む作業項目</div>
-              <div class="focus-title-actions">
-                <button
-                  id="sort-priority-lane"
-                  class="btn btn-ghost section-sort-button"
-                  type="button"
-                  data-sort-control="priority-lane"
-                  style="width: auto"
-                ></button>
-              </div>
-            </div>
-            <div id="priority-lane-copy" class="focus-meta">
-              いま自分が返す・確認する必要がある作業項目だけを上から出します。
-            </div>
-            <div id="priority-lane-list" class="focus-list"></div>
-          </section>
-
           <section id="getting-started" class="card intro-card hidden">
             <div class="intro-pill">最初の使い方</div>
             <h2>ここでは、思いついたことをそのまままとめて送って大丈夫です</h2>
             <p>
               何の作業かを先に決める必要はありません。下からそのまま送ると、
-              いま返事や確認が必要なものが上に並びます。
+              いま返事や確認が必要なものは対応する一覧に並びます。
             </p>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
@@ -1924,8 +1761,10 @@
               <div class="intro-step">
                 1. 下の送信ボタンを開いて、やりたいことをそのまま書く
               </div>
-              <div class="intro-step">2. 返事や確認が必要なものが上に並ぶ</div>
-              <div class="intro-step">3. 上から順に確認する</div>
+              <div class="intro-step">
+                2. 返事や確認が必要なものが対応する一覧に並ぶ
+              </div>
+              <div class="intro-step">3. 必要な一覧から順に確認する</div>
             </div>
           </section>
 

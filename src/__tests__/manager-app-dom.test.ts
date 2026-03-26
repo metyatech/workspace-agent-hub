@@ -1088,28 +1088,17 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('AI の中では一区切りついています。');
   });
 
-  it('keeps AI execution-waiting items out of the read-first lane', async () => {
-    const validToken = 'priority-lane-filter-token';
-    const actionableThread = makeThreadView('thread-reply', '返事が必要', {
-      uiState: 'user-reply-needed',
-      previewText: '[ai] 返答してください',
-      lastSender: 'ai',
-    });
-    const queuedThread = makeThreadView('thread-queued', '順番待ちの task', {
-      uiState: 'queued',
-      previewText: '[user] 実行待ちです',
-      lastSender: 'user',
-    });
-    const workingThread = makeThreadView('thread-working', '作業中の task', {
-      uiState: 'ai-working',
-      previewText: '[user] 実行中です',
-      lastSender: 'user',
-      isWorking: true,
-    });
-
+  it('does not render the removed read-first section', async () => {
+    const validToken = 'removed-read-first-section-token';
     const fetchMock = createManagerFetchWithData({
       validToken,
-      threads: [queuedThread, actionableThread, workingThread],
+      threads: [
+        makeThreadView('thread-reply', '返事が必要', {
+          uiState: 'user-reply-needed',
+          previewText: '[ai] 返答してください',
+          lastSender: 'ai',
+        }),
+      ],
       status: {
         running: true,
         configured: true,
@@ -1125,20 +1114,140 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
-    const priorityItems = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '#priority-lane-list .focus-list-item'
-      )
-    ).map((element) => element.textContent ?? '');
+    expect(document.querySelector('#priority-lane')).toBeNull();
+    expect(
+      textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
+    ).toEqual(['返事が必要']);
+  });
 
-    expect(priorityItems).toHaveLength(1);
-    expect(priorityItems[0]).toContain('返事が必要');
-    expect(priorityItems[0]).not.toContain('順番待ちの task');
-    expect(priorityItems[0]).not.toContain('作業中の task');
+  it('collapses empty sections by default and reopens them when items arrive', async () => {
+    const validToken = 'auto-reopen-empty-sections-token';
+    let threads: Array<ReturnType<typeof makeThreadView>> = [];
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify(threads), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads,
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const replyBody = document.querySelector<HTMLElement>(
+      '#body-user-reply-needed'
+    )!;
+    expect(replyBody.style.display).toBe('none');
+    expect(
+      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
+        ?.textContent
+    ).toBe('▼');
+
+    document
+      .querySelector<HTMLElement>('[data-section-key="user-reply-needed"]')!
+      .click();
+    await flushAsync(2);
+
+    expect(replyBody.style.display).toBe('');
+    expect(
+      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
+        ?.textContent
+    ).toBe('▲');
+    expect(
+      replyBody.querySelector<HTMLElement>('.section-empty')?.textContent
+    ).toContain('あなたの返信が必要な作業項目はありません');
+
+    document
+      .querySelector<HTMLElement>('[data-section-key="user-reply-needed"]')!
+      .click();
+    await flushAsync(2);
+
+    expect(replyBody.style.display).toBe('none');
+    expect(
+      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
+        ?.textContent
+    ).toBe('▼');
+
+    threads = [
+      makeThreadView('thread-reply', 'あとから来た返信待ち', {
+        uiState: 'user-reply-needed',
+        status: 'needs-reply',
+        previewText: '[ai] 返答してください',
+        lastSender: 'ai',
+      }),
+    ];
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    expect(replyBody.style.display).toBe('');
+    expect(
+      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
+        ?.textContent
+    ).toBe('▲');
+    expect(
+      textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
+    ).toEqual(['あとから来た返信待ち']);
   });
 
   it('tells the user there is nothing to do when only queued or working items remain', async () => {
-    const validToken = 'priority-lane-background-only-token';
+    const validToken = 'background-only-token';
     const queuedThread = makeThreadView('thread-queued', '順番待ちの task', {
       uiState: 'queued',
       previewText: '[user] 実行待ちです',
@@ -1170,108 +1279,26 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
-    const priorityItems = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '#priority-lane-list .focus-list-item'
-      )
-    );
-
-    expect(priorityItems).toHaveLength(0);
-    expect(
-      document.querySelector<HTMLElement>('#priority-lane-copy')!.textContent
-    ).toContain('いま自分が返すものはありません');
-    expect(
-      document.querySelector<HTMLElement>('#priority-lane-list .focus-empty')!
-        .textContent
-    ).toContain('いま優先して読む作業項目はありません');
     expect(
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
     ).toContain('AI の順番待ちがあります');
+    expect(
+      document.querySelector<HTMLElement>('#body-routing-confirmation-needed')!
+        .style.display
+    ).toBe('none');
+    expect(
+      document.querySelector<HTMLElement>('#body-user-reply-needed')!.style
+        .display
+    ).toBe('none');
+    expect(
+      document.querySelector<HTMLElement>(
+        '#body-ai-finished-awaiting-user-confirmation'
+      )!.style.display
+    ).toBe('none');
     const chips = Array.from(
       document.querySelectorAll<HTMLElement>('.activity-chip')
     ).map((element) => element.textContent ?? '');
     expect(chips).toContain('AI の順番待ち 1');
-  });
-
-  it('does not scroll away when the target thread row is already visible', async () => {
-    const validToken = 'priority-lane-focus-token';
-    const thread = makeThreadView('thread-priority-visible', '優先 task', {
-      uiState: 'user-reply-needed',
-    });
-
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const headers = new Headers(init?.headers ?? {});
-        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
-
-        if (providedToken !== validToken) {
-          return new Response(
-            JSON.stringify({
-              error: 'Access code required',
-              authRequired: true,
-            }),
-            { status: 401 }
-          );
-        }
-
-        if (isRoute(url, '/threads')) {
-          return new Response(JSON.stringify([thread]), { status: 200 });
-        }
-
-        if (isRoute(url, '/tasks')) {
-          return new Response(JSON.stringify([]), { status: 200 });
-        }
-
-        if (isRoute(url, '/manager/status')) {
-          return new Response(
-            JSON.stringify({
-              running: true,
-              configured: true,
-              builtinBackend: true,
-              detail: '待機中',
-            }),
-            { status: 200 }
-          );
-        }
-
-        return new Response('{}', { status: 200 });
-      }
-    ) as unknown as typeof fetch;
-
-    const document = await loadManagerApp(fetchMock, {
-      authRequired: true,
-      beforeImport: (window) => {
-        window.localStorage.setItem(authStorageKey, validToken);
-      },
-    });
-
-    const row = document.querySelector<HTMLElement>('.thread-row')!;
-    vi.spyOn(row, 'getBoundingClientRect').mockReturnValue({
-      x: 0,
-      y: 24,
-      top: 24,
-      left: 0,
-      right: 900,
-      bottom: 260,
-      width: 900,
-      height: 236,
-      toJSON: () => ({}),
-    });
-
-    const scrollSpy = document.defaultView!.HTMLElement.prototype
-      .scrollIntoView as unknown as ReturnType<typeof vi.fn>;
-    scrollSpy.mockClear();
-
-    document.querySelector<HTMLElement>('.focus-list-item')!.click();
-    await flushAsync(3);
-
-    expect(
-      document.querySelector<HTMLElement>(
-        '.thread-row.selected [data-row-title]'
-      )!.textContent
-    ).toContain('優先 task');
-    expect(scrollSpy).not.toHaveBeenCalled();
   });
 
   it('defaults human-facing lists to oldest-first and AI lists to newest-first', async () => {
@@ -1331,16 +1358,8 @@ describe('manager-app DOM auth state matrix', () => {
       textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
     ).toEqual(['古い返信待ち', '新しい返信待ち']);
     expect(
-      textList(document, '#priority-lane-list .focus-list-item-title')
-    ).toEqual(['古い返信待ち', '新しい返信待ち']);
-    expect(
       textList(document, '#body-ai-working .thread-row [data-row-title]')
     ).toEqual(['新しいAI作業', '古いAI作業']);
-    expect(
-      document.querySelector<HTMLButtonElement>(
-        '[data-sort-control="priority-lane"]'
-      )?.textContent
-    ).toContain('上: 古い');
     expect(
       document.querySelector<HTMLButtonElement>(
         '[data-sort-control="ai-working"]'
@@ -1388,30 +1407,20 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
     ).toEqual(['古い確認', '新しい確認']);
-    expect(
-      textList(document, '#priority-lane-list .focus-list-item-title')
-    ).toEqual(['古い確認', '新しい確認']);
 
     document
       .querySelector<HTMLButtonElement>(
         '[data-sort-control="user-reply-needed"]'
       )!
       .click();
-    document
-      .querySelector<HTMLButtonElement>('[data-sort-control="priority-lane"]')!
-      .click();
     await flushAsync(2);
 
     expect(
       textList(document, '#body-user-reply-needed .thread-row [data-row-title]')
     ).toEqual(['新しい確認', '古い確認']);
-    expect(
-      textList(document, '#priority-lane-list .focus-list-item-title')
-    ).toEqual(['新しい確認', '古い確認']);
 
     const storedSortOrder = window.localStorage.getItem(sortStorageKey);
     expect(storedSortOrder).toContain('"user-reply-needed":"newest-first"');
-    expect(storedSortOrder).toContain('"priority-lane":"newest-first"');
 
     const reloadedDocument = await loadManagerApp(fetchMock, {
       authRequired: true,
@@ -1428,9 +1437,6 @@ describe('manager-app DOM auth state matrix', () => {
         reloadedDocument,
         '#body-user-reply-needed .thread-row [data-row-title]'
       )
-    ).toEqual(['新しい確認', '古い確認']);
-    expect(
-      textList(reloadedDocument, '#priority-lane-list .focus-list-item-title')
     ).toEqual(['新しい確認', '古い確認']);
   });
 
