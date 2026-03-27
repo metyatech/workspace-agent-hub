@@ -2078,6 +2078,11 @@ async function runCodexTurn(input: {
     input.imagePaths ?? []
   );
   const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
+  if (spawnSpec.command !== codexCommand) {
+    console.error(
+      `[manager-backend] codex shim rewritten: ${codexCommand} → ${spawnSpec.command} (shell: ${spawnSpec.spawnOptions.shell})`
+    );
+  }
   const proc = spawn(spawnSpec.command, spawnSpec.args, spawnSpec.spawnOptions);
   activeChildProcesses.add(proc);
   proc.on('close', () => {
