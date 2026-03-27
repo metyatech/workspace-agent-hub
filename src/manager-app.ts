@@ -26,6 +26,7 @@ interface Msg {
   provisional?: boolean;
   senderLabel?: string;
   key?: string;
+  liveEntries?: LiveActivityStep[];
 }
 
 type ManagerUiState =
@@ -1437,6 +1438,47 @@ function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
   return badge;
 }
 
+function liveStepKindLabel(kind: WorkerLiveEntry['kind']): string {
+  return kind === 'output' ? '内容' : kind === 'error' ? '異常' : '状況';
+}
+
+function makeLiveConsolePane(
+  steps: LiveActivityStep[],
+  scrollId: string,
+  variant: 'panel' | 'bubble'
+): HTMLDivElement {
+  const scroll = document.createElement('div');
+  scroll.className = `live-console-scroll live-console-scroll-${variant}`;
+  scroll.dataset.liveScrollId = scrollId;
+
+  for (const step of steps) {
+    const line = document.createElement('div');
+    line.className = `live-console-line live-console-line-${step.kind}`;
+
+    const meta = document.createElement('div');
+    meta.className = 'live-console-meta';
+
+    const badge = document.createElement('span');
+    badge.className = 'live-console-kind';
+    badge.textContent = liveStepKindLabel(step.kind);
+
+    const time = document.createElement('span');
+    time.className = 'live-console-time';
+    time.textContent = step.at ? formatDate(step.at) : '';
+
+    meta.append(badge, time);
+
+    const text = document.createElement('div');
+    text.className = 'live-console-text';
+    text.textContent = step.text;
+
+    line.append(meta, text);
+    scroll.appendChild(line);
+  }
+
+  return scroll;
+}
+
 function makeBubble(
   message: Msg,
   threadTitlesById: Map<string, string>
@@ -1472,11 +1514,18 @@ function makeBubble(
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  renderMessageMarkdown(
-    content,
-    message.content,
-    message.sender === 'ai' ? threadTitlesById : new Map()
-  );
+  if (message.live && message.liveEntries && message.liveEntries.length > 0) {
+    content.classList.add('bubble-content-live-console');
+    content.appendChild(
+      makeLiveConsolePane(message.liveEntries, 'live-bubble', 'bubble')
+    );
+  } else {
+    renderMessageMarkdown(
+      content,
+      message.content,
+      message.sender === 'ai' ? threadTitlesById : new Map()
+    );
+  }
 
   meta.append(sender, timestamp);
   bubble.append(meta, content);
@@ -1515,6 +1564,7 @@ function buildLiveWorkerMessage(
     provisional: true,
     senderLabel: activity.actorLabel,
     key: `live:${thread.id}`,
+    liveEntries: activity.steps,
   };
 }
 
@@ -1887,33 +1937,9 @@ function makeLiveActivityPanel(
 
   const steps = activity.steps;
   if (steps.length > 0) {
-    const list = document.createElement('div');
-    list.className = 'detail-live-activity-list';
+    const list = makeLiveConsolePane(steps, 'activity-panel', 'panel');
+    list.classList.add('detail-live-activity-list');
     list.dataset.liveActivityList = '';
-    for (const step of steps) {
-      const item = document.createElement('div');
-      item.className = 'detail-live-activity-item';
-
-      const badge = document.createElement('span');
-      badge.className = 'detail-live-activity-kind';
-      badge.textContent =
-        step.kind === 'output'
-          ? '内容'
-          : step.kind === 'error'
-            ? '異常'
-            : '状況';
-
-      const text = document.createElement('div');
-      text.className = 'detail-live-activity-item-text';
-      text.textContent = step.text;
-
-      const meta = document.createElement('span');
-      meta.className = 'detail-live-activity-item-time';
-      meta.textContent = step.at ? formatDate(step.at) : '';
-
-      item.append(badge, text, meta);
-      list.appendChild(item);
-    }
     panel.appendChild(list);
   }
 
@@ -2656,14 +2682,60 @@ class DetailController {
     return remaining <= threshold;
   }
 
-  #revealLatestMessage(msgArea: HTMLElement): void {
+  #revealScrollableBottom(container: HTMLElement): void {
     const sync = () => {
-      msgArea.scrollTop = msgArea.scrollHeight;
+      container.scrollTop = container.scrollHeight;
     };
 
     sync();
-    const view = msgArea.ownerDocument.defaultView;
+    const view = container.ownerDocument.defaultView;
     view?.setTimeout(sync, 0);
+  }
+
+  #captureLivePaneStates(): Map<
+    string,
+    { scrollTop: number; preserveBottom: boolean }
+  > {
+    const states = new Map<
+      string,
+      { scrollTop: number; preserveBottom: boolean }
+    >();
+    for (const pane of this.#detailEl.querySelectorAll<HTMLElement>(
+      '[data-live-scroll-id]'
+    )) {
+      const scrollId = pane.dataset.liveScrollId?.trim();
+      if (!scrollId) {
+        continue;
+      }
+      states.set(scrollId, {
+        scrollTop: pane.scrollTop,
+        preserveBottom: this.#isNearBottom(pane, 16),
+      });
+    }
+    return states;
+  }
+
+  #restoreLivePaneStates(
+    states: Map<string, { scrollTop: number; preserveBottom: boolean }>
+  ): void {
+    for (const pane of this.#detailEl.querySelectorAll<HTMLElement>(
+      '[data-live-scroll-id]'
+    )) {
+      const scrollId = pane.dataset.liveScrollId?.trim();
+      if (!scrollId) {
+        continue;
+      }
+      const previous = states.get(scrollId);
+      if (!previous) {
+        this.#revealScrollableBottom(pane);
+        continue;
+      }
+      if (previous.preserveBottom) {
+        this.#revealScrollableBottom(pane);
+        continue;
+      }
+      pane.scrollTop = previous.scrollTop;
+    }
   }
 
   render(
@@ -2727,6 +2799,9 @@ class DetailController {
       sameThread && previousMsgArea
         ? this.#captureScrollAnchor(previousMsgArea)
         : null;
+    const previousLivePaneStates = sameThread
+      ? this.#captureLivePaneStates()
+      : new Map();
 
     this.#currentThreadId = thread.id;
     this.#lastRenderedSignature = nextSignature;
@@ -2893,13 +2968,15 @@ class DetailController {
     body.appendChild(actions);
     this.#detailEl.appendChild(body);
 
+    this.#restoreLivePaneStates(previousLivePaneStates);
+
     if (!sameThread) {
-      this.#revealLatestMessage(msgArea);
+      this.#revealScrollableBottom(msgArea);
       return;
     }
 
     if (preserveBottom) {
-      this.#revealLatestMessage(msgArea);
+      this.#revealScrollableBottom(msgArea);
       return;
     }
 

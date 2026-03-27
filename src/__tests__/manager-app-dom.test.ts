@@ -3411,6 +3411,394 @@ describe('manager-app DOM auth state matrix', () => {
     );
   });
 
+  it('keeps live console panes pinned to the bottom when they were already at the bottom', async () => {
+    const validToken = 'live-console-pinned-token';
+    let threadsRequestCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const workerLiveLog =
+            threadsRequestCount >= 2
+              ? [
+                  {
+                    at: '2026-03-27T10:00:00.000Z',
+                    text: '1行目の live 出力',
+                    kind: 'status' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:00:10.000Z',
+                    text: '2行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:00:20.000Z',
+                    text: '3行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                ]
+              : [
+                  {
+                    at: '2026-03-27T10:00:00.000Z',
+                    text: '1行目の live 出力',
+                    kind: 'status' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:00:10.000Z',
+                    text: '2行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                ];
+          const thread = makeThreadView(
+            'thread-live-console',
+            '進捗コンソール',
+            {
+              status: 'active',
+              uiState: 'ai-working',
+              isWorking: true,
+              lastSender: 'user',
+              workerAgentId: 'assign_live_console',
+              workerRuntimeState: 'worker-running',
+              workerLiveLog,
+              workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
+              workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
+            }
+          );
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '処理中 (進捗コンソール)',
+              currentThreadId: 'thread-live-console',
+              currentThreadTitle: '進捗コンソール',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        const domWindow = window as Window & typeof globalThis;
+        window.localStorage.setItem(authStorageKey, validToken);
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'clientHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.dataset.liveScrollId) {
+              return 120;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('bubble')) {
+              return 120;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            const parent = element.parentElement;
+            if (
+              element.classList.contains('bubble') &&
+              parent?.classList.contains('msg-area')
+            ) {
+              return Array.from(parent.children)
+                .slice(0, Array.from(parent.children).indexOf(element))
+                .reduce(
+                  (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                  0
+                );
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'scrollHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.dataset.liveScrollId) {
+              return element.querySelectorAll('.live-console-line').length * 80;
+            }
+            if (element.classList.contains('msg-area')) {
+              return Array.from(element.children).reduce(
+                (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                0
+              );
+            }
+            return 0;
+          },
+        });
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstActivityPane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="activity-panel"]'
+    )!;
+    const firstBubblePane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="live-bubble"]'
+    )!;
+    firstActivityPane.scrollTop = firstActivityPane.scrollHeight;
+    firstBubblePane.scrollTop = firstBubblePane.scrollHeight;
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    const secondActivityPane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="activity-panel"]'
+    )!;
+    const secondBubblePane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="live-bubble"]'
+    )!;
+    expect(secondActivityPane).not.toBe(firstActivityPane);
+    expect(secondBubblePane).not.toBe(firstBubblePane);
+    expect(secondActivityPane.scrollTop).toBe(secondActivityPane.scrollHeight);
+    expect(secondBubblePane.scrollTop).toBe(secondBubblePane.scrollHeight);
+    expect(secondActivityPane.textContent).toContain('3行目の live 出力');
+    expect(secondBubblePane.textContent).toContain('3行目の live 出力');
+  });
+
+  it('keeps live console panes fixed when the reader has scrolled up', async () => {
+    const validToken = 'live-console-preserve-token';
+    let threadsRequestCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          threadsRequestCount += 1;
+          const workerLiveLog =
+            threadsRequestCount >= 2
+              ? [
+                  {
+                    at: '2026-03-27T10:10:00.000Z',
+                    text: 'A行目の live 出力',
+                    kind: 'status' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:10:10.000Z',
+                    text: 'B行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:10:20.000Z',
+                    text: 'C行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                ]
+              : [
+                  {
+                    at: '2026-03-27T10:10:00.000Z',
+                    text: 'A行目の live 出力',
+                    kind: 'status' as const,
+                  },
+                  {
+                    at: '2026-03-27T10:10:10.000Z',
+                    text: 'B行目の live 出力',
+                    kind: 'output' as const,
+                  },
+                ];
+          const thread = makeThreadView(
+            'thread-live-console-preserve',
+            '進捗コンソール維持',
+            {
+              status: 'active',
+              uiState: 'ai-working',
+              isWorking: true,
+              lastSender: 'user',
+              workerAgentId: 'assign_live_console_preserve',
+              workerRuntimeState: 'worker-running',
+              workerLiveLog,
+              workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
+              workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
+            }
+          );
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '処理中 (進捗コンソール維持)',
+              currentThreadId: 'thread-live-console-preserve',
+              currentThreadTitle: '進捗コンソール維持',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        const domWindow = window as Window & typeof globalThis;
+        window.localStorage.setItem(authStorageKey, validToken);
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'clientHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.dataset.liveScrollId) {
+              return 120;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.classList.contains('bubble')) {
+              return 120;
+            }
+            if (element.classList.contains('msg-area')) {
+              return 300;
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            const parent = element.parentElement;
+            if (
+              element.classList.contains('bubble') &&
+              parent?.classList.contains('msg-area')
+            ) {
+              return Array.from(parent.children)
+                .slice(0, Array.from(parent.children).indexOf(element))
+                .reduce(
+                  (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                  0
+                );
+            }
+            return 0;
+          },
+        });
+        Object.defineProperty(domWindow.HTMLElement.prototype, 'scrollHeight', {
+          configurable: true,
+          get() {
+            const element = this as HTMLElement;
+            if (element.dataset.liveScrollId) {
+              return element.querySelectorAll('.live-console-line').length * 80;
+            }
+            if (element.classList.contains('msg-area')) {
+              return Array.from(element.children).reduce(
+                (sum, child) => sum + (child as HTMLElement).offsetHeight,
+                0
+              );
+            }
+            return 0;
+          },
+        });
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const firstActivityPane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="activity-panel"]'
+    )!;
+    const firstBubblePane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="live-bubble"]'
+    )!;
+    firstActivityPane.scrollTop = 20;
+    firstBubblePane.scrollTop = 20;
+
+    document
+      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
+      .click();
+    await flushAsync(6);
+
+    const secondActivityPane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="activity-panel"]'
+    )!;
+    const secondBubblePane = document.querySelector<HTMLElement>(
+      '[data-live-scroll-id="live-bubble"]'
+    )!;
+    expect(secondActivityPane.scrollTop).toBe(20);
+    expect(secondBubblePane.scrollTop).toBe(20);
+    expect(secondActivityPane.scrollTop).not.toBe(
+      secondActivityPane.scrollHeight
+    );
+    expect(secondBubblePane.scrollTop).not.toBe(secondBubblePane.scrollHeight);
+    expect(secondActivityPane.textContent).toContain('C行目の live 出力');
+    expect(secondBubblePane.textContent).toContain('C行目の live 出力');
+  });
+
   it('keeps the open task inline and shows its new state when it moves between buckets', async () => {
     const validToken = 'movement-token';
     let threadsRequestCount = 0;
