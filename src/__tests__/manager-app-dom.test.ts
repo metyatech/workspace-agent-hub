@@ -3718,6 +3718,91 @@ describe('manager-app activity summary', () => {
     expect(chips).toContain('AI作業中 0');
   });
 
+  it('surfaces the latest meaningful live activity in the summary and ai-working row', async () => {
+    const workingThread = makeThreadView(
+      'thread-live-summary',
+      'リアルタイム進捗',
+      {
+        status: 'active',
+        uiState: 'ai-working',
+        isWorking: true,
+        lastSender: 'user',
+        previewText: '[user] 進めてください',
+        assigneeKind: 'worker',
+        assigneeLabel: 'Codex gpt-5.4 (xhigh)',
+        workerAgentId: 'assign_live_summary',
+        workerRuntimeState: 'worker-running',
+        workerRuntimeDetail: '担当 worker agent がこの作業項目を実行中です。',
+        workerLiveLog: [
+          {
+            at: '2026-03-23T07:59:30.000Z',
+            text: 'AI が担当 worker を起動しました。内容を整理しています…',
+            kind: 'status',
+          },
+          {
+            at: '2026-03-23T08:00:00.000Z',
+            text: 'いま `src/manager-backend.ts` を見ています。',
+            kind: 'output',
+          },
+          {
+            at: '2026-03-23T08:00:15.000Z',
+            text: 'AI が作業を進めています…',
+            kind: 'status',
+          },
+        ],
+        workerLiveOutput: 'AI が作業を進めています…',
+        workerLiveAt: '2026-03-23T08:00:15.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '進めてください',
+            at: '2026-03-23T07:59:00.000Z',
+          },
+        ],
+      }
+    );
+
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'activity-live-token',
+      threads: [workingThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (リアルタイム進捗)',
+        currentThreadId: 'thread-live-summary',
+        currentThreadTitle: 'リアルタイム進捗',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'activity-live-token');
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-detail')!.textContent
+    ).toContain(
+      'Worker が「いま src/manager-backend.ts を見ています。」を進めています'
+    );
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('Worker: いま src/manager-backend.ts を見ています。');
+
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    expect(
+      row.querySelector<HTMLElement>('[data-row-preview]')?.textContent
+    ).toContain('Worker: いま src/manager-backend.ts を見ています。');
+    expect(
+      row.querySelector<HTMLElement>('[data-row-activity]')?.textContent
+    ).toContain('Worker / Worker agent 実行中 / 最終更新');
+    expect(
+      row.querySelector<HTMLElement>('[data-row-preview]')?.textContent
+    ).not.toContain('AI が作業を進めています');
+  });
+
   it('keeps normal busy copy when the backend is still running without a factual error', async () => {
     const fetchMock = createManagerFetchWithData({
       validToken: 'stalled-status-token',
@@ -4162,7 +4247,7 @@ describe('manager-app live updates', () => {
     ).toBe(true);
   });
 
-  it('renders the in-flight worker output as the latest AI bubble in detail view', async () => {
+  it('renders the in-flight worker output in a dedicated live activity panel and the latest AI bubble in detail view', async () => {
     const workingThread = makeThreadView('thread-live', 'リアルタイム出力', {
       status: 'active',
       uiState: 'ai-working',
@@ -4225,6 +4310,18 @@ describe('manager-app live updates', () => {
     const detail = document.querySelector<HTMLElement>('#thread-detail')!;
     expect(detail.textContent).toContain('担当: Codex gpt-5.4 (xhigh)');
     expect(detail.textContent).toContain('実行状態: Worker agent 実行中');
+    expect(
+      detail.querySelector<HTMLElement>('[data-live-activity-panel]')
+        ?.textContent
+    ).toContain('いまの活動');
+    expect(
+      detail.querySelector<HTMLElement>('[data-live-activity-panel]')
+        ?.textContent
+    ).toContain('Worker');
+    expect(
+      detail.querySelector<HTMLElement>('[data-live-activity-panel]')
+        ?.textContent
+    ).toContain('いま src/manager-backend.ts を見ています。');
     expect(detail.textContent).toContain(
       'AI が担当 worker を起動しました。内容を整理しています…'
     );
@@ -4240,6 +4337,92 @@ describe('manager-app live updates', () => {
     expect(
       detail.querySelector<HTMLElement>('.bubble-live .bubble-ts')?.textContent
     ).toContain('仮表示');
+  });
+
+  it('uses readable recovery activity instead of raw structured JSON in ai-working views', async () => {
+    const recoveryThread = makeThreadView('thread-recovery', '回復判断', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 状況を見てください',
+      assigneeKind: 'manager',
+      assigneeLabel: 'Manager gpt-5.4 (xhigh)',
+      workerAgentId: 'assign_recovery',
+      workerRuntimeState: 'manager-recovery',
+      workerRuntimeDetail:
+        'Manager がレビュー結果を分析し回復方法を決定中です。',
+      workerLiveLog: [
+        {
+          at: '2026-03-23T08:10:00.000Z',
+          text: '`npm run verify` は通っています。',
+          kind: 'output',
+        },
+        {
+          at: '2026-03-23T08:10:30.000Z',
+          text: '{"decision":"fix-self","reason":"verify は通っており方向性は正しいです。"}',
+          kind: 'output',
+        },
+        {
+          at: '2026-03-23T08:10:45.000Z',
+          text: 'AI が作業を進めています…',
+          kind: 'status',
+        },
+      ],
+      workerLiveOutput: 'AI が作業を進めています…',
+      workerLiveAt: '2026-03-23T08:10:45.000Z',
+      messages: [
+        {
+          sender: 'user',
+          content: '状況を見てください',
+          at: '2026-03-23T08:09:00.000Z',
+        },
+      ],
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken: 'recovery-live-token',
+      threads: [recoveryThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (回復判断)',
+        currentThreadId: 'thread-recovery',
+        currentThreadTitle: '回復判断',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'recovery-live-token');
+      },
+    });
+
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    expect(
+      row.querySelector<HTMLElement>('[data-row-preview]')?.textContent
+    ).toContain('Manager: 回復判断: 今の修正をそのまま継続');
+    expect(
+      row.querySelector<HTMLElement>('[data-row-activity]')?.textContent
+    ).toContain('Manager / Manager が回復対応中 / 最終更新');
+    expect(
+      row.querySelector<HTMLElement>('[data-row-preview]')?.textContent
+    ).not.toContain('"decision":"fix-self"');
+
+    row.click();
+    await flushAsync(3);
+
+    const livePanel = document.querySelector<HTMLElement>(
+      '[data-live-activity-panel]'
+    )!;
+    expect(livePanel.textContent).toContain(
+      'Manager がレビュー結果を分析し回復方法を決定中です。'
+    );
+    expect(livePanel.textContent).toContain('npm run verify は通っています。');
+    expect(livePanel.textContent).toContain('回復判断: 今の修正をそのまま継続');
+    expect(livePanel.textContent).not.toContain('"decision":"fix-self"');
   });
 
   it('shows superseded work items in their own visible bucket with the cancel reason', async () => {
