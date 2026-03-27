@@ -378,12 +378,12 @@ afterEach(() => {
 });
 
 describe('manager-app DOM auth state matrix', () => {
-  it('describes drag-drop and clipboard image insertion instead of an add-image button', () => {
+  it('describes mobile and desktop image insertion paths in the composer', () => {
     expect(managerHtml).toContain(
-      '画像はここへドラッグ&ドロップするか、Ctrl / Cmd + V で'
+      'スマホは「画像を選ぶ」、PC はドラッグ&ドロップか Ctrl /'
     );
-    expect(managerHtml).not.toContain('composerInsertImageButton');
-    expect(managerHtml).not.toContain('composerImageInput');
+    expect(managerHtml).toContain('id="composerImagePickerButton"');
+    expect(managerHtml).toContain('id="composerImagePickerInput"');
   });
 
   it('keeps markdown reply spacing compact in the manager stylesheet', () => {
@@ -3433,6 +3433,56 @@ describe('manager-app DOM auth state matrix', () => {
     expect(textarea.classList.contains('composer-textarea-drop-active')).toBe(
       false
     );
+  });
+
+  it('inserts images chosen from the picker at the remembered cursor position', async () => {
+    const fetchMock = createManagerFetch('composer-picker-token');
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'composer-picker-token');
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    textarea.value = '前の説明後ろの説明';
+    textarea.setSelectionRange('前の説明'.length, '前の説明'.length);
+    textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    const pickerButton = document.querySelector<HTMLButtonElement>(
+      '#composerImagePickerButton'
+    )!;
+    pickerButton.dispatchEvent(
+      new window.MouseEvent('mousedown', { bubbles: true })
+    );
+
+    const pickerInput = document.querySelector<HTMLInputElement>(
+      '#composerImagePickerInput'
+    )!;
+    const file = new window.File([Uint8Array.from([4, 5, 6])], 'mobile.png', {
+      type: 'image/png',
+    });
+    Object.defineProperty(pickerInput, 'files', {
+      configurable: true,
+      value: [file],
+    });
+    pickerInput.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await flushAsync(8);
+
+    expect(textarea.value).toContain(
+      '前の説明\n\n![mobile.png](attachment://img-'
+    );
+    expect(textarea.value).toContain(')\n\n後ろの説明');
+    expect(
+      document.querySelector<HTMLElement>('#composerAttachmentList')!
+        .textContent
+    ).toContain('mobile.png');
   });
 
   it('keeps done topics hidden by default and shows them when toggled', async () => {

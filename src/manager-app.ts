@@ -3024,6 +3024,8 @@ class ManagerApp {
   #composerAttachments = new Map<string, ManagerMessageAttachment>();
   #composerAttachmentSerial = 0;
   #composerImageDragDepth = 0;
+  #composerSelectionStart: number | null = null;
+  #composerSelectionEnd: number | null = null;
   #composerFeedbackEntries: ComposerFeedbackEntry[] =
     readStoredComposerFeedbackEntries();
   #composerFeedbackSerial = 0;
@@ -3290,6 +3292,18 @@ class ManagerApp {
     input.setRangeText(text, selectionStart, selectionEnd, 'end');
   }
 
+  #rememberComposerSelection(): void {
+    const input = this.#composerInput();
+    if (!input) {
+      this.#composerSelectionStart = null;
+      this.#composerSelectionEnd = null;
+      return;
+    }
+    this.#composerSelectionStart = input.selectionStart ?? input.value.length;
+    this.#composerSelectionEnd =
+      input.selectionEnd ?? this.#composerSelectionStart;
+  }
+
   #imageInsertionText(
     input: HTMLTextAreaElement,
     insertions: string[],
@@ -3376,15 +3390,23 @@ class ManagerApp {
       return;
     }
 
-    const rangeStart =
-      selectionStart ?? input.selectionStart ?? input.value.length;
-    const rangeEnd = selectionEnd ?? input.selectionEnd ?? rangeStart;
+    const inputLength = input.value.length;
+    const rememberedStart =
+      this.#composerSelectionStart ?? input.selectionStart ?? inputLength;
+    const rememberedEnd =
+      this.#composerSelectionEnd ?? input.selectionEnd ?? rememberedStart;
+    const rangeStart = Math.min(selectionStart ?? rememberedStart, inputLength);
+    const rangeEnd = Math.min(
+      Math.max(selectionEnd ?? rememberedEnd, rangeStart),
+      inputLength
+    );
     this.#insertTextAtCursor(
       input,
       this.#imageInsertionText(input, insertions, rangeStart, rangeEnd),
       rangeStart,
       rangeEnd
     );
+    this.#rememberComposerSelection();
     this.#syncComposerDraftUi();
     input.focus();
   }
@@ -4194,6 +4216,7 @@ class ManagerApp {
     this.#syncComposerDraftUi();
     this.#setComposerExpanded(true);
     input.focus();
+    this.#rememberComposerSelection();
   }
 
   async #rollbackBuild(commitHash: string): Promise<void> {
@@ -4238,6 +4261,8 @@ class ManagerApp {
     const feedbackEntryId = this.#queueComposerFeedbackEntry(content);
     input.value = '';
     this.#composerAttachments.clear();
+    this.#composerSelectionStart = 0;
+    this.#composerSelectionEnd = 0;
     this.#syncComposerDraftUi();
     input.focus();
 
@@ -4418,23 +4443,45 @@ class ManagerApp {
       'globalComposerInput'
     ) as HTMLTextAreaElement | null;
     composerInput?.addEventListener('input', () => {
+      this.#rememberComposerSelection();
       this.#syncComposerDraftUi();
     });
-    composerInput?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        void this.sendGlobalMessage();
-      }
+    composerInput?.addEventListener('click', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('keyup', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('select', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('focus', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('keydown', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('mouseup', () => {
+      this.#rememberComposerSelection();
+    });
+    composerInput?.addEventListener('touchend', () => {
+      this.#rememberComposerSelection();
     });
     composerInput?.addEventListener('paste', (event) => {
+      this.#rememberComposerSelection();
       const files = this.#imageFilesFromTransfer(event.clipboardData);
       if (files.length === 0) {
         return;
       }
       event.preventDefault();
       const selectionStart =
-        composerInput.selectionStart ?? composerInput.value.length;
-      const selectionEnd = composerInput.selectionEnd ?? selectionStart;
+        this.#composerSelectionStart ??
+        composerInput.selectionStart ??
+        composerInput.value.length;
+      const selectionEnd =
+        this.#composerSelectionEnd ??
+        composerInput.selectionEnd ??
+        selectionStart;
       void this.#insertComposerImages(files, selectionStart, selectionEnd);
     });
     composerInput?.addEventListener('dragenter', (event) => {
@@ -4442,6 +4489,7 @@ class ManagerApp {
         return;
       }
       event.preventDefault();
+      this.#rememberComposerSelection();
       this.#composerImageDragDepth += 1;
       this.#setComposerDropActive(true);
     });
@@ -4450,6 +4498,7 @@ class ManagerApp {
         return;
       }
       event.preventDefault();
+      this.#rememberComposerSelection();
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'copy';
       }
@@ -4469,6 +4518,7 @@ class ManagerApp {
       }
     });
     composerInput?.addEventListener('drop', (event) => {
+      this.#rememberComposerSelection();
       const files = this.#imageFilesFromTransfer(event.dataTransfer);
       if (files.length === 0) {
         return;
@@ -4476,8 +4526,59 @@ class ManagerApp {
       event.preventDefault();
       this.#resetComposerDropState();
       const selectionStart =
-        composerInput.selectionStart ?? composerInput.value.length;
-      const selectionEnd = composerInput.selectionEnd ?? selectionStart;
+        this.#composerSelectionStart ??
+        composerInput.selectionStart ??
+        composerInput.value.length;
+      const selectionEnd =
+        this.#composerSelectionEnd ??
+        composerInput.selectionEnd ??
+        selectionStart;
+      void this.#insertComposerImages(files, selectionStart, selectionEnd);
+    });
+    composerInput?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void this.sendGlobalMessage();
+      }
+    });
+
+    const composerImagePickerButton = document.getElementById(
+      'composerImagePickerButton'
+    ) as HTMLButtonElement | null;
+    const composerImagePickerInput = document.getElementById(
+      'composerImagePickerInput'
+    ) as HTMLInputElement | null;
+    const openComposerImagePicker = () => {
+      this.#rememberComposerSelection();
+      composerImagePickerInput?.click();
+    };
+    composerImagePickerButton?.addEventListener('pointerdown', () => {
+      this.#rememberComposerSelection();
+    });
+    composerImagePickerButton?.addEventListener('mousedown', () => {
+      this.#rememberComposerSelection();
+    });
+    composerImagePickerButton?.addEventListener('touchstart', () => {
+      this.#rememberComposerSelection();
+    });
+    composerImagePickerButton?.addEventListener('click', () => {
+      openComposerImagePicker();
+    });
+    composerImagePickerInput?.addEventListener('change', () => {
+      const files = Array.from(composerImagePickerInput.files ?? []);
+      composerImagePickerInput.value = '';
+      if (files.length === 0) {
+        return;
+      }
+      const selectionStart =
+        this.#composerSelectionStart ??
+        composerInput?.selectionStart ??
+        composerInput?.value.length ??
+        0;
+      const selectionEnd =
+        this.#composerSelectionEnd ??
+        composerInput?.selectionEnd ??
+        selectionStart;
       void this.#insertComposerImages(files, selectionStart, selectionEnd);
     });
 

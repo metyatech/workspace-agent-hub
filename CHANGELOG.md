@@ -18,6 +18,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Updated the Manager composer so smartphone users can choose one or more
+  images from a mobile-friendly picker and insert them back at the remembered
+  cursor position while desktop drag-and-drop and Ctrl/Cmd+V insertion
+  continue to work
 - Kept the Web UI replacement/swap path machine-readable during automatic
   rebuilds by redirecting PowerShell wrapper `npm` build output away from
   stdout, so phone-ready restarts can keep the previous listener alive until

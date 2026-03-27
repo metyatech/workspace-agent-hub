@@ -465,9 +465,10 @@ Important behavior:
   inbox or a selected work item mention hint, so follow-up messages can keep
   that work item attached without bypassing the normal routing pass.
 - Manager work-item messages now preserve multiline user text, support inline image
-  insertion inside the message body via drag-and-drop or Ctrl/Cmd+V clipboard
-  paste at the current cursor position, and render both user/AI replies with
-  Markdown formatting in the work-item conversation view.
+  insertion inside the message body via a mobile-friendly image picker plus
+  desktop drag-and-drop or Ctrl/Cmd+V clipboard paste at the current cursor
+  position, and render both user/AI replies with Markdown formatting in the
+  work-item conversation view.
 - The work-item graph keeps zero or more `derived_from` parent work items, and
   the Manager UI surfaces those relations directly instead of relying on
   topic-like folders as the primary mental model.

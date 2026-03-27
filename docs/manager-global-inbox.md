@@ -279,9 +279,10 @@ The Manager screen must make these points obvious without external explanation:
   specific selected task mention hint, without turning that hint into a forced
   destination
 - Preserve real conversation shape inside a work item: multiline user messages,
-  inline image evidence inserted by drag-and-drop or clipboard paste at the
-  current cursor position, and Markdown-formatted AI replies with the newest
-  message at the bottom of the conversation
+  inline image evidence inserted by a phone-friendly image picker or by
+  desktop drag-and-drop / clipboard paste at the current cursor position, and
+  Markdown-formatted AI replies with the newest message at the bottom of the
+  conversation
 
 ### Routing feedback placement
 

@@ -1798,6 +1798,10 @@
         flex-shrink: 0;
       }
 
+      .composer-actions .composer-image-button {
+        flex-shrink: 0;
+      }
+
       .composer-actions .composer-hint {
         flex-basis: 100%;
       }
@@ -1971,6 +1975,7 @@
 
         #composerToggleButton,
         .composer-actions #globalComposerSendButton,
+        .composer-actions .composer-image-button,
         .composer-tools .btn {
           flex: 1;
           width: 100%;
@@ -2740,8 +2745,8 @@
           ></textarea>
           <div class="composer-tools">
             <span id="composerMediaHint" class="composer-hint"
-              >画像はここへドラッグ&ドロップするか、Ctrl / Cmd + V で
-              カーソル位置へ差し込めます。</span
+              >スマホは「画像を選ぶ」、PC はドラッグ&ドロップか Ctrl / Cmd + V
+              でカーソル位置へ差し込めます。</span
             >
           </div>
           <div
@@ -2761,6 +2766,22 @@
                 全体へ戻す
               </button>
             </div>
+            <button
+              id="composerImagePickerButton"
+              class="btn btn-ghost composer-image-button"
+              type="button"
+            >
+              画像を選ぶ
+            </button>
+            <input
+              id="composerImagePickerInput"
+              class="sr-only"
+              type="file"
+              accept="image/*"
+              multiple
+              tabindex="-1"
+              aria-hidden="true"
+            />
             <button id="globalComposerSendButton" class="btn btn-primary">
               AI に送る
             </button>
