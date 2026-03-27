@@ -39,18 +39,45 @@ NODE
 trap cleanup EXIT
 
 tmux new-session -d -s "$menu_session" -c "$AGENT_SESSION_HUB_WORKSPACE_ROOT" "env AI_AGENT_SESSION_NO_ATTACH=1 '${AGENT_SESSION_HUB_SCRIPTS_DIR}/wsl-agent-mobile-menu.sh'"
-sleep 1
+tmux set-option -t "$menu_session" remain-on-exit on >/dev/null 2>&1 || true
 
+wait_for_menu_text() {
+  local expected_text="$1"
+  local pane_output=''
+
+  for _ in $(seq 1 100); do
+    if ! tmux has-session -t "$menu_session" >/dev/null 2>&1; then
+      printf 'Menu session exited before showing expected text: %s\n' "$expected_text" >&2
+      return 1
+    fi
+
+    pane_output="$(tmux capture-pane -pt "$menu_session" -S -200 2>/dev/null || true)"
+    if [[ "$pane_output" == *"$expected_text"* ]]; then
+      printf '%s\n' "$pane_output"
+      return 0
+    fi
+
+    sleep 0.2
+  done
+
+  printf 'Timed out waiting for menu text: %s\n' "$expected_text" >&2
+  printf '%s\n' "$pane_output" >&2
+  return 1
+}
+
+wait_for_menu_text 'Choose 1/2/3/4/5/6:' >/dev/null
 tmux send-keys -t "$menu_session" '1' C-m
-sleep 1
-tmux send-keys -t "$menu_session" 'shell' C-m
-sleep 1
-tmux send-keys -t "$menu_session" "$session_title" C-m
-sleep 1
-tmux send-keys -t "$menu_session" "$AGENT_SESSION_HUB_REPO_ROOT" C-m
-sleep 2
 
-pane_output="$(tmux capture-pane -pt "$menu_session" -S -200)"
+wait_for_menu_text 'Type (codex/claude/gemini/shell):' >/dev/null
+tmux send-keys -t "$menu_session" 'shell' C-m
+
+wait_for_menu_text 'What is this session about? (optional):' >/dev/null
+tmux send-keys -t "$menu_session" "$session_title" C-m
+
+wait_for_menu_text 'Working directory (optional, default:' >/dev/null
+tmux send-keys -t "$menu_session" "$AGENT_SESSION_HUB_REPO_ROOT" C-m
+
+pane_output="$(wait_for_menu_text 'Session ready:')"
 created_session="$(printf '%s\n' "$pane_output" | sed -n 's/.*Session ready: \([^[:space:]]\+\).*/\1/p' | tail -n 1)"
 
 [[ -n "${created_session// }" ]]

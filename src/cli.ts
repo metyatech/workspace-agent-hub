@@ -7,6 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
+
+const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 import { readManagerWorkItems } from './manager-work-items.js';
 import { startWebUi } from './web-ui.js';
 import { startWebUiFrontDoor } from './web-ui-front-door.js';
@@ -126,18 +128,18 @@ async function spawnAndWaitForReady(
   packageRoot: string,
   state: WebUiState | null
 ): Promise<boolean> {
-  const args = ['run', 'start', '--', '--json'];
+  const cliPath = join(packageRoot, 'dist', 'cli.js');
+  const args = [cliPath, 'web-ui', '--json', '--no-open-browser'];
   if (state?.AuthDisabled) {
     args.push('--auth-token', 'none');
   } else if (state?.AccessCode) {
     args.push('--auth-token', state.AccessCode);
   }
 
-  const child = nodeSpawn('npm', args, {
+  const child = nodeSpawn(process.execPath, args, {
     cwd: packageRoot,
     detached: true,
     stdio: 'ignore',
-    shell: true,
     windowsHide: true,
   });
   child.unref();
@@ -337,10 +339,9 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
 
       console.log('Installing dependencies...');
       await new Promise<void>((resolvePromise, reject) => {
-        const install = nodeSpawn('npm', ['install'], {
+        const install = nodeSpawn(npmCmd, ['install'], {
           cwd: packageRoot,
           stdio: 'inherit',
-          shell: true,
           windowsHide: true,
         });
         install.on('close', (code) => {
@@ -355,10 +356,9 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
 
       console.log('Building...');
       await new Promise<void>((resolvePromise, reject) => {
-        const build = nodeSpawn('npm', ['run', 'build'], {
+        const build = nodeSpawn(npmCmd, ['run', 'build'], {
           cwd: packageRoot,
           stdio: 'inherit',
-          shell: true,
           windowsHide: true,
         });
         build.on('close', (code) => {
