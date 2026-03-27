@@ -26,7 +26,6 @@ interface Msg {
   provisional?: boolean;
   senderLabel?: string;
   key?: string;
-  liveEntries?: LiveActivityStep[];
 }
 
 type ManagerUiState =
@@ -48,6 +47,8 @@ type ManagerWorkerRuntimeState =
   | 'worker-running'
   | 'blocked-by-scope'
   | 'cancelled-as-superseded';
+
+type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
 
 interface WorkerLiveEntry {
   at: string;
@@ -85,6 +86,13 @@ interface ThreadView {
   routingHint: string | null;
   derivedFromThreadIds: string[];
   derivedChildThreadIds: string[];
+  managedRepoId: string | null;
+  managedRepoLabel: string | null;
+  managedRepoRoot: string | null;
+  managedBaseBranch: string | null;
+  managedVerifyCommand: string | null;
+  requestedWorkerRuntime: ManagerWorkerRuntime | null;
+  requestedRunMode: 'read-only' | 'write' | null;
   queueDepth: number;
   isWorking: boolean;
   assigneeKind: 'manager' | 'worker' | null;
@@ -142,7 +150,21 @@ interface ManagerLiveSnapshotPayload {
   emittedAt: string;
   threads: ThreadView[];
   tasks: Task[];
+  repos: ManagedRepo[];
   status: ManagerStatusPayload;
+}
+
+interface ManagedRepo {
+  id: string;
+  label: string;
+  repoRoot: string;
+  defaultBranch: string;
+  verifyCommand: string;
+  supportedWorkerRuntimes: ManagerWorkerRuntime[];
+  preferredWorkerRuntime: ManagerWorkerRuntime;
+  mergeLaneEnabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface ManagerLifecycleDebugEntry {
@@ -598,6 +620,24 @@ function threadHistoryState(threadId: string): ManagerHistoryState {
 function humanizeTaskStage(stage?: string): string {
   const key = stage?.trim();
   return key ? (TASK_STAGE_LABELS[key] ?? key) : '未整理';
+}
+
+function humanizeWorkerRuntime(runtime: ManagerWorkerRuntime | null): string {
+  switch (runtime) {
+    case 'claude':
+      return 'Claude';
+    case 'gemini':
+      return 'Gemini';
+    case 'copilot':
+      return 'Copilot';
+    case 'codex':
+    default:
+      return 'Codex';
+  }
+}
+
+function humanizeRunMode(mode: 'read-only' | 'write' | null): string {
+  return mode === 'read-only' ? 'read-only' : 'write';
 }
 
 class AuthRequiredError extends Error {
@@ -1438,47 +1478,6 @@ function makeStateBadge(state: ManagerUiState): HTMLSpanElement {
   return badge;
 }
 
-function liveStepKindLabel(kind: WorkerLiveEntry['kind']): string {
-  return kind === 'output' ? '内容' : kind === 'error' ? '異常' : '状況';
-}
-
-function makeLiveConsolePane(
-  steps: LiveActivityStep[],
-  scrollId: string,
-  variant: 'panel' | 'bubble'
-): HTMLDivElement {
-  const scroll = document.createElement('div');
-  scroll.className = `live-console-scroll live-console-scroll-${variant}`;
-  scroll.dataset.liveScrollId = scrollId;
-
-  for (const step of steps) {
-    const line = document.createElement('div');
-    line.className = `live-console-line live-console-line-${step.kind}`;
-
-    const meta = document.createElement('div');
-    meta.className = 'live-console-meta';
-
-    const badge = document.createElement('span');
-    badge.className = 'live-console-kind';
-    badge.textContent = liveStepKindLabel(step.kind);
-
-    const time = document.createElement('span');
-    time.className = 'live-console-time';
-    time.textContent = step.at ? formatDate(step.at) : '';
-
-    meta.append(badge, time);
-
-    const text = document.createElement('div');
-    text.className = 'live-console-text';
-    text.textContent = step.text;
-
-    line.append(meta, text);
-    scroll.appendChild(line);
-  }
-
-  return scroll;
-}
-
 function makeBubble(
   message: Msg,
   threadTitlesById: Map<string, string>
@@ -1514,18 +1513,11 @@ function makeBubble(
 
   const content = document.createElement('div');
   content.className = 'bubble-content';
-  if (message.live && message.liveEntries && message.liveEntries.length > 0) {
-    content.classList.add('bubble-content-live-console');
-    content.appendChild(
-      makeLiveConsolePane(message.liveEntries, 'live-bubble', 'bubble')
-    );
-  } else {
-    renderMessageMarkdown(
-      content,
-      message.content,
-      message.sender === 'ai' ? threadTitlesById : new Map()
-    );
-  }
+  renderMessageMarkdown(
+    content,
+    message.content,
+    message.sender === 'ai' ? threadTitlesById : new Map()
+  );
 
   meta.append(sender, timestamp);
   bubble.append(meta, content);
@@ -1564,7 +1556,6 @@ function buildLiveWorkerMessage(
     provisional: true,
     senderLabel: activity.actorLabel,
     key: `live:${thread.id}`,
-    liveEntries: activity.steps,
   };
 }
 
@@ -1826,6 +1817,15 @@ function describeWorkItemContext(
   threadsById: Map<string, ThreadView>
 ): string | null {
   const parts = [
+    thread.managedRepoLabel
+      ? [
+          `repo: ${thread.managedRepoLabel}`,
+          thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
+          `mode: ${humanizeRunMode(thread.requestedRunMode)}`,
+        ]
+          .filter(Boolean)
+          .join(' / ')
+      : null,
     describeWorkItemRelations(thread, threadsById),
     thread.routingHint,
   ].filter((value): value is string => Boolean(value?.trim()));
@@ -1937,9 +1937,33 @@ function makeLiveActivityPanel(
 
   const steps = activity.steps;
   if (steps.length > 0) {
-    const list = makeLiveConsolePane(steps, 'activity-panel', 'panel');
-    list.classList.add('detail-live-activity-list');
+    const list = document.createElement('div');
+    list.className = 'detail-live-activity-list';
     list.dataset.liveActivityList = '';
+    for (const step of steps) {
+      const item = document.createElement('div');
+      item.className = 'detail-live-activity-item';
+
+      const badge = document.createElement('span');
+      badge.className = 'detail-live-activity-kind';
+      badge.textContent =
+        step.kind === 'output'
+          ? '内容'
+          : step.kind === 'error'
+            ? '異常'
+            : '状況';
+
+      const text = document.createElement('div');
+      text.className = 'detail-live-activity-item-text';
+      text.textContent = step.text;
+
+      const meta = document.createElement('span');
+      meta.className = 'detail-live-activity-item-time';
+      meta.textContent = step.at ? formatDate(step.at) : '';
+
+      item.append(badge, text, meta);
+      list.appendChild(item);
+    }
     panel.appendChild(list);
   }
 
@@ -2682,60 +2706,14 @@ class DetailController {
     return remaining <= threshold;
   }
 
-  #revealScrollableBottom(container: HTMLElement): void {
+  #revealLatestMessage(msgArea: HTMLElement): void {
     const sync = () => {
-      container.scrollTop = container.scrollHeight;
+      msgArea.scrollTop = msgArea.scrollHeight;
     };
 
     sync();
-    const view = container.ownerDocument.defaultView;
+    const view = msgArea.ownerDocument.defaultView;
     view?.setTimeout(sync, 0);
-  }
-
-  #captureLivePaneStates(): Map<
-    string,
-    { scrollTop: number; preserveBottom: boolean }
-  > {
-    const states = new Map<
-      string,
-      { scrollTop: number; preserveBottom: boolean }
-    >();
-    for (const pane of this.#detailEl.querySelectorAll<HTMLElement>(
-      '[data-live-scroll-id]'
-    )) {
-      const scrollId = pane.dataset.liveScrollId?.trim();
-      if (!scrollId) {
-        continue;
-      }
-      states.set(scrollId, {
-        scrollTop: pane.scrollTop,
-        preserveBottom: this.#isNearBottom(pane, 16),
-      });
-    }
-    return states;
-  }
-
-  #restoreLivePaneStates(
-    states: Map<string, { scrollTop: number; preserveBottom: boolean }>
-  ): void {
-    for (const pane of this.#detailEl.querySelectorAll<HTMLElement>(
-      '[data-live-scroll-id]'
-    )) {
-      const scrollId = pane.dataset.liveScrollId?.trim();
-      if (!scrollId) {
-        continue;
-      }
-      const previous = states.get(scrollId);
-      if (!previous) {
-        this.#revealScrollableBottom(pane);
-        continue;
-      }
-      if (previous.preserveBottom) {
-        this.#revealScrollableBottom(pane);
-        continue;
-      }
-      pane.scrollTop = previous.scrollTop;
-    }
   }
 
   render(
@@ -2799,9 +2777,6 @@ class DetailController {
       sameThread && previousMsgArea
         ? this.#captureScrollAnchor(previousMsgArea)
         : null;
-    const previousLivePaneStates = sameThread
-      ? this.#captureLivePaneStates()
-      : new Map();
 
     this.#currentThreadId = thread.id;
     this.#lastRenderedSignature = nextSignature;
@@ -2830,6 +2805,14 @@ class DetailController {
     const meta = document.createElement('div');
     meta.className = 'detail-meta';
     meta.textContent = [
+      thread.managedRepoLabel ? `repo: ${thread.managedRepoLabel}` : '',
+      thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
+      thread.requestedRunMode
+        ? `mode: ${humanizeRunMode(thread.requestedRunMode)}`
+        : '',
+      thread.requestedWorkerRuntime
+        ? `runtime: ${humanizeWorkerRuntime(thread.requestedWorkerRuntime)}`
+        : '',
       thread.updatedAt ? `更新: ${formatDate(thread.updatedAt)}` : '',
       thread.queueDepth > 0 ? `キュー: ${thread.queueDepth}` : '',
       thread.assigneeLabel ? `担当: ${thread.assigneeLabel}` : '',
@@ -2860,6 +2843,13 @@ class DetailController {
       const note = document.createElement('div');
       note.className = 'detail-note';
       note.textContent = noteText;
+      body.appendChild(note);
+    }
+
+    if (thread.managedVerifyCommand) {
+      const note = document.createElement('div');
+      note.className = 'detail-note';
+      note.textContent = `verify: ${thread.managedVerifyCommand}`;
       body.appendChild(note);
     }
 
@@ -2968,15 +2958,13 @@ class DetailController {
     body.appendChild(actions);
     this.#detailEl.appendChild(body);
 
-    this.#restoreLivePaneStates(previousLivePaneStates);
-
     if (!sameThread) {
-      this.#revealScrollableBottom(msgArea);
+      this.#revealLatestMessage(msgArea);
       return;
     }
 
     if (preserveBottom) {
-      this.#revealScrollableBottom(msgArea);
+      this.#revealLatestMessage(msgArea);
       return;
     }
 
@@ -2995,6 +2983,7 @@ class DetailController {
 class ManagerApp {
   allThreads: ThreadView[] = [];
   allTasks: Task[] = [];
+  #managedRepos: ManagedRepo[] = [];
   openThreadId: string | null = null;
   #composerTargetThreadId: string | null = null;
   #openThreadMovementNotice: string | null = null;
@@ -3029,6 +3018,10 @@ class ManagerApp {
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
   #sortOrders = buildManagerSortOrders();
+  #newTaskSheetOpen = false;
+  #newTaskSheetSubmitting = false;
+  #repoFormSubmitting = false;
+  #pendingManagedRepoSelectionId: string | null = null;
 
   constructor() {
     this.#sections = {
@@ -3454,12 +3447,13 @@ class ManagerApp {
   }
 
   async loadAll(): Promise<boolean> {
-    const [threadsRes, tasksRes] = await Promise.all([
+    const [threadsRes, tasksRes, reposRes] = await Promise.all([
       this.apiFetch('/api/threads'),
       this.apiFetch('/api/tasks'),
+      this.apiFetch('/api/manager/repos'),
     ]);
 
-    if (!threadsRes || !tasksRes) {
+    if (!threadsRes || !tasksRes || !reposRes) {
       return false;
     }
 
@@ -3469,8 +3463,18 @@ class ManagerApp {
     const nextTasks = tasksRes.ok
       ? ((await tasksRes.json()) as Task[])
       : this.allTasks;
+    const reposPayload = reposRes.ok
+      ? ((await reposRes.json()) as unknown)
+      : null;
+    const nextRepos = Array.isArray(reposPayload)
+      ? (reposPayload as ManagedRepo[])
+      : this.#managedRepos;
 
-    this.#applyThreadAndTaskSnapshot(nextThreads, nextTasks);
+    this.#applySnapshot({
+      threads: nextThreads,
+      tasks: nextTasks,
+      repos: nextRepos,
+    });
     return true;
   }
 
@@ -3484,10 +3488,17 @@ class ManagerApp {
     return true;
   }
 
-  #applyThreadAndTaskSnapshot(threads: ThreadView[], tasks: Task[]): void {
+  #applySnapshot(input: {
+    threads: ThreadView[];
+    tasks: Task[];
+    repos: ManagedRepo[];
+  }): void {
     const previousOpenThread = this.#findThread(this.openThreadId);
-    this.allThreads = this.#applyPendingThreadMutations(threads);
-    this.allTasks = tasks;
+    this.allThreads = this.#applyPendingThreadMutations(input.threads);
+    this.allTasks = input.tasks;
+    this.#managedRepos = [...input.repos].sort((left, right) =>
+      left.label.localeCompare(right.label, 'ja-JP')
+    );
 
     if (
       this.openThreadId &&
@@ -3617,7 +3628,13 @@ class ManagerApp {
 
   #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): void {
     this.#resumeRefreshPending = false;
-    this.#applyThreadAndTaskSnapshot(snapshot.threads, snapshot.tasks);
+    this.#applySnapshot({
+      threads: snapshot.threads,
+      tasks: snapshot.tasks,
+      repos: Array.isArray(snapshot.repos)
+        ? snapshot.repos
+        : this.#managedRepos,
+    });
     this.#applyManagerStatus(snapshot.status);
   }
 
@@ -3976,7 +3993,11 @@ class ManagerApp {
       previousThread: currentThread,
     };
     this.#pendingThreadMutations.set(threadId, mutation);
-    this.#applyThreadAndTaskSnapshot(this.allThreads, this.allTasks);
+    this.#applySnapshot({
+      threads: this.allThreads,
+      tasks: this.allTasks,
+      repos: this.#managedRepos,
+    });
     return mutation;
   }
 
@@ -3992,12 +4013,13 @@ class ManagerApp {
     mutation: PendingThreadMutation
   ): void {
     this.#pendingThreadMutations.delete(threadId);
-    this.#applyThreadAndTaskSnapshot(
-      this.allThreads.map((thread) =>
+    this.#applySnapshot({
+      threads: this.allThreads.map((thread) =>
         thread.id === threadId ? mutation.previousThread : thread
       ),
-      this.allTasks
-    );
+      tasks: this.allTasks,
+      repos: this.#managedRepos,
+    });
   }
 
   #focusThread(threadId: string): void {
@@ -4282,6 +4304,12 @@ class ManagerApp {
       }
       const action = target.getAttribute('data-action');
       switch (action) {
+        case 'open-new-task-sheet':
+          this.#setNewTaskSheetOpen(true);
+          break;
+        case 'close-new-task-sheet':
+          this.#setNewTaskSheetOpen(false);
+          break;
         case 'refresh':
           void Promise.all([this.loadAll(), this.loadManagerStatus()]);
           break;
@@ -4421,6 +4449,38 @@ class ManagerApp {
     composerButton?.addEventListener('click', () => {
       void this.sendGlobalMessage();
     });
+
+    const repoSelect = document.getElementById(
+      'newTaskRepoSelect'
+    ) as HTMLSelectElement | null;
+    repoSelect?.addEventListener('change', () => {
+      this.#pendingManagedRepoSelectionId = repoSelect.value || null;
+      this.#renderNewTaskSheet();
+    });
+
+    const newTaskForm = document.getElementById(
+      'newTaskForm'
+    ) as HTMLFormElement | null;
+    newTaskForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void this.#submitNewTaskForm();
+    });
+
+    const repoForm = document.getElementById(
+      'managedRepoForm'
+    ) as HTMLFormElement | null;
+    repoForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void this.#submitManagedRepoForm();
+    });
+
+    document
+      .getElementById('newTaskSheetBackdrop')
+      ?.addEventListener('click', (event) => {
+        if (event.target === event.currentTarget) {
+          this.#setNewTaskSheetOpen(false);
+        }
+      });
 
     const composerTargetClear = document.getElementById(
       'composerTargetClearButton'
@@ -4656,6 +4716,8 @@ class ManagerApp {
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
+    this.#renderNewTaskEntry();
+    this.#renderNewTaskSheet();
     this.#syncComposerDockReserve();
 
     const openThread =
@@ -4778,6 +4840,342 @@ class ManagerApp {
     const hasThreads = this.allThreads.length > 0;
     const hasTasks = this.allTasks.length > 0;
     hero.classList.toggle('hidden', hasThreads || hasTasks);
+    const copy = document.getElementById('getting-started-copy');
+    const steps = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-getting-started-step]')
+    );
+    if (copy) {
+      copy.textContent =
+        this.#managedRepos.length === 0
+          ? '最初に local git repo を登録すると、その後は repo を選んで isolated worktree の作業を起票できます。通常の相談は下の送信欄からそのまま送れます。'
+          : 'repo を選んで isolated worktree の作業を起票できます。通常の相談は下の送信欄からそのまま送れます。';
+    }
+    if (steps.length >= 3) {
+      steps[0].textContent =
+        this.#managedRepos.length === 0
+          ? '1. 「新しい作業」から local git repo を追加する'
+          : '1. 「新しい作業」を押して repo を選ぶ';
+      steps[1].textContent =
+        this.#managedRepos.length === 0
+          ? '2. 同じシートでタイトルと依頼内容を書く'
+          : '2. base branch と依頼内容を書いて起票する';
+      steps[2].textContent =
+        '3. queued / working / review をこの一覧で追い、あとで merge lane へつなげる';
+    }
+  }
+
+  #setNewTaskSheetOpen(open: boolean): void {
+    this.#newTaskSheetOpen = open;
+    const status = document.getElementById('newTaskStatus');
+    if (status && open) {
+      status.textContent = '';
+    }
+    this.#renderAll();
+  }
+
+  #selectedManagedRepo(): ManagedRepo | null {
+    const select = document.getElementById(
+      'newTaskRepoSelect'
+    ) as HTMLSelectElement | null;
+    const requestedId =
+      this.#pendingManagedRepoSelectionId ??
+      (select?.value.trim() ? select.value.trim() : null);
+    if (requestedId) {
+      const matched = this.#managedRepos.find(
+        (repo) => repo.id === requestedId
+      );
+      if (matched) {
+        return matched;
+      }
+    }
+    return this.#managedRepos[0] ?? null;
+  }
+
+  #renderNewTaskEntry(): void {
+    const summary = document.getElementById('newTaskEntrySummary');
+    const openButtons = [
+      document.getElementById('newTaskOpenButton') as HTMLButtonElement | null,
+      document.getElementById(
+        'newTaskOpenButtonSecondary'
+      ) as HTMLButtonElement | null,
+    ];
+    const hasRepos = this.#managedRepos.length > 0;
+    if (summary) {
+      summary.textContent = hasRepos
+        ? `${this.#managedRepos.length} repo を登録済みです。repo を選んで isolated worktree の作業を起票できます。`
+        : 'まだ managed repo がありません。最初に local git repo を登録してください。';
+    }
+    for (const button of openButtons) {
+      if (!button) {
+        continue;
+      }
+      button.textContent = hasRepos
+        ? '新しい作業'
+        : 'repo を登録して作業を始める';
+    }
+  }
+
+  #renderNewTaskSheet(): void {
+    const backdrop = document.getElementById('newTaskSheetBackdrop');
+    if (!backdrop) {
+      return;
+    }
+    backdrop.classList.toggle('hidden', !this.#newTaskSheetOpen);
+
+    const select = document.getElementById(
+      'newTaskRepoSelect'
+    ) as HTMLSelectElement | null;
+    const repoSummary = document.getElementById('newTaskRepoSummary');
+    const runtimeSummary = document.getElementById('newTaskRuntimeSummary');
+    const status = document.getElementById('newTaskStatus');
+    const submitButton = document.getElementById(
+      'newTaskSubmitButton'
+    ) as HTMLButtonElement | null;
+    const repoHint = document.getElementById('newTaskRepoHint');
+    const baseBranchInput = document.getElementById(
+      'newTaskBaseBranchInput'
+    ) as HTMLInputElement | null;
+
+    if (select) {
+      const selectedId = this.#selectedManagedRepo()?.id ?? '';
+      select.innerHTML = '';
+      if (this.#managedRepos.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'managed repo を先に追加してください';
+        select.appendChild(option);
+      } else {
+        for (const repo of this.#managedRepos) {
+          const option = document.createElement('option');
+          option.value = repo.id;
+          option.textContent = repo.label;
+          option.selected = repo.id === selectedId;
+          select.appendChild(option);
+        }
+      }
+    }
+
+    const repo = this.#selectedManagedRepo();
+    if (repo && baseBranchInput) {
+      if (
+        !baseBranchInput.value.trim() ||
+        this.#pendingManagedRepoSelectionId !== null
+      ) {
+        baseBranchInput.value = repo.defaultBranch;
+      }
+    }
+    this.#pendingManagedRepoSelectionId = null;
+
+    if (repoSummary) {
+      repoSummary.textContent = repo
+        ? `${repo.label} / ${repo.repoRoot}`
+        : 'repo を追加すると、ここに base branch と verify の基準を出します。';
+    }
+    if (runtimeSummary) {
+      runtimeSummary.textContent = repo
+        ? `現在の backend は Codex 固定です。repo 設定の希望 runtime は ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} です。`
+        : '現在の backend は Codex 固定です。';
+    }
+    if (repoHint) {
+      repoHint.textContent = repo
+        ? `標準 verify: ${repo.verifyCommand}`
+        : 'まず local git repo の path を登録してください。';
+    }
+    if (
+      status &&
+      this.#managedRepos.length === 0 &&
+      !status.textContent?.trim()
+    ) {
+      status.textContent = '先に repo を追加してください。';
+    } else if (
+      status &&
+      this.#managedRepos.length > 0 &&
+      status.textContent === '先に repo を追加してください。'
+    ) {
+      status.textContent = '';
+    }
+    if (submitButton) {
+      submitButton.disabled =
+        this.#newTaskSheetSubmitting || this.#managedRepos.length === 0;
+      submitButton.textContent = this.#newTaskSheetSubmitting
+        ? '起票中...'
+        : 'この内容で起票する';
+    }
+
+    const repoFormStatus = document.getElementById('managedRepoFormStatus');
+    const repoFormButton = document.getElementById(
+      'managedRepoSubmitButton'
+    ) as HTMLButtonElement | null;
+    if (repoFormButton) {
+      repoFormButton.disabled = this.#repoFormSubmitting;
+      repoFormButton.textContent = this.#repoFormSubmitting
+        ? '保存中...'
+        : 'repo を保存';
+    }
+    if (repoFormStatus && !repoFormStatus.textContent?.trim()) {
+      repoFormStatus.textContent =
+        this.#managedRepos.length > 0
+          ? '別の repo を足したいときだけ下を使ってください。'
+          : 'ここで最初の repo を追加します。';
+    }
+  }
+
+  async #submitManagedRepoForm(): Promise<void> {
+    if (this.#repoFormSubmitting) {
+      return;
+    }
+    const labelInput = document.getElementById(
+      'managedRepoNameInput'
+    ) as HTMLInputElement | null;
+    const pathInput = document.getElementById(
+      'managedRepoPathInput'
+    ) as HTMLInputElement | null;
+    const branchInput = document.getElementById(
+      'managedRepoDefaultBranchInput'
+    ) as HTMLInputElement | null;
+    const verifyInput = document.getElementById(
+      'managedRepoVerifyCommandInput'
+    ) as HTMLInputElement | null;
+    const status = document.getElementById('managedRepoFormStatus');
+    const label = labelInput?.value.trim() ?? '';
+    const repoRoot = pathInput?.value.trim() ?? '';
+    if (!label || !repoRoot) {
+      if (status) {
+        status.textContent = '表示名と local repo path を入力してください。';
+      }
+      return;
+    }
+
+    this.#repoFormSubmitting = true;
+    this.#renderNewTaskSheet();
+    const response = await this.apiFetch('/api/manager/repos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label,
+        repoRoot,
+        defaultBranch: branchInput?.value.trim() || 'main',
+        verifyCommand: verifyInput?.value.trim() || 'npm run verify',
+        supportedWorkerRuntimes: ['codex'],
+        preferredWorkerRuntime: 'codex',
+      }),
+    });
+    this.#repoFormSubmitting = false;
+    if (!response) {
+      this.#renderNewTaskSheet();
+      return;
+    }
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (status) {
+        status.textContent = payload?.error || 'repo を保存できませんでした。';
+      }
+      this.#renderNewTaskSheet();
+      return;
+    }
+
+    const saved = (await response.json()) as ManagedRepo;
+    this.#pendingManagedRepoSelectionId = saved.id;
+    if (labelInput) {
+      labelInput.value = '';
+    }
+    if (pathInput) {
+      pathInput.value = '';
+    }
+    if (branchInput) {
+      branchInput.value = 'main';
+    }
+    if (verifyInput) {
+      verifyInput.value = 'npm run verify';
+    }
+    if (status) {
+      status.textContent = `「${saved.label}」を追加しました。`;
+    }
+    await this.loadAll();
+  }
+
+  async #submitNewTaskForm(): Promise<void> {
+    if (this.#newTaskSheetSubmitting) {
+      return;
+    }
+    const repo = this.#selectedManagedRepo();
+    const titleInput = document.getElementById(
+      'newTaskTitleInput'
+    ) as HTMLInputElement | null;
+    const contentInput = document.getElementById(
+      'newTaskContentInput'
+    ) as HTMLTextAreaElement | null;
+    const baseBranchInput = document.getElementById(
+      'newTaskBaseBranchInput'
+    ) as HTMLInputElement | null;
+    const status = document.getElementById('newTaskStatus');
+    const runMode =
+      (document.querySelector<HTMLInputElement>(
+        'input[name="newTaskRunMode"]:checked'
+      )?.value ?? 'write') === 'read-only'
+        ? 'read-only'
+        : 'write';
+
+    if (!repo) {
+      if (status) {
+        status.textContent = '先に repo を追加してください。';
+      }
+      return;
+    }
+
+    const title = titleInput?.value.trim() ?? '';
+    const content = contentInput?.value.trim() ?? '';
+    if (!title || !content) {
+      if (status) {
+        status.textContent = 'タイトルと依頼内容を入力してください。';
+      }
+      return;
+    }
+
+    this.#newTaskSheetSubmitting = true;
+    this.#renderNewTaskSheet();
+    const response = await this.apiFetch('/api/manager/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoId: repo.id,
+        title,
+        content,
+        baseBranch: baseBranchInput?.value.trim() || repo.defaultBranch,
+        runMode,
+      }),
+    });
+    this.#newTaskSheetSubmitting = false;
+    if (!response) {
+      this.#renderNewTaskSheet();
+      return;
+    }
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (status) {
+        status.textContent = payload?.error || '作業を起票できませんでした。';
+      }
+      this.#renderNewTaskSheet();
+      return;
+    }
+
+    const payload = (await response.json()) as { threadId: string };
+    if (titleInput) {
+      titleInput.value = '';
+    }
+    if (contentInput) {
+      contentInput.value = '';
+    }
+    if (status) {
+      status.textContent = '';
+    }
+    this.#setNewTaskSheetOpen(false);
+    await this.loadAll();
+    this.#focusThread(payload.threadId);
   }
 
   #renderActivitySummary(): void {
@@ -4856,10 +5254,14 @@ class ManagerApp {
       detail.textContent =
         pendingCount > 0
           ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
-          : 'いまは待機中です。新しい内容を送れば、ここから自動で動きます。';
+          : this.#managedRepos.length === 0
+            ? 'まず「新しい作業」から local git repo を追加してください。'
+            : 'いまは待機中です。「新しい作業」から repo を選んで起票できます。';
     } else if (configured) {
       detail.textContent =
-        'まだ始まっていません。下の送信ボタンを開いて送れば自動で起動します。';
+        this.#managedRepos.length === 0
+          ? 'まず「新しい作業」から local git repo を追加してください。登録後はそのまま起票できます。'
+          : 'まだ始まっていません。「新しい作業」で起票するか、下の送信欄から相談を送ると自動で動きます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';

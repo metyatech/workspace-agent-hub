@@ -391,16 +391,20 @@ How it works:
 3. The browser moves into Hub's native `/manager/` page on the same origin and in the same tab.
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
-5. The user writes from one global send dock instead of creating tasks by hand;
-   the writing surface stays collapsed on the inbox, then turns into a compact
+5. The user can either:
+   - press `新しい作業`, choose a managed repo, base branch, and run mode, then
+     launch an isolated-worktree run explicitly
+   - or keep using the global send dock for ordinary inbox-style routing and
+     follow-up discussion
+6. The writing surface stays collapsed on the inbox, then turns into a compact
    bottom reply bar while a work-item conversation screen is open.
-6. The built-in manager backend splits each message across existing tasks,
+7. The built-in manager backend splits each message across existing tasks,
    new tasks, or routing-confirmation items, then either answers the routed
    work item directly or dispatches it to a worker agent. Worker-agent items
    can run in parallel when their declared write scopes do not overlap, and
    each completed worker result goes back through a manager review turn before
    the final user-facing update and any delivery actions.
-7. The built-in manager backend starts inside Hub when needed and keeps
+8. The built-in manager backend starts inside Hub when needed and keeps
    handling inbox messages for that workspace.
 
 Important behavior:
@@ -409,7 +413,13 @@ Important behavior:
   smartphone/desktop Manager path. On the default phone-ready Tailscale route,
   Manager opens directly from the same trusted Hub origin.
 - There is no separate `manager-gui` process or second GUI server anymore.
+- Managed repos are now explicit workspace-local configuration. The Manager
+  stores repo path, default branch, verify command, and preferred runtime in a
+  dedicated registry before creating isolated runs.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
+- `新しい作業` now gives the human a first-class explicit run flow: pick a
+  repo, set the base branch, choose `write` or `read-only`, and queue the run
+  without touching git directly.
 - Users send from one global dock; they do not need to create or pick a task
   before sending, and the larger text area only opens when they choose to
   write.

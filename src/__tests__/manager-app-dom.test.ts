@@ -54,6 +54,13 @@ function makeThreadView(
     routingHint: null,
     derivedFromThreadIds: [],
     derivedChildThreadIds: [],
+    managedRepoId: null,
+    managedRepoLabel: null,
+    managedRepoRoot: null,
+    managedBaseBranch: null,
+    managedVerifyCommand: null,
+    requestedWorkerRuntime: null,
+    requestedRunMode: null,
     queueDepth: 0,
     isWorking: false,
     assigneeKind: null,
@@ -110,6 +117,10 @@ function createManagerFetch(validToken: string) {
       return new Response(JSON.stringify([]), { status: 200 });
     }
 
+    if (isRoute(url, '/manager/repos')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+
     if (isRoute(url, '/manager/status')) {
       return new Response(
         JSON.stringify({
@@ -129,6 +140,7 @@ function createManagerFetch(validToken: string) {
           emittedAt: '2026-03-21T00:00:00.000Z',
           threads: [],
           tasks: [],
+          repos: [],
           status: {
             running: false,
             configured: true,
@@ -167,6 +179,16 @@ function createManagerFetchWithData(input: {
   validToken: string;
   threads: Array<ReturnType<typeof makeThreadView>>;
   tasks?: unknown[];
+  repos?: Array<{
+    id: string;
+    label: string;
+    repoRoot: string;
+    defaultBranch: string;
+    verifyCommand: string;
+    supportedWorkerRuntimes: string[];
+    preferredWorkerRuntime: string;
+    mergeLaneEnabled: boolean;
+  }>;
   status?: {
     running: boolean;
     configured: boolean;
@@ -201,6 +223,10 @@ function createManagerFetchWithData(input: {
       return new Response(JSON.stringify(input.tasks ?? []), { status: 200 });
     }
 
+    if (isRoute(url, '/manager/repos')) {
+      return new Response(JSON.stringify(input.repos ?? []), { status: 200 });
+    }
+
     if (isRoute(url, '/manager/status')) {
       return new Response(
         JSON.stringify(
@@ -222,6 +248,7 @@ function createManagerFetchWithData(input: {
           emittedAt: '2026-03-21T00:00:00.000Z',
           threads: input.threads,
           tasks: input.tasks ?? [],
+          repos: input.repos ?? [],
           status: input.status ?? {
             running: false,
             configured: true,
@@ -392,6 +419,14 @@ describe('manager-app DOM auth state matrix', () => {
     );
   });
 
+  it('includes an explicit new-task sheet with repo selection and managed-repo registration', () => {
+    expect(managerHtml).toContain('id="newTaskOpenButton"');
+    expect(managerHtml).toContain('id="newTaskSheetBackdrop"');
+    expect(managerHtml).toContain('id="newTaskRepoSelect"');
+    expect(managerHtml).toContain('id="managedRepoForm"');
+    expect(managerHtml).toContain('isolated worktree');
+  });
+
   it('moves routed and recently sent items into a separate processing lane', () => {
     expect(managerHtml).toContain('id="routingFeedbackLane"');
     expect(managerHtml).toContain('id="routingFeedbackList"');
@@ -451,6 +486,179 @@ describe('manager-app DOM auth state matrix', () => {
     expect(hint.classList.contains('hidden')).toBe(true);
   });
 
+  it('opens the explicit new-task sheet and submits a managed repo run', async () => {
+    const validToken = 'new-task-sheet-token';
+    const repos = [
+      {
+        id: 'workspace-agent-hub',
+        label: 'workspace-agent-hub',
+        repoRoot: 'D:\\ghws\\workspace-agent-hub',
+        defaultBranch: 'main',
+        verifyCommand: 'npm run verify',
+        supportedWorkerRuntimes: ['codex'],
+        preferredWorkerRuntime: 'codex',
+        mergeLaneEnabled: true,
+      },
+    ];
+    let threads: Array<ReturnType<typeof makeThreadView>> = [];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify(threads), { status: 200 });
+        }
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (isRoute(url, '/manager/repos')) {
+          return new Response(JSON.stringify(repos), { status: 200 });
+        }
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: false,
+              configured: true,
+              builtinBackend: true,
+              detail: '未起動 — メッセージ送信で自動起動します',
+            }),
+            { status: 200 }
+          );
+        }
+        if (isRoute(url, '/manager/runs')) {
+          const body = JSON.parse(String(init?.body ?? '{}')) as Record<
+            string,
+            unknown
+          >;
+          threads = [
+            makeThreadView('thread-managed-run', 'Repo registry を追加する', {
+              status: 'waiting',
+              uiState: 'queued',
+              lastSender: 'user',
+              previewText: '[user] repo registry を追加してください',
+              managedRepoId: 'workspace-agent-hub',
+              managedRepoLabel: 'workspace-agent-hub',
+              managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+              managedBaseBranch: String(body['baseBranch']),
+              managedVerifyCommand: 'npm run verify',
+              requestedWorkerRuntime: 'codex',
+              requestedRunMode: String(body['runMode']),
+              messages: [
+                {
+                  sender: 'user',
+                  content: String(body['content']),
+                  at: '2026-03-27T00:00:00.000Z',
+                },
+              ],
+            }),
+          ];
+          return new Response(
+            JSON.stringify({
+              queued: true,
+              threadId: 'thread-managed-run',
+            }),
+            { status: 201 }
+          );
+        }
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-27T00:00:00.000Z',
+              threads,
+              tasks: [],
+              repos,
+              status: {
+                running: false,
+                configured: true,
+                builtinBackend: true,
+                detail: '未起動 — メッセージ送信で自動起動します',
+              },
+            },
+          ]);
+        }
+        if (isRoute(url, '/builds')) {
+          return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+            status: 200,
+          });
+        }
+        return new Response('{}', { status: 200 });
+      }
+    );
+
+    const document = await loadManagerApp(
+      fetchMock as unknown as typeof fetch,
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, validToken);
+        },
+      }
+    );
+
+    document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
+    await flushAsync(2);
+
+    expect(
+      document
+        .querySelector<HTMLElement>('#newTaskSheetBackdrop')!
+        .classList.contains('hidden')
+    ).toBe(false);
+
+    document.querySelector<HTMLInputElement>('#newTaskTitleInput')!.value =
+      'Repo registry を追加する';
+    document.querySelector<HTMLTextAreaElement>('#newTaskContentInput')!.value =
+      'repo registry を追加してください';
+    document.querySelector<HTMLInputElement>('#newTaskBaseBranchInput')!.value =
+      'main';
+    document.querySelector<HTMLInputElement>(
+      'input[name="newTaskRunMode"][value="read-only"]'
+    )!.checked = true;
+    document
+      .querySelector<HTMLFormElement>('#newTaskForm')!
+      .dispatchEvent(
+        new window.Event('submit', { bubbles: true, cancelable: true })
+      );
+    await flushAsync(6);
+
+    const runCall = fetchMock.mock.calls.find(([input]) =>
+      isRoute(String(input), '/manager/runs')
+    );
+    expect(runCall).toBeTruthy();
+    const runBody = JSON.parse(String(runCall?.[1]?.body ?? '{}')) as Record<
+      string,
+      unknown
+    >;
+    expect(runBody).toMatchObject({
+      repoId: 'workspace-agent-hub',
+      baseBranch: 'main',
+      title: 'Repo registry を追加する',
+      content: 'repo registry を追加してください',
+      runMode: 'read-only',
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('Repo registry を追加する');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('repo: workspace-agent-hub');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('mode: read-only');
+  });
+
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {
     const fetchMock = vi.fn() as unknown as typeof fetch;
     const document = await loadManagerApp(fetchMock, {
@@ -501,6 +709,7 @@ describe('manager-app DOM auth state matrix', () => {
         if (
           !isRoute(url, '/threads') &&
           !isRoute(url, '/tasks') &&
+          !isRoute(url, '/manager/repos') &&
           !isRoute(url, '/manager/status')
         ) {
           return true;
@@ -591,6 +800,7 @@ describe('manager-app DOM auth state matrix', () => {
         if (
           !isRoute(url, '/threads') &&
           !isRoute(url, '/tasks') &&
+          !isRoute(url, '/manager/repos') &&
           !isRoute(url, '/manager/status')
         ) {
           return true;
@@ -3409,394 +3619,6 @@ describe('manager-app DOM auth state matrix', () => {
     expect(secondMsgArea.textContent).toContain(
       '2行目の live 出力が追加されました。'
     );
-  });
-
-  it('keeps live console panes pinned to the bottom when they were already at the bottom', async () => {
-    const validToken = 'live-console-pinned-token';
-    let threadsRequestCount = 0;
-
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const headers = new Headers(init?.headers ?? {});
-        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
-
-        if (providedToken !== validToken) {
-          return new Response(
-            JSON.stringify({
-              error: 'Access code required',
-              authRequired: true,
-            }),
-            { status: 401 }
-          );
-        }
-
-        if (isRoute(url, '/threads')) {
-          threadsRequestCount += 1;
-          const workerLiveLog =
-            threadsRequestCount >= 2
-              ? [
-                  {
-                    at: '2026-03-27T10:00:00.000Z',
-                    text: '1行目の live 出力',
-                    kind: 'status' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:00:10.000Z',
-                    text: '2行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:00:20.000Z',
-                    text: '3行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                ]
-              : [
-                  {
-                    at: '2026-03-27T10:00:00.000Z',
-                    text: '1行目の live 出力',
-                    kind: 'status' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:00:10.000Z',
-                    text: '2行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                ];
-          const thread = makeThreadView(
-            'thread-live-console',
-            '進捗コンソール',
-            {
-              status: 'active',
-              uiState: 'ai-working',
-              isWorking: true,
-              lastSender: 'user',
-              workerAgentId: 'assign_live_console',
-              workerRuntimeState: 'worker-running',
-              workerLiveLog,
-              workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
-              workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
-            }
-          );
-          return new Response(JSON.stringify([thread]), { status: 200 });
-        }
-
-        if (isRoute(url, '/tasks')) {
-          return new Response(JSON.stringify([]), { status: 200 });
-        }
-
-        if (isRoute(url, '/manager/status')) {
-          return new Response(
-            JSON.stringify({
-              running: true,
-              configured: true,
-              builtinBackend: true,
-              detail: '処理中 (進捗コンソール)',
-              currentThreadId: 'thread-live-console',
-              currentThreadTitle: '進捗コンソール',
-            }),
-            { status: 200 }
-          );
-        }
-
-        return new Response('{}', { status: 200 });
-      }
-    ) as unknown as typeof fetch;
-
-    const document = await loadManagerApp(fetchMock, {
-      authRequired: true,
-      beforeImport: (window) => {
-        const domWindow = window as Window & typeof globalThis;
-        window.localStorage.setItem(authStorageKey, validToken);
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'clientHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.dataset.liveScrollId) {
-              return 120;
-            }
-            if (element.classList.contains('msg-area')) {
-              return 300;
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.classList.contains('bubble')) {
-              return 120;
-            }
-            if (element.classList.contains('msg-area')) {
-              return 300;
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            const parent = element.parentElement;
-            if (
-              element.classList.contains('bubble') &&
-              parent?.classList.contains('msg-area')
-            ) {
-              return Array.from(parent.children)
-                .slice(0, Array.from(parent.children).indexOf(element))
-                .reduce(
-                  (sum, child) => sum + (child as HTMLElement).offsetHeight,
-                  0
-                );
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'scrollHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.dataset.liveScrollId) {
-              return element.querySelectorAll('.live-console-line').length * 80;
-            }
-            if (element.classList.contains('msg-area')) {
-              return Array.from(element.children).reduce(
-                (sum, child) => sum + (child as HTMLElement).offsetHeight,
-                0
-              );
-            }
-            return 0;
-          },
-        });
-      },
-    });
-
-    document.querySelector<HTMLElement>('.thread-row')!.click();
-    await flushAsync(3);
-
-    const firstActivityPane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="activity-panel"]'
-    )!;
-    const firstBubblePane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="live-bubble"]'
-    )!;
-    firstActivityPane.scrollTop = firstActivityPane.scrollHeight;
-    firstBubblePane.scrollTop = firstBubblePane.scrollHeight;
-
-    document
-      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
-      .click();
-    await flushAsync(6);
-
-    const secondActivityPane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="activity-panel"]'
-    )!;
-    const secondBubblePane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="live-bubble"]'
-    )!;
-    expect(secondActivityPane).not.toBe(firstActivityPane);
-    expect(secondBubblePane).not.toBe(firstBubblePane);
-    expect(secondActivityPane.scrollTop).toBe(secondActivityPane.scrollHeight);
-    expect(secondBubblePane.scrollTop).toBe(secondBubblePane.scrollHeight);
-    expect(secondActivityPane.textContent).toContain('3行目の live 出力');
-    expect(secondBubblePane.textContent).toContain('3行目の live 出力');
-  });
-
-  it('keeps live console panes fixed when the reader has scrolled up', async () => {
-    const validToken = 'live-console-preserve-token';
-    let threadsRequestCount = 0;
-
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const headers = new Headers(init?.headers ?? {});
-        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
-
-        if (providedToken !== validToken) {
-          return new Response(
-            JSON.stringify({
-              error: 'Access code required',
-              authRequired: true,
-            }),
-            { status: 401 }
-          );
-        }
-
-        if (isRoute(url, '/threads')) {
-          threadsRequestCount += 1;
-          const workerLiveLog =
-            threadsRequestCount >= 2
-              ? [
-                  {
-                    at: '2026-03-27T10:10:00.000Z',
-                    text: 'A行目の live 出力',
-                    kind: 'status' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:10:10.000Z',
-                    text: 'B行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:10:20.000Z',
-                    text: 'C行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                ]
-              : [
-                  {
-                    at: '2026-03-27T10:10:00.000Z',
-                    text: 'A行目の live 出力',
-                    kind: 'status' as const,
-                  },
-                  {
-                    at: '2026-03-27T10:10:10.000Z',
-                    text: 'B行目の live 出力',
-                    kind: 'output' as const,
-                  },
-                ];
-          const thread = makeThreadView(
-            'thread-live-console-preserve',
-            '進捗コンソール維持',
-            {
-              status: 'active',
-              uiState: 'ai-working',
-              isWorking: true,
-              lastSender: 'user',
-              workerAgentId: 'assign_live_console_preserve',
-              workerRuntimeState: 'worker-running',
-              workerLiveLog,
-              workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
-              workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
-            }
-          );
-          return new Response(JSON.stringify([thread]), { status: 200 });
-        }
-
-        if (isRoute(url, '/tasks')) {
-          return new Response(JSON.stringify([]), { status: 200 });
-        }
-
-        if (isRoute(url, '/manager/status')) {
-          return new Response(
-            JSON.stringify({
-              running: true,
-              configured: true,
-              builtinBackend: true,
-              detail: '処理中 (進捗コンソール維持)',
-              currentThreadId: 'thread-live-console-preserve',
-              currentThreadTitle: '進捗コンソール維持',
-            }),
-            { status: 200 }
-          );
-        }
-
-        return new Response('{}', { status: 200 });
-      }
-    ) as unknown as typeof fetch;
-
-    const document = await loadManagerApp(fetchMock, {
-      authRequired: true,
-      beforeImport: (window) => {
-        const domWindow = window as Window & typeof globalThis;
-        window.localStorage.setItem(authStorageKey, validToken);
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'clientHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.dataset.liveScrollId) {
-              return 120;
-            }
-            if (element.classList.contains('msg-area')) {
-              return 300;
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.classList.contains('bubble')) {
-              return 120;
-            }
-            if (element.classList.contains('msg-area')) {
-              return 300;
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'offsetTop', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            const parent = element.parentElement;
-            if (
-              element.classList.contains('bubble') &&
-              parent?.classList.contains('msg-area')
-            ) {
-              return Array.from(parent.children)
-                .slice(0, Array.from(parent.children).indexOf(element))
-                .reduce(
-                  (sum, child) => sum + (child as HTMLElement).offsetHeight,
-                  0
-                );
-            }
-            return 0;
-          },
-        });
-        Object.defineProperty(domWindow.HTMLElement.prototype, 'scrollHeight', {
-          configurable: true,
-          get() {
-            const element = this as HTMLElement;
-            if (element.dataset.liveScrollId) {
-              return element.querySelectorAll('.live-console-line').length * 80;
-            }
-            if (element.classList.contains('msg-area')) {
-              return Array.from(element.children).reduce(
-                (sum, child) => sum + (child as HTMLElement).offsetHeight,
-                0
-              );
-            }
-            return 0;
-          },
-        });
-      },
-    });
-
-    document.querySelector<HTMLElement>('.thread-row')!.click();
-    await flushAsync(3);
-
-    const firstActivityPane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="activity-panel"]'
-    )!;
-    const firstBubblePane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="live-bubble"]'
-    )!;
-    firstActivityPane.scrollTop = 20;
-    firstBubblePane.scrollTop = 20;
-
-    document
-      .querySelector<HTMLButtonElement>('[data-action="refresh"]')!
-      .click();
-    await flushAsync(6);
-
-    const secondActivityPane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="activity-panel"]'
-    )!;
-    const secondBubblePane = document.querySelector<HTMLElement>(
-      '[data-live-scroll-id="live-bubble"]'
-    )!;
-    expect(secondActivityPane.scrollTop).toBe(20);
-    expect(secondBubblePane.scrollTop).toBe(20);
-    expect(secondActivityPane.scrollTop).not.toBe(
-      secondActivityPane.scrollHeight
-    );
-    expect(secondBubblePane.scrollTop).not.toBe(secondBubblePane.scrollHeight);
-    expect(secondActivityPane.textContent).toContain('C行目の live 出力');
-    expect(secondBubblePane.textContent).toContain('C行目の live 出力');
   });
 
   it('keeps the open task inline and shows its new state when it moves between buckets', async () => {

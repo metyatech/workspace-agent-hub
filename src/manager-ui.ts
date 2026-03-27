@@ -25,6 +25,7 @@ import { readActiveTasks } from './manager-tasks.js';
 import {
   deriveManagerThreadViews,
   readManagerThreadMeta,
+  updateManagerThreadMeta,
 } from './manager-thread-state.js';
 import {
   notifyManagerUpdate,
@@ -38,6 +39,13 @@ import {
   resolvePackageRoot,
   restoreBuild,
 } from './build-archive.js';
+import {
+  findManagedRepo,
+  readManagedRepos,
+  upsertManagedRepo,
+  type ManagerRunMode,
+  type ManagedRepoConfig,
+} from './manager-repos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -112,11 +120,16 @@ function sendError(res: ServerResponse, message: string, status = 400): void {
   sendJson(res, { error: message }, status);
 }
 
+function normalizeRequestedRunMode(value: unknown): ManagerRunMode {
+  return value === 'read-only' ? 'read-only' : 'write';
+}
+
 interface ManagerLiveSnapshot {
   kind: 'snapshot';
   emittedAt: string;
   threads: ReturnType<typeof deriveManagerThreadViews>;
   tasks: Awaited<ReturnType<typeof readActiveTasks>>;
+  repos: ManagedRepoConfig[];
   status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>;
 }
 
@@ -163,14 +176,16 @@ function normalizeManagerPath(pathname: string): string {
 async function buildManagerLiveSnapshot(
   workspaceRoot: string
 ): Promise<ManagerLiveSnapshot> {
-  const [threads, session, queue, meta, tasks, status] = await Promise.all([
-    listThreads(workspaceRoot),
-    readSession(workspaceRoot),
-    readQueue(workspaceRoot),
-    readManagerThreadMeta(workspaceRoot),
-    readActiveTasks(workspaceRoot),
-    getBuiltinManagerStatus(workspaceRoot),
-  ]);
+  const [threads, session, queue, meta, tasks, repos, status] =
+    await Promise.all([
+      listThreads(workspaceRoot),
+      readSession(workspaceRoot),
+      readQueue(workspaceRoot),
+      readManagerThreadMeta(workspaceRoot),
+      readActiveTasks(workspaceRoot),
+      readManagedRepos(workspaceRoot),
+      getBuiltinManagerStatus(workspaceRoot),
+    ]);
 
   return {
     kind: 'snapshot',
@@ -182,6 +197,7 @@ async function buildManagerLiveSnapshot(
       meta,
     }),
     tasks,
+    repos,
     status,
   };
 }
@@ -418,6 +434,123 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/manager/status' && input.method === 'GET') {
     sendJson(input.res, await getBuiltinManagerStatus(input.workspaceRoot));
+    return true;
+  }
+
+  if (localPath === '/api/manager/repos' && input.method === 'GET') {
+    sendJson(input.res, await readManagedRepos(input.workspaceRoot));
+    return true;
+  }
+
+  if (localPath === '/api/manager/repos' && input.method === 'POST') {
+    const body = await parseBody(input.req);
+    try {
+      const repo = await upsertManagedRepo(input.workspaceRoot, {
+        id: typeof body.id === 'string' ? body.id : null,
+        label: typeof body.label === 'string' ? body.label : '',
+        repoRoot: typeof body.repoRoot === 'string' ? body.repoRoot : '',
+        defaultBranch:
+          typeof body.defaultBranch === 'string' ? body.defaultBranch : null,
+        verifyCommand:
+          typeof body.verifyCommand === 'string' ? body.verifyCommand : null,
+        supportedWorkerRuntimes: Array.isArray(body.supportedWorkerRuntimes)
+          ? body.supportedWorkerRuntimes.filter(
+              (entry): entry is ManagedRepoConfig['preferredWorkerRuntime'] =>
+                entry === 'codex' ||
+                entry === 'claude' ||
+                entry === 'gemini' ||
+                entry === 'copilot'
+            )
+          : null,
+        preferredWorkerRuntime:
+          body.preferredWorkerRuntime === 'codex' ||
+          body.preferredWorkerRuntime === 'claude' ||
+          body.preferredWorkerRuntime === 'gemini' ||
+          body.preferredWorkerRuntime === 'copilot'
+            ? body.preferredWorkerRuntime
+            : null,
+        mergeLaneEnabled:
+          typeof body.mergeLaneEnabled === 'boolean'
+            ? body.mergeLaneEnabled
+            : null,
+      });
+      sendJson(input.res, repo, 201);
+    } catch (error) {
+      sendError(
+        input.res,
+        error instanceof Error ? error.message : 'Failed to save repo',
+        400
+      );
+    }
+    return true;
+  }
+
+  if (localPath === '/api/manager/runs' && input.method === 'POST') {
+    const body = await parseBody(input.req);
+    const repoId = typeof body.repoId === 'string' ? body.repoId.trim() : '';
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    const content = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!repoId) {
+      sendError(input.res, 'repoId is required');
+      return true;
+    }
+    if (!title) {
+      sendError(input.res, 'title is required');
+      return true;
+    }
+    if (!content) {
+      sendError(input.res, 'content is required');
+      return true;
+    }
+
+    const repo = await findManagedRepo(input.workspaceRoot, repoId);
+    if (!repo) {
+      sendError(input.res, 'Managed repo not found', 404);
+      return true;
+    }
+
+    const runMode = normalizeRequestedRunMode(body.runMode);
+    const baseBranch =
+      typeof body.baseBranch === 'string' && body.baseBranch.trim()
+        ? body.baseBranch.trim()
+        : repo.defaultBranch;
+    const createdThread = await createThread(input.workspaceRoot, title);
+    await addMessage(
+      input.workspaceRoot,
+      createdThread.id,
+      content,
+      'user',
+      'waiting'
+    );
+    await updateManagerThreadMeta(
+      input.workspaceRoot,
+      createdThread.id,
+      () => ({
+        managedRepoId: repo.id,
+        managedRepoLabel: repo.label,
+        managedRepoRoot: repo.repoRoot,
+        managedBaseBranch: baseBranch,
+        managedVerifyCommand: repo.verifyCommand,
+        requestedWorkerRuntime: repo.preferredWorkerRuntime,
+        requestedRunMode: runMode,
+      })
+    );
+    await sendToBuiltinManager(input.workspaceRoot, createdThread.id, content, {
+      dispatchMode: 'direct-worker',
+      writeScopes: runMode === 'write' ? [repo.repoRoot] : [],
+      targetRepoRoot: repo.repoRoot,
+      requestedRunMode: runMode,
+      requestedWorkerRuntime: repo.preferredWorkerRuntime,
+    });
+    sendJson(
+      input.res,
+      {
+        queued: true,
+        threadId: createdThread.id,
+        detail: `「${repo.label}」向けの作業をキューに追加しました`,
+      },
+      201
+    );
     return true;
   }
 

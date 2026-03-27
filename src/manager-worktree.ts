@@ -48,6 +48,17 @@ export interface PostMergeDeliveryResult {
 // ---------------------------------------------------------------------------
 
 const _mergeLocks = new Map<string, Promise<void>>();
+const GIT_CONTEXT_ENV_KEYS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_NAMESPACE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_SUPER_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
 
 async function withMergeLock<T>(
   targetRepoRoot: string,
@@ -75,6 +86,14 @@ async function withMergeLock<T>(
 // Git helper
 // ---------------------------------------------------------------------------
 
+function createSpawnEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of GIT_CONTEXT_ENV_KEYS) {
+    delete env[key];
+  }
+  return env;
+}
+
 export function execGit(
   cwd: string,
   args: string[],
@@ -83,6 +102,7 @@ export function execGit(
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
       cwd,
+      env: createSpawnEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       timeout: options?.timeoutMs ?? 120_000,
@@ -122,6 +142,7 @@ async function execCommand(
   return new Promise((resolve, reject) => {
     const proc = spawn(resolveExternalCommand(command), args, {
       cwd,
+      env: createSpawnEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       timeout: options?.timeoutMs ?? 300_000,

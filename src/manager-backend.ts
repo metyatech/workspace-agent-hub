@@ -77,6 +77,7 @@ import {
   validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
+import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -353,6 +354,10 @@ export interface QueueEntry {
   content: string;
   attachments?: QueueEntryAttachment[];
   dispatchMode?: 'direct-worker' | 'manager-evaluate';
+  writeScopes?: string[];
+  targetRepoRoot?: string | null;
+  requestedRunMode?: ManagerRunMode | null;
+  requestedWorkerRuntime?: ManagerWorkerRuntime | null;
   createdAt: string;
   processed: boolean;
   priority: ManagerQueuePriority;
@@ -676,7 +681,11 @@ export async function readQueue(dir: string): Promise<QueueEntry[]> {
       .filter((line) => line.trim())
       .flatMap((line) => {
         try {
-          return [normalizeManagerQueueEntry(JSON.parse(line) as QueueEntry)];
+          return [
+            normalizeQueueEntry(
+              normalizeManagerQueueEntry(JSON.parse(line) as QueueEntry)
+            ),
+          ];
         } catch {
           return [];
         }
@@ -684,6 +693,29 @@ export async function readQueue(dir: string): Promise<QueueEntry[]> {
   } catch {
     return [];
   }
+}
+
+function normalizeQueueEntry(entry: QueueEntry): QueueEntry {
+  return {
+    ...entry,
+    writeScopes: normalizeWriteScopes(entry.writeScopes),
+    targetRepoRoot:
+      typeof entry.targetRepoRoot === 'string' && entry.targetRepoRoot.trim()
+        ? resolvePath(entry.targetRepoRoot)
+        : null,
+    requestedRunMode:
+      entry.requestedRunMode === 'read-only' ||
+      entry.requestedRunMode === 'write'
+        ? entry.requestedRunMode
+        : null,
+    requestedWorkerRuntime:
+      entry.requestedWorkerRuntime === 'codex' ||
+      entry.requestedWorkerRuntime === 'claude' ||
+      entry.requestedWorkerRuntime === 'gemini' ||
+      entry.requestedWorkerRuntime === 'copilot'
+        ? entry.requestedWorkerRuntime
+        : null,
+  };
 }
 
 export async function writeQueue(
@@ -706,6 +738,10 @@ export async function enqueueMessage(
   content: string,
   options?: {
     dispatchMode?: 'direct-worker' | 'manager-evaluate';
+    writeScopes?: string[];
+    targetRepoRoot?: string | null;
+    requestedRunMode?: ManagerRunMode | null;
+    requestedWorkerRuntime?: ManagerWorkerRuntime | null;
   }
 ): Promise<string> {
   const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -719,6 +755,24 @@ export async function enqueueMessage(
     content,
     attachments,
     dispatchMode: options?.dispatchMode ?? 'direct-worker',
+    writeScopes: normalizeWriteScopes(options?.writeScopes),
+    targetRepoRoot:
+      typeof options?.targetRepoRoot === 'string' &&
+      options.targetRepoRoot.trim()
+        ? resolvePath(options.targetRepoRoot)
+        : null,
+    requestedRunMode:
+      options?.requestedRunMode === 'read-only' ||
+      options?.requestedRunMode === 'write'
+        ? options.requestedRunMode
+        : null,
+    requestedWorkerRuntime:
+      options?.requestedWorkerRuntime === 'codex' ||
+      options?.requestedWorkerRuntime === 'claude' ||
+      options?.requestedWorkerRuntime === 'gemini' ||
+      options?.requestedWorkerRuntime === 'copilot'
+        ? options.requestedWorkerRuntime
+        : null,
     createdAt: new Date().toISOString(),
     processed: false,
     priority: detectManagerQueuePriority(content),
@@ -1222,6 +1276,12 @@ export function buildWorkerExecutionPrompt(input: {
   thread: Thread;
   resolvedDir: string;
   worktreePath: string | null;
+  managedRepoLabel?: string | null;
+  managedRepoRoot?: string | null;
+  managedBaseBranch?: string | null;
+  managedVerifyCommand?: string | null;
+  requestedRunMode?: ManagerRunMode | null;
+  writeScopes: string[];
   isFirstTurn: boolean;
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
@@ -1230,19 +1290,38 @@ export function buildWorkerExecutionPrompt(input: {
     return [
       `[Topic: ${input.thread.title}]`,
       MANAGER_WORKER_JSON_RULES,
+      `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
       promptContent,
     ].join('\n\n');
   }
 
   const worktreeNotice = input.worktreePath
-    ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
+    ? input.requestedRunMode === 'read-only'
+      ? 'This is an isolated git worktree prepared for inspection. Do NOT modify files, commit, or push. Read the repository state and run read-only verification only.'
+      : 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
     : '';
+  const repoContext = [
+    input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
+    input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
+    input.managedBaseBranch
+      ? `Managed base branch: ${input.managedBaseBranch}`
+      : '',
+    input.managedVerifyCommand
+      ? `Managed verify command: ${input.managedVerifyCommand}`
+      : '',
+    `Requested run mode: ${input.requestedRunMode ?? 'write'}`,
+    `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
+    input.requestedRunMode === 'read-only'
+      ? 'This is a read-only task. Inspect, explain, and verify without changing repository files.'
+      : '',
+  ].filter(Boolean);
 
   return [
     MANAGER_WORKER_SYSTEM_PROMPT,
     MANAGER_WORKER_JSON_RULES,
     `Workspace: ${workspace}`,
     ...(worktreeNotice ? [worktreeNotice] : []),
+    ...repoContext,
     `[Topic: ${input.thread.title}]`,
     'Topic history:',
     formatThreadHistory(input.thread),
@@ -1257,6 +1336,7 @@ export function buildManagerReviewPrompt(input: {
   resolvedDir: string;
   worktreePath: string | null;
   writeScopes: string[];
+  requestedRunMode?: ManagerRunMode | null;
   structuralWarnings?: string[];
 }): string {
   const workspace = input.worktreePath ?? input.resolvedDir;
@@ -1270,9 +1350,10 @@ export function buildManagerReviewPrompt(input: {
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
 
-  const deliveryInstruction = input.worktreePath
-    ? 'Commit your verified changes in this worktree branch. If this repository normally requires release or publish for completion, prepare that release metadata in this branch now (for example version/changelog updates) so the Manager backend can finish the post-merge delivery chain. Do NOT push, release, or publish yourself. Do not return status "review" unless the branch is left fully committed and ready for the Manager backend to merge to the main branch, push, and run any required release/publish follow-through.'
-    : '';
+  const deliveryInstruction =
+    input.worktreePath && input.requestedRunMode !== 'read-only'
+      ? 'Commit your verified changes in this worktree branch. If this repository normally requires release or publish for completion, prepare that release metadata in this branch now (for example version/changelog updates) so the Manager backend can finish the post-merge delivery chain. Do NOT push, release, or publish yourself. Do not return status "review" unless the branch is left fully committed and ready for the Manager backend to merge to the main branch, push, and run any required release/publish follow-through.'
+      : '';
 
   const structuralSection =
     input.structuralWarnings && input.structuralWarnings.length > 0
@@ -1488,6 +1569,11 @@ function buildDispatchPrompt(input: {
   thread: Thread;
   resolvedDir: string;
   relatedActiveAssignments: ManagerActiveAssignment[];
+  managedRepoLabel?: string | null;
+  managedRepoRoot?: string | null;
+  managedBaseBranch?: string | null;
+  managedVerifyCommand?: string | null;
+  requestedRunMode?: ManagerRunMode | null;
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
   const activeAssignments =
@@ -1513,6 +1599,17 @@ function buildDispatchPrompt(input: {
     'When assignee is "worker", include writeScopes as a short array of repo-relative write areas. Use an empty array only for truly read-only work.',
     'Only include supersedesThreadIds when the new work item is a descendant whose result would completely invalidate an already-running descendant task listed below.',
     `Workspace: ${input.resolvedDir}`,
+    input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
+    input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
+    input.managedBaseBranch
+      ? `Managed base branch: ${input.managedBaseBranch}`
+      : '',
+    input.managedVerifyCommand
+      ? `Managed verify command: ${input.managedVerifyCommand}`
+      : '',
+    input.requestedRunMode
+      ? `Requested run mode: ${input.requestedRunMode}`
+      : '',
     `[Work item: ${input.thread.title}]`,
     'Recent work-item history:',
     formatThreadHistory(input.thread),
@@ -1520,7 +1617,9 @@ function buildDispatchPrompt(input: {
     promptContent,
     'Running related worker agents:',
     activeAssignments,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function parseManagerDispatchPayload(
@@ -2776,6 +2875,7 @@ async function decideDispatchForBatch(input: {
   dir: string;
   resolvedDir: string;
   thread: Thread;
+  threadMeta: ManagerThreadMeta | null;
   entries: QueueEntry[];
   relatedActiveAssignments: ManagerActiveAssignment[];
 }): Promise<ManagerDispatchPayload> {
@@ -2784,6 +2884,11 @@ async function decideDispatchForBatch(input: {
     thread: stripTrailingUserMessagesFromThread(input.thread),
     resolvedDir: input.resolvedDir,
     relatedActiveAssignments: input.relatedActiveAssignments,
+    managedRepoLabel: input.threadMeta?.managedRepoLabel ?? null,
+    managedRepoRoot: input.threadMeta?.managedRepoRoot ?? null,
+    managedBaseBranch: input.threadMeta?.managedBaseBranch ?? null,
+    managedVerifyCommand: input.threadMeta?.managedVerifyCommand ?? null,
+    requestedRunMode: input.threadMeta?.requestedRunMode ?? null,
   });
   const runResult = await runCodexTurn({
     dir: input.dir,
@@ -2801,10 +2906,15 @@ async function decideDispatchForBatch(input: {
   }
 
   const parsed = parseManagerDispatchPayload(runResult.parsed.text);
+  const fallbackWriteScopes =
+    input.threadMeta?.managedRepoRoot &&
+    input.threadMeta.requestedRunMode === 'write'
+      ? [input.threadMeta.managedRepoRoot]
+      : [UNIVERSAL_WRITE_SCOPE];
   if (!parsed) {
     return {
       assignee: 'worker',
-      writeScopes: [UNIVERSAL_WRITE_SCOPE],
+      writeScopes: fallbackWriteScopes,
       reason: 'dispatch-fallback',
     };
   }
@@ -2812,7 +2922,13 @@ async function decideDispatchForBatch(input: {
   if (parsed.assignee === 'worker' && (parsed.writeScopes?.length ?? 0) === 0) {
     return {
       ...parsed,
-      writeScopes: [UNIVERSAL_WRITE_SCOPE],
+      writeScopes:
+        input.threadMeta?.requestedRunMode === 'write' &&
+        input.threadMeta.managedRepoRoot
+          ? [input.threadMeta.managedRepoRoot]
+          : input.threadMeta?.requestedRunMode === 'read-only'
+            ? []
+            : [UNIVERSAL_WRITE_SCOPE],
     };
   }
 
@@ -2910,6 +3026,8 @@ async function runQueuedAssignment(input: {
   const targetRepoRoot = assignment.targetRepoRoot ?? resolvedDir;
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
+  const threadMeta =
+    (await readManagerThreadMeta(resolvedDir))[thread.id] ?? null;
   let workerSessionId = await readWorkerSessionId(resolvedDir, thread.id);
   const imagePaths = queueEntriesImagePaths(entries);
 
@@ -3032,6 +3150,12 @@ async function runQueuedAssignment(input: {
               thread: promptThread,
               resolvedDir,
               worktreePath: assignment.worktreePath,
+              managedRepoLabel: threadMeta?.managedRepoLabel ?? null,
+              managedRepoRoot: threadMeta?.managedRepoRoot ?? null,
+              managedBaseBranch: threadMeta?.managedBaseBranch ?? null,
+              managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
+              requestedRunMode: threadMeta?.requestedRunMode ?? null,
+              writeScopes: assignment.writeScopes,
               isFirstTurn,
             }),
       sessionId: currentSessionId,
@@ -3119,6 +3243,7 @@ async function runQueuedAssignment(input: {
           resolvedDir,
           worktreePath: assignment.worktreePath,
           writeScopes: assignment.writeScopes,
+          requestedRunMode: threadMeta?.requestedRunMode ?? null,
           structuralWarnings,
         }),
         sessionId: null,
@@ -3403,6 +3528,7 @@ async function runQueuedAssignment(input: {
             resolvedDir,
             worktreePath: assignment.worktreePath,
             writeScopes: assignment.writeScopes,
+            requestedRunMode: threadMeta?.requestedRunMode ?? null,
             structuralWarnings: reStructuralWarnings,
           }),
           sessionId: null,
@@ -3941,6 +4067,7 @@ export async function processNextQueued(
       const parentLineage = normalizeStringArray(
         meta[next.threadId]?.derivedFromThreadIds
       );
+      const threadMeta = meta[next.threadId] ?? null;
       const relatedDescendants = collectDescendantThreadIds(
         parentLineage,
         childrenIndex
@@ -3957,12 +4084,28 @@ export async function processNextQueued(
             dir,
             resolvedDir,
             thread,
+            threadMeta,
             entries: nextEntries,
             relatedActiveAssignments,
           })
         : {
             assignee: 'worker' as const,
-            writeScopes: [UNIVERSAL_WRITE_SCOPE],
+            writeScopes: (() => {
+              const queuedWriteScopes = nextEntries.flatMap(
+                (entry) => entry.writeScopes ?? []
+              );
+              if (queuedWriteScopes.length > 0) {
+                return queuedWriteScopes;
+              }
+              if (
+                nextEntries.some(
+                  (entry) => entry.requestedRunMode === 'read-only'
+                )
+              ) {
+                return [];
+              }
+              return [UNIVERSAL_WRITE_SCOPE];
+            })(),
             reason: 'direct-worker-default',
           };
 
@@ -4000,6 +4143,14 @@ export async function processNextQueued(
         dispatch.assignee === 'worker'
           ? normalizeWriteScopes(dispatch.writeScopes)
           : [];
+      const assignmentTargetRepoRoot =
+        nextEntries.find(
+          (entry) =>
+            typeof entry.targetRepoRoot === 'string' &&
+            entry.targetRepoRoot.trim()
+        )?.targetRepoRoot ??
+        threadMeta?.managedRepoRoot ??
+        null;
       if (
         dispatch.assignee === 'manager' &&
         activeManagerAssignments >= MAX_PARALLEL_MANAGER_ASSIGNMENTS
@@ -4072,10 +4223,9 @@ export async function processNextQueued(
 
       // Create isolated worktree for worker assignments.
       if (dispatch.assignee === 'worker') {
-        const targetRepo = resolveTargetRepoRoot(
-          resolvedDir,
-          assignmentWriteScopes
-        );
+        const targetRepo =
+          assignmentTargetRepoRoot ??
+          resolveTargetRepoRoot(resolvedDir, assignmentWriteScopes);
         try {
           const wt = await createWorkerWorktree({
             targetRepoRoot: targetRepo,
@@ -4677,6 +4827,10 @@ export async function sendToBuiltinManager(
   content: string,
   options?: {
     dispatchMode?: 'direct-worker' | 'manager-evaluate';
+    writeScopes?: string[];
+    targetRepoRoot?: string | null;
+    requestedRunMode?: ManagerRunMode | null;
+    requestedWorkerRuntime?: ManagerWorkerRuntime | null;
   }
 ): Promise<void> {
   const session = await readSession(dir);

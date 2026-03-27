@@ -12,6 +12,7 @@ import {
   extractTailscaleServeSetupUrl,
   runCommand,
 } from '../web-ui.js';
+import { execGit } from '../manager-worktree.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
   DirectorySuggestion,
@@ -199,6 +200,13 @@ async function createTempWorkspace(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-test-'));
   tempDirs.push(dir);
   return dir;
+}
+
+async function initGitRepo(repoRoot: string): Promise<void> {
+  await mkdir(repoRoot, { recursive: true });
+  const init = await execGit(repoRoot, ['init']);
+  expect(init.code).toBe(0);
+  await writeFile(join(repoRoot, 'README.md'), '# repo\n', 'utf8');
 }
 
 async function readNdjsonObjects(
@@ -959,5 +967,56 @@ describe('native manager page', () => {
     expect(res.status).toBe(200);
     const tasks = await res.json();
     expect(Array.isArray(tasks)).toBe(true);
+  });
+
+  it('stores and lists managed repos through the native manager API', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const repoRoot = join(workspaceRoot, 'repo-managed');
+    await initGitRepo(repoRoot);
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const headers = {
+      'X-Workspace-Agent-Hub-Token': 'secret-token',
+      'Content-Type': 'application/json',
+    };
+    const saveResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/repos`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          label: 'Managed Repo',
+          repoRoot,
+          defaultBranch: 'main',
+          verifyCommand: 'npm run verify',
+        }),
+      }
+    );
+    expect(saveResponse.status).toBe(201);
+    const saved = (await saveResponse.json()) as {
+      id: string;
+      label: string;
+      repoRoot: string;
+    };
+    expect(saved.label).toBe('Managed Repo');
+    expect(saved.repoRoot).toBe(repoRoot);
+
+    const listResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/repos`,
+      {
+        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+      }
+    );
+    expect(listResponse.status).toBe(200);
+    const repos = (await listResponse.json()) as Array<{ id: string }>;
+    expect(repos.some((repo) => repo.id === saved.id)).toBe(true);
   });
 });

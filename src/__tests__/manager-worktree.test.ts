@@ -53,6 +53,7 @@ function gitResult(
 
 beforeEach(() => {
   spawnMock.mockReset();
+  vi.unstubAllEnvs();
   // Default: any unplanned git call succeeds with empty output.
   spawnMock.mockImplementation(gitResult(0, ''));
 });
@@ -104,6 +105,27 @@ describe('execGit', () => {
     );
     expect(result.stdout).toBe('output');
     expect(result.code).toBe(0);
+  });
+
+  it('removes git hook context env vars before spawning child git commands', async () => {
+    vi.stubEnv('GIT_DIR', '/parent/.git');
+    vi.stubEnv('GIT_WORK_TREE', '/parent');
+    vi.stubEnv('GIT_INDEX_FILE', '/parent/.git/index');
+
+    await execGit('/repo', ['status']);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'git',
+      ['status'],
+      expect.objectContaining({
+        cwd: '/repo',
+        env: expect.not.objectContaining({
+          GIT_DIR: '/parent/.git',
+          GIT_WORK_TREE: '/parent',
+          GIT_INDEX_FILE: '/parent/.git/index',
+        }),
+      })
+    );
   });
 });
 

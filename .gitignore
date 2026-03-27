@@ -1,4 +1,6 @@
 .threads.jsonl
+.workspace-agent-hub-manager*.json
+.workspace-agent-hub-manager*.jsonl
 dist/
 node_modules/
 playwright-report/

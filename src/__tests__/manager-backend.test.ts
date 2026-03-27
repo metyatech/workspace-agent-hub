@@ -347,6 +347,7 @@ describe('manager backend codex integration', () => {
       content: 'Implement the task',
       resolvedDir: 'D:\\ghws',
       worktreePath: null,
+      writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
       isFirstTurn: true,
       thread: {
         id: 'thread-a',

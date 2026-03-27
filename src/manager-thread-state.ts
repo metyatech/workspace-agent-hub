@@ -10,6 +10,7 @@ import {
 } from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
+import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
 
 export const MANAGER_THREAD_META_FILE =
   '.workspace-agent-hub-manager-thread-meta.json';
@@ -41,6 +42,13 @@ export interface ManagerThreadMeta {
   routingHint?: string | null;
   derivedFromThreadIds?: string[] | null;
   lastRoutingAt?: string | null;
+  managedRepoId?: string | null;
+  managedRepoLabel?: string | null;
+  managedRepoRoot?: string | null;
+  managedBaseBranch?: string | null;
+  managedVerifyCommand?: string | null;
+  requestedWorkerRuntime?: ManagerWorkerRuntime | null;
+  requestedRunMode?: ManagerRunMode | null;
   workerSessionId?: string | null;
   workerLastStartedAt?: string | null;
   assigneeKind?: 'manager' | 'worker' | null;
@@ -67,6 +75,13 @@ export interface ManagerThreadView extends Thread {
   routingHint: string | null;
   derivedFromThreadIds: string[];
   derivedChildThreadIds: string[];
+  managedRepoId: string | null;
+  managedRepoLabel: string | null;
+  managedRepoRoot: string | null;
+  managedBaseBranch: string | null;
+  managedVerifyCommand: string | null;
+  requestedWorkerRuntime: ManagerWorkerRuntime | null;
+  requestedRunMode: ManagerRunMode | null;
   queueDepth: number;
   isWorking: boolean;
   queueOrder: number | null;
@@ -224,6 +239,25 @@ function normalizeWorkerRuntimeState(
     return value;
   }
   return null;
+}
+
+function normalizeManagedRepoText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeRequestedWorkerRuntime(
+  value: unknown
+): ManagerWorkerRuntime | null {
+  return value === 'codex' ||
+    value === 'claude' ||
+    value === 'gemini' ||
+    value === 'copilot'
+    ? value
+    : null;
+}
+
+function normalizeRequestedRunMode(value: unknown): ManagerRunMode | null {
+  return value === 'read-only' || value === 'write' ? value : null;
 }
 
 function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
@@ -408,6 +442,17 @@ export function deriveManagerThreadViews(input: {
       routingHint: meta?.routingHint ?? null,
       derivedFromThreadIds: derivedFromByThread.get(thread.id) ?? [],
       derivedChildThreadIds: derivedChildrenByThread.get(thread.id) ?? [],
+      managedRepoId: normalizeManagedRepoText(meta?.managedRepoId),
+      managedRepoLabel: normalizeManagedRepoText(meta?.managedRepoLabel),
+      managedRepoRoot: normalizeManagedRepoText(meta?.managedRepoRoot),
+      managedBaseBranch: normalizeManagedRepoText(meta?.managedBaseBranch),
+      managedVerifyCommand: normalizeManagedRepoText(
+        meta?.managedVerifyCommand
+      ),
+      requestedWorkerRuntime: normalizeRequestedWorkerRuntime(
+        meta?.requestedWorkerRuntime
+      ),
+      requestedRunMode: normalizeRequestedRunMode(meta?.requestedRunMode),
       queueDepth,
       isWorking,
       queueOrder: queueOrderByThread.get(thread.id) ?? null,
