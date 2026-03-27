@@ -873,9 +873,6 @@ function renderLiveStep(
   if (!rawText) {
     return null;
   }
-  if (rawText === GENERIC_LIVE_PROGRESS_TEXT) {
-    return null;
-  }
   const structuredText = renderStructuredLivePayload(rawText, threadTitlesById);
   const text = structuredText ?? simplifyLiveText(rawText, threadTitlesById);
   if (!text) {
@@ -1888,7 +1885,7 @@ function makeLiveActivityPanel(
     panel.appendChild(stage);
   }
 
-  const steps = activity.steps.slice(-5);
+  const steps = activity.steps;
   if (steps.length > 0) {
     const list = document.createElement('div');
     list.className = 'detail-live-activity-list';

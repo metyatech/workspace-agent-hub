@@ -4357,9 +4357,24 @@ describe('manager-app live updates', () => {
         'Manager がレビュー結果を分析し回復方法を決定中です。',
       workerLiveLog: [
         {
+          at: '2026-03-23T08:09:45.000Z',
+          text: 'Manager が worker の成果を確認しています。',
+          kind: 'status',
+        },
+        {
+          at: '2026-03-23T08:09:55.000Z',
+          text: '差分を再確認しています。',
+          kind: 'output',
+        },
+        {
           at: '2026-03-23T08:10:00.000Z',
           text: '`npm run verify` は通っています。',
           kind: 'output',
+        },
+        {
+          at: '2026-03-23T08:10:20.000Z',
+          text: '影響範囲を再点検しています。',
+          kind: 'status',
         },
         {
           at: '2026-03-23T08:10:30.000Z',
@@ -4424,7 +4439,13 @@ describe('manager-app live updates', () => {
     expect(livePanel.textContent).toContain(
       'Manager がレビュー結果を分析し回復方法を決定中です。'
     );
+    expect(livePanel.textContent).toContain(
+      'Manager が worker の成果を確認しています。'
+    );
     expect(livePanel.textContent).toContain('npm run verify は通っています。');
+    expect(livePanel.textContent).toContain(
+      '進捗イベントを受信しましたが、まだ説明文は届いていません。'
+    );
     expect(livePanel.textContent).toContain('回復判断: 今の修正をそのまま継続');
     expect(livePanel.textContent).not.toContain('"decision":"fix-self"');
   });

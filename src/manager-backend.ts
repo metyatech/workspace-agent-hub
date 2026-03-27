@@ -1747,6 +1747,22 @@ export function parseCodexProgressLine(
     };
   }
 
+  const singleLiveEntry = (
+    text: string,
+    kind: ManagerWorkerLiveEntry['kind']
+  ): CodexProgressState => ({
+    sessionId: null,
+    latestText: text,
+    liveEntries: [
+      {
+        at: new Date().toISOString(),
+        text,
+        kind,
+      },
+    ],
+    structuredReply: kind === 'output' ? parseManagerReplyPayload(text) : null,
+  });
+
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     if (
@@ -1787,16 +1803,10 @@ export function parseCodexProgressLine(
     }
 
     const typedItem = item as Record<string, unknown>;
-    const itemType = typedItem['type'];
-    if (
-      itemType === 'agent_message' ||
-      itemType === 'assistant_message' ||
-      itemType === 'message'
-    ) {
-      const fragments = collectTextFragments(typedItem);
-      const combined =
-        fragments.length > 0 ? fragments.join('\n').trim() : null;
-      const parsedReply = combined ? parseManagerReplyPayload(combined) : null;
+    const fragments = collectTextFragments(typedItem);
+    const combined = fragments.length > 0 ? fragments.join('\n').trim() : null;
+    if (combined) {
+      const parsedReply = parseManagerReplyPayload(combined);
       const latestText = parsedReply?.reply ?? combined;
       return {
         sessionId: null,
@@ -1829,12 +1839,7 @@ export function parseCodexProgressLine(
       structuredReply: null,
     };
   } catch {
-    return {
-      sessionId: null,
-      latestText: null,
-      liveEntries: [],
-      structuredReply: null,
-    };
+    return singleLiveEntry(trimmed, 'output');
   }
 }
 
@@ -2099,6 +2104,7 @@ async function runCodexTurn(input: {
   let stdout = '';
   let stderr = '';
   let pendingStdout = '';
+  let pendingStderr = '';
   let latestProgressText: string | null = null;
   let latestProgressSessionId: string | null = input.sessionId;
   let sawStructuredReply = false;
@@ -2199,6 +2205,27 @@ async function runCodexTurn(input: {
     armStallTimers();
   };
 
+  const handleStderrLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+    latestProgressText = trimmed;
+    enqueueProgress({
+      sessionId: latestProgressSessionId,
+      latestText: trimmed,
+      liveEntries: [
+        {
+          at: new Date().toISOString(),
+          text: trimmed,
+          kind: 'error',
+        },
+      ],
+      structuredReply: null,
+    });
+    armStallTimers();
+  };
+
   proc.stdout?.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
     stdout += text;
@@ -2225,22 +2252,17 @@ async function runCodexTurn(input: {
     armStallTimers();
   });
   proc.stderr?.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
-    if (!latestProgressText) {
-      latestProgressText = GENERIC_LIVE_PROGRESS_TEXT;
-      enqueueProgress({
-        sessionId: latestProgressSessionId,
-        latestText: latestProgressText,
-        liveEntries: [
-          {
-            at: new Date().toISOString(),
-            text: latestProgressText,
-            kind: 'status',
-          },
-        ],
-        structuredReply: null,
-      });
+    const text = chunk.toString();
+    stderr += text;
+    pendingStderr += text;
+
+    const lines = pendingStderr.split(/\r?\n/);
+    pendingStderr = lines.pop() ?? '';
+
+    for (const line of lines) {
+      handleStderrLine(line);
     }
+
     armStallTimers();
   });
   proc.stdin?.on('error', () => {
@@ -2266,6 +2288,9 @@ async function runCodexTurn(input: {
 
   if (pendingStdout.trim()) {
     handleProgressLine(pendingStdout);
+  }
+  if (pendingStderr.trim()) {
+    handleStderrLine(pendingStderr);
   }
 
   await progressChain;

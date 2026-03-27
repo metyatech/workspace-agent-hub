@@ -1848,6 +1848,78 @@ describe('manager backend codex integration', () => {
     });
   });
 
+  it('stores stderr lines as live error output while a worker turn is running', async () => {
+    const workerProc = makeProc(7052);
+    const reviewProc = makeProc(7053);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-live-stderr', 'stderr message');
+
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        session.status === 'busy' &&
+        meta['thread-live-stderr']?.workerRuntimeState === 'worker-running'
+      );
+    });
+
+    workerProc.stderr.emit(
+      'data',
+      Buffer.from('worker stderr line 1\nworker stderr line 2\n')
+    );
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        meta['thread-live-stderr']?.workerLiveOutput === 'worker stderr line 2'
+      );
+    });
+
+    let meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-live-stderr']?.workerLiveLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: 'worker stderr line 1',
+          kind: 'error',
+        }),
+        expect.objectContaining({
+          text: 'worker stderr line 2',
+          kind: 'error',
+        }),
+      ])
+    );
+
+    workerProc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          '{"type":"thread.started","thread_id":"codex-thread-live-stderr"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"stderr handled"}}',
+        ].join('\n')
+      )
+    );
+    workerProc.emit('close', 0);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-live-stderr',
+      text: '{"status":"review","reply":"stderr handled"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      meta = await readManagerThreadMeta(tempDir);
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        meta['thread-live-stderr']?.workerRuntimeState === null &&
+        meta['thread-live-stderr']?.workerLiveOutput === null
+      );
+    });
+  });
+
   it('uses the turn-specific live label when a review session starts', () => {
     const progress = parseCodexProgressLine(
       '{"type":"thread.started","thread_id":"manager-review-thread"}',
@@ -1862,6 +1934,30 @@ describe('manager backend codex integration', () => {
     expect(progress.liveEntries[0]?.kind).toBe('status');
     expect(progress.liveEntries[0]?.text).toBe(
       'Manager が worker の成果を確認しています…'
+    );
+  });
+
+  it('extracts readable progress text from non-message completed items', () => {
+    const progress = parseCodexProgressLine(
+      '{"type":"item.completed","item":{"type":"tool_result","content":[{"type":"output_text","text":"PowerShell の結果を確認しています。"}]}}'
+    );
+
+    expect(progress.latestText).toBe('PowerShell の結果を確認しています。');
+    expect(progress.liveEntries).toHaveLength(1);
+    expect(progress.liveEntries[0]?.kind).toBe('output');
+    expect(progress.liveEntries[0]?.text).toBe(
+      'PowerShell の結果を確認しています。'
+    );
+  });
+
+  it('treats plain stdout progress lines as live output', () => {
+    const progress = parseCodexProgressLine('いま verify を実行しています。');
+
+    expect(progress.latestText).toBe('いま verify を実行しています。');
+    expect(progress.liveEntries).toHaveLength(1);
+    expect(progress.liveEntries[0]?.kind).toBe('output');
+    expect(progress.liveEntries[0]?.text).toBe(
+      'いま verify を実行しています。'
     );
   });
 
