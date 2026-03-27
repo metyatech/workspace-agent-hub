@@ -23,7 +23,14 @@ trim_cr() {
 
 get_windows_env() {
   local variable_name="$1"
+  local bridge_name="AI_AGENT_MOBILE_WINDOWS_${variable_name}"
   local value
+
+  value="${!bridge_name:-}"
+  if [[ -n "${value// }" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
 
   value="$(cmd.exe /c "echo %${variable_name}%" < /dev/null 2>/dev/null | trim_cr || true)"
   if [[ "$value" == "%${variable_name}%" ]]; then

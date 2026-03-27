@@ -21,7 +21,7 @@ jobs:
           python-version: '3.12'
       - name: Install compose-agentsmd
         run: npm install -g compose-agentsmd
-      - name: Prepare WSL Ubuntu with tmux
+      - name: Prepare WSL Ubuntu with tmux and Node.js
         shell: pwsh
         run: |
           $rootfsUrl = 'https://cloud-images.ubuntu.com/wsl/jammy/current/ubuntu-jammy-wsl-amd64-ubuntu22.04lts.rootfs.tar.gz'
@@ -34,8 +34,10 @@ jobs:
           }
           New-Item -ItemType Directory -Path $installPath -Force | Out-Null
           wsl.exe --import Ubuntu $installPath $rootfsPath --version 2
+          $workspaceRootWsl = ((wsl.exe -d Ubuntu -- wslpath -a -u $env:GITHUB_WORKSPACE) | Out-String).Trim()
           wsl.exe -d Ubuntu -- bash -lc 'apt-get update'
-          wsl.exe -d Ubuntu -- bash -lc 'DEBIAN_FRONTEND=noninteractive apt-get install -y tmux'
+          wsl.exe -d Ubuntu -- bash -lc 'DEBIAN_FRONTEND=noninteractive apt-get install -y tmux curl xz-utils'
+          wsl.exe -d Ubuntu -- bash -lc "bash '$workspaceRootWsl/scripts/install-wsl-node.sh'"
       - name: Verify
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1

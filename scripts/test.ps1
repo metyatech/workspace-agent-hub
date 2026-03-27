@@ -36,26 +36,35 @@ $startMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScrip
 $manageMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-manage.sh')
 $catalogPathScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-catalog-path.sh')
 
+@(
+    @{
+        Probe = 'tmux -V'
+        Description = 'tmux'
+        InstallHint = 'Install tmux inside the Ubuntu WSL distro before running verify.'
+    },
+    @{
+        Probe = 'node --version'
+        Description = 'Node.js'
+        InstallHint = 'Run sudo ./scripts/install-wsl-node.sh inside the repository WSL path before running verify.'
+    }
+) | ForEach-Object {
+    $probeOutput = & wsl.exe -d Ubuntu -- bash -lc $_.Probe
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Expected $($_.Description) to be installed inside the Ubuntu WSL distro. $($_.InstallHint)"
+        exit 1
+    }
+}
+
 $probeViaWslEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 SSH_CONNECTION=test-via-wsl bash -lc "$bootstrapScript --probe"
 if (($probeViaWslEnv | Out-String).Trim() -ne 'open-menu') {
     Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is present in WSL.'
     exit 1
 }
 
-$previousSshConnection = $env:SSH_CONNECTION
-try {
-    $env:SSH_CONNECTION = 'test-via-windows'
-    $probeViaWindowsEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 bash -lc "$bootstrapScript --probe"
-} finally {
-    if ($null -eq $previousSshConnection) {
-        [Environment]::SetEnvironmentVariable('SSH_CONNECTION', $null, 'Process')
-    } else {
-        $env:SSH_CONNECTION = $previousSshConnection
-    }
-}
+$probeViaWindowsEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION=test-via-windows bash -lc "$bootstrapScript --probe"
 
 if (($probeViaWindowsEnv | Out-String).Trim() -ne 'open-menu') {
-    Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION exists only in the Windows parent environment.'
+    Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is available only through the Windows-side fallback bridge.'
     exit 1
 }
 

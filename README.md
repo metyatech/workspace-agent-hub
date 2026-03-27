@@ -23,7 +23,7 @@ It provides:
 - PowerShell 7 or Windows PowerShell
 - Node.js 22+
 - WSL2 with an Ubuntu distro
-- `tmux` installed inside WSL
+- `tmux`, `curl`, `xz-utils`, and Node.js 22+ installed inside that WSL distro
 - Optional: Android emulator for the ConnectBot coverage path
 
 ## Install / setup
@@ -47,13 +47,22 @@ It provides:
    compose-agentsmd
    ```
 
-4. Install the WSL mobile-login hook from inside WSL:
+4. From inside WSL, install the distro-side dependencies that the mobile menu
+   and repository-standard verification use:
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y tmux curl xz-utils
+   sudo ./scripts/install-wsl-node.sh
+   ```
+
+5. Install the WSL mobile-login hook from inside WSL:
 
    ```bash
    ./scripts/install-wsl-mobile-menu-hook.sh
    ```
 
-5. Optionally install the always-on browser UI shortcuts:
+6. Optionally install the always-on browser UI shortcuts:
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-web-ui-shortcuts.ps1
@@ -555,7 +564,8 @@ npm run verify
 formatting, lint/typecheck, the full test suite, the build, and the launcher
 smoke test. The repository pre-commit hook runs that same entrypoint, then
 refreshes the generated instruction files with `compose-agentsmd --compose`
-and stages them.
+and stages them. CI provisions a fresh Ubuntu WSL distro with the same tmux +
+Node prerequisites before invoking that entrypoint.
 
 Real-browser web UI verification only:
 
