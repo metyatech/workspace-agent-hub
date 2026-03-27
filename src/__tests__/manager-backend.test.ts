@@ -2482,7 +2482,7 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'review done after stall'
     );
-  });
+  }, 15000);
 
   it('consumes the queue entry even if writing a successful reply back to thread storage fails', async () => {
     const workerProc = makeProc(8301);

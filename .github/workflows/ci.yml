@@ -34,7 +34,10 @@ jobs:
           }
           New-Item -ItemType Directory -Path $installPath -Force | Out-Null
           wsl.exe --import Ubuntu $installPath $rootfsPath --version 2
-          $workspaceRootWsl = ((wsl.exe -d Ubuntu -- wslpath -a -u $env:GITHUB_WORKSPACE) | Out-String).Trim()
+          $workspaceRootWindows = $env:GITHUB_WORKSPACE -replace '\\', '/'
+          $workspaceDrive = $workspaceRootWindows.Substring(0, 1).ToLowerInvariant()
+          $workspaceTail = $workspaceRootWindows.Substring(2)
+          $workspaceRootWsl = "/mnt/$workspaceDrive$workspaceTail"
           wsl.exe -d Ubuntu -- bash -lc 'apt-get update'
           wsl.exe -d Ubuntu -- bash -lc 'DEBIAN_FRONTEND=noninteractive apt-get install -y tmux curl xz-utils'
           wsl.exe -d Ubuntu -- bash -lc "bash '$workspaceRootWsl/scripts/install-wsl-node.sh'"
