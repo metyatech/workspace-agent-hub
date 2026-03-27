@@ -873,6 +873,11 @@ async function reconcileActiveAssignments(
   const nextSession = await updateSession(dir, async (session) => {
     if (session.activeAssignments.length === 0) {
       survivingAssignments = [];
+      // Clear any stale error from a previous assignment that has already
+      // been cleaned up — the error is no longer relevant.
+      if (session.lastErrorMessage !== null) {
+        return { ...session, lastErrorMessage: null, lastErrorAt: null };
+      }
       return session;
     }
 

@@ -1600,7 +1600,7 @@ describe('manager backend codex integration', () => {
     ).toBe(true);
   });
 
-  it('surfaces the last backend error in manager status instead of showing normal waiting', async () => {
+  it('clears stale error from manager status when idle with no active assignments', async () => {
     const session = await readSession(tempDir);
     await writeSession(tempDir, {
       ...session,
@@ -1610,10 +1610,9 @@ describe('manager backend codex integration', () => {
     });
 
     const status = await getBuiltinManagerStatus(tempDir);
-    expect(status.health).toBe('error');
-    expect(status.detail).toBe('AI backend で問題が起きています');
-    expect(status.errorMessage).toBe('前の担当 worker が途中で停止しました。');
-    expect(status.errorAt).toBe('2026-03-23T08:00:00.000Z');
+    expect(status.health).toBe('ok');
+    expect(status.errorMessage).toBeNull();
+    expect(status.errorAt).toBeNull();
   });
 
   it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {
