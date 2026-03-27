@@ -1803,7 +1803,7 @@ describe('manager backend codex integration', () => {
         meta['thread-live']?.workerRuntimeState === 'worker-running' &&
         meta['thread-live']?.workerAgentId?.startsWith('assign_q_') === true &&
         meta['thread-live']?.workerLiveOutput ===
-          'AI が担当 worker を起動しました。内容を整理しています…'
+          'Worker を起動しました。まだ進捗メッセージは届いていません。'
       );
     });
 

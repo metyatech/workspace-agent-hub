@@ -93,6 +93,13 @@ export const MANAGER_REASONING_EFFORT = 'xhigh';
  */
 export const MANAGER_REPLY_STATUS = 'review' as const;
 
+const WORKER_LIVE_STARTED_TEXT =
+  'Worker を起動しました。まだ進捗メッセージは届いていません。';
+const MANAGER_LIVE_PREPARING_TEXT =
+  'Manager が返答を準備しています。まだ本文は確定していません。';
+const GENERIC_LIVE_PROGRESS_TEXT =
+  '進捗イベントを受信しましたが、まだ説明文は届いていません。';
+
 /**
  * System context embedded in the first routing turn.
  */
@@ -1728,7 +1735,7 @@ export function parseCodexOutput(stdout: string): {
 
 export function parseCodexProgressLine(
   line: string,
-  threadStartedText = 'AI が担当 worker を起動しました。内容を整理しています…'
+  threadStartedText = WORKER_LIVE_STARTED_TEXT
 ): CodexProgressState {
   const trimmed = line.trim();
   if (!trimmed) {
@@ -1808,7 +1815,7 @@ export function parseCodexProgressLine(
       };
     }
 
-    const genericText = 'AI が作業を進めています…';
+    const genericText = GENERIC_LIVE_PROGRESS_TEXT;
     return {
       sessionId: null,
       latestText: genericText,
@@ -2220,7 +2227,7 @@ async function runCodexTurn(input: {
   proc.stderr?.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
     if (!latestProgressText) {
-      latestProgressText = 'AI が作業を進めています…';
+      latestProgressText = GENERIC_LIVE_PROGRESS_TEXT;
       enqueueProgress({
         sessionId: latestProgressSessionId,
         latestText: latestProgressText,
@@ -2939,7 +2946,7 @@ async function runQueuedAssignment(input: {
       },
       onProgress: async (progress) => {
         const nextText =
-          progress.latestText?.trim() || 'AI が作業を進めています…';
+          progress.latestText?.trim() || GENERIC_LIVE_PROGRESS_TEXT;
         const progressEntries =
           progress.liveEntries.length > 0
             ? progress.liveEntries
@@ -3015,8 +3022,8 @@ async function runQueuedAssignment(input: {
           : '担当 worker agent がこの作業項目を実行中です。',
       initialLiveOutput:
         assignment.assigneeKind === 'manager'
-          ? 'AI が内容を整理して返答を準備しています…'
-          : 'AI が担当 worker を起動しました。内容を整理しています…',
+          ? MANAGER_LIVE_PREPARING_TEXT
+          : WORKER_LIVE_STARTED_TEXT,
       clearLiveLog: true,
       preserveWorkerSessionId: false,
     });

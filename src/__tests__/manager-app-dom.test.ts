@@ -3271,7 +3271,7 @@ describe('manager-app DOM auth state matrix', () => {
               ? [
                   {
                     at: '2026-03-21T00:01:00.000Z',
-                    text: 'AI が担当 worker を起動しました。内容を整理しています…',
+                    text: 'Worker を起動しました。まだ進捗メッセージは届いていません。',
                     kind: 'status' as const,
                   },
                   {
@@ -3283,7 +3283,7 @@ describe('manager-app DOM auth state matrix', () => {
               : [
                   {
                     at: '2026-03-21T00:01:00.000Z',
-                    text: 'AI が担当 worker を起動しました。内容を整理しています…',
+                    text: 'Worker を起動しました。まだ進捗メッセージは届いていません。',
                     kind: 'status' as const,
                   },
                 ];
@@ -3736,7 +3736,7 @@ describe('manager-app activity summary', () => {
         workerLiveLog: [
           {
             at: '2026-03-23T07:59:30.000Z',
-            text: 'AI が担当 worker を起動しました。内容を整理しています…',
+            text: 'Worker を起動しました。まだ進捗メッセージは届いていません。',
             kind: 'status',
           },
           {
@@ -3746,11 +3746,12 @@ describe('manager-app activity summary', () => {
           },
           {
             at: '2026-03-23T08:00:15.000Z',
-            text: 'AI が作業を進めています…',
+            text: '進捗イベントを受信しましたが、まだ説明文は届いていません。',
             kind: 'status',
           },
         ],
-        workerLiveOutput: 'AI が作業を進めています…',
+        workerLiveOutput:
+          '進捗イベントを受信しましたが、まだ説明文は届いていません。',
         workerLiveAt: '2026-03-23T08:00:15.000Z',
         messages: [
           {
@@ -3800,7 +3801,9 @@ describe('manager-app activity summary', () => {
     ).toContain('Worker / Worker agent 実行中 / 最終更新');
     expect(
       row.querySelector<HTMLElement>('[data-row-preview]')?.textContent
-    ).not.toContain('AI が作業を進めています');
+    ).not.toContain(
+      '進捗イベントを受信しましたが、まだ説明文は届いていません。'
+    );
   });
 
   it('keeps normal busy copy when the backend is still running without a factual error', async () => {
@@ -4263,7 +4266,7 @@ describe('manager-app live updates', () => {
       workerLiveLog: [
         {
           at: '2026-03-23T07:59:30.000Z',
-          text: 'AI が担当 worker を起動しました。内容を整理しています…',
+          text: 'Worker を起動しました。まだ進捗メッセージは届いていません。',
           kind: 'status',
         },
         {
@@ -4323,7 +4326,7 @@ describe('manager-app live updates', () => {
         ?.textContent
     ).toContain('いま src/manager-backend.ts を見ています。');
     expect(detail.textContent).toContain(
-      'AI が担当 worker を起動しました。内容を整理しています…'
+      'Worker を起動しました。まだ進捗メッセージは届いていません。'
     );
     expect(detail.textContent).toContain(
       'いま src/manager-backend.ts を見ています。'
@@ -4336,7 +4339,7 @@ describe('manager-app live updates', () => {
     ).toContain('Worker');
     expect(
       detail.querySelector<HTMLElement>('.bubble-live .bubble-ts')?.textContent
-    ).toContain('仮表示');
+    ).toContain('確定前');
   });
 
   it('uses readable recovery activity instead of raw structured JSON in ai-working views', async () => {
@@ -4365,11 +4368,12 @@ describe('manager-app live updates', () => {
         },
         {
           at: '2026-03-23T08:10:45.000Z',
-          text: 'AI が作業を進めています…',
+          text: '進捗イベントを受信しましたが、まだ説明文は届いていません。',
           kind: 'status',
         },
       ],
-      workerLiveOutput: 'AI が作業を進めています…',
+      workerLiveOutput:
+        '進捗イベントを受信しましたが、まだ説明文は届いていません。',
       workerLiveAt: '2026-03-23T08:10:45.000Z',
       messages: [
         {

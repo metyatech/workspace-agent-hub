@@ -790,7 +790,8 @@ function formatDate(iso: string | undefined): string {
   }
 }
 
-const GENERIC_LIVE_PROGRESS_TEXT = 'AI が作業を進めています…';
+const GENERIC_LIVE_PROGRESS_TEXT =
+  '進捗イベントを受信しましたが、まだ説明文は届いていません。';
 
 const STRUCTURED_LIVE_DECISION_LABELS: Record<string, string> = {
   'fix-self': '今の修正をそのまま継続',
@@ -1466,10 +1467,10 @@ function makeBubble(
   timestamp.className = 'bubble-ts';
   timestamp.textContent = message.live
     ? message.at
-      ? `${message.provisional ? '仮表示 / ' : ''}更新中 / ${formatDate(message.at)}`
+      ? `${message.provisional ? '確定前 / ' : ''}ライブ更新 / ${formatDate(message.at)}`
       : message.provisional
-        ? '仮表示 / 更新中'
-        : '更新中'
+        ? '確定前 / ライブ更新'
+        : 'ライブ更新'
     : formatDate(message.at);
 
   const content = document.createElement('div');
