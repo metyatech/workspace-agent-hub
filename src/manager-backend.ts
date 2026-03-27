@@ -2088,7 +2088,6 @@ async function runCodexTurn(input: {
   proc.on('close', () => {
     activeChildProcesses.delete(proc);
   });
-  await input.onSpawn?.(proc.pid ?? null);
 
   let stdout = '';
   let stderr = '';
@@ -2251,6 +2250,9 @@ async function runCodexTurn(input: {
     clearStallTimers();
     resolveExitCode(code);
   });
+
+  await input.onSpawn?.(proc.pid ?? null);
+
   armStallTimers();
 
   const exitCode = await exitCodePromise;

@@ -54,6 +54,22 @@ interface WorkerLiveEntry {
   kind: 'status' | 'output' | 'error';
 }
 
+interface LiveActivityStep {
+  at: string | null;
+  text: string;
+  kind: WorkerLiveEntry['kind'];
+}
+
+interface LiveActivitySnapshot {
+  actorLabel: string;
+  runtimeLabel: string | null;
+  runtimeDetail: string | null;
+  headline: string | null;
+  updatedAt: string | null;
+  updatedLabel: string | null;
+  steps: LiveActivityStep[];
+}
+
 interface ThreadView {
   id: string;
   title: string;
@@ -774,6 +790,167 @@ function formatDate(iso: string | undefined): string {
   }
 }
 
+const GENERIC_LIVE_PROGRESS_TEXT = 'AI が作業を進めています…';
+
+const STRUCTURED_LIVE_DECISION_LABELS: Record<string, string> = {
+  'fix-self': '今の修正をそのまま継続',
+  'retry-worker': 'worker に修正を再実行',
+  restart: '作業をやり直し',
+  escalate: '人への確認が必要',
+};
+
+function truncateText(value: string, maxLength = 96): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function simplifyLiveText(
+  value: string,
+  threadTitlesById: Map<string, string>
+): string {
+  return humanizeThreadReferenceText(value, threadTitlesById)
+    .replace(/`+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseStructuredLivePayload(
+  value: string
+): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderStructuredLivePayload(
+  value: string,
+  threadTitlesById: Map<string, string>
+): string | null {
+  const parsed = parseStructuredLivePayload(value);
+  if (!parsed) {
+    return null;
+  }
+  const decision =
+    typeof parsed['decision'] === 'string' ? parsed['decision'] : null;
+  const reason = typeof parsed['reason'] === 'string' ? parsed['reason'] : null;
+  if (!decision) {
+    return null;
+  }
+  const decisionLabel =
+    STRUCTURED_LIVE_DECISION_LABELS[decision] ??
+    simplifyLiveText(decision, threadTitlesById);
+  const reasonText = reason ? simplifyLiveText(reason, threadTitlesById) : null;
+  return reasonText
+    ? `回復判断: ${decisionLabel} / ${truncateText(reasonText, 84)}`
+    : `回復判断: ${decisionLabel}`;
+}
+
+function assigneeDisplayLabel(thread: ThreadView): string {
+  if (thread.assigneeKind === 'manager') {
+    return 'Manager';
+  }
+  if (thread.assigneeKind === 'worker') {
+    return 'Worker';
+  }
+  return 'AI';
+}
+
+function renderLiveStep(
+  entry: WorkerLiveEntry,
+  threadTitlesById: Map<string, string>
+): LiveActivityStep | null {
+  const rawText = entry.text.trim();
+  if (!rawText) {
+    return null;
+  }
+  if (rawText === GENERIC_LIVE_PROGRESS_TEXT) {
+    return null;
+  }
+  const structuredText = renderStructuredLivePayload(rawText, threadTitlesById);
+  const text = structuredText ?? simplifyLiveText(rawText, threadTitlesById);
+  if (!text) {
+    return null;
+  }
+  return {
+    at: entry.at ?? null,
+    text,
+    kind: entry.kind,
+  };
+}
+
+function collectLiveActivitySteps(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): LiveActivityStep[] {
+  const steps: LiveActivityStep[] = [];
+  for (const entry of thread.workerLiveLog) {
+    const rendered = renderLiveStep(entry, threadTitlesById);
+    if (!rendered) {
+      continue;
+    }
+    const previous = steps.at(-1);
+    if (previous?.text === rendered.text && previous.kind === rendered.kind) {
+      continue;
+    }
+    steps.push(rendered);
+  }
+  return steps;
+}
+
+function liveRuntimeDetail(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): string | null {
+  if (!thread.workerRuntimeDetail?.trim()) {
+    return null;
+  }
+  return simplifyLiveText(thread.workerRuntimeDetail, threadTitlesById);
+}
+
+function describeLiveActivity(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): LiveActivitySnapshot | null {
+  const runtimeDetail = liveRuntimeDetail(thread, threadTitlesById);
+  const steps = collectLiveActivitySteps(thread, threadTitlesById);
+  if (!thread.isWorking && !runtimeDetail && steps.length === 0) {
+    return null;
+  }
+  const latestOutput = [...steps]
+    .reverse()
+    .find((entry) => entry.kind === 'output');
+  const latestAny = steps.at(-1) ?? null;
+  const fallbackOutput = thread.workerLiveOutput?.trim()
+    ? simplifyLiveText(thread.workerLiveOutput, threadTitlesById)
+    : null;
+  const headline =
+    latestOutput?.text ??
+    runtimeDetail ??
+    latestAny?.text ??
+    fallbackOutput ??
+    null;
+  return {
+    actorLabel: assigneeDisplayLabel(thread),
+    runtimeLabel: workerRuntimeLabel(thread),
+    runtimeDetail,
+    headline,
+    updatedAt: thread.workerLiveAt ?? null,
+    updatedLabel: thread.workerLiveAt
+      ? `最終更新 ${formatAge(thread.workerLiveAt)}`
+      : null,
+    steps,
+  };
+}
+
 function hashMessageContent(text: string): string {
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -1308,19 +1485,22 @@ function makeBubble(
   return bubble;
 }
 
-function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
-  if (!thread.isWorking && thread.workerLiveLog.length === 0) {
+function buildLiveWorkerMessage(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): Msg | null {
+  const activity = describeLiveActivity(thread, threadTitlesById);
+  if (!activity) {
     return null;
   }
 
   const content =
-    thread.workerLiveLog
-      .map((entry) => entry.text.trim())
-      .filter(Boolean)
+    activity.steps
+      .map((entry) => entry.text)
       .join('\n\n')
       .trim() ||
-    thread.workerLiveOutput?.trim() ||
-    'AI が作業を進めています…';
+    activity.headline ||
+    GENERIC_LIVE_PROGRESS_TEXT;
   const lastPersisted = thread.messages.at(-1);
   if (
     lastPersisted?.sender === 'ai' &&
@@ -1332,22 +1512,20 @@ function buildLiveWorkerMessage(thread: ThreadView): Msg | null {
   return {
     sender: 'ai',
     content,
-    at: thread.workerLiveAt ?? thread.updatedAt,
+    at: activity.updatedAt ?? thread.updatedAt,
     live: true,
     provisional: true,
-    senderLabel:
-      thread.assigneeKind === 'manager'
-        ? 'Manager'
-        : thread.assigneeKind === 'worker'
-          ? 'Worker'
-          : 'AI',
+    senderLabel: activity.actorLabel,
     key: `live:${thread.id}`,
   };
 }
 
-function messagesForDetail(thread: ThreadView): Msg[] {
+function messagesForDetail(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): Msg[] {
   const messages = [...thread.messages];
-  const liveMessage = buildLiveWorkerMessage(thread);
+  const liveMessage = buildLiveWorkerMessage(thread, threadTitlesById);
   if (liveMessage) {
     messages.push(liveMessage);
   }
@@ -1621,6 +1799,156 @@ function workerRuntimeLabel(thread: ThreadView): string | null {
     default:
       return null;
   }
+}
+
+function rowPreviewText(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): string {
+  const activity = describeLiveActivity(thread, threadTitlesById);
+  if (thread.uiState === 'ai-working' && activity?.headline) {
+    return `${activity.actorLabel}: ${activity.headline}`;
+  }
+  return (
+    humanizeThreadReferenceText(thread.previewText, threadTitlesById) ||
+    'まだやり取りはありません'
+  );
+}
+
+function rowActivityText(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): string | null {
+  const activity = describeLiveActivity(thread, threadTitlesById);
+  if (!activity) {
+    return null;
+  }
+  const parts = [
+    activity.actorLabel,
+    activity.runtimeLabel,
+    activity.updatedLabel,
+  ].filter((value): value is string => Boolean(value?.trim()));
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function makeLiveActivityPanel(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>
+): HTMLElement | null {
+  const activity = describeLiveActivity(thread, threadTitlesById);
+  if (!activity) {
+    return null;
+  }
+
+  const panel = document.createElement('section');
+  panel.className = 'detail-live-activity';
+  panel.dataset.liveActivityPanel = '';
+
+  const header = document.createElement('div');
+  header.className = 'detail-live-activity-header';
+
+  const title = document.createElement('div');
+  title.className = 'detail-live-activity-title';
+  title.textContent = 'いまの活動';
+
+  const chips = document.createElement('div');
+  chips.className = 'detail-live-activity-chips';
+  for (const value of [
+    activity.actorLabel,
+    activity.runtimeLabel,
+    activity.updatedLabel,
+  ]) {
+    if (!value) {
+      continue;
+    }
+    const chip = document.createElement('span');
+    chip.className = 'detail-live-activity-chip';
+    chip.textContent = value;
+    chips.appendChild(chip);
+  }
+  header.append(title, chips);
+  panel.appendChild(header);
+
+  if (activity.headline) {
+    const summary = document.createElement('div');
+    summary.className = 'detail-live-activity-summary';
+    summary.textContent = activity.headline;
+    panel.appendChild(summary);
+  }
+
+  if (
+    activity.runtimeDetail &&
+    activity.headline &&
+    activity.runtimeDetail !== activity.headline
+  ) {
+    const stage = document.createElement('div');
+    stage.className = 'detail-live-activity-stage';
+    stage.textContent = `現在の段階: ${activity.runtimeDetail}`;
+    panel.appendChild(stage);
+  }
+
+  const steps = activity.steps.slice(-5);
+  if (steps.length > 0) {
+    const list = document.createElement('div');
+    list.className = 'detail-live-activity-list';
+    list.dataset.liveActivityList = '';
+    for (const step of steps) {
+      const item = document.createElement('div');
+      item.className = 'detail-live-activity-item';
+
+      const badge = document.createElement('span');
+      badge.className = 'detail-live-activity-kind';
+      badge.textContent =
+        step.kind === 'output'
+          ? '内容'
+          : step.kind === 'error'
+            ? '異常'
+            : '状況';
+
+      const text = document.createElement('div');
+      text.className = 'detail-live-activity-item-text';
+      text.textContent = step.text;
+
+      const meta = document.createElement('span');
+      meta.className = 'detail-live-activity-item-time';
+      meta.textContent = step.at ? formatDate(step.at) : '';
+
+      item.append(badge, text, meta);
+      list.appendChild(item);
+    }
+    panel.appendChild(list);
+  }
+
+  return panel;
+}
+
+function currentBusyThread(
+  threads: ThreadView[],
+  status: ManagerStatusPayload | null
+): ThreadView | null {
+  if (status?.currentThreadId) {
+    return (
+      threads.find((thread) => thread.id === status.currentThreadId) ?? null
+    );
+  }
+  return threads.find((thread) => thread.uiState === 'ai-working') ?? null;
+}
+
+function currentBusySummary(
+  threads: ThreadView[],
+  status: ManagerStatusPayload | null,
+  threadTitlesById: Map<string, string>
+): string | null {
+  const thread = currentBusyThread(threads, status);
+  if (!thread) {
+    return null;
+  }
+  const activity = describeLiveActivity(thread, threadTitlesById);
+  if (!activity?.headline) {
+    return null;
+  }
+  const prefix = activity.actorLabel ? `${activity.actorLabel}: ` : '';
+  return truncateText(`${prefix}${activity.headline}`, 88);
 }
 
 function makeRelatedWorkItemButton(
@@ -1918,12 +2246,19 @@ class ThreadSectionController {
     const preview = document.createElement('div');
     preview.className = 'thread-preview';
     preview.dataset.rowPreview = '';
-    preview.textContent =
-      humanizeThreadReferenceText(thread.previewText, threadTitlesById) ||
-      'まだやり取りはありません';
+    preview.textContent = rowPreviewText(thread, threadTitlesById);
 
     top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
+
+    const activityText = rowActivityText(thread, threadTitlesById);
+    if (activityText) {
+      const activity = document.createElement('div');
+      activity.className = 'thread-activity';
+      activity.dataset.rowActivity = '';
+      activity.textContent = activityText;
+      row.appendChild(activity);
+    }
 
     const noteText = describeWorkItemContext(thread, threadsById);
     if (noteText) {
@@ -1982,11 +2317,23 @@ class ThreadSectionController {
     target?.classList.toggle('hidden', targetThreadId !== thread.id);
 
     const preview = row.querySelector<HTMLElement>('[data-row-preview]');
-    const nextPreview =
-      humanizeThreadReferenceText(thread.previewText, threadTitlesById) ||
-      'まだやり取りはありません';
+    const nextPreview = rowPreviewText(thread, threadTitlesById);
     if (preview && preview.textContent !== nextPreview) {
       preview.textContent = nextPreview;
+    }
+
+    let activity = row.querySelector<HTMLElement>('[data-row-activity]');
+    const nextActivityText = rowActivityText(thread, threadTitlesById);
+    if (nextActivityText) {
+      if (!activity) {
+        activity = document.createElement('div');
+        activity.className = 'thread-activity';
+        activity.dataset.rowActivity = '';
+        preview?.insertAdjacentElement('afterend', activity);
+      }
+      activity.textContent = nextActivityText;
+    } else {
+      activity?.remove();
     }
 
     let note = row.querySelector<HTMLElement>('[data-row-note]');
@@ -2443,6 +2790,11 @@ class DetailController {
       body.appendChild(note);
     }
 
+    const liveActivityPanel = makeLiveActivityPanel(thread, threadTitlesById);
+    if (liveActivityPanel) {
+      body.appendChild(liveActivityPanel);
+    }
+
     const parentThreads = collectRelatedThreads(
       thread.derivedFromThreadIds ?? [],
       threadsById
@@ -2502,7 +2854,7 @@ class DetailController {
 
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
-    const detailMessages = messagesForDetail(thread);
+    const detailMessages = messagesForDetail(thread, threadTitlesById);
     if (detailMessages.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'detail-empty';
@@ -3113,6 +3465,14 @@ class ManagerApp {
 
   #applyManagerStatus(payload: ManagerStatusPayload): void {
     this.#managerStatus = payload;
+    const threadTitlesById = new Map(
+      this.allThreads.map((thread) => [thread.id, thread.title])
+    );
+    const busySummary = currentBusySummary(
+      this.allThreads,
+      payload,
+      threadTitlesById
+    );
     const dot = document.getElementById(
       'manager-status-dot'
     ) as HTMLElement | null;
@@ -3141,11 +3501,13 @@ class ManagerApp {
                 ? `AI が「${payload.currentThreadTitle}」を処理中です`
                 : 'AI が作業中です'
               : '待機中です';
-        const queueTail = payload.detail
-          ? ` — ${payload.detail}`
-          : !busy && (payload.pendingCount ?? 0) > 0
-            ? ` — キュー ${payload.pendingCount} 件`
-            : '';
+        const queueTail = busySummary
+          ? ` — ${busySummary}`
+          : payload.detail
+            ? ` — ${payload.detail}`
+            : !busy && (payload.pendingCount ?? 0) > 0
+              ? ` — キュー ${payload.pendingCount} 件`
+              : '';
         text.textContent = `${label}${queueTail}`;
       }
       startButton?.classList.add('hidden');
@@ -4365,6 +4727,13 @@ class ManagerApp {
     const currentThreadTitle = this.#managerStatus?.currentThreadTitle ?? null;
     const pendingCount = this.#managerStatus?.pendingCount ?? 0;
     const statusErrorMessage = this.#managerStatus?.errorMessage ?? null;
+    const threadTitlesById = new Map(
+      this.allThreads.map((thread) => [thread.id, thread.title])
+    );
+    const busyThread = currentBusyThread(this.allThreads, this.#managerStatus);
+    const busyActivity = busyThread
+      ? describeLiveActivity(busyThread, threadTitlesById)
+      : null;
 
     if (problem === 'error') {
       primary.textContent = 'AI backend で問題が起きています';
@@ -4395,8 +4764,17 @@ class ManagerApp {
         ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''}`
         : 'AI backend のエラーで処理できていません。';
     } else if (busy) {
-      detail.textContent =
-        pendingCount > 0
+      detail.textContent = busyActivity?.headline
+        ? [
+            `いまは ${busyActivity.actorLabel} が「${busyActivity.headline}」を進めています。`,
+            busyActivity.updatedLabel ? `${busyActivity.updatedLabel}。` : '',
+            pendingCount > 0
+              ? `この作業項目が終わると、残り ${pendingCount} 件を順番に進めます。`
+              : '返答できる状態になると対応する一覧に出ます。',
+          ]
+            .filter(Boolean)
+            .join(' ')
+        : pendingCount > 0
           ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると対応する一覧に出ます。`
           : 'いまの作業項目を実行中です。返答できる状態になると対応する一覧に出ます。';
     } else if (running) {
