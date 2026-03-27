@@ -923,7 +923,17 @@ async function reconcileActiveAssignments(
       return session;
     }
 
-    return replaceSessionAssignments(session, survivingAssignments);
+    const replaced = replaceSessionAssignments(session, survivingAssignments);
+    // When all assignments are gone after reconciliation, clear any stale
+    // error so the UI reflects the current (idle) state instead of a past
+    // failure from an assignment that no longer exists.
+    if (
+      replaced.activeAssignments.length === 0 &&
+      replaced.lastErrorMessage !== null
+    ) {
+      return { ...replaced, lastErrorMessage: null, lastErrorAt: null };
+    }
+    return replaced;
   });
 
   if (droppedAssignments.length === 0) {
@@ -2648,9 +2658,18 @@ async function removeAssignment(
   dir: string,
   assignmentId: string
 ): Promise<ManagerSession> {
-  return updateSession(dir, (session) =>
-    updateSessionAssignment(session, assignmentId, () => null)
-  );
+  return updateSession(dir, (session) => {
+    const updated = updateSessionAssignment(session, assignmentId, () => null);
+    // When the last assignment is removed, clear any stale error so the UI
+    // does not keep showing a past error for an assignment that no longer exists.
+    if (
+      updated.activeAssignments.length === 0 &&
+      updated.lastErrorMessage !== null
+    ) {
+      return { ...updated, lastErrorMessage: null, lastErrorAt: null };
+    }
+    return updated;
+  });
 }
 
 async function patchAssignment(
