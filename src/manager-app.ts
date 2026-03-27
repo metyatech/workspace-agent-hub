@@ -15,6 +15,7 @@ declare global {
     MANAGER_AUTH_STORAGE_KEY?: string;
     MANAGER_API_BASE?: string;
     __workspaceAgentHubManagerDiagnostics?: () => ManagerClientDiagnostics;
+    __workspaceAgentHubManagerApp__?: ManagerApp;
   }
 }
 
@@ -291,8 +292,6 @@ const ANSI_16_COLOR_PALETTE = [
 
 const GUI_DIR = window.GUI_DIR;
 const MANAGER_AUTH_REQUIRED = Boolean(window.MANAGER_AUTH_REQUIRED);
-const MANAGER_AUTH_STORAGE_KEY =
-  window.MANAGER_AUTH_STORAGE_KEY || `workspace-agent-hub.token:${GUI_DIR}`;
 const MANAGER_FEEDBACK_STORAGE_KEY = `workspace-agent-hub.manager-feedback:${GUI_DIR}`;
 const MANAGER_SORT_STORAGE_KEY = `workspace-agent-hub.manager-sort:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
@@ -649,7 +648,7 @@ class AuthRequiredError extends Error {
 
 function readStoredAuthToken(): string | null {
   try {
-    const token = window.localStorage.getItem(MANAGER_AUTH_STORAGE_KEY);
+    const token = window.localStorage.getItem(managerAuthStorageKey());
     return token && token.trim() ? token : null;
   } catch {
     return null;
@@ -658,7 +657,7 @@ function readStoredAuthToken(): string | null {
 
 function writeStoredAuthToken(token: string): void {
   try {
-    window.localStorage.setItem(MANAGER_AUTH_STORAGE_KEY, token);
+    window.localStorage.setItem(managerAuthStorageKey(), token);
   } catch {
     /* ignore */
   }
@@ -666,10 +665,17 @@ function writeStoredAuthToken(token: string): void {
 
 function clearStoredAuthToken(): void {
   try {
-    window.localStorage.removeItem(MANAGER_AUTH_STORAGE_KEY);
+    window.localStorage.removeItem(managerAuthStorageKey());
   } catch {
     /* ignore */
   }
+}
+
+function managerAuthStorageKey(): string {
+  return (
+    window.MANAGER_AUTH_STORAGE_KEY ||
+    `workspace-agent-hub.token:${window.GUI_DIR}`
+  );
 }
 
 function normalizeComposerFeedbackStatus(
@@ -3072,6 +3078,22 @@ class ManagerApp {
     void this.#bootAfterAuth();
   }
 
+  dispose(): void {
+    this.#stopLiveStream('dispose');
+    if (this.#liveStaleTimer !== null) {
+      window.clearTimeout(this.#liveStaleTimer);
+      this.#liveStaleTimer = null;
+    }
+    if (this.#composerResizeObserver) {
+      this.#composerResizeObserver.disconnect();
+      this.#composerResizeObserver = null;
+    }
+    delete window.__workspaceAgentHubManagerDiagnostics;
+    if (window.__workspaceAgentHubManagerApp__ === this) {
+      delete window.__workspaceAgentHubManagerApp__;
+    }
+  }
+
   #wireHistory(): void {
     const currentState = readManagerHistoryState();
     if (currentState?.screen === 'thread' && currentState.threadId) {
@@ -4973,8 +4995,8 @@ class ManagerApp {
     }
     if (runtimeSummary) {
       runtimeSummary.textContent = repo
-        ? `現在の backend は Codex 固定です。repo 設定の希望 runtime は ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} です。`
-        : '現在の backend は Codex 固定です。';
+        ? `この run は既定で ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} worker に割り当てられ、isolated worktree で実行されます。`
+        : 'repo を選ぶと、ここに worker runtime を表示します。';
     }
     if (repoHint) {
       repoHint.textContent = repo
@@ -5036,9 +5058,18 @@ class ManagerApp {
     const verifyInput = document.getElementById(
       'managedRepoVerifyCommandInput'
     ) as HTMLInputElement | null;
+    const runtimeSelect = document.getElementById(
+      'managedRepoPreferredRuntimeSelect'
+    ) as HTMLSelectElement | null;
     const status = document.getElementById('managedRepoFormStatus');
     const label = labelInput?.value.trim() ?? '';
     const repoRoot = pathInput?.value.trim() ?? '';
+    const preferredWorkerRuntime =
+      runtimeSelect?.value === 'claude' ||
+      runtimeSelect?.value === 'copilot' ||
+      runtimeSelect?.value === 'gemini'
+        ? runtimeSelect.value
+        : 'codex';
     if (!label || !repoRoot) {
       if (status) {
         status.textContent = '表示名と local repo path を入力してください。';
@@ -5056,8 +5087,8 @@ class ManagerApp {
         repoRoot,
         defaultBranch: branchInput?.value.trim() || 'main',
         verifyCommand: verifyInput?.value.trim() || 'npm run verify',
-        supportedWorkerRuntimes: ['codex'],
-        preferredWorkerRuntime: 'codex',
+        supportedWorkerRuntimes: ['codex', 'claude', 'copilot', 'gemini'],
+        preferredWorkerRuntime,
       }),
     });
     this.#repoFormSubmitting = false;
@@ -5090,8 +5121,11 @@ class ManagerApp {
     if (verifyInput) {
       verifyInput.value = 'npm run verify';
     }
+    if (runtimeSelect) {
+      runtimeSelect.value = 'codex';
+    }
     if (status) {
-      status.textContent = `「${saved.label}」を追加しました。`;
+      status.textContent = `「${saved.label}」を追加しました。既定 worker runtime は ${humanizeWorkerRuntime(saved.preferredWorkerRuntime)} です。`;
     }
     await this.loadAll();
   }
@@ -5469,7 +5503,9 @@ class ManagerApp {
 export { ManagerApp };
 
 export function bootstrapManagerApp(): ManagerApp {
+  window.__workspaceAgentHubManagerApp__?.dispose();
   const app = new ManagerApp();
+  window.__workspaceAgentHubManagerApp__ = app;
   app.init();
   return app;
 }

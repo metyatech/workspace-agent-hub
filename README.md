@@ -393,7 +393,8 @@ How it works:
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user can either:
    - press `新しい作業`, choose a managed repo, base branch, and run mode, then
-     launch an isolated-worktree run explicitly
+     launch an isolated-worktree run explicitly using that repo's preferred
+     worker runtime
    - or keep using the global send dock for ordinary inbox-style routing and
      follow-up discussion
 6. The writing surface stays collapsed on the inbox, then turns into a compact
@@ -415,7 +416,8 @@ Important behavior:
 - There is no separate `manager-gui` process or second GUI server anymore.
 - Managed repos are now explicit workspace-local configuration. The Manager
   stores repo path, default branch, verify command, and preferred runtime in a
-  dedicated registry before creating isolated runs.
+  dedicated registry before creating isolated runs, and worker execution uses
+  the selected runtime adapter (`codex`, `claude`, `gemini`, or `copilot`).
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - `新しい作業` now gives the human a first-class explicit run flow: pick a
   repo, set the base branch, choose `write` or `read-only`, and queue the run

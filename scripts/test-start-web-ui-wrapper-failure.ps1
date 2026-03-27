@@ -16,10 +16,19 @@ function Remove-TempFile {
     if ([IO.File]::Exists($Path)) {
         for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
             try {
+                if (-not [IO.File]::Exists($Path)) {
+                    break
+                }
                 [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+                if (-not [IO.File]::Exists($Path)) {
+                    break
+                }
                 [IO.File]::Delete($Path)
                 break
             } catch {
+                if (-not [IO.File]::Exists($Path)) {
+                    break
+                }
                 if ($attempt -eq 19) {
                     throw
                 }

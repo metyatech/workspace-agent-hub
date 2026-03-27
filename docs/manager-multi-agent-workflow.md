@@ -318,10 +318,11 @@ Target worker runtimes:
 
 Current implementation note:
 
-- the built-in Manager backend currently runs Manager and worker turns through
-  Codex only
-- this document defines the next-phase contract for generalizing that runtime
-  layer without changing the human workflow
+- the built-in Manager backend still keeps Manager routing/review turns on
+  Codex
+- worker turns now go through a shared runtime adapter that can launch
+  `codex`, `claude`, `gemini`, or `copilot` without changing the human
+  workflow
 
 ## CLI surface
 
@@ -436,4 +437,4 @@ That is the level of complexity the human should need to remember.
 3. Introduce the generic worker-adapter interface
 4. Move task creation to an explicit `新しい作業` flow
 5. Add merge-lane and needs-human screens
-6. Generalize worker runtime support beyond Codex
+6. Add runtime availability checks and richer per-runtime operator controls

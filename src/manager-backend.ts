@@ -78,6 +78,12 @@ import {
 } from './manager-worktree.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
 import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
+import {
+  buildWorkerRuntimeLaunchSpec,
+  parseGenericRuntimeOutput,
+  parseGenericRuntimeProgressLine,
+  workerRuntimeAssigneeLabel,
+} from './manager-worker-runtime.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -251,6 +257,7 @@ export interface ManagerActiveAssignment {
   threadId: string;
   queueEntryIds: string[];
   assigneeKind: 'manager' | 'worker';
+  workerRuntime: ManagerWorkerRuntime;
   assigneeLabel: string;
   writeScopes: string[];
   pid: number | null;
@@ -460,13 +467,20 @@ function normalizeActiveAssignment(
     record['assigneeKind'] === 'manager' || record['assigneeKind'] === 'worker'
       ? record['assigneeKind']
       : 'worker';
+  const workerRuntime =
+    record['workerRuntime'] === 'claude' ||
+    record['workerRuntime'] === 'copilot' ||
+    record['workerRuntime'] === 'gemini' ||
+    record['workerRuntime'] === 'codex'
+      ? record['workerRuntime']
+      : 'codex';
   const assigneeLabel =
     typeof record['assigneeLabel'] === 'string' &&
     record['assigneeLabel'].trim()
       ? record['assigneeLabel'].trim()
       : assigneeKind === 'manager'
         ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
-        : `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`;
+        : workerRuntimeAssigneeLabel(workerRuntime);
   const queueEntryIds = normalizeStringArray(record['queueEntryIds']);
   if (!id || !threadId || queueEntryIds.length === 0) {
     return null;
@@ -477,6 +491,7 @@ function normalizeActiveAssignment(
     threadId,
     queueEntryIds,
     assigneeKind,
+    workerRuntime,
     assigneeLabel,
     writeScopes: normalizeWriteScopes(record['writeScopes']),
     pid:
@@ -532,7 +547,8 @@ function normalizeManagerSession(
             threadId: 'unknown',
             queueEntryIds: [session.currentQueueId.trim()],
             assigneeKind: 'worker' as const,
-            assigneeLabel: `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`,
+            workerRuntime: 'codex' as const,
+            assigneeLabel: workerRuntimeAssigneeLabel('codex'),
             writeScopes: [],
             pid:
               typeof session.pid === 'number' && Number.isFinite(session.pid)
@@ -2167,34 +2183,40 @@ function buildDerivedThreadUserMessage(input: {
   });
 }
 
-async function runCodexTurn(input: {
-  dir: string;
-  resolvedDir: string;
-  prompt: string;
+async function runCliTurn(input: {
+  spawnSpec: {
+    command: string;
+    args: string[];
+    spawnOptions: {
+      cwd: string;
+      env?: NodeJS.ProcessEnv;
+      shell: boolean;
+      stdio: ['pipe', 'pipe', 'pipe'];
+      windowsHide: boolean;
+    };
+  };
+  prompt: string | null;
   sessionId: string | null;
+  runtimeLabel: string;
   threadStartedText?: string;
-  imagePaths?: string[];
   onSpawn?: (pid: number | null) => void | Promise<void>;
   onProgress?: (state: CodexProgressState) => void | Promise<void>;
+  parseOutput: (stdout: string) => { text: string; sessionId: string | null };
+  parseProgressLine: (
+    line: string,
+    threadStartedText: string
+  ) => CodexProgressState;
 }): Promise<{
   code: number | null;
   stdout: string;
   stderr: string;
   parsed: { text: string; sessionId: string | null };
 }> {
-  const codexCommand = resolveCodexCommand();
-  const args = buildCodexArgs(
-    input.prompt,
-    input.sessionId,
-    input.imagePaths ?? []
+  const proc = spawn(
+    input.spawnSpec.command,
+    input.spawnSpec.args,
+    input.spawnSpec.spawnOptions
   );
-  const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
-  if (spawnSpec.command !== codexCommand) {
-    console.error(
-      `[manager-backend] codex shim rewritten: ${codexCommand} → ${spawnSpec.command} (shell: ${spawnSpec.spawnOptions.shell})`
-    );
-  }
-  const proc = spawn(spawnSpec.command, spawnSpec.args, spawnSpec.spawnOptions);
   activeChildProcesses.add(proc);
   proc.on('close', () => {
     activeChildProcesses.delete(proc);
@@ -2204,7 +2226,6 @@ async function runCodexTurn(input: {
   let stderr = '';
   let pendingStdout = '';
   let pendingStderr = '';
-  let latestProgressText: string | null = null;
   let latestProgressSessionId: string | null = input.sessionId;
   let sawStructuredReply = false;
   let progressChain = Promise.resolve();
@@ -2235,7 +2256,7 @@ async function runCodexTurn(input: {
     }
   };
 
-  const forceCodexCompletion = async (
+  const forceCompletion = async (
     code: number | null,
     stderrSuffix: string
   ): Promise<void> => {
@@ -2254,9 +2275,9 @@ async function runCodexTurn(input: {
   const armStallTimers = (): void => {
     clearStallTimers();
     idleTimeout = setTimeout(() => {
-      void forceCodexCompletion(
+      void forceCompletion(
         124,
-        `[Manager error] Codex produced no progress for ${Math.round(
+        `[Manager error] ${input.runtimeLabel} produced no progress for ${Math.round(
           idleTimeoutMs / 1000
         )} seconds and was terminated as stalled.`
       );
@@ -2264,9 +2285,9 @@ async function runCodexTurn(input: {
 
     if (sawStructuredReply) {
       structuredReplyTimeout = setTimeout(() => {
-        void forceCodexCompletion(
+        void forceCompletion(
           0,
-          `[Manager notice] Codex emitted a structured final reply but did not exit within ${Math.round(
+          `[Manager notice] ${input.runtimeLabel} emitted a structured final reply but did not exit within ${Math.round(
             structuredReplyCloseGraceMs / 1000
           )} seconds. The process was terminated and the latest structured reply was adopted.`
         );
@@ -2285,7 +2306,10 @@ async function runCodexTurn(input: {
   };
 
   const handleProgressLine = (line: string): void => {
-    const progress = parseCodexProgressLine(line, input.threadStartedText);
+    const progress = input.parseProgressLine(
+      line,
+      input.threadStartedText ?? WORKER_LIVE_STARTED_TEXT
+    );
     if (progress.sessionId) {
       latestProgressSessionId = progress.sessionId;
     }
@@ -2293,10 +2317,9 @@ async function runCodexTurn(input: {
       sawStructuredReply = true;
     }
     if (progress.latestText) {
-      latestProgressText = progress.latestText;
       enqueueProgress({
         sessionId: latestProgressSessionId,
-        latestText: latestProgressText,
+        latestText: progress.latestText,
         liveEntries: progress.liveEntries,
         structuredReply: progress.structuredReply,
       });
@@ -2309,7 +2332,6 @@ async function runCodexTurn(input: {
     if (!trimmed) {
       return;
     }
-    latestProgressText = trimmed;
     enqueueProgress({
       sessionId: latestProgressSessionId,
       latestText: trimmed,
@@ -2367,7 +2389,9 @@ async function runCodexTurn(input: {
   proc.stdin?.on('error', () => {
     /* ignore prompt pipe teardown races */
   });
-  proc.stdin?.write(input.prompt);
+  if (input.prompt !== null) {
+    proc.stdin?.write(input.prompt);
+  }
   proc.stdin?.end();
 
   proc.on('error', (error) => {
@@ -2380,7 +2404,6 @@ async function runCodexTurn(input: {
   });
 
   await input.onSpawn?.(proc.pid ?? null);
-
   armStallTimers();
 
   const exitCode = await exitCodePromise;
@@ -2407,8 +2430,108 @@ async function runCodexTurn(input: {
     code: finalForcedExitResult?.code ?? exitCode,
     stdout,
     stderr,
-    parsed: parseCodexOutput(stdout),
+    parsed: input.parseOutput(stdout),
   };
+}
+
+async function runCodexTurn(input: {
+  dir: string;
+  resolvedDir: string;
+  prompt: string;
+  sessionId: string | null;
+  threadStartedText?: string;
+  imagePaths?: string[];
+  onSpawn?: (pid: number | null) => void | Promise<void>;
+  onProgress?: (state: CodexProgressState) => void | Promise<void>;
+}): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  parsed: { text: string; sessionId: string | null };
+}> {
+  const codexCommand = resolveCodexCommand();
+  const args = buildCodexArgs(
+    input.prompt,
+    input.sessionId,
+    input.imagePaths ?? []
+  );
+  const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
+  if (spawnSpec.command !== codexCommand) {
+    console.error(
+      `[manager-backend] codex shim rewritten: ${codexCommand} → ${spawnSpec.command} (shell: ${spawnSpec.spawnOptions.shell})`
+    );
+  }
+  return runCliTurn({
+    spawnSpec,
+    prompt: input.prompt,
+    sessionId: input.sessionId,
+    runtimeLabel: 'Codex',
+    threadStartedText: input.threadStartedText,
+    onSpawn: input.onSpawn,
+    onProgress: input.onProgress,
+    parseOutput: parseCodexOutput,
+    parseProgressLine: parseCodexProgressLine,
+  });
+}
+
+async function runWorkerRuntimeTurn(input: {
+  runtime: ManagerWorkerRuntime;
+  dir: string;
+  resolvedDir: string;
+  prompt: string;
+  sessionId: string | null;
+  runMode: ManagerRunMode | null;
+  threadStartedText?: string;
+  imagePaths?: string[];
+  onSpawn?: (pid: number | null) => void | Promise<void>;
+  onProgress?: (state: CodexProgressState) => void | Promise<void>;
+}): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  parsed: { text: string; sessionId: string | null };
+}> {
+  const launchSpec = buildWorkerRuntimeLaunchSpec({
+    runtime: input.runtime,
+    prompt: input.prompt,
+    sessionId: input.sessionId,
+    resolvedDir: input.resolvedDir,
+    runMode: input.runMode,
+    imagePaths: input.imagePaths ?? [],
+  });
+  const parseProgressLine = (line: string, threadStartedText: string) => {
+    if (launchSpec.runtime === 'codex') {
+      return parseCodexProgressLine(line, threadStartedText);
+    }
+    const generic = parseGenericRuntimeProgressLine(line, threadStartedText);
+    return {
+      sessionId: generic.sessionId,
+      latestText: generic.latestText,
+      liveEntries: generic.liveEntries,
+      structuredReply: generic.latestText
+        ? parseManagerReplyPayload(generic.latestText)
+        : null,
+    };
+  };
+
+  return runCliTurn({
+    spawnSpec: {
+      command: launchSpec.command,
+      args: launchSpec.args,
+      spawnOptions: launchSpec.spawnOptions,
+    },
+    prompt: launchSpec.prompt,
+    sessionId: launchSpec.sessionId,
+    runtimeLabel: launchSpec.displayLabel,
+    threadStartedText: input.threadStartedText,
+    onSpawn: input.onSpawn,
+    onProgress: input.onProgress,
+    parseOutput:
+      launchSpec.runtime === 'codex'
+        ? parseCodexOutput
+        : parseGenericRuntimeOutput,
+    parseProgressLine,
+  });
 }
 
 // Per-workspace in-flight guard (module-level singleton, safe for single server process).
@@ -2534,20 +2657,31 @@ async function ensureThreadReadyForUserMessage(
 
 async function readWorkerSessionId(
   dir: string,
-  threadId: string
+  threadId: string,
+  runtime: ManagerWorkerRuntime
 ): Promise<string | null> {
   const meta = await readManagerThreadMeta(dir);
-  return meta[threadId]?.workerSessionId?.trim() || null;
+  const workerSessionId = meta[threadId]?.workerSessionId?.trim() || null;
+  if (!workerSessionId) {
+    return null;
+  }
+  const storedRuntime = meta[threadId]?.workerSessionRuntime ?? null;
+  if (!storedRuntime) {
+    return runtime === 'codex' ? workerSessionId : null;
+  }
+  return storedRuntime === runtime ? workerSessionId : null;
 }
 
 async function writeWorkerSessionId(
   dir: string,
   threadId: string,
+  runtime: ManagerWorkerRuntime,
   workerSessionId: string | null
 ): Promise<void> {
   await updateManagerThreadMeta(dir, threadId, (current) => ({
     ...(current ?? {}),
     workerSessionId,
+    workerSessionRuntime: workerSessionId ? runtime : null,
     workerLastStartedAt: new Date().toISOString(),
   }));
 }
@@ -2935,10 +3069,13 @@ async function decideDispatchForBatch(input: {
   return parsed;
 }
 
-function defaultAssigneeLabel(kind: 'manager' | 'worker'): string {
+function defaultAssigneeLabel(
+  kind: 'manager' | 'worker',
+  runtime: ManagerWorkerRuntime = 'codex'
+): string {
   return kind === 'manager'
     ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
-    : `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`;
+    : workerRuntimeAssigneeLabel(runtime);
 }
 
 function blockingScopeDetail(input: {
@@ -3026,9 +3163,24 @@ async function runQueuedAssignment(input: {
   const targetRepoRoot = assignment.targetRepoRoot ?? resolvedDir;
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
+  const workerRuntime = assignment.workerRuntime;
+  const sessionRuntime: ManagerWorkerRuntime =
+    assignment.assigneeKind === 'worker' ? workerRuntime : 'codex';
   const threadMeta =
     (await readManagerThreadMeta(resolvedDir))[thread.id] ?? null;
-  let workerSessionId = await readWorkerSessionId(resolvedDir, thread.id);
+  const requestedRunMode: ManagerRunMode | null =
+    entries.find(
+      (entry) =>
+        entry.requestedRunMode === 'read-only' ||
+        entry.requestedRunMode === 'write'
+    )?.requestedRunMode ??
+    threadMeta?.requestedRunMode ??
+    null;
+  let workerSessionId = await readWorkerSessionId(
+    resolvedDir,
+    thread.id,
+    sessionRuntime
+  );
   const imagePaths = queueEntriesImagePaths(entries);
 
   const runTurn = async (turn: {
@@ -3072,14 +3224,14 @@ async function runQueuedAssignment(input: {
       workerWriteScopes: assignment.writeScopes,
     });
 
-    return runCodexTurn({
+    const commonInput = {
       dir,
       resolvedDir: workerCwd,
       prompt: turn.prompt,
       sessionId: turn.sessionId,
       threadStartedText: turn.initialLiveOutput,
       imagePaths,
-      onSpawn: async (pid) => {
+      onSpawn: async (pid: number | null) => {
         await patchAssignment(dir, assignment.id, (current) => ({
           ...current,
           pid,
@@ -3087,7 +3239,7 @@ async function runQueuedAssignment(input: {
         }));
         await touchManagerProgress(dir);
       },
-      onProgress: async (progress) => {
+      onProgress: async (progress: CodexProgressState) => {
         const nextText =
           progress.latestText?.trim() || GENERIC_LIVE_PROGRESS_TEXT;
         const progressEntries =
@@ -3129,7 +3281,15 @@ async function runQueuedAssignment(input: {
         }));
         await touchManagerProgress(dir);
       },
-    });
+    };
+
+    return turn.assigneeKind === 'manager'
+      ? runCodexTurn(commonInput)
+      : runWorkerRuntimeTurn({
+          ...commonInput,
+          runtime: workerRuntime,
+          runMode: requestedRunMode,
+        });
   };
 
   const runPrimaryTurn = async (
@@ -3154,7 +3314,7 @@ async function runQueuedAssignment(input: {
               managedRepoRoot: threadMeta?.managedRepoRoot ?? null,
               managedBaseBranch: threadMeta?.managedBaseBranch ?? null,
               managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
-              requestedRunMode: threadMeta?.requestedRunMode ?? null,
+              requestedRunMode,
               writeScopes: assignment.writeScopes,
               isFirstTurn,
             }),
@@ -3189,7 +3349,7 @@ async function runQueuedAssignment(input: {
       workerSessionId &&
       isSessionInvalidError(firstCombinedOutput)
     ) {
-      await writeWorkerSessionId(resolvedDir, thread.id, null);
+      await writeWorkerSessionId(resolvedDir, thread.id, workerRuntime, null);
       workerSessionId = null;
       primaryResult = await runPrimaryTurn(null, true);
     }
@@ -3230,7 +3390,12 @@ async function runQueuedAssignment(input: {
       };
       latestReportedChangedFiles = workerResult.changedFiles;
       workerSessionId = nextWorkerSessionId;
-      await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
+      await writeWorkerSessionId(
+        resolvedDir,
+        thread.id,
+        workerRuntime,
+        nextWorkerSessionId
+      );
       reviewStepAttempted = true;
       const structuralWarnings = await runStructuralChecks(
         workerCwd,
@@ -3243,7 +3408,7 @@ async function runQueuedAssignment(input: {
           resolvedDir,
           worktreePath: assignment.worktreePath,
           writeScopes: assignment.writeScopes,
-          requestedRunMode: threadMeta?.requestedRunMode ?? null,
+          requestedRunMode,
           structuralWarnings,
         }),
         sessionId: null,
@@ -3380,7 +3545,12 @@ async function runQueuedAssignment(input: {
             )
           );
           if (isSessionInvalidError(finalCombinedOutput)) {
-            await writeWorkerSessionId(resolvedDir, thread.id, null);
+            await writeWorkerSessionId(
+              resolvedDir,
+              thread.id,
+              sessionRuntime,
+              null
+            );
           }
           await clearWorkerLiveOutput(
             resolvedDir,
@@ -3444,7 +3614,12 @@ async function runQueuedAssignment(input: {
             }).catch(() => {});
           }
           // Queue entries are NOT removed — they will be re-dispatched
-          await writeWorkerSessionId(resolvedDir, thread.id, null);
+          await writeWorkerSessionId(
+            resolvedDir,
+            thread.id,
+            sessionRuntime,
+            null
+          );
           void processNextQueued(dir, resolvedDir);
           return;
         }
@@ -3528,7 +3703,7 @@ async function runQueuedAssignment(input: {
             resolvedDir,
             worktreePath: assignment.worktreePath,
             writeScopes: assignment.writeScopes,
-            requestedRunMode: threadMeta?.requestedRunMode ?? null,
+            requestedRunMode,
             structuralWarnings: reStructuralWarnings,
           }),
           sessionId: null,
@@ -3873,7 +4048,12 @@ async function runQueuedAssignment(input: {
       }
       if (assignment.assigneeKind === 'manager') {
         workerSessionId = nextWorkerSessionId;
-        await writeWorkerSessionId(resolvedDir, thread.id, nextWorkerSessionId);
+        await writeWorkerSessionId(
+          resolvedDir,
+          thread.id,
+          'codex',
+          nextWorkerSessionId
+        );
       }
       await clearWorkerLiveOutput(
         resolvedDir,
@@ -3900,8 +4080,8 @@ async function runQueuedAssignment(input: {
 
     const errMsg =
       finalResult.code === 0
-        ? '[Manager error] codex finished successfully but no usable assistant reply could be parsed from the JSON output.'
-        : `[Manager error] codex CLI exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
+        ? `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} finished successfully but no usable assistant reply could be parsed from the runtime output.`
+        : `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
     try {
       await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
     } catch {
@@ -3912,7 +4092,7 @@ async function runQueuedAssignment(input: {
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
     if (isSessionInvalidError(finalCombinedOutput)) {
-      await writeWorkerSessionId(resolvedDir, thread.id, null);
+      await writeWorkerSessionId(resolvedDir, thread.id, sessionRuntime, null);
     }
     await clearWorkerLiveOutput(
       resolvedDir,
@@ -3947,8 +4127,8 @@ async function runQueuedAssignment(input: {
 
     const errMsg =
       (error as NodeJS.ErrnoException).code === 'ENOENT'
-        ? '[Manager error] `codex` CLI not found in PATH. Install Codex CLI to use the built-in manager backend.'
-        : `[Manager error] Failed to start codex: ${error instanceof Error ? error.message : String(error)}`;
+        ? `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} CLI not found in PATH. Install the required runtime CLI to use the built-in manager backend.`
+        : `[Manager error] Failed to start ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'}: ${error instanceof Error ? error.message : String(error)}`;
     try {
       await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
     } catch {
@@ -4151,6 +4331,16 @@ export async function processNextQueued(
         )?.targetRepoRoot ??
         threadMeta?.managedRepoRoot ??
         null;
+      const requestedWorkerRuntime: ManagerWorkerRuntime =
+        nextEntries.find(
+          (entry) =>
+            entry.requestedWorkerRuntime === 'codex' ||
+            entry.requestedWorkerRuntime === 'claude' ||
+            entry.requestedWorkerRuntime === 'gemini' ||
+            entry.requestedWorkerRuntime === 'copilot'
+        )?.requestedWorkerRuntime ??
+        threadMeta?.requestedWorkerRuntime ??
+        'codex';
       if (
         dispatch.assignee === 'manager' &&
         activeManagerAssignments >= MAX_PARALLEL_MANAGER_ASSIGNMENTS
@@ -4176,7 +4366,7 @@ export async function processNextQueued(
           dir: resolvedDir,
           threadId: next.threadId,
           assigneeKind: 'worker',
-          assigneeLabel: defaultAssigneeLabel('worker'),
+          assigneeLabel: defaultAssigneeLabel('worker', requestedWorkerRuntime),
           workerAgentId: null,
           runtimeState: 'blocked-by-scope',
           runtimeDetail: blockingScopeDetail({
@@ -4211,7 +4401,11 @@ export async function processNextQueued(
         threadId: next.threadId,
         queueEntryIds: batchIds,
         assigneeKind: dispatch.assignee,
-        assigneeLabel: defaultAssigneeLabel(dispatch.assignee),
+        workerRuntime: requestedWorkerRuntime,
+        assigneeLabel: defaultAssigneeLabel(
+          dispatch.assignee,
+          requestedWorkerRuntime
+        ),
         writeScopes: assignmentWriteScopes,
         pid: null,
         startedAt: new Date().toISOString(),

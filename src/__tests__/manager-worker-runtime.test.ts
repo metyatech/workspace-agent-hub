@@ -1,0 +1,112 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildWorkerRuntimeLaunchSpec,
+  parseGenericRuntimeOutput,
+  parseGenericRuntimeProgressLine,
+  workerRuntimeAssigneeLabel,
+} from '../manager-worker-runtime.js';
+
+describe('manager-worker-runtime', () => {
+  it('builds a Claude launch spec that resumes the existing session in read-only mode', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'claude',
+      prompt: 'Investigate the failure',
+      sessionId: 'claude-session-1',
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'read-only',
+      platform: 'win32',
+      env: {
+        CLAUDE_PATH: 'claude.exe',
+        GIT_DIR: 'D:\\ghws\\workspace-agent-hub\\.git',
+        GIT_WORK_TREE: 'D:\\ghws\\workspace-agent-hub',
+      },
+    });
+
+    expect(spec.command).toBe('claude.exe');
+    expect(spec.prompt).toBeNull();
+    expect(spec.sessionId).toBe('claude-session-1');
+    expect(spec.args).toEqual(
+      expect.arrayContaining([
+        '--print',
+        '--output-format',
+        'stream-json',
+        '--permission-mode',
+        'plan',
+        '--resume',
+        'claude-session-1',
+        '--add-dir',
+        'D:\\ghws\\workspace-agent-hub',
+        'Investigate the failure',
+      ])
+    );
+    expect(spec.spawnOptions.env.GIT_DIR).toBeUndefined();
+    expect(spec.spawnOptions.env.GIT_WORK_TREE).toBeUndefined();
+  });
+
+  it('builds a Copilot launch spec with explicit prompt arguments', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'copilot',
+      prompt: 'Apply the requested fix',
+      sessionId: 'copilot-session-1',
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        COPILOT_PATH: 'copilot.exe',
+      },
+    });
+
+    expect(spec.command).toBe('copilot.exe');
+    expect(spec.prompt).toBeNull();
+    expect(spec.args).toEqual(
+      expect.arrayContaining([
+        '--output-format',
+        'json',
+        '--allow-all-tools',
+        '--allow-all-paths',
+        '--no-ask-user',
+        '--resume=copilot-session-1',
+        '--prompt',
+        'Apply the requested fix',
+      ])
+    );
+    expect(workerRuntimeAssigneeLabel('copilot')).toContain('Copilot');
+  });
+
+  it('parses generic runtime JSON progress and final output', () => {
+    const progress = parseGenericRuntimeProgressLine(
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        session_id: 'gemini-session-1',
+        text: 'First delta',
+      }),
+      'Started'
+    );
+    expect(progress.sessionId).toBe('gemini-session-1');
+    expect(progress.latestText).toBe('First delta');
+    expect(progress.liveEntries[0]?.kind).toBe('output');
+
+    const parsed = parseGenericRuntimeOutput(
+      [
+        JSON.stringify({
+          type: 'init',
+          session_id: 'gemini-session-1',
+        }),
+        JSON.stringify({
+          role: 'assistant',
+          delta: true,
+          text: '{"status":"review",',
+        }),
+        JSON.stringify({
+          role: 'assistant',
+          delta: true,
+          text: '"reply":"all set"}',
+        }),
+      ].join('\n')
+    );
+
+    expect(parsed.sessionId).toBe('gemini-session-1');
+    expect(parsed.text).toBe('{"status":"review","reply":"all set"}');
+  });
+});

@@ -277,6 +277,13 @@ async function loadManagerApp(
     beforeImport?: (window: Window) => void;
   }
 ): Promise<Document> {
+  const previousWindow = globalThis.window as
+    | (Window & {
+        __workspaceAgentHubManagerApp__?: { dispose?: () => void };
+      })
+    | undefined;
+  previousWindow?.__workspaceAgentHubManagerApp__?.dispose?.();
+
   const dom = new JSDOM(managerHtml, {
     url: options?.url ?? 'https://hub.example.test/manager/',
     pretendToBeVisual: true,
@@ -356,6 +363,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  const activeWindow = globalThis.window as
+    | (Window & {
+        __workspaceAgentHubManagerApp__?: { dispose?: () => void };
+      })
+    | undefined;
+  activeWindow?.__workspaceAgentHubManagerApp__?.dispose?.();
   vi.unstubAllGlobals();
 });
 
@@ -495,8 +508,8 @@ describe('manager-app DOM auth state matrix', () => {
         repoRoot: 'D:\\ghws\\workspace-agent-hub',
         defaultBranch: 'main',
         verifyCommand: 'npm run verify',
-        supportedWorkerRuntimes: ['codex'],
-        preferredWorkerRuntime: 'codex',
+        supportedWorkerRuntimes: ['codex', 'claude'],
+        preferredWorkerRuntime: 'claude',
         mergeLaneEnabled: true,
       },
     ];
@@ -552,7 +565,7 @@ describe('manager-app DOM auth state matrix', () => {
               managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
               managedBaseBranch: String(body['baseBranch']),
               managedVerifyCommand: 'npm run verify',
-              requestedWorkerRuntime: 'codex',
+              requestedWorkerRuntime: repos[0].preferredWorkerRuntime,
               requestedRunMode: String(body['runMode']),
               messages: [
                 {
@@ -615,6 +628,9 @@ describe('manager-app DOM auth state matrix', () => {
         .querySelector<HTMLElement>('#newTaskSheetBackdrop')!
         .classList.contains('hidden')
     ).toBe(false);
+    expect(
+      document.querySelector<HTMLElement>('#newTaskRuntimeSummary')!.textContent
+    ).toContain('Claude');
 
     document.querySelector<HTMLInputElement>('#newTaskTitleInput')!.value =
       'Repo registry を追加する';
@@ -657,6 +673,152 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('mode: read-only');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('runtime: Claude');
+  });
+
+  it('submits the managed repo form with the selected preferred runtime', async () => {
+    const validToken = 'managed-repo-runtime-token';
+    let repos: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (isRoute(url, '/manager/repos') && init?.method === 'POST') {
+          const body = JSON.parse(String(init.body ?? '{}')) as Record<
+            string,
+            unknown
+          >;
+          repos = [
+            {
+              id: 'workspace-agent-hub',
+              label: body['label'],
+              repoRoot: body['repoRoot'],
+              defaultBranch: body['defaultBranch'],
+              verifyCommand: body['verifyCommand'],
+              supportedWorkerRuntimes: body['supportedWorkerRuntimes'],
+              preferredWorkerRuntime: body['preferredWorkerRuntime'],
+              mergeLaneEnabled: true,
+            },
+          ];
+          return new Response(JSON.stringify(repos[0]), { status: 201 });
+        }
+        if (isRoute(url, '/manager/repos')) {
+          return new Response(JSON.stringify(repos), { status: 200 });
+        }
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: false,
+              configured: true,
+              builtinBackend: true,
+              detail: '未起動 — メッセージ送信で自動起動します',
+            }),
+            { status: 200 }
+          );
+        }
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-27T00:00:00.000Z',
+              threads: [],
+              tasks: [],
+              repos,
+              status: {
+                running: false,
+                configured: true,
+                builtinBackend: true,
+                detail: '未起動 — メッセージ送信で自動起動します',
+              },
+            },
+          ]);
+        }
+        if (isRoute(url, '/builds')) {
+          return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+            status: 200,
+          });
+        }
+        return new Response('{}', { status: 200 });
+      }
+    );
+
+    const document = await loadManagerApp(
+      fetchMock as unknown as typeof fetch,
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, validToken);
+        },
+      }
+    );
+
+    document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
+    await flushAsync(2);
+
+    document.querySelector<HTMLInputElement>('#managedRepoNameInput')!.value =
+      'workspace-agent-hub';
+    document.querySelector<HTMLInputElement>('#managedRepoPathInput')!.value =
+      'D:\\ghws\\workspace-agent-hub';
+    document.querySelector<HTMLInputElement>(
+      '#managedRepoDefaultBranchInput'
+    )!.value = 'main';
+    document.querySelector<HTMLInputElement>(
+      '#managedRepoVerifyCommandInput'
+    )!.value = 'npm run verify';
+    document.querySelector<HTMLSelectElement>(
+      '#managedRepoPreferredRuntimeSelect'
+    )!.value = 'claude';
+    document
+      .querySelector<HTMLFormElement>('#managedRepoForm')!
+      .dispatchEvent(
+        new window.Event('submit', { bubbles: true, cancelable: true })
+      );
+    await flushAsync(6);
+
+    const repoCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        isRoute(String(input), '/manager/repos') && init?.method === 'POST'
+    );
+    expect(repoCall).toBeTruthy();
+    const repoBody = JSON.parse(String(repoCall?.[1]?.body ?? '{}')) as Record<
+      string,
+      unknown
+    >;
+    expect(repoBody).toMatchObject({
+      label: 'workspace-agent-hub',
+      repoRoot: 'D:\\ghws\\workspace-agent-hub',
+      defaultBranch: 'main',
+      verifyCommand: 'npm run verify',
+      preferredWorkerRuntime: 'claude',
+    });
+    expect(repoBody['supportedWorkerRuntimes']).toEqual([
+      'codex',
+      'claude',
+      'copilot',
+      'gemini',
+    ]);
+    expect(
+      document.querySelector<HTMLElement>('#managedRepoFormStatus')!.textContent
+    ).toContain('Claude');
   });
 
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {
@@ -787,8 +949,11 @@ describe('manager-app DOM auth state matrix', () => {
         window.localStorage.setItem(authStorageKey, 'stale-token');
       },
     });
+    await flushAsync(4);
 
-    expect(window.localStorage.getItem(authStorageKey)).toBe('fresh-token');
+    expect(document.defaultView?.localStorage.getItem(authStorageKey)).toBe(
+      'fresh-token'
+    );
     expect(
       document
         .querySelector<HTMLDivElement>('#auth-panel')!

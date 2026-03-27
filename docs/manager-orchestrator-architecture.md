@@ -223,9 +223,9 @@ Not yet complete:
   repo-relative/module-level lock model
 - richer operator controls for pausing, retrying, or manually reassigning
   worker agents from the UI
-- generalizing the current Codex-only worker runtime into a shared adapter
-  contract for `codex`, `claude`, `gemini`, and `copilot`, while keeping the
-  same human-facing run and merge-lane workflow
+- runtime availability checks and per-runtime health reporting for
+  `codex`, `claude`, `gemini`, and `copilot`, while keeping the same
+  human-facing run and merge-lane workflow
 
 ## Next implementation opportunities
 

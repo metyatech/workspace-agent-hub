@@ -184,6 +184,33 @@ function completeCodexTurn(
   proc.emit('close', input.code ?? 0);
 }
 
+function completeGenericRuntimeTurn(
+  proc: FakeProc,
+  input: {
+    sessionId: string;
+    text: string;
+    code?: number;
+  }
+): void {
+  proc.stdout.emit(
+    'data',
+    Buffer.from(
+      [
+        JSON.stringify({
+          type: 'init',
+          session_id: input.sessionId,
+        }),
+        JSON.stringify({
+          type: 'message',
+          role: 'assistant',
+          response: input.text,
+        }),
+      ].join('\n')
+    )
+  );
+  proc.emit('close', input.code ?? 0);
+}
+
 async function waitFor(
   check: () => boolean | Promise<boolean>,
   timeoutMs = 5000
@@ -949,6 +976,7 @@ describe('manager backend codex integration', () => {
     await writeManagerThreadMeta(tempDir, {
       _bX_UpQR: {
         workerSessionId: 'codex-thread-existing',
+        workerSessionRuntime: 'codex',
         workerLastStartedAt: '2026-03-26T00:00:00.000Z',
         routingConfirmationNeeded: true,
         routingHint: '古い routing hint',
@@ -1046,6 +1074,76 @@ describe('manager backend codex integration', () => {
     expect(meta['_bX_UpQR']?.workerSessionId).toBe('codex-thread-existing');
     expect(meta['_bX_UpQR']?.routingConfirmationNeeded).toBeUndefined();
     expect(meta['_bX_UpQR']?.workerLiveOutput).toBeNull();
+  });
+
+  it('launches the requested Claude worker runtime and only reuses the matching stored session', async () => {
+    const claudeWorkerProc = makeProc(9101);
+    const managerReviewProc = makeProc(9102);
+    spawnMock
+      .mockReturnValueOnce(claudeWorkerProc)
+      .mockReturnValueOnce(managerReviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: join(tempDir, 'worktrees', 'claude-runtime'),
+      branchName: 'agent/claude-runtime',
+      targetRepoRoot: tempDir,
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-claude-runtime': {
+        workerSessionId: 'claude-session-existing',
+        workerSessionRuntime: 'claude',
+        workerLastStartedAt: '2026-03-26T00:00:00.000Z',
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-claude-runtime',
+      'Claude worker で続きを実行してください',
+      {
+        dispatchMode: 'direct-worker',
+        requestedRunMode: 'read-only',
+        requestedWorkerRuntime: 'claude',
+        targetRepoRoot: tempDir,
+      }
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    const workerCommand = String(spawnMock.mock.calls[0]?.[0] ?? '');
+    const workerArgs = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(workerCommand.toLowerCase()).toContain('claude');
+    expect(workerArgs).toEqual(
+      expect.arrayContaining([
+        '--print',
+        '--output-format',
+        'stream-json',
+        '--permission-mode',
+        'plan',
+        '--resume',
+        'claude-session-existing',
+      ])
+    );
+    completeGenericRuntimeTurn(claudeWorkerProc, {
+      sessionId: 'claude-session-existing',
+      text: '{"status":"review","reply":"Claude worker finished"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(managerReviewProc, {
+      sessionId: 'manager-review-claude',
+      text: '{"status":"review","reply":"Claude worker finished"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-claude-runtime']?.workerSessionId).toBe(
+      'claude-session-existing'
+    );
+    expect(meta['thread-claude-runtime']?.workerSessionRuntime).toBe('claude');
   });
 
   it('keeps direct replies to needs-reply topics in the same topic instead of splitting them', async () => {
@@ -1414,6 +1512,7 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-stalled',
           queueEntryIds: ['q_stalled'],
           assigneeKind: 'worker',
+          workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: process.pid,
@@ -1446,6 +1545,7 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-a',
           queueEntryIds: ['q_a'],
           assigneeKind: 'worker',
+          workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/a.ts'],
           pid: 7001,
@@ -1460,6 +1560,7 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-b',
           queueEntryIds: ['q_b'],
           assigneeKind: 'worker',
+          workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/b.ts'],
           pid: 7002,
@@ -1553,6 +1654,7 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-orphaned',
           queueEntryIds: ['q_orphaned'],
           assigneeKind: 'worker',
+          workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: null,
@@ -1843,7 +1945,7 @@ describe('manager backend codex integration', () => {
         session.status === 'idle' &&
         meta['thread-live']?.workerRuntimeState === null &&
         meta['thread-live']?.workerLiveOutput === null &&
-        meta['thread-live']?.assigneeLabel?.includes('Worker agent gpt-5.4') ===
+        meta['thread-live']?.assigneeLabel?.includes('Worker Codex gpt-5.4') ===
           true
       );
     });
@@ -2106,6 +2208,7 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-old',
           queueEntryIds: ['q_old'],
           assigneeKind: 'worker',
+          workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: null,
