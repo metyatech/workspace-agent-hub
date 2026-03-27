@@ -380,6 +380,10 @@ The broader target architecture for the Manager-as-orchestrator model is
 documented in
 [docs/manager-orchestrator-architecture.md](docs/manager-orchestrator-architecture.md).
 
+The detailed next-phase operator flow for explicit repo selection, isolated
+worktree runs, repo merge lanes, and multi-agent worker adapters is documented
+in [docs/manager-multi-agent-workflow.md](docs/manager-multi-agent-workflow.md).
+
 How it works:
 
 1. Open the normal Hub page from the PC or smartphone.

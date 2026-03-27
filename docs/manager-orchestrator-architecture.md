@@ -15,6 +15,10 @@ The target behavior is:
 6. the human sees the work item graph, assignee, live progress, and resulting
    state in one place
 
+The detailed next-phase operator flow for explicit repo selection, isolated
+worktree runs, repo merge lanes, and multi-agent runtime adapters is documented
+in [manager-multi-agent-workflow.md](manager-multi-agent-workflow.md).
+
 The inbox should stay human-first. The human should not need to create folders,
 topics, or worker agents manually.
 
@@ -219,6 +223,9 @@ Not yet complete:
   repo-relative/module-level lock model
 - richer operator controls for pausing, retrying, or manually reassigning
   worker agents from the UI
+- generalizing the current Codex-only worker runtime into a shared adapter
+  contract for `codex`, `claude`, `gemini`, and `copilot`, while keeping the
+  same human-facing run and merge-lane workflow
 
 ## Next implementation opportunities
 
