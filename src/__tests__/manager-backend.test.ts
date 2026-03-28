@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -127,6 +127,7 @@ import {
   createWorkerWorktree,
   mergeWorktreeToMain,
   pushWithRetry,
+  resolveTargetRepoRoot,
   runPostMergeDeliveryChain,
   validateWorktreeReadyForMerge,
 } from '../manager-worktree.js';
@@ -273,6 +274,10 @@ beforeEach(async () => {
     success: true,
     detail: 'mock push',
   });
+  vi.mocked(resolveTargetRepoRoot).mockReset();
+  vi.mocked(resolveTargetRepoRoot).mockImplementation(
+    (resolvedDir: string) => resolvedDir
+  );
   vi.mocked(validateWorktreeReadyForMerge).mockReset();
   vi.mocked(validateWorktreeReadyForMerge).mockResolvedValue({
     ready: true,
@@ -1291,6 +1296,86 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-idle');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('idle reply');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('infers a sibling repo root from the thread context when manager dispatch falls back to universal scope', async () => {
+    const dispatchProc = makeProc(6111);
+    const workerProc = makeProc(6112);
+    const reviewProc = makeProc(6113);
+    const repoRoot = join(tempDir, 'workspace-agent-hub');
+    const inferredThread = {
+      id: 'thread-repo-infer',
+      title: 'workspace-agent-hub が一時アクセス不能になる問題を防ぎたい',
+      status: 'active' as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [
+        {
+          sender: 'user' as const,
+          content: '今の実装状況を確認したいです',
+          at: new Date().toISOString(),
+        },
+      ],
+    };
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: join(tempDir, 'worktrees', 'repo-inferred'),
+      branchName: 'agent/repo-inferred',
+      targetRepoRoot: repoRoot,
+    });
+    vi.mocked(resolveTargetRepoRoot).mockImplementationOnce(
+      (resolvedDir: string, writeScopes: string[]) =>
+        writeScopes.includes('workspace-agent-hub') ? repoRoot : resolvedDir
+    );
+    listThreadsMock.mockResolvedValueOnce([inferredThread]);
+    getThreadMock.mockImplementationOnce(async () => inferredThread);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-repo-infer',
+      'これって完了してます？',
+      { dispatchMode: 'manager-evaluate' }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(dispatchProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('Likely repo from context: workspace-agent-hub')
+    );
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-repo-infer',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['*'],
+      }),
+    });
+
+    await waitFor(
+      () => vi.mocked(createWorkerWorktree).mock.calls.length === 1
+    );
+    expect(vi.mocked(resolveTargetRepoRoot).mock.calls.length).toBe(0);
+    expect(vi.mocked(createWorkerWorktree).mock.calls[0]?.[0]).toMatchObject({
+      targetRepoRoot: repoRoot,
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-repo-infer',
+      text: '{"status":"review","reply":"repo inferred"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-repo-infer',
+      text: '{"status":"review","reply":"repo inferred"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
   });
 
   it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {

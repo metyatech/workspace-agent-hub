@@ -25,9 +25,15 @@ import {
   execFile as execFileCb,
 } from 'child_process';
 import { readFile, writeFile, appendFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { createHash } from 'crypto';
-import { dirname, join, resolve as resolvePath } from 'path';
+import {
+  basename,
+  dirname,
+  join,
+  relative,
+  resolve as resolvePath,
+} from 'path';
 import {
   addMessage,
   createThread,
@@ -73,6 +79,7 @@ import {
   resolveTargetRepoRoot,
   cleanupOrphanedWorktrees,
   execGit,
+  findGitRoot,
   runPostMergeDeliveryChain,
   validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
@@ -1590,6 +1597,9 @@ function buildDispatchPrompt(input: {
   managedBaseBranch?: string | null;
   managedVerifyCommand?: string | null;
   requestedRunMode?: ManagerRunMode | null;
+  inferredRepoLabel?: string | null;
+  inferredRepoRoot?: string | null;
+  inferredRepoScope?: string | null;
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
   const activeAssignments =
@@ -1617,6 +1627,15 @@ function buildDispatchPrompt(input: {
     `Workspace: ${input.resolvedDir}`,
     input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
     input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
+    input.inferredRepoLabel
+      ? `Likely repo from context: ${input.inferredRepoLabel}`
+      : '',
+    input.inferredRepoRoot
+      ? `Likely repo root from context: ${input.inferredRepoRoot}`
+      : '',
+    input.inferredRepoScope
+      ? `Likely repo-relative scope from context: ${input.inferredRepoScope}`
+      : '',
     input.managedBaseBranch
       ? `Managed base branch: ${input.managedBaseBranch}`
       : '',
@@ -1636,6 +1655,90 @@ function buildDispatchPrompt(input: {
   ]
     .filter(Boolean)
     .join('\n\n');
+}
+
+interface InferredRepoContext {
+  label: string;
+  repoRoot: string;
+  scope: string;
+}
+
+function listWorkspaceRepoCandidates(
+  resolvedDir: string
+): InferredRepoContext[] {
+  const workspaceRoot = resolvePath(resolvedDir);
+  const candidates = new Map<string, InferredRepoContext>();
+  try {
+    for (const entry of readdirSync(workspaceRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const candidateRoot = findGitRoot(join(workspaceRoot, entry.name));
+      if (!candidateRoot) {
+        continue;
+      }
+      const normalizedRoot = resolvePath(candidateRoot);
+      const normalizedKey = normalizedRoot.toLowerCase();
+      const scope = relative(workspaceRoot, normalizedRoot).replace(/\\/g, '/');
+      if (!scope || scope.startsWith('..') || candidates.has(normalizedKey)) {
+        continue;
+      }
+      candidates.set(normalizedKey, {
+        label: basename(normalizedRoot),
+        repoRoot: normalizedRoot,
+        scope,
+      });
+    }
+  } catch {
+    return [];
+  }
+  return [...candidates.values()];
+}
+
+function inferRepoContextFromThread(input: {
+  resolvedDir: string;
+  thread: Thread;
+  content: string;
+}): InferredRepoContext | null {
+  const contextText = [
+    input.thread.title,
+    input.content,
+    ...input.thread.messages
+      .slice(-6)
+      .map((message) =>
+        typeof message.content === 'string' ? message.content : ''
+      ),
+  ]
+    .join('\n')
+    .toLowerCase();
+  const tokenMatches = new Map<string, InferredRepoContext>();
+  const repoNameTokens = contextText.match(/[a-z0-9][a-z0-9._-]*/g) ?? [];
+  for (const token of repoNameTokens) {
+    const repoRoot = resolvePath(input.resolvedDir, token);
+    if (!existsSync(join(repoRoot, '.git'))) {
+      continue;
+    }
+    tokenMatches.set(repoRoot.toLowerCase(), {
+      label: basename(repoRoot),
+      repoRoot,
+      scope: relative(resolvePath(input.resolvedDir), repoRoot).replace(
+        /\\/g,
+        '/'
+      ),
+    });
+  }
+  if (tokenMatches.size === 1) {
+    return [...tokenMatches.values()][0] ?? null;
+  }
+
+  const candidates = listWorkspaceRepoCandidates(input.resolvedDir);
+  if (candidates.length === 0) {
+    return null;
+  }
+  const matches = candidates.filter((candidate) =>
+    contextText.includes(candidate.label.toLowerCase())
+  );
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 function parseManagerDispatchPayload(
@@ -3013,6 +3116,15 @@ async function decideDispatchForBatch(input: {
   entries: QueueEntry[];
   relatedActiveAssignments: ManagerActiveAssignment[];
 }): Promise<ManagerDispatchPayload> {
+  const inferredRepo =
+    input.threadMeta?.managedRepoRoot === null ||
+    input.threadMeta?.managedRepoRoot === undefined
+      ? inferRepoContextFromThread({
+          resolvedDir: input.resolvedDir,
+          thread: input.thread,
+          content: mergeQueuedEntryContent(input.entries),
+        })
+      : null;
   const prompt = buildDispatchPrompt({
     content: mergeQueuedEntryContent(input.entries),
     thread: stripTrailingUserMessagesFromThread(input.thread),
@@ -3023,6 +3135,9 @@ async function decideDispatchForBatch(input: {
     managedBaseBranch: input.threadMeta?.managedBaseBranch ?? null,
     managedVerifyCommand: input.threadMeta?.managedVerifyCommand ?? null,
     requestedRunMode: input.threadMeta?.requestedRunMode ?? null,
+    inferredRepoLabel: inferredRepo?.label ?? null,
+    inferredRepoRoot: inferredRepo?.repoRoot ?? null,
+    inferredRepoScope: inferredRepo?.scope ?? null,
   });
   const runResult = await runCodexTurn({
     dir: input.dir,
@@ -3044,7 +3159,9 @@ async function decideDispatchForBatch(input: {
     input.threadMeta?.managedRepoRoot &&
     input.threadMeta.requestedRunMode === 'write'
       ? [input.threadMeta.managedRepoRoot]
-      : [UNIVERSAL_WRITE_SCOPE];
+      : inferredRepo
+        ? [inferredRepo.scope]
+        : [UNIVERSAL_WRITE_SCOPE];
   if (!parsed) {
     return {
       assignee: 'worker',
@@ -3060,9 +3177,22 @@ async function decideDispatchForBatch(input: {
         input.threadMeta?.requestedRunMode === 'write' &&
         input.threadMeta.managedRepoRoot
           ? [input.threadMeta.managedRepoRoot]
-          : input.threadMeta?.requestedRunMode === 'read-only'
-            ? []
-            : [UNIVERSAL_WRITE_SCOPE],
+          : inferredRepo
+            ? [inferredRepo.scope]
+            : input.threadMeta?.requestedRunMode === 'read-only'
+              ? []
+              : [UNIVERSAL_WRITE_SCOPE],
+    };
+  }
+
+  if (
+    parsed.assignee === 'worker' &&
+    inferredRepo &&
+    parsed.writeScopes?.includes(UNIVERSAL_WRITE_SCOPE)
+  ) {
+    return {
+      ...parsed,
+      writeScopes: [inferredRepo.scope],
     };
   }
 
@@ -4288,6 +4418,15 @@ export async function processNextQueued(
             })(),
             reason: 'direct-worker-default',
           };
+      const inferredRepoContext =
+        threadMeta?.managedRepoRoot === null ||
+        threadMeta?.managedRepoRoot === undefined
+          ? inferRepoContextFromThread({
+              resolvedDir,
+              thread,
+              content: mergeQueuedEntryContent(nextEntries),
+            })
+          : null;
 
       const supersededAssignments = session.activeAssignments.filter(
         (assignment: ManagerActiveAssignment) =>
@@ -4321,7 +4460,16 @@ export async function processNextQueued(
 
       const assignmentWriteScopes =
         dispatch.assignee === 'worker'
-          ? normalizeWriteScopes(dispatch.writeScopes)
+          ? (() => {
+              const normalized = normalizeWriteScopes(dispatch.writeScopes);
+              if (
+                inferredRepoContext &&
+                normalized.includes(UNIVERSAL_WRITE_SCOPE)
+              ) {
+                return [inferredRepoContext.scope];
+              }
+              return normalized;
+            })()
           : [];
       const assignmentTargetRepoRoot =
         nextEntries.find(
@@ -4330,6 +4478,7 @@ export async function processNextQueued(
             entry.targetRepoRoot.trim()
         )?.targetRepoRoot ??
         threadMeta?.managedRepoRoot ??
+        inferredRepoContext?.repoRoot ??
         null;
       const requestedWorkerRuntime: ManagerWorkerRuntime =
         nextEntries.find(
