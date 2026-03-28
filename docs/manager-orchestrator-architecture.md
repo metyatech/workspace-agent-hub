@@ -15,9 +15,10 @@ The target behavior is:
 6. the human sees the work item graph, assignee, live progress, and resulting
    state in one place
 
-The detailed next-phase operator flow for explicit repo selection, isolated
-worktree runs, repo merge lanes, and multi-agent runtime adapters is documented
-in [manager-multi-agent-workflow.md](manager-multi-agent-workflow.md).
+The detailed next-phase operator flow for explicit existing-repo selection,
+explicit new-repo creation under `D:\ghws`, isolated worktree runs, repo merge
+lanes, and multi-agent runtime adapters is documented in
+[manager-multi-agent-workflow.md](manager-multi-agent-workflow.md).
 
 The inbox should stay human-first. The human should not need to create folders,
 topics, or worker agents manually.
@@ -89,6 +90,8 @@ acceptance:
 - Enforce dispatch rules such as queue order, non-overlap constraints, retries,
   cancellation, and supersede application
 - Start, stop, and monitor worker agents
+- Require concrete repo targeting for existing-repo write work
+- Create new repos only through explicit `new repo` targets under `D:\ghws`
 
 ### Manager responsibilities
 

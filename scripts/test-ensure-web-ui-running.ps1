@@ -181,6 +181,7 @@ function Wait-ForApiReady {
 
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-open-web-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
+$currentPackageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $statePath = Join-Path $testDirectory 'state.json'
 $mockCliPath = Join-Path $testDirectory 'mock-web-ui.mjs'
 $port = Get-FreeTcpPort
@@ -359,6 +360,24 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 
     if ([int]$upgradedReuse.ProcessId -ne [int]$legacyUpgrade.ProcessId) {
         throw 'Expected ensure-web-ui-running.ps1 to reuse the existing process once the PhoneReady marker is present.'
+    }
+
+    $wrongPackageState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    $wrongPackageState.PackageRoot = 'D:\ghws\workspace-agent-hub-repofix'
+    ($wrongPackageState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
+
+    $packageMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'package-mismatch' -TargetDirectory $testDirectory
+    $packageMismatch = Wait-ForLaunchMetadata -ProcessInfo $packageMismatchRun
+    Wait-ForProcessSuccess -ProcessInfo $packageMismatchRun
+    Wait-ForApiReady -PortNumber ([Uri][string]$packageMismatch.ListenUrl).Port -Token ''
+
+    if ([int]$packageMismatch.ProcessId -eq [int]$upgradedReuse.ProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to restart when the saved PackageRoot points at a different checkout.'
+    }
+
+    $packageMismatchState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ([string]$packageMismatchState.PackageRoot -ne $currentPackageRoot) {
+        throw 'Expected ensure-web-ui-running.ps1 to persist the current PackageRoot after restarting from a different checkout.'
     }
 
     $tailscaleState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json

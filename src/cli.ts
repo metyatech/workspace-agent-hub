@@ -7,8 +7,6 @@ import { pathToFileURL } from 'node:url';
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
-
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 import { readManagerWorkItems } from './manager-work-items.js';
 import { startWebUi } from './web-ui.js';
 import { startWebUiFrontDoor } from './web-ui-front-door.js';
@@ -30,23 +28,74 @@ interface WebUiState {
   AccessCode: string | null;
   ProcessId: number | null;
   AuthDisabled?: boolean;
+  FrontDoorProcessId?: number | null;
+  StatePath?: string | null;
+  UpdatedUtc?: string | null;
+  PackageRoot?: string | null;
+}
+
+export function buildEnsureWebUiRunningArgs(
+  packageRoot: string,
+  statePath: string
+): string[] {
+  return [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    join(packageRoot, 'scripts', 'ensure-web-ui-running.ps1'),
+    '-StatePath',
+    statePath,
+    '-JsonOutput',
+  ];
+}
+
+export function createStreamingSpawnOptions(cwd: string): {
+  cwd: string;
+  stdio: ['ignore', 'pipe', 'pipe'];
+  windowsHide: boolean;
+} {
+  return {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  };
+}
+
+export function createDetachedSpawnOptions(cwd: string): {
+  cwd: string;
+  stdio: 'ignore';
+  detached: true;
+  windowsHide: boolean;
+} {
+  return {
+    cwd,
+    stdio: 'ignore',
+    detached: true,
+    windowsHide: true,
+  };
 }
 
 function webUiStatePath(): string {
   return join(homedir(), 'agent-handoff', 'workspace-agent-hub-web-ui.json');
 }
 
-async function readWebUiState(): Promise<WebUiState | null> {
-  const statePath = webUiStatePath();
+async function readWebUiStateFromPath(
+  statePath: string
+): Promise<WebUiState | null> {
   if (!existsSync(statePath)) {
     return null;
   }
   try {
     const content = await readFile(statePath, 'utf-8');
-    return JSON.parse(content) as WebUiState;
+    return JSON.parse(content.replace(/^\uFEFF/, '')) as WebUiState;
   } catch {
     return null;
   }
+}
+
+async function readWebUiState(): Promise<WebUiState | null> {
+  return readWebUiStateFromPath(webUiStatePath());
 }
 
 async function httpShutdown(
@@ -90,6 +139,110 @@ function killProcess(pid: number): Promise<void> {
       resolvePromise();
     }
   });
+}
+
+function streamChildOutput(child: ReturnType<typeof nodeSpawn>): void {
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    process.stdout.write(chunk);
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    process.stderr.write(chunk);
+  });
+}
+
+async function runStreamingCommand(
+  command: string,
+  args: string[],
+  cwd: string
+): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = nodeSpawn(command, args, createStreamingSpawnOptions(cwd));
+    streamChildOutput(child);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        reject(new Error(`${command} failed with exit code ${code}`));
+      }
+    });
+    child.on('error', reject);
+  });
+}
+
+async function forceStopFromState(state: WebUiState | null): Promise<void> {
+  const pids = [
+    state?.ProcessId ?? null,
+    state?.FrontDoorProcessId ?? null,
+  ].filter(
+    (value): value is number =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0
+  );
+  await Promise.allSettled(pids.map((pid) => killProcess(pid)));
+}
+
+async function launchDetachedCommand(
+  command: string,
+  args: string[],
+  cwd: string
+): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = nodeSpawn(command, args, createDetachedSpawnOptions(cwd));
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolvePromise();
+    });
+  });
+}
+
+export async function waitForWebUiReadyFromState(
+  statePath: string,
+  previousUpdatedUtc: string | null = null,
+  timeoutMs = 180000
+): Promise<WebUiState> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await readWebUiStateFromPath(statePath);
+    if (state?.ListenUrl) {
+      try {
+        const listenUrl = new URL(state.ListenUrl);
+        const stateUpdated =
+          !previousUpdatedUtc ||
+          !state.UpdatedUtc ||
+          state.UpdatedUtc !== previousUpdatedUtc;
+        if (
+          stateUpdated &&
+          (await isPortOpen(listenUrl.hostname, Number(listenUrl.port)))
+        ) {
+          return state;
+        }
+      } catch {
+        /* keep polling until the state file becomes usable */
+      }
+    }
+    await new Promise<void>((resolvePromise) =>
+      setTimeout(resolvePromise, 500)
+    );
+  }
+  throw new Error(
+    `Timed out waiting for Workspace Agent Hub readiness via ${statePath}.`
+  );
+}
+
+async function runEnsureWebUiRunning(
+  packageRoot: string,
+  state: WebUiState | null
+): Promise<void> {
+  const statePath = state?.StatePath?.trim() || webUiStatePath();
+  const command = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+  const args = buildEnsureWebUiRunningArgs(packageRoot, statePath);
+  if (process.platform === 'win32') {
+    await launchDetachedCommand(command, args, packageRoot);
+    await waitForWebUiReadyFromState(statePath, state?.UpdatedUtc ?? null);
+    return;
+  }
+
+  await runStreamingCommand(command, args, packageRoot);
 }
 
 function isPortOpen(host: string, port: number): Promise<boolean> {
@@ -336,42 +489,13 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
       }
 
       const packageRoot = resolvePackageRoot();
+      if (!stopped) {
+        await forceStopFromState(state);
+      }
 
-      console.log('Installing dependencies...');
-      await new Promise<void>((resolvePromise, reject) => {
-        const install = nodeSpawn(npmCmd, ['install'], {
-          cwd: packageRoot,
-          stdio: 'inherit',
-          windowsHide: true,
-        });
-        install.on('close', (code) => {
-          if (code === 0) {
-            resolvePromise();
-          } else {
-            reject(new Error(`npm install failed with exit code ${code}`));
-          }
-        });
-        install.on('error', reject);
-      });
+      console.log('Restarting via ensure-web-ui-running.ps1...');
+      await runEnsureWebUiRunning(packageRoot, state);
 
-      console.log('Building...');
-      await new Promise<void>((resolvePromise, reject) => {
-        const build = nodeSpawn(npmCmd, ['run', 'build'], {
-          cwd: packageRoot,
-          stdio: 'inherit',
-          windowsHide: true,
-        });
-        build.on('close', (code) => {
-          if (code === 0) {
-            resolvePromise();
-          } else {
-            reject(new Error(`Build failed with exit code ${code}`));
-          }
-        });
-        build.on('error', reject);
-      });
-
-      // Archive the new build
       try {
         const archived = await snapshotBuild(packageRoot);
         console.log(
@@ -382,12 +506,6 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
           'Warning: failed to archive build:',
           error instanceof Error ? error.message : error
         );
-      }
-
-      console.log('Starting new instance...');
-      const ready = await spawnAndWaitForReady(packageRoot, state);
-      if (!ready) {
-        process.exitCode = 1;
       }
     });
 

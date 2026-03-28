@@ -2498,14 +2498,57 @@
           <section class="task-sheet-card">
             <h3>作業を起票する</h3>
             <div class="task-sheet-card-copy">
-              この作業は selected repo の isolated worktree に送られます。
+              既存 repo の修正は具体 repo を選び、新規 repo は workspace root
+              直下に作ります。
             </div>
             <form id="newTaskForm" class="stack">
-              <label class="field-group">
-                <span class="field-label">repo</span>
-                <select id="newTaskRepoSelect" class="field-select"></select>
-                <span id="newTaskRepoSummary" class="field-hint"></span>
-              </label>
+              <div class="field-group">
+                <span class="field-label">target</span>
+                <div class="mode-grid">
+                  <label class="mode-option">
+                    <input
+                      type="radio"
+                      name="newTaskTargetKind"
+                      value="existing-repo"
+                      checked
+                    />
+                    <span class="mode-option-title">existing repo</span>
+                    <span class="mode-option-copy"
+                      >既存の local git repo を具体的に選んで修正します。</span
+                    >
+                  </label>
+                  <label class="mode-option">
+                    <input
+                      type="radio"
+                      name="newTaskTargetKind"
+                      value="new-repo"
+                    />
+                    <span class="mode-option-title">new repo</span>
+                    <span class="mode-option-copy"
+                      >workspace root 直下に新しい repo を作ります。</span
+                    >
+                  </label>
+                </div>
+              </div>
+              <div id="newTaskExistingRepoFields" class="stack">
+                <label class="field-group">
+                  <span class="field-label">repo</span>
+                  <select id="newTaskRepoSelect" class="field-select"></select>
+                  <span id="newTaskRepoSummary" class="field-hint"></span>
+                </label>
+              </div>
+              <div id="newTaskNewRepoFields" class="stack hidden">
+                <label class="field-group">
+                  <span class="field-label">new repo name</span>
+                  <input
+                    id="newTaskNewRepoNameInput"
+                    class="field-input"
+                    type="text"
+                    placeholder="例: workspace-agent-broker"
+                  />
+                  <span id="newTaskNewRepoHint" class="field-hint"></span>
+                </label>
+              </div>
               <label class="field-group">
                 <span class="field-label">base branch</span>
                 <input

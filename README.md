@@ -392,9 +392,12 @@ How it works:
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user can either:
-   - press `新しい作業`, choose a managed repo, base branch, and run mode, then
-     launch an isolated-worktree run explicitly using that repo's preferred
-     worker runtime
+   - press `新しい作業`, choose either `existing repo` or `new repo`, then:
+     - for `existing repo`, pick a managed repo, base branch, and run mode and
+       launch an isolated-worktree run explicitly using that repo's preferred
+       worker runtime
+     - for `new repo`, give the repo name explicitly and let Manager create
+       `D:\ghws\<repo-name>` directly instead of guessing a destination
    - or keep using the global send dock for ordinary inbox-style routing and
      follow-up discussion
 6. The writing surface stays collapsed on the inbox, then turns into a compact
@@ -418,10 +421,15 @@ Important behavior:
   stores repo path, default branch, verify command, and preferred runtime in a
   dedicated registry before creating isolated runs, and worker execution uses
   the selected runtime adapter (`codex`, `claude`, `gemini`, or `copilot`).
+- Existing-repo write work must target one concrete repo. When a routed worker
+  task would mutate an existing repo but does not identify which repo, Manager
+  asks for clarification instead of falling back to the workspace root.
+- New repos are first-class targets. They must be launched explicitly from the
+  new-task sheet, and Manager creates them directly under `D:\ghws`.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
 - `新しい作業` now gives the human a first-class explicit run flow: pick a
-  repo, set the base branch, choose `write` or `read-only`, and queue the run
-  without touching git directly.
+  target kind, set the base branch, choose `write` or `read-only`, and queue
+  the run without touching git directly.
 - Users send from one global dock; they do not need to create or pick a task
   before sending, and the larger text area only opens when they choose to
   write.

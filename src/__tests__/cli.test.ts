@@ -1,112 +1,100 @@
-import { describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import { join } from 'node:path';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { describe, expect, it } from 'vitest';
+import {
+  buildEnsureWebUiRunningArgs,
+  createDetachedSpawnOptions,
+  createStreamingSpawnOptions,
+  waitForWebUiReadyFromState,
+} from '../cli.js';
 
-const { readManagerWorkItemsMock } = vi.hoisted(() => ({
-  readManagerWorkItemsMock: vi.fn(),
-}));
+describe('cli restart helpers', () => {
+  it('builds ensure-web-ui-running arguments with the explicit state path', () => {
+    const packageRoot = 'D:\\ghws\\workspace-agent-hub';
+    const statePath =
+      'C:\\Users\\Origin\\agent-handoff\\workspace-agent-hub-web-ui.json';
 
-vi.mock('../manager-work-items.js', () => ({
-  readManagerWorkItems: readManagerWorkItemsMock,
-}));
+    expect(buildEnsureWebUiRunningArgs(packageRoot, statePath)).toEqual([
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      join(packageRoot, 'scripts', 'ensure-web-ui-running.ps1'),
+      '-StatePath',
+      statePath,
+      '-JsonOutput',
+    ]);
+  });
 
-import { createProgram } from '../cli.js';
-
-describe('CLI', () => {
-  it('passes machine-readable launch options through to startWebUi', async () => {
-    const startWebUiMock = vi.fn().mockResolvedValue(undefined);
-    const program = createProgram(
-      startWebUiMock as Parameters<typeof createProgram>[0]
-    );
-
-    await program.parseAsync(
-      [
-        'node',
-        'workspace-agent-hub',
-        'web-ui',
-        '--host',
-        '0.0.0.0',
-        '--port',
-        '4455',
-        '--public-url',
-        'https://hub.example.test/connect',
-        '--tailscale-serve',
-        '--auth-token',
-        'secret-token',
-        '--json',
-        '--no-open-browser',
-      ],
-      { from: 'node' }
-    );
-
-    expect(startWebUiMock).toHaveBeenCalledWith({
-      host: '0.0.0.0',
-      port: 4455,
-      publicUrl: 'https://hub.example.test/connect',
-      tailscaleServe: true,
-      authToken: 'secret-token',
-      jsonOutput: true,
-      openBrowser: false,
+  it('uses pipe-based stdio for streaming restarts instead of inherit handles', () => {
+    expect(
+      createStreamingSpawnOptions('D:\\ghws\\workspace-agent-hub')
+    ).toEqual({
+      cwd: 'D:\\ghws\\workspace-agent-hub',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
   });
 
-  it('prints the work-item graph as JSON', async () => {
-    readManagerWorkItemsMock.mockResolvedValueOnce([
+  it('uses detached stdio-less launch options for Windows ensure polling', () => {
+    expect(createDetachedSpawnOptions('D:\\ghws\\workspace-agent-hub')).toEqual(
       {
-        id: 'item-1',
-        title: '親作業',
-        uiState: 'ai-working',
-        derivedFromThreadIds: [],
-        derivedChildThreadIds: ['item-2'],
-      },
-      {
-        id: 'item-2',
-        title: '派生作業',
-        uiState: 'queued',
-        derivedFromThreadIds: ['item-1'],
-        derivedChildThreadIds: [],
-      },
-    ]);
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const program = createProgram(vi.fn().mockResolvedValue(undefined));
+        cwd: 'D:\\ghws\\workspace-agent-hub',
+        stdio: 'ignore',
+        detached: true,
+        windowsHide: true,
+      }
+    );
+  });
 
-    await program.parseAsync(
-      [
-        'node',
-        'workspace-agent-hub',
-        'work-items',
-        '--workspace',
-        'D:\\ghws\\workspace-agent-hub',
-        '--json',
-      ],
-      { from: 'node' }
-    );
+  it('waits for the ensured web UI readiness from the state file instead of child close events', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-cli-'));
+    const statePath = join(tempDir, 'hub-state.json');
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('[]');
+    });
+    await new Promise<void>((resolvePromise) => {
+      server.listen(0, '127.0.0.1', () => resolvePromise());
+    });
 
-    expect(readManagerWorkItemsMock).toHaveBeenCalledWith(
-      'D:\\ghws\\workspace-agent-hub'
-    );
-    expect(logSpy).toHaveBeenCalledWith(
-      JSON.stringify(
-        {
-          workItems: [
-            {
-              id: 'item-1',
-              title: '親作業',
-              uiState: 'ai-working',
-              derivedFromThreadIds: [],
-              derivedChildThreadIds: ['item-2'],
-            },
-            {
-              id: 'item-2',
-              title: '派生作業',
-              uiState: 'queued',
-              derivedFromThreadIds: ['item-1'],
-              derivedChildThreadIds: [],
-            },
-          ],
-        },
-        null,
-        2
-      )
-    );
-    logSpy.mockRestore();
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Expected a TCP address for the test server.');
+      }
+
+      const waitPromise = waitForWebUiReadyFromState(
+        statePath,
+        '2026-03-28T08:00:00.000Z',
+        5000
+      );
+      await writeFile(
+        statePath,
+        `\uFEFF${JSON.stringify({
+          ListenUrl: `http://127.0.0.1:${address.port}/`,
+          AccessCode: null,
+          ProcessId: 4242,
+          UpdatedUtc: '2026-03-28T08:00:01.000Z',
+        })}`
+      );
+
+      await expect(waitPromise).resolves.toMatchObject({
+        ListenUrl: `http://127.0.0.1:${address.port}/`,
+        ProcessId: 4242,
+      });
+    } finally {
+      await new Promise<void>((resolvePromise, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolvePromise();
+        });
+      });
+    }
   });
 });

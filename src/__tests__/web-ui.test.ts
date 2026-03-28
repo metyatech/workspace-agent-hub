@@ -12,6 +12,7 @@ import {
   extractTailscaleServeSetupUrl,
   runCommand,
 } from '../web-ui.js';
+import { readManagerThreadMeta } from '../manager-thread-state.js';
 import { execGit } from '../manager-worktree.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
@@ -1018,5 +1019,47 @@ describe('native manager page', () => {
     expect(listResponse.status).toBe(200);
     const repos = (await listResponse.json()) as Array<{ id: string }>;
     expect(repos.some((repo) => repo.id === saved.id)).toBe(true);
+  });
+
+  it('accepts a new-repo run and records the explicit target under the workspace root', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const headers = {
+      'X-Workspace-Agent-Hub-Token': 'secret-token',
+      'Content-Type': 'application/json',
+    };
+    const createResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/runs`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          targetKind: 'new-repo',
+          newRepoName: 'workspace-agent-broker',
+          title: 'Workspace Agent Broker を作る',
+          content: '新しい repo を作成してください',
+          baseBranch: 'main',
+          runMode: 'write',
+        }),
+      }
+    );
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as { threadId: string };
+    const meta = await readManagerThreadMeta(workspaceRoot);
+    expect(meta[created.threadId]).toMatchObject({
+      repoTargetKind: 'new-repo',
+      managedRepoLabel: 'workspace-agent-broker',
+      newRepoName: 'workspace-agent-broker',
+      newRepoRoot: join(workspaceRoot, 'workspace-agent-broker'),
+      requestedRunMode: 'write',
+    });
   });
 });

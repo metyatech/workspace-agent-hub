@@ -318,6 +318,28 @@ function Test-RequestedPhoneReadyMatches {
     return ($existingPhoneReady -eq $RequestedPhoneReady)
 }
 
+function Test-StatePackageRootMatches {
+    param(
+        $ExistingState
+    )
+
+    if (
+        -not $ExistingState -or
+        $ExistingState.PSObject.Properties.Match('PackageRoot').Count -eq 0 -or
+        -not $ExistingState.PackageRoot
+    ) {
+        return $false
+    }
+
+    try {
+        $existingPackageRoot = [IO.Path]::GetFullPath([string]$ExistingState.PackageRoot)
+    } catch {
+        return $false
+    }
+
+    return ($existingPackageRoot.TrimEnd('\').ToLowerInvariant() -eq $repoRoot.Path.TrimEnd('\').ToLowerInvariant())
+}
+
 function Get-PowerShellPath {
     $pwsh = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
     if ($pwsh) {
@@ -1075,6 +1097,7 @@ function Build-StateFromLaunchInfo {
     }
 
     return [pscustomobject]@{
+        PackageRoot = $repoRoot.Path
         ListenUrl = $LocalListenUrl
         FrontDoorListenUrl = if ($FrontDoorListenUrl -and $FrontDoorListenUrl.Trim()) { $FrontDoorListenUrl.Trim() } else { $null }
         FrontDoorProcessId = if ($FrontDoorProcessId -gt 0) { [int]$FrontDoorProcessId } else { $null }
@@ -1141,6 +1164,7 @@ function Ensure-FrontDoorRunning {
     $existingFrontDoorListenUrl = Get-FrontDoorListenUrl -State $ExistingState
     $existingFrontDoorProcessId = Get-FrontDoorProcessId -State $ExistingState
     if (
+        (Test-StatePackageRootMatches -ExistingState $ExistingState) -and
         $existingFrontDoorListenUrl -and
         $existingFrontDoorProcessId -and
         (Test-ProcessAliveById -ProcessId $existingFrontDoorProcessId) -and
@@ -1195,6 +1219,7 @@ $canReuseExistingInstance = $false
 
 if (
     $existingState -and
+    (Test-StatePackageRootMatches -ExistingState $existingState) -and
     $existingListenUrl -and
     (Test-RequestedAuthMatches -ExistingState $existingState -RequestedTokenOption $resolvedToken) -and
     (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady) -and
@@ -1230,6 +1255,7 @@ if (
         $false
     }
     $finalState = [pscustomobject]@{
+        PackageRoot = $repoRoot.Path
         ListenUrl = $localListenUrl
         FrontDoorListenUrl = [string]$frontDoorInfo.ListenUrl
         FrontDoorProcessId = [int]$frontDoorInfo.ProcessId

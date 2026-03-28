@@ -50,6 +50,7 @@ type ManagerWorkerRuntimeState =
   | 'cancelled-as-superseded';
 
 type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
+type ManagerTargetKind = 'existing-repo' | 'new-repo';
 
 interface WorkerLiveEntry {
   at: string;
@@ -90,6 +91,9 @@ interface ThreadView {
   managedRepoId: string | null;
   managedRepoLabel: string | null;
   managedRepoRoot: string | null;
+  repoTargetKind: ManagerTargetKind | null;
+  newRepoName: string | null;
+  newRepoRoot: string | null;
   managedBaseBranch: string | null;
   managedVerifyCommand: string | null;
   requestedWorkerRuntime: ManagerWorkerRuntime | null;
@@ -637,6 +641,14 @@ function humanizeWorkerRuntime(runtime: ManagerWorkerRuntime | null): string {
 
 function humanizeRunMode(mode: 'read-only' | 'write' | null): string {
   return mode === 'read-only' ? 'read-only' : 'write';
+}
+
+function normalizeNewRepoNameForDisplay(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 class AuthRequiredError extends Error {
@@ -1825,7 +1837,7 @@ function describeWorkItemContext(
   const parts = [
     thread.managedRepoLabel
       ? [
-          `repo: ${thread.managedRepoLabel}`,
+          `${thread.repoTargetKind === 'new-repo' ? 'new repo' : 'repo'}: ${thread.managedRepoLabel}`,
           thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
           `mode: ${humanizeRunMode(thread.requestedRunMode)}`,
         ]
@@ -2811,7 +2823,9 @@ class DetailController {
     const meta = document.createElement('div');
     meta.className = 'detail-meta';
     meta.textContent = [
-      thread.managedRepoLabel ? `repo: ${thread.managedRepoLabel}` : '',
+      thread.managedRepoLabel
+        ? `${thread.repoTargetKind === 'new-repo' ? 'new repo' : 'repo'}: ${thread.managedRepoLabel}`
+        : '',
       thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
       thread.requestedRunMode
         ? `mode: ${humanizeRunMode(thread.requestedRunMode)}`
@@ -4479,6 +4493,19 @@ class ManagerApp {
       this.#pendingManagedRepoSelectionId = repoSelect.value || null;
       this.#renderNewTaskSheet();
     });
+    for (const radio of document.querySelectorAll<HTMLInputElement>(
+      'input[name="newTaskTargetKind"]'
+    )) {
+      radio.addEventListener('change', () => {
+        this.#renderNewTaskSheet();
+      });
+    }
+    const newRepoNameInput = document.getElementById(
+      'newTaskNewRepoNameInput'
+    ) as HTMLInputElement | null;
+    newRepoNameInput?.addEventListener('input', () => {
+      this.#renderNewTaskSheet();
+    });
 
     const newTaskForm = document.getElementById(
       'newTaskForm'
@@ -4869,18 +4896,18 @@ class ManagerApp {
     if (copy) {
       copy.textContent =
         this.#managedRepos.length === 0
-          ? '最初に local git repo を登録すると、その後は repo を選んで isolated worktree の作業を起票できます。通常の相談は下の送信欄からそのまま送れます。'
-          : 'repo を選んで isolated worktree の作業を起票できます。通常の相談は下の送信欄からそのまま送れます。';
+          ? '既存 repo を直したいときは local git repo を登録し、新規 repo を作りたいときは名前だけ入れて起票できます。通常の相談は下の送信欄からそのまま送れます。'
+          : '既存 repo は登録済み repo から選び、新規 repo は名前だけ入れて起票できます。通常の相談は下の送信欄からそのまま送れます。';
     }
     if (steps.length >= 3) {
       steps[0].textContent =
         this.#managedRepos.length === 0
-          ? '1. 「新しい作業」から local git repo を追加する'
-          : '1. 「新しい作業」を押して repo を選ぶ';
+          ? '1. 「新しい作業」で既存 repo か新規 repo かを選ぶ'
+          : '1. 「新しい作業」で既存 repo か新規 repo かを選ぶ';
       steps[1].textContent =
         this.#managedRepos.length === 0
-          ? '2. 同じシートでタイトルと依頼内容を書く'
-          : '2. base branch と依頼内容を書いて起票する';
+          ? '2. 既存 repo なら登録、または新規 repo 名と依頼内容を書く'
+          : '2. 既存 repo なら repo を選び、新規 repo なら名前を入れる';
       steps[2].textContent =
         '3. queued / working / review をこの一覧で追い、あとで merge lane へつなげる';
     }
@@ -4913,6 +4940,21 @@ class ManagerApp {
     return this.#managedRepos[0] ?? null;
   }
 
+  #selectedNewTaskTargetKind(): ManagerTargetKind {
+    return (document.querySelector<HTMLInputElement>(
+      'input[name="newTaskTargetKind"]:checked'
+    )?.value ?? 'existing-repo') === 'new-repo'
+      ? 'new-repo'
+      : 'existing-repo';
+  }
+
+  #newRepoNamePreview(): string {
+    const input = document.getElementById(
+      'newTaskNewRepoNameInput'
+    ) as HTMLInputElement | null;
+    return normalizeNewRepoNameForDisplay(input?.value ?? '');
+  }
+
   #renderNewTaskEntry(): void {
     const summary = document.getElementById('newTaskEntrySummary');
     const openButtons = [
@@ -4924,8 +4966,8 @@ class ManagerApp {
     const hasRepos = this.#managedRepos.length > 0;
     if (summary) {
       summary.textContent = hasRepos
-        ? `${this.#managedRepos.length} repo を登録済みです。repo を選んで isolated worktree の作業を起票できます。`
-        : 'まだ managed repo がありません。最初に local git repo を登録してください。';
+        ? `${this.#managedRepos.length} repo を登録済みです。既存 repo の修正はここから具体 repo を選び、新規 repo は名前を入れて起票できます。`
+        : 'まだ managed repo はありませんが、新規 repo の起票はできます。既存 repo を直したいときだけ先に local git repo を登録してください。';
     }
     for (const button of openButtons) {
       if (!button) {
@@ -4933,7 +4975,7 @@ class ManagerApp {
       }
       button.textContent = hasRepos
         ? '新しい作業'
-        : 'repo を登録して作業を始める';
+        : '新規 repo / repo 登録から始める';
     }
   }
 
@@ -4954,8 +4996,15 @@ class ManagerApp {
       'newTaskSubmitButton'
     ) as HTMLButtonElement | null;
     const repoHint = document.getElementById('newTaskRepoHint');
+    const targetKind = this.#selectedNewTaskTargetKind();
+    const existingFields = document.getElementById('newTaskExistingRepoFields');
+    const newRepoFields = document.getElementById('newTaskNewRepoFields');
+    const newRepoHint = document.getElementById('newTaskNewRepoHint');
     const baseBranchInput = document.getElementById(
       'newTaskBaseBranchInput'
+    ) as HTMLInputElement | null;
+    const newRepoNameInput = document.getElementById(
+      'newTaskNewRepoNameInput'
     ) as HTMLInputElement | null;
 
     if (select) {
@@ -4987,38 +5036,57 @@ class ManagerApp {
       }
     }
     this.#pendingManagedRepoSelectionId = null;
+    existingFields?.classList.toggle('hidden', targetKind !== 'existing-repo');
+    newRepoFields?.classList.toggle('hidden', targetKind !== 'new-repo');
 
     if (repoSummary) {
-      repoSummary.textContent = repo
-        ? `${repo.label} / ${repo.repoRoot}`
-        : 'repo を追加すると、ここに base branch と verify の基準を出します。';
+      repoSummary.textContent =
+        targetKind === 'new-repo'
+          ? 'この task は brand-new repo を workspace root 直下に作ります。'
+          : repo
+            ? `${repo.label} / ${repo.repoRoot}`
+            : 'repo を追加すると、ここに base branch と verify の基準を出します。';
     }
     if (runtimeSummary) {
-      runtimeSummary.textContent = repo
-        ? `この run は既定で ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} worker に割り当てられ、isolated worktree で実行されます。`
-        : 'repo を選ぶと、ここに worker runtime を表示します。';
+      runtimeSummary.textContent =
+        targetKind === 'new-repo'
+          ? 'この run は D:\\ghws\\<repo-name> に新規 repo を作る専用作業として扱います。merge lane ではなく、その repo 自体を worker が構築します。'
+          : repo
+            ? `この run は既定で ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} worker に割り当てられ、isolated worktree で実行されます。`
+            : 'repo を選ぶと、ここに worker runtime を表示します。';
     }
     if (repoHint) {
-      repoHint.textContent = repo
-        ? `標準 verify: ${repo.verifyCommand}`
-        : 'まず local git repo の path を登録してください。';
+      repoHint.textContent =
+        targetKind === 'new-repo'
+          ? '既存 repo の修正ではありません。新規 repo 名だけを明示して起票します。'
+          : repo
+            ? `標準 verify: ${repo.verifyCommand}`
+            : 'まず local git repo の path を登録してください。';
+    }
+    if (newRepoHint) {
+      const previewName = this.#newRepoNamePreview();
+      newRepoHint.textContent = previewName
+        ? `作成先: ${window.GUI_DIR}\\${previewName}`
+        : `作成先: ${window.GUI_DIR}\\<repo-name>`;
     }
     if (
       status &&
+      targetKind === 'existing-repo' &&
       this.#managedRepos.length === 0 &&
       !status.textContent?.trim()
     ) {
       status.textContent = '先に repo を追加してください。';
     } else if (
       status &&
-      this.#managedRepos.length > 0 &&
+      (targetKind === 'new-repo' || this.#managedRepos.length > 0) &&
       status.textContent === '先に repo を追加してください。'
     ) {
       status.textContent = '';
     }
     if (submitButton) {
       submitButton.disabled =
-        this.#newTaskSheetSubmitting || this.#managedRepos.length === 0;
+        this.#newTaskSheetSubmitting ||
+        (targetKind === 'existing-repo' && this.#managedRepos.length === 0);
       submitButton.textContent = this.#newTaskSheetSubmitting
         ? '起票中...'
         : 'この内容で起票する';
@@ -5135,6 +5203,7 @@ class ManagerApp {
       return;
     }
     const repo = this.#selectedManagedRepo();
+    const targetKind = this.#selectedNewTaskTargetKind();
     const titleInput = document.getElementById(
       'newTaskTitleInput'
     ) as HTMLInputElement | null;
@@ -5144,6 +5213,9 @@ class ManagerApp {
     const baseBranchInput = document.getElementById(
       'newTaskBaseBranchInput'
     ) as HTMLInputElement | null;
+    const newRepoNameInput = document.getElementById(
+      'newTaskNewRepoNameInput'
+    ) as HTMLInputElement | null;
     const status = document.getElementById('newTaskStatus');
     const runMode =
       (document.querySelector<HTMLInputElement>(
@@ -5152,7 +5224,7 @@ class ManagerApp {
         ? 'read-only'
         : 'write';
 
-    if (!repo) {
+    if (targetKind === 'existing-repo' && !repo) {
       if (status) {
         status.textContent = '先に repo を追加してください。';
       }
@@ -5167,6 +5239,15 @@ class ManagerApp {
       }
       return;
     }
+    const newRepoName = normalizeNewRepoNameForDisplay(
+      newRepoNameInput?.value ?? ''
+    );
+    if (targetKind === 'new-repo' && !newRepoName) {
+      if (status) {
+        status.textContent = '新規 repo 名を入力してください。';
+      }
+      return;
+    }
 
     this.#newTaskSheetSubmitting = true;
     this.#renderNewTaskSheet();
@@ -5174,10 +5255,15 @@ class ManagerApp {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        repoId: repo.id,
+        targetKind,
+        repoId: targetKind === 'existing-repo' ? (repo?.id ?? '') : '',
+        newRepoName: targetKind === 'new-repo' ? newRepoName : '',
         title,
         content,
-        baseBranch: baseBranchInput?.value.trim() || repo.defaultBranch,
+        baseBranch:
+          baseBranchInput?.value.trim() ||
+          (targetKind === 'existing-repo' ? repo?.defaultBranch : 'main') ||
+          'main',
         runMode,
       }),
     });
@@ -5203,6 +5289,9 @@ class ManagerApp {
     }
     if (contentInput) {
       contentInput.value = '';
+    }
+    if (newRepoNameInput && targetKind === 'new-repo') {
+      newRepoNameInput.value = '';
     }
     if (status) {
       status.textContent = '';

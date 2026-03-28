@@ -42,8 +42,10 @@ import {
 import {
   findManagedRepo,
   readManagedRepos,
+  resolveNewRepoRoot,
   upsertManagedRepo,
   type ManagerRunMode,
+  type ManagerTargetKind,
   type ManagedRepoConfig,
 } from './manager-repos.js';
 
@@ -122,6 +124,10 @@ function sendError(res: ServerResponse, message: string, status = 400): void {
 
 function normalizeRequestedRunMode(value: unknown): ManagerRunMode {
   return value === 'read-only' ? 'read-only' : 'write';
+}
+
+function normalizeTargetKind(value: unknown): ManagerTargetKind {
+  return value === 'new-repo' ? 'new-repo' : 'existing-repo';
 }
 
 interface ManagerLiveSnapshot {
@@ -487,13 +493,12 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/manager/runs' && input.method === 'POST') {
     const body = await parseBody(input.req);
+    const targetKind = normalizeTargetKind(body.targetKind);
     const repoId = typeof body.repoId === 'string' ? body.repoId.trim() : '';
+    const newRepoName =
+      typeof body.newRepoName === 'string' ? body.newRepoName.trim() : '';
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     const content = typeof body.content === 'string' ? body.content.trim() : '';
-    if (!repoId) {
-      sendError(input.res, 'repoId is required');
-      return true;
-    }
     if (!title) {
       sendError(input.res, 'title is required');
       return true;
@@ -503,17 +508,7 @@ export async function handleManagerUiRequest(input: {
       return true;
     }
 
-    const repo = await findManagedRepo(input.workspaceRoot, repoId);
-    if (!repo) {
-      sendError(input.res, 'Managed repo not found', 404);
-      return true;
-    }
-
     const runMode = normalizeRequestedRunMode(body.runMode);
-    const baseBranch =
-      typeof body.baseBranch === 'string' && body.baseBranch.trim()
-        ? body.baseBranch.trim()
-        : repo.defaultBranch;
     const createdThread = await createThread(input.workspaceRoot, title);
     await addMessage(
       input.workspaceRoot,
@@ -522,13 +517,91 @@ export async function handleManagerUiRequest(input: {
       'user',
       'waiting'
     );
+    if (targetKind === 'new-repo') {
+      if (!newRepoName) {
+        sendError(input.res, 'newRepoName is required');
+        return true;
+      }
+      let newRepoRoot = '';
+      try {
+        newRepoRoot = resolveNewRepoRoot(input.workspaceRoot, newRepoName);
+      } catch (error) {
+        sendError(
+          input.res,
+          error instanceof Error ? error.message : 'Invalid newRepoName'
+        );
+        return true;
+      }
+      const baseBranch =
+        typeof body.baseBranch === 'string' && body.baseBranch.trim()
+          ? body.baseBranch.trim()
+          : 'main';
+      await updateManagerThreadMeta(
+        input.workspaceRoot,
+        createdThread.id,
+        () => ({
+          repoTargetKind: 'new-repo',
+          managedRepoId: null,
+          managedRepoLabel: newRepoName,
+          managedRepoRoot: newRepoRoot,
+          newRepoName,
+          newRepoRoot,
+          managedBaseBranch: baseBranch,
+          managedVerifyCommand: 'repo-created-by-worker',
+          requestedWorkerRuntime: 'codex',
+          requestedRunMode: runMode,
+        })
+      );
+      await sendToBuiltinManager(
+        input.workspaceRoot,
+        createdThread.id,
+        content,
+        {
+          dispatchMode: 'direct-worker',
+          writeScopes: runMode === 'write' ? [newRepoName] : [],
+          targetRepoRoot: newRepoRoot,
+          requestedRunMode: runMode,
+          requestedWorkerRuntime: 'codex',
+          targetKind: 'new-repo',
+          newRepoName,
+        }
+      );
+      sendJson(
+        input.res,
+        {
+          queued: true,
+          threadId: createdThread.id,
+          detail: `「${newRepoName}」を ${input.workspaceRoot} に新規作成する作業をキューに追加しました`,
+        },
+        201
+      );
+      return true;
+    }
+
+    if (!repoId) {
+      sendError(input.res, 'repoId is required');
+      return true;
+    }
+
+    const repo = await findManagedRepo(input.workspaceRoot, repoId);
+    if (!repo) {
+      sendError(input.res, 'Managed repo not found', 404);
+      return true;
+    }
+    const baseBranch =
+      typeof body.baseBranch === 'string' && body.baseBranch.trim()
+        ? body.baseBranch.trim()
+        : repo.defaultBranch;
     await updateManagerThreadMeta(
       input.workspaceRoot,
       createdThread.id,
       () => ({
+        repoTargetKind: 'existing-repo',
         managedRepoId: repo.id,
         managedRepoLabel: repo.label,
         managedRepoRoot: repo.repoRoot,
+        newRepoName: null,
+        newRepoRoot: null,
         managedBaseBranch: baseBranch,
         managedVerifyCommand: repo.verifyCommand,
         requestedWorkerRuntime: repo.preferredWorkerRuntime,
@@ -541,6 +614,7 @@ export async function handleManagerUiRequest(input: {
       targetRepoRoot: repo.repoRoot,
       requestedRunMode: runMode,
       requestedWorkerRuntime: repo.preferredWorkerRuntime,
+      targetKind: 'existing-repo',
     });
     sendJson(
       input.res,
