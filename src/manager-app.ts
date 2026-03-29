@@ -154,21 +154,7 @@ interface ManagerLiveSnapshotPayload {
   emittedAt: string;
   threads: ThreadView[];
   tasks: Task[];
-  repos: ManagedRepo[];
   status: ManagerStatusPayload;
-}
-
-interface ManagedRepo {
-  id: string;
-  label: string;
-  repoRoot: string;
-  defaultBranch: string;
-  verifyCommand: string;
-  supportedWorkerRuntimes: ManagerWorkerRuntime[];
-  preferredWorkerRuntime: ManagerWorkerRuntime;
-  mergeLaneEnabled: boolean;
-  createdAt?: string;
-  updatedAt?: string;
 }
 
 interface ManagerLifecycleDebugEntry {
@@ -2998,7 +2984,6 @@ class DetailController {
 class ManagerApp {
   allThreads: ThreadView[] = [];
   allTasks: Task[] = [];
-  #managedRepos: ManagedRepo[] = [];
   openThreadId: string | null = null;
   #composerTargetThreadId: string | null = null;
   #openThreadMovementNotice: string | null = null;
@@ -3037,7 +3022,6 @@ class ManagerApp {
   #sortOrders = buildManagerSortOrders();
   #newTaskSheetOpen = false;
   #newTaskSheetSubmitting = false;
-  #repoFormSubmitting = false;
 
   constructor() {
     this.#sections = {
@@ -3499,13 +3483,12 @@ class ManagerApp {
   }
 
   async loadAll(): Promise<boolean> {
-    const [threadsRes, tasksRes, reposRes] = await Promise.all([
+    const [threadsRes, tasksRes] = await Promise.all([
       this.apiFetch('/api/threads'),
       this.apiFetch('/api/tasks'),
-      this.apiFetch('/api/manager/repos'),
     ]);
 
-    if (!threadsRes || !tasksRes || !reposRes) {
+    if (!threadsRes || !tasksRes) {
       return false;
     }
 
@@ -3515,17 +3498,10 @@ class ManagerApp {
     const nextTasks = tasksRes.ok
       ? ((await tasksRes.json()) as Task[])
       : this.allTasks;
-    const reposPayload = reposRes.ok
-      ? ((await reposRes.json()) as unknown)
-      : null;
-    const nextRepos = Array.isArray(reposPayload)
-      ? (reposPayload as ManagedRepo[])
-      : this.#managedRepos;
 
     this.#applySnapshot({
       threads: nextThreads,
       tasks: nextTasks,
-      repos: nextRepos,
     });
     return true;
   }
@@ -3540,17 +3516,10 @@ class ManagerApp {
     return true;
   }
 
-  #applySnapshot(input: {
-    threads: ThreadView[];
-    tasks: Task[];
-    repos: ManagedRepo[];
-  }): void {
+  #applySnapshot(input: { threads: ThreadView[]; tasks: Task[] }): void {
     const previousOpenThread = this.#findThread(this.openThreadId);
     this.allThreads = this.#applyPendingThreadMutations(input.threads);
     this.allTasks = input.tasks;
-    this.#managedRepos = [...input.repos].sort((left, right) =>
-      left.label.localeCompare(right.label, 'ja-JP')
-    );
 
     if (
       this.openThreadId &&
@@ -3683,9 +3652,6 @@ class ManagerApp {
     this.#applySnapshot({
       threads: snapshot.threads,
       tasks: snapshot.tasks,
-      repos: Array.isArray(snapshot.repos)
-        ? snapshot.repos
-        : this.#managedRepos,
     });
     this.#applyManagerStatus(snapshot.status);
   }
@@ -4048,7 +4014,6 @@ class ManagerApp {
     this.#applySnapshot({
       threads: this.allThreads,
       tasks: this.allTasks,
-      repos: this.#managedRepos,
     });
     return mutation;
   }
@@ -4070,7 +4035,6 @@ class ManagerApp {
         thread.id === threadId ? mutation.previousThread : thread
       ),
       tasks: this.allTasks,
-      repos: this.#managedRepos,
     });
   }
 
@@ -4589,14 +4553,6 @@ class ManagerApp {
       void this.#submitNewTaskForm();
     });
 
-    const repoForm = document.getElementById(
-      'managedRepoForm'
-    ) as HTMLFormElement | null;
-    repoForm?.addEventListener('submit', (event) => {
-      event.preventDefault();
-      void this.#submitManagedRepoForm();
-    });
-
     document
       .getElementById('newTaskSheetBackdrop')
       ?.addEventListener('click', (event) => {
@@ -4969,19 +4925,12 @@ class ManagerApp {
     );
     if (copy) {
       copy.textContent =
-        this.#managedRepos.length === 0
-          ? '通常の相談は下の送信欄からそのまま送れます。既存 repo に自動割当したいときだけ、先に local git repo を登録してください。'
-          : 'Manager が登録済み repo に振るか、新しい repo を切るかを判断します。通常の相談は下の送信欄からそのまま送れます。';
+        '通常の相談は下の送信欄からそのまま送れます。isolated worktree で進めたいものだけ「新しい作業」から起票すると、Manager が既存 repo か新規 repo かを判断して進めます。';
     }
     if (steps.length >= 3) {
-      steps[0].textContent =
-        this.#managedRepos.length === 0
-          ? '1. 必要なら local git repo を登録する'
-          : '1. 「新しい作業」にタイトルと依頼を書く';
+      steps[0].textContent = '1. 「新しい作業」にタイトルと依頼を書く';
       steps[1].textContent =
-        this.#managedRepos.length === 0
-          ? '2. 「新しい作業」で依頼内容と mode を入れる'
-          : '2. mode を決めて起票し、repo 判断は Manager に任せる';
+        '2. mode を決めて起票し、repo 判断は Manager に任せる';
       steps[2].textContent =
         '3. queued / working / review をこの一覧で追い、あとで merge lane へつなげる';
     }
@@ -5004,11 +4953,9 @@ class ManagerApp {
         'newTaskOpenButtonSecondary'
       ) as HTMLButtonElement | null,
     ];
-    const hasRepos = this.#managedRepos.length > 0;
     if (summary) {
-      summary.textContent = hasRepos
-        ? `${this.#managedRepos.length} repo を登録済みです。Manager が既存 repo に割り当てるか、新しい repo を切るかをここで判断します。`
-        : 'まだ managed repo はありません。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたい場合だけ先に local git repo を登録してください。';
+      summary.textContent =
+        'repo の選択や新規作成の判断は Manager が引き受けます。ここでは依頼内容だけを書けば十分です。';
     }
     for (const button of openButtons) {
       if (!button) {
@@ -5034,15 +4981,11 @@ class ManagerApp {
 
     if (repoSummary) {
       repoSummary.textContent =
-        this.#managedRepos.length > 0
-          ? `登録済み repo: ${this.#managedRepos.map((repo) => repo.label).join(' / ')}`
-          : '登録済み repo はまだありません。既存 repo に自動割当したい場合だけ、下で local git repo を登録してください。';
+        'Manager が workspace の文脈と依頼内容から、既存 repo に振るか新しい repo を切るかを内部で判断します。';
     }
     if (runtimeSummary) {
       runtimeSummary.textContent =
-        this.#managedRepos.length > 0
-          ? 'Manager が依頼内容から既存 repo か新規 repo かを判断します。既存 repo に振る場合は、その repo の既定 runtime と base branch を使います。'
-          : 'Manager が新規 repo かどうかは判断できます。既存 repo に振りたいときだけ、先に下で repo を登録してください。';
+        '既存 repo に振る場合も新規 repo を切る場合も、判断と実行準備は Manager が行います。ここでは write / read-only だけ選んでください。';
     }
     if (submitButton) {
       submitButton.disabled = this.#newTaskSheetSubmitting;
@@ -5050,110 +4993,6 @@ class ManagerApp {
         ? '起票中...'
         : 'この内容で起票する';
     }
-
-    const repoFormStatus = document.getElementById('managedRepoFormStatus');
-    const repoFormButton = document.getElementById(
-      'managedRepoSubmitButton'
-    ) as HTMLButtonElement | null;
-    if (repoFormButton) {
-      repoFormButton.disabled = this.#repoFormSubmitting;
-      repoFormButton.textContent = this.#repoFormSubmitting
-        ? '保存中...'
-        : 'repo を保存';
-    }
-    if (repoFormStatus && !repoFormStatus.textContent?.trim()) {
-      repoFormStatus.textContent =
-        this.#managedRepos.length > 0
-          ? '別の repo を足したいときだけ下を使ってください。'
-          : 'ここで最初の repo を追加します。';
-    }
-  }
-
-  async #submitManagedRepoForm(): Promise<void> {
-    if (this.#repoFormSubmitting) {
-      return;
-    }
-    const labelInput = document.getElementById(
-      'managedRepoNameInput'
-    ) as HTMLInputElement | null;
-    const pathInput = document.getElementById(
-      'managedRepoPathInput'
-    ) as HTMLInputElement | null;
-    const branchInput = document.getElementById(
-      'managedRepoDefaultBranchInput'
-    ) as HTMLInputElement | null;
-    const verifyInput = document.getElementById(
-      'managedRepoVerifyCommandInput'
-    ) as HTMLInputElement | null;
-    const runtimeSelect = document.getElementById(
-      'managedRepoPreferredRuntimeSelect'
-    ) as HTMLSelectElement | null;
-    const status = document.getElementById('managedRepoFormStatus');
-    const label = labelInput?.value.trim() ?? '';
-    const repoRoot = pathInput?.value.trim() ?? '';
-    const preferredWorkerRuntime =
-      runtimeSelect?.value === 'claude' ||
-      runtimeSelect?.value === 'copilot' ||
-      runtimeSelect?.value === 'gemini'
-        ? runtimeSelect.value
-        : 'codex';
-    if (!label || !repoRoot) {
-      if (status) {
-        status.textContent = '表示名と local repo path を入力してください。';
-      }
-      return;
-    }
-
-    this.#repoFormSubmitting = true;
-    this.#renderNewTaskSheet();
-    const response = await this.apiFetch('/api/manager/repos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label,
-        repoRoot,
-        defaultBranch: branchInput?.value.trim() || 'main',
-        verifyCommand: verifyInput?.value.trim() || 'npm run verify',
-        supportedWorkerRuntimes: ['codex', 'claude', 'copilot', 'gemini'],
-        preferredWorkerRuntime,
-      }),
-    });
-    this.#repoFormSubmitting = false;
-    if (!response) {
-      this.#renderNewTaskSheet();
-      return;
-    }
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as {
-        error?: string;
-      } | null;
-      if (status) {
-        status.textContent = payload?.error || 'repo を保存できませんでした。';
-      }
-      this.#renderNewTaskSheet();
-      return;
-    }
-
-    const saved = (await response.json()) as ManagedRepo;
-    if (labelInput) {
-      labelInput.value = '';
-    }
-    if (pathInput) {
-      pathInput.value = '';
-    }
-    if (branchInput) {
-      branchInput.value = 'main';
-    }
-    if (verifyInput) {
-      verifyInput.value = 'npm run verify';
-    }
-    if (runtimeSelect) {
-      runtimeSelect.value = 'codex';
-    }
-    if (status) {
-      status.textContent = `「${saved.label}」を追加しました。既定 worker runtime は ${humanizeWorkerRuntime(saved.preferredWorkerRuntime)} です。`;
-    }
-    await this.loadAll();
   }
 
   async #submitNewTaskForm(): Promise<void> {
@@ -5300,14 +5139,10 @@ class ManagerApp {
       detail.textContent =
         pendingCount > 0
           ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
-          : this.#managedRepos.length === 0
-            ? 'いまは待機中です。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたいときだけ local git repo を追加してください。'
-            : 'いまは待機中です。「新しい作業」から依頼を起票すると、Manager が repo を判断して進めます。';
+          : 'いまは待機中です。「新しい作業」から依頼を起票すると、Manager が repo を判断して進めます。';
     } else if (configured) {
       detail.textContent =
-        this.#managedRepos.length === 0
-          ? 'まだ始まっていません。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたいときだけ local git repo を登録してください。'
-          : 'まだ始まっていません。「新しい作業」で起票するか、下の送信欄から相談を送ると自動で動きます。';
+        'まだ始まっていません。「新しい作業」で起票するか、下の送信欄から相談を送ると自動で動きます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';

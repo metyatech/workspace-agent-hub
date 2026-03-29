@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,6 +85,11 @@ vi.mock('../manager-worktree.js', () => ({
   resolveTargetRepoRoot: vi
     .fn()
     .mockImplementation((resolvedDir: string) => resolvedDir),
+  findGitRoot: vi
+    .fn()
+    .mockImplementation((candidate: string) =>
+      existsSync(join(candidate, '.git')) ? candidate : null
+    ),
   cleanupOrphanedWorktrees: vi.fn().mockResolvedValue(undefined),
   execGit: vi.fn().mockResolvedValue({ stdout: '', stderr: '', code: 0 }),
 }));

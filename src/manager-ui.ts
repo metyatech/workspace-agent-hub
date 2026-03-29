@@ -39,12 +39,7 @@ import {
   resolvePackageRoot,
   restoreBuild,
 } from './build-archive.js';
-import {
-  readManagedRepos,
-  upsertManagedRepo,
-  type ManagerRunMode,
-  type ManagedRepoConfig,
-} from './manager-repos.js';
+import { type ManagerRunMode } from './manager-repos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -128,7 +123,6 @@ interface ManagerLiveSnapshot {
   emittedAt: string;
   threads: ReturnType<typeof deriveManagerThreadViews>;
   tasks: Awaited<ReturnType<typeof readActiveTasks>>;
-  repos: ManagedRepoConfig[];
   status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>;
 }
 
@@ -175,16 +169,14 @@ function normalizeManagerPath(pathname: string): string {
 async function buildManagerLiveSnapshot(
   workspaceRoot: string
 ): Promise<ManagerLiveSnapshot> {
-  const [threads, session, queue, meta, tasks, repos, status] =
-    await Promise.all([
-      listThreads(workspaceRoot),
-      readSession(workspaceRoot),
-      readQueue(workspaceRoot),
-      readManagerThreadMeta(workspaceRoot),
-      readActiveTasks(workspaceRoot),
-      readManagedRepos(workspaceRoot),
-      getBuiltinManagerStatus(workspaceRoot),
-    ]);
+  const [threads, session, queue, meta, tasks, status] = await Promise.all([
+    listThreads(workspaceRoot),
+    readSession(workspaceRoot),
+    readQueue(workspaceRoot),
+    readManagerThreadMeta(workspaceRoot),
+    readActiveTasks(workspaceRoot),
+    getBuiltinManagerStatus(workspaceRoot),
+  ]);
 
   return {
     kind: 'snapshot',
@@ -196,7 +188,6 @@ async function buildManagerLiveSnapshot(
       meta,
     }),
     tasks,
-    repos,
     status,
   };
 }
@@ -433,54 +424,6 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/manager/status' && input.method === 'GET') {
     sendJson(input.res, await getBuiltinManagerStatus(input.workspaceRoot));
-    return true;
-  }
-
-  if (localPath === '/api/manager/repos' && input.method === 'GET') {
-    sendJson(input.res, await readManagedRepos(input.workspaceRoot));
-    return true;
-  }
-
-  if (localPath === '/api/manager/repos' && input.method === 'POST') {
-    const body = await parseBody(input.req);
-    try {
-      const repo = await upsertManagedRepo(input.workspaceRoot, {
-        id: typeof body.id === 'string' ? body.id : null,
-        label: typeof body.label === 'string' ? body.label : '',
-        repoRoot: typeof body.repoRoot === 'string' ? body.repoRoot : '',
-        defaultBranch:
-          typeof body.defaultBranch === 'string' ? body.defaultBranch : null,
-        verifyCommand:
-          typeof body.verifyCommand === 'string' ? body.verifyCommand : null,
-        supportedWorkerRuntimes: Array.isArray(body.supportedWorkerRuntimes)
-          ? body.supportedWorkerRuntimes.filter(
-              (entry): entry is ManagedRepoConfig['preferredWorkerRuntime'] =>
-                entry === 'codex' ||
-                entry === 'claude' ||
-                entry === 'gemini' ||
-                entry === 'copilot'
-            )
-          : null,
-        preferredWorkerRuntime:
-          body.preferredWorkerRuntime === 'codex' ||
-          body.preferredWorkerRuntime === 'claude' ||
-          body.preferredWorkerRuntime === 'gemini' ||
-          body.preferredWorkerRuntime === 'copilot'
-            ? body.preferredWorkerRuntime
-            : null,
-        mergeLaneEnabled:
-          typeof body.mergeLaneEnabled === 'boolean'
-            ? body.mergeLaneEnabled
-            : null,
-      });
-      sendJson(input.res, repo, 201);
-    } catch (error) {
-      sendError(
-        input.res,
-        error instanceof Error ? error.message : 'Failed to save repo',
-        400
-      );
-    }
     return true;
   }
 

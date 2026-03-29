@@ -91,8 +91,8 @@ acceptance:
   cancellation, and supersede application
 - Start, stop, and monitor worker agents
 - Require concrete repo targeting for existing-repo write work
-- Keep the Manager focused on concrete existing-repo work selection; do not add
-  exception-only creation paths to the default human-facing GUI
+- Keep repo choice manager-owned; do not expose repo registration/configuration
+  as part of the default human-facing GUI
 
 ### Manager responsibilities
 

@@ -393,7 +393,7 @@ How it works:
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user can either:
    - press `新しい作業`, write the task title/body and run mode, and let
-     Manager decide whether it should land on a registered existing repo or a
+     Manager decide whether it should land on an existing workspace repo or a
      brand-new repo under the workspace root
    - or keep using the global send dock for ordinary inbox-style routing and
      follow-up discussion
@@ -414,11 +414,10 @@ Important behavior:
   smartphone/desktop Manager path. On the default phone-ready Tailscale route,
   Manager opens directly from the same trusted Hub origin.
 - There is no separate `manager-gui` process or second GUI server anymore.
-- Managed repos are now explicit workspace-local configuration. The Manager
-  stores repo path, default branch, verify command, and preferred runtime in a
-  dedicated registry, uses it when deciding which existing repo a new task
-  should target, and worker execution uses the selected runtime adapter
-  (`codex`, `claude`, `gemini`, or `copilot`).
+- Existing workspace repos are discovered internally by Manager. The human does
+  not register repo paths or repo settings in the GUI; Manager decides whether
+  a task belongs on one discovered repo or on a brand-new repo under the
+  workspace root.
 - Existing-repo write work must target one concrete repo. When a routed worker
   task would mutate an existing repo but does not identify which repo, Manager
   asks for clarification instead of falling back to the workspace root.

@@ -1371,15 +1371,15 @@ export function buildWorkerExecutionPrompt(input: {
       : '';
   const repoContext = [
     `Target kind: ${input.repoTargetKind ?? 'existing-repo'}`,
-    input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
-    input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
+    input.managedRepoLabel ? `Target repo: ${input.managedRepoLabel}` : '',
+    input.managedRepoRoot ? `Target repo root: ${input.managedRepoRoot}` : '',
     input.newRepoName ? `New repo name: ${input.newRepoName}` : '',
     input.newRepoRoot ? `New repo root: ${input.newRepoRoot}` : '',
     input.managedBaseBranch
-      ? `Managed base branch: ${input.managedBaseBranch}`
+      ? `Repo branch hint: ${input.managedBaseBranch}`
       : '',
     input.managedVerifyCommand
-      ? `Managed verify command: ${input.managedVerifyCommand}`
+      ? `Repo verification hint: ${input.managedVerifyCommand}`
       : '',
     `Requested run mode: ${input.requestedRunMode ?? 'write'}`,
     `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
@@ -1674,7 +1674,7 @@ function buildDispatchPrompt(input: {
             ].join('\n')
           )
           .join('\n');
-  const managedRepoSummary =
+  const workspaceRepoSummary =
     input.managedRepos && input.managedRepos.length > 0
       ? input.managedRepos
           .map((repo) =>
@@ -1688,7 +1688,7 @@ function buildDispatchPrompt(input: {
             ].join('\n')
           )
           .join('\n')
-      : 'No managed repos are currently registered.';
+      : 'No existing workspace repos were discovered.';
 
   return [
     MANAGER_ROUTER_SYSTEM_PROMPT,
@@ -1698,15 +1698,15 @@ function buildDispatchPrompt(input: {
     'Use assignee "worker" for anything that needs repository inspection, command execution, code changes, tests, substantial investigation, or a heavier question that should be delegated.',
     'When assignee is "manager", include status and reply.',
     'When assignee is "worker", include writeScopes as a short array of repo-relative write areas. Use an empty array only for truly read-only work.',
-    'If the task modifies an existing repository, set targetKind to "existing-repo" and include repoId using one repoRef from the managed repo list below.',
+    'If the task modifies an existing repository, set targetKind to "existing-repo" and include repoId using one repoRef from the discovered workspace repo list below.',
     'If the user wants a brand-new repository, set targetKind to "new-repo" and include newRepoName. The repo will be created directly under the workspace root.',
     'For existing-repo mutation tasks, the worker target MUST resolve to one concrete repo. Never use "*" or the workspace root as a fallback.',
     'If it is unclear whether the user means an existing repo or a new repo, or which existing repo they mean, do not dispatch a worker. Reply as manager with status "needs-reply" and ask only for the missing clarification.',
     'Only include supersedesThreadIds when the new work item is a descendant whose result would completely invalidate an already-running descendant task listed below.',
     `Workspace: ${input.resolvedDir}`,
     input.repoTargetKind ? `Current target kind: ${input.repoTargetKind}` : '',
-    input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
-    input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
+    input.managedRepoLabel ? `Current repo: ${input.managedRepoLabel}` : '',
+    input.managedRepoRoot ? `Current repo root: ${input.managedRepoRoot}` : '',
     input.newRepoName ? `Current new repo name: ${input.newRepoName}` : '',
     input.newRepoRoot ? `Current new repo root: ${input.newRepoRoot}` : '',
     input.inferredRepoLabel
@@ -1719,10 +1719,10 @@ function buildDispatchPrompt(input: {
       ? `Likely repo-relative scope from context: ${input.inferredRepoScope}`
       : '',
     input.managedBaseBranch
-      ? `Managed base branch: ${input.managedBaseBranch}`
+      ? `Current repo branch hint: ${input.managedBaseBranch}`
       : '',
     input.managedVerifyCommand
-      ? `Managed verify command: ${input.managedVerifyCommand}`
+      ? `Current repo verification hint: ${input.managedVerifyCommand}`
       : '',
     input.requestedRunMode
       ? `Requested run mode: ${input.requestedRunMode}`
@@ -1732,8 +1732,8 @@ function buildDispatchPrompt(input: {
     formatThreadHistory(input.thread),
     'New queued user request:',
     promptContent,
-    'Managed repos:',
-    managedRepoSummary,
+    'Discovered workspace repos:',
+    workspaceRepoSummary,
     'Running related worker agents:',
     activeAssignments,
   ]

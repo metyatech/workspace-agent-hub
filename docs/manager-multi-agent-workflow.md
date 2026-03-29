@@ -25,7 +25,6 @@ Already implemented in the current line:
 Not yet generalized enough for the target operator experience:
 
 - explicit multi-agent worker selection from the human-facing task creation flow
-- a first-class repo registry and repo settings surface
 - explicit repo-scoped merge-lane visibility in the UI
 - a generic worker-adapter contract shared by `codex`, `claude`, `gemini`, and
   `copilot`
@@ -66,7 +65,6 @@ canonical_store:
   runtime_db:
     type: sqlite
     purpose:
-      - repo registry
       - run metadata
       - worktree metadata
       - merge queues
@@ -88,7 +86,7 @@ ai_surface:
   - conflict-resolution turn
 sync:
   task_start:
-    - refresh managed repo mirror when targeting an existing repo
+    - inspect discovered workspace repos when targeting an existing repo
     - create task branch + isolated worktree for existing-repo write runs
     - launch worker runtime
   task_finish:
@@ -140,7 +138,7 @@ The normal human flow should be:
 
 The human should never see `git worktree add` or branch plumbing in the normal
 flow. Repo targeting should be internal: Manager decides whether the task
-belongs on a concrete registered existing repo or on a brand-new repo under the
+belongs on a concrete existing workspace repo or on a brand-new repo under the
 workspace root, and only asks for clarification when that decision is genuinely
 ambiguous.
 
@@ -277,19 +275,6 @@ Typical entries:
 
 The human should not have to scan ordinary completed runs to find real blockers.
 
-### Repo settings view
-
-Each managed repo should expose:
-
-- local repo path or mirror source
-- default branch
-- verify command
-- optional release/publish command chain
-- supported worker runtimes
-- merge-lane enabled/disabled
-
-This turns repo onboarding into configuration instead of hidden code edits.
-
 ## Worker adapter contract
 
 All worker runtimes should implement the same adapter contract even when their
@@ -323,15 +308,6 @@ Current implementation note:
 
 The browser UI should be the primary human entrypoint, but the CLI should
 mirror the same concepts for automation and debugging.
-
-### Repo management
-
-```text
-workspace-agent-hub repos list
-workspace-agent-hub repos add
-workspace-agent-hub repos show <repo>
-workspace-agent-hub repos verify <repo>
-```
 
 ### Run management
 
@@ -367,8 +343,6 @@ of overloading thread-only endpoints.
 
 Suggested resources:
 
-- `GET /api/manager/repos`
-- `POST /api/manager/repos`
 - `GET /api/manager/runs`
 - `POST /api/manager/runs`
 - `GET /api/manager/runs/:id`
@@ -408,8 +382,8 @@ The simplest day-1 explanation should be:
 1. Open Hub
 2. Open Manager
 3. Press `新しい作業`
-4. Pick a repo and agent
-5. Write the request
+4. Write the request
+5. Let Manager choose the repo path internally
 6. Let the repo lane merge it later
 
 That is the level of complexity the human should need to remember.
@@ -427,9 +401,9 @@ That is the level of complexity the human should need to remember.
 
 ## Implementation sequence
 
-1. Make the repo registry first-class
-2. Expose explicit run and lane state in the Manager UI
-3. Introduce the generic worker-adapter interface
-4. Move task creation to an explicit `新しい作業` flow
+1. Expose explicit run and lane state in the Manager UI
+2. Introduce the generic worker-adapter interface
+3. Move task creation to an explicit `新しい作業` flow
+4. Keep repo choice manager-owned and clarify that in the UI
 5. Add merge-lane and needs-human screens
 6. Add runtime availability checks and richer per-runtime operator controls

@@ -970,7 +970,7 @@ describe('native manager page', () => {
     expect(Array.isArray(tasks)).toBe(true);
   });
 
-  it('stores and lists managed repos through the native manager API', async () => {
+  it('does not expose a user-facing managed repo registration API', async () => {
     const workspaceRoot = await createTempWorkspace();
     const repoRoot = join(workspaceRoot, 'repo-managed');
     await initGitRepo(repoRoot);
@@ -1001,14 +1001,7 @@ describe('native manager page', () => {
         }),
       }
     );
-    expect(saveResponse.status).toBe(201);
-    const saved = (await saveResponse.json()) as {
-      id: string;
-      label: string;
-      repoRoot: string;
-    };
-    expect(saved.label).toBe('Managed Repo');
-    expect(saved.repoRoot).toBe(repoRoot);
+    expect(saveResponse.status).toBe(404);
 
     const listResponse = await fetch(
       `http://127.0.0.1:${port}/manager/api/manager/repos`,
@@ -1016,9 +1009,7 @@ describe('native manager page', () => {
         headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
       }
     );
-    expect(listResponse.status).toBe(200);
-    const repos = (await listResponse.json()) as Array<{ id: string }>;
-    expect(repos.some((repo) => repo.id === saved.id)).toBe(true);
+    expect(listResponse.status).toBe(404);
   });
 
   it('creates a manager-evaluated run without forcing the user to pick an existing repo first', async () => {

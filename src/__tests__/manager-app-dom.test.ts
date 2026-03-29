@@ -437,10 +437,10 @@ describe('manager-app DOM auth state matrix', () => {
     );
   });
 
-  it('includes an explicit new-task sheet with manager-decided repo targeting and managed-repo registration', () => {
+  it('includes an explicit new-task sheet that lets Manager decide the repo internally without repo registration UI', () => {
     expect(managerHtml).toContain('id="newTaskOpenButton"');
     expect(managerHtml).toContain('id="newTaskSheetBackdrop"');
-    expect(managerHtml).toContain('id="managedRepoForm"');
+    expect(managerHtml).not.toContain('id="managedRepoForm"');
     expect(managerHtml).toContain('isolated worktree');
     expect(managerHtml).toContain(
       'Manager が既存 repo か新規 repo かも含めて判断'
@@ -510,18 +510,6 @@ describe('manager-app DOM auth state matrix', () => {
 
   it('opens the explicit new-task sheet and lets Manager decide the repo target', async () => {
     const validToken = 'new-task-sheet-token';
-    const repos = [
-      {
-        id: 'workspace-agent-hub',
-        label: 'workspace-agent-hub',
-        repoRoot: 'D:\\ghws\\workspace-agent-hub',
-        defaultBranch: 'main',
-        verifyCommand: 'npm run verify',
-        supportedWorkerRuntimes: ['codex', 'claude'],
-        preferredWorkerRuntime: 'claude',
-        mergeLaneEnabled: true,
-      },
-    ];
     let threads: Array<ReturnType<typeof makeThreadView>> = [];
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -544,9 +532,6 @@ describe('manager-app DOM auth state matrix', () => {
         if (isRoute(url, '/tasks')) {
           return new Response(JSON.stringify([]), { status: 200 });
         }
-        if (isRoute(url, '/manager/repos')) {
-          return new Response(JSON.stringify(repos), { status: 200 });
-        }
         if (isRoute(url, '/manager/status')) {
           return new Response(
             JSON.stringify({
@@ -564,27 +549,31 @@ describe('manager-app DOM auth state matrix', () => {
             unknown
           >;
           threads = [
-            makeThreadView('thread-managed-run', 'Repo registry を追加する', {
-              status: 'waiting',
-              uiState: 'queued',
-              lastSender: 'user',
-              previewText:
-                '[user] workspace-agent-hub の repo registry を追加してください',
-              managedRepoId: 'workspace-agent-hub',
-              managedRepoLabel: 'workspace-agent-hub',
-              managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
-              managedBaseBranch: 'main',
-              managedVerifyCommand: 'npm run verify',
-              requestedWorkerRuntime: repos[0].preferredWorkerRuntime,
-              requestedRunMode: String(body['runMode']),
-              messages: [
-                {
-                  sender: 'user',
-                  content: String(body['content']),
-                  at: '2026-03-27T00:00:00.000Z',
-                },
-              ],
-            }),
+            makeThreadView(
+              'thread-managed-run',
+              'Workspace Agent Broker を作る',
+              {
+                status: 'waiting',
+                uiState: 'queued',
+                lastSender: 'user',
+                previewText:
+                  '[user] workspace-agent-broker を新しい repo として作成してください',
+                managedRepoLabel: 'workspace-agent-broker',
+                managedRepoRoot: 'D:\\ghws\\workspace-agent-broker',
+                repoTargetKind: 'new-repo',
+                newRepoName: 'workspace-agent-broker',
+                newRepoRoot: 'D:\\ghws\\workspace-agent-broker',
+                requestedWorkerRuntime: 'codex',
+                requestedRunMode: String(body['runMode']),
+                messages: [
+                  {
+                    sender: 'user',
+                    content: String(body['content']),
+                    at: '2026-03-27T00:00:00.000Z',
+                  },
+                ],
+              }
+            ),
           ];
           return new Response(
             JSON.stringify({
@@ -601,7 +590,6 @@ describe('manager-app DOM auth state matrix', () => {
               emittedAt: '2026-03-27T00:00:00.000Z',
               threads,
               tasks: [],
-              repos,
               status: {
                 running: false,
                 configured: true,
@@ -640,12 +628,12 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLElement>('#newTaskRuntimeSummary')!.textContent
-    ).toContain('Manager が依頼内容から既存 repo か新規 repo かを判断');
+    ).toContain('判断と実行準備は Manager が行います');
 
     document.querySelector<HTMLInputElement>('#newTaskTitleInput')!.value =
-      'Repo registry を追加する';
+      'Workspace Agent Broker を作る';
     document.querySelector<HTMLTextAreaElement>('#newTaskContentInput')!.value =
-      'workspace-agent-hub の repo registry を追加してください';
+      'workspace-agent-broker を新しい repo として作成してください';
     document.querySelector<HTMLInputElement>(
       'input[name="newTaskRunMode"][value="read-only"]'
     )!.checked = true;
@@ -665,23 +653,23 @@ describe('manager-app DOM auth state matrix', () => {
       unknown
     >;
     expect(runBody).toMatchObject({
-      title: 'Repo registry を追加する',
-      content: 'workspace-agent-hub の repo registry を追加してください',
+      title: 'Workspace Agent Broker を作る',
+      content: 'workspace-agent-broker を新しい repo として作成してください',
       runMode: 'read-only',
     });
 
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('Repo registry を追加する');
+    ).toContain('Workspace Agent Broker を作る');
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('repo: workspace-agent-hub');
+    ).toContain('new repo: workspace-agent-broker');
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
     ).toContain('mode: read-only');
     expect(
       document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('runtime: Claude');
+    ).toContain('runtime: Codex');
   });
 
   it('keeps repo-kind selection out of the visible new-task sheet and does not ask the user to pick a repo', async () => {
@@ -709,12 +697,11 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBeNull();
     expect(
       document.querySelector<HTMLElement>('#newTaskRepoSummary')!.textContent
-    ).toContain('登録済み repo');
+    ).toContain('workspace の文脈');
   });
 
-  it('submits the managed repo form with the selected preferred runtime', async () => {
+  it('does not render a managed repo registration form or call its API', async () => {
     const validToken = 'managed-repo-runtime-token';
-    let repos: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -736,28 +723,6 @@ describe('manager-app DOM auth state matrix', () => {
         if (isRoute(url, '/tasks')) {
           return new Response(JSON.stringify([]), { status: 200 });
         }
-        if (isRoute(url, '/manager/repos') && init?.method === 'POST') {
-          const body = JSON.parse(String(init.body ?? '{}')) as Record<
-            string,
-            unknown
-          >;
-          repos = [
-            {
-              id: 'workspace-agent-hub',
-              label: body['label'],
-              repoRoot: body['repoRoot'],
-              defaultBranch: body['defaultBranch'],
-              verifyCommand: body['verifyCommand'],
-              supportedWorkerRuntimes: body['supportedWorkerRuntimes'],
-              preferredWorkerRuntime: body['preferredWorkerRuntime'],
-              mergeLaneEnabled: true,
-            },
-          ];
-          return new Response(JSON.stringify(repos[0]), { status: 201 });
-        }
-        if (isRoute(url, '/manager/repos')) {
-          return new Response(JSON.stringify(repos), { status: 200 });
-        }
         if (isRoute(url, '/manager/status')) {
           return new Response(
             JSON.stringify({
@@ -776,7 +741,6 @@ describe('manager-app DOM auth state matrix', () => {
               emittedAt: '2026-03-27T00:00:00.000Z',
               threads: [],
               tasks: [],
-              repos,
               status: {
                 running: false,
                 configured: true,
@@ -808,51 +772,14 @@ describe('manager-app DOM auth state matrix', () => {
     document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
     await flushAsync(2);
 
-    document.querySelector<HTMLInputElement>('#managedRepoNameInput')!.value =
-      'workspace-agent-hub';
-    document.querySelector<HTMLInputElement>('#managedRepoPathInput')!.value =
-      'D:\\ghws\\workspace-agent-hub';
-    document.querySelector<HTMLInputElement>(
-      '#managedRepoDefaultBranchInput'
-    )!.value = 'main';
-    document.querySelector<HTMLInputElement>(
-      '#managedRepoVerifyCommandInput'
-    )!.value = 'npm run verify';
-    document.querySelector<HTMLSelectElement>(
-      '#managedRepoPreferredRuntimeSelect'
-    )!.value = 'claude';
-    document
-      .querySelector<HTMLFormElement>('#managedRepoForm')!
-      .dispatchEvent(
-        new window.Event('submit', { bubbles: true, cancelable: true })
-      );
-    await flushAsync(6);
-
-    const repoCall = fetchMock.mock.calls.find(
-      ([input, init]) =>
-        isRoute(String(input), '/manager/repos') && init?.method === 'POST'
-    );
-    expect(repoCall).toBeTruthy();
-    const repoBody = JSON.parse(String(repoCall?.[1]?.body ?? '{}')) as Record<
-      string,
-      unknown
-    >;
-    expect(repoBody).toMatchObject({
-      label: 'workspace-agent-hub',
-      repoRoot: 'D:\\ghws\\workspace-agent-hub',
-      defaultBranch: 'main',
-      verifyCommand: 'npm run verify',
-      preferredWorkerRuntime: 'claude',
-    });
-    expect(repoBody['supportedWorkerRuntimes']).toEqual([
-      'codex',
-      'claude',
-      'copilot',
-      'gemini',
-    ]);
     expect(
-      document.querySelector<HTMLElement>('#managedRepoFormStatus')!.textContent
-    ).toContain('Claude');
+      document.querySelector<HTMLFormElement>('#managedRepoForm')
+    ).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        isRoute(String(input), '/manager/repos')
+      )
+    ).toBe(false);
   });
 
   it('shows the auth panel on a fresh protected load with no saved access code', async () => {

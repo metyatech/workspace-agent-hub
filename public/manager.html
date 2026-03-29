@@ -2132,14 +2132,14 @@
             <div class="new-task-entry-top">
               <div class="new-task-entry-copy">
                 <div class="new-task-entry-kicker">
-                  repo を決めて起票する入口
+                  isolated worktree で進める入口
                 </div>
                 <div class="new-task-entry-title">
-                  isolated worktree で進めたい作業は、ここから明示的に作ります
+                  isolated worktree で進めたい作業は、ここから明示的に起票します
                 </div>
                 <div id="newTaskEntrySummary" class="new-task-entry-summary">
-                  まだ managed repo がありません。最初に local git repo
-                  を登録してください。
+                  repo の選択や新規作成の判断は Manager
+                  が引き受けます。ここでは依頼内容だけを書けば十分です。
                 </div>
               </div>
               <div class="new-task-entry-actions">
@@ -2150,7 +2150,7 @@
                   type="button"
                   style="width: auto"
                 >
-                  repo を登録して作業を始める
+                  新しい作業を起票する
                 </button>
               </div>
             </div>
@@ -2163,23 +2163,24 @@
               に作業を起票する流れと、下からそのまま送る相談を分けて使えます
             </h2>
             <p id="getting-started-copy">
-              local git repo を登録しておくと、Manager が既存 repo に振るか新規
-              repo
-              を切るかを判断できます。通常の相談は下の送信欄からそのまま送れます。
+              通常の相談は下の送信欄からそのまま送れます。isolated worktree
+              で進めたいものだけ「新しい作業」から起票すると、Manager が既存
+              repo か新規 repo かを判断して進めます。
             </p>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
               <p>
-                repo を指定して起票したものは、その repo の isolated worktree
-                でそのまま実行に回ります。相談として送った内容は、既存の作業項目への追記、新しい作業項目、確認が必要なものに分かれます。
+                「新しい作業」から起票したものは、Manager が既存 repo か新規
+                repo かを判断したうえで isolated worktree
+                に回します。相談として送った内容は、既存の作業項目への追記、新しい作業項目、確認が必要なものに分かれます。
               </p>
             </details>
             <div class="intro-steps">
               <div class="intro-step" data-getting-started-step>
-                1. 「新しい作業」から local git repo を追加する
+                1. 「新しい作業」にタイトルと依頼を書く
               </div>
               <div class="intro-step" data-getting-started-step>
-                2. 同じシートでタイトルと依頼内容を書く
+                2. mode を決めて起票し、repo 判断は Manager に任せる
               </div>
               <div class="intro-step" data-getting-started-step>
                 3. queued / working / review をこの一覧で追い、あとで merge lane
@@ -2194,7 +2195,7 @@
                 type="button"
                 style="width: auto"
               >
-                repo を登録して作業を始める
+                新しい作業を起票する
               </button>
             </div>
           </section>
@@ -2515,7 +2516,7 @@
                   id="newTaskTitleInput"
                   class="field-input"
                   type="text"
-                  placeholder="例: Manager に repo registry を追加する"
+                  placeholder="例: Manager の送信欄に画像挿入を追加する"
                 />
               </label>
               <label class="field-group">
@@ -2572,76 +2573,6 @@
                   style="width: auto"
                 >
                   この内容で起票する
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section class="task-sheet-card">
-            <h3>managed repo を追加する</h3>
-            <div class="task-sheet-card-copy">
-              local git repo の path を登録すると、以後はここから選べます。
-            </div>
-            <form id="managedRepoForm" class="stack">
-              <label class="field-group">
-                <span class="field-label">表示名</span>
-                <input
-                  id="managedRepoNameInput"
-                  class="field-input"
-                  type="text"
-                  placeholder="例: workspace-agent-hub"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">local repo path</span>
-                <input
-                  id="managedRepoPathInput"
-                  class="field-input"
-                  type="text"
-                  placeholder="例: D:\\ghws\\workspace-agent-hub"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">default branch</span>
-                <input
-                  id="managedRepoDefaultBranchInput"
-                  class="field-input"
-                  type="text"
-                  value="main"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">verify command</span>
-                <input
-                  id="managedRepoVerifyCommandInput"
-                  class="field-input"
-                  type="text"
-                  value="npm run verify"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">preferred worker runtime</span>
-                <select
-                  id="managedRepoPreferredRuntimeSelect"
-                  class="field-input"
-                >
-                  <option value="codex">Codex</option>
-                  <option value="claude">Claude</option>
-                  <option value="copilot">Copilot</option>
-                  <option value="gemini">Gemini</option>
-                </select>
-              </label>
-              <div id="managedRepoFormStatus" class="sheet-status">
-                ここで最初の repo を追加します。
-              </div>
-              <div class="sheet-actions">
-                <button
-                  id="managedRepoSubmitButton"
-                  class="btn btn-secondary"
-                  type="submit"
-                  style="width: auto"
-                >
-                  repo を保存
                 </button>
               </div>
             </form>
