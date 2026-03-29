@@ -10,7 +10,7 @@
 
 import { spawn } from 'child_process';
 import { existsSync, symlinkSync, unlinkSync, rmSync } from 'fs';
-import { readFile } from 'fs/promises';
+import { mkdir, readFile, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
 
@@ -341,6 +341,43 @@ export function resolveTargetRepoRoot(
 
   // Zero matches or mixed → default to the workspace root.
   return resolvedDir;
+}
+
+export async function prepareNewRepoWorkspace(input: {
+  workspaceRoot: string;
+  targetRepoRoot: string;
+}): Promise<void> {
+  const workspaceRoot = resolvePath(input.workspaceRoot);
+  const targetRepoRoot = resolvePath(input.targetRepoRoot);
+  const relativeTarget = targetRepoRoot
+    .slice(workspaceRoot.length)
+    .replace(/^[\\/]+/, '');
+  if (
+    targetRepoRoot.toLowerCase() === workspaceRoot.toLowerCase() ||
+    !relativeTarget ||
+    targetRepoRoot
+      .toLowerCase()
+      .startsWith(`${workspaceRoot.toLowerCase()}\\`) === false
+  ) {
+    throw new Error(
+      `new repo target must stay under the workspace root (${workspaceRoot})`
+    );
+  }
+
+  const existingRoot = findGitRoot(targetRepoRoot);
+  if (existingRoot && resolvePath(existingRoot) === targetRepoRoot) {
+    throw new Error(`new repo target already exists as a git repository`);
+  }
+
+  if (existsSync(targetRepoRoot)) {
+    const entries = await readdir(targetRepoRoot);
+    if (entries.length > 0) {
+      throw new Error(`new repo target already exists and is not empty`);
+    }
+    return;
+  }
+
+  await mkdir(targetRepoRoot, { recursive: true });
 }
 
 // ---------------------------------------------------------------------------

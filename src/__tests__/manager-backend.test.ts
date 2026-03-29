@@ -54,6 +54,7 @@ vi.mock('../manager-worktree.js', () => ({
     branchName: '',
     targetRepoRoot: '',
   }),
+  prepareNewRepoWorkspace: vi.fn().mockResolvedValue(undefined),
   mergeWorktreeToMain: vi.fn().mockResolvedValue({
     success: true,
     conflicted: false,
@@ -126,6 +127,7 @@ import {
 import {
   createWorkerWorktree,
   mergeWorktreeToMain,
+  prepareNewRepoWorkspace,
   pushWithRetry,
   resolveTargetRepoRoot,
   runPostMergeDeliveryChain,
@@ -262,6 +264,8 @@ beforeEach(async () => {
     branchName: '',
     targetRepoRoot: '',
   });
+  vi.mocked(prepareNewRepoWorkspace).mockReset();
+  vi.mocked(prepareNewRepoWorkspace).mockResolvedValue(undefined);
   vi.mocked(mergeWorktreeToMain).mockReset();
   vi.mocked(mergeWorktreeToMain).mockResolvedValue({
     success: true,
@@ -1410,14 +1414,84 @@ describe('manager backend codex integration', () => {
       sessionId: 'manager-clarification-repo',
       text: JSON.stringify({
         status: 'needs-reply',
-        reply: '対象 repo を具体的に指定してください。',
+        reply:
+          '既存 repo に振るべきか新規 repo を切るべきか判断できるよう、対象や成果物をもう少し具体的に書いてください。',
       }),
     });
 
     await waitFor(() => addMessageMock.mock.calls.length === 1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-ambiguous-repo');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('対象 repo');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('判断できるよう');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+  });
+
+  it('lets Manager choose a brand-new repo target for a new task without a visible repo picker', async () => {
+    const dispatchProc = makeProc(6116);
+    const workerProc = makeProc(6117);
+    const reviewProc = makeProc(6118);
+    const newRepoRoot = join(tempDir, 'workspace-agent-broker');
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-new-repo',
+      'Workspace Agent Broker を新しい repo として作って',
+      {
+        dispatchMode: 'manager-evaluate',
+        requestedRunMode: 'write',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-new-repo',
+      text: JSON.stringify({
+        assignee: 'worker',
+        targetKind: 'new-repo',
+        newRepoName: 'workspace-agent-broker',
+        writeScopes: ['*'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(prepareNewRepoWorkspace)).toHaveBeenCalledWith({
+      workspaceRoot: tempDir,
+      targetRepoRoot: newRepoRoot,
+    });
+    expect(spawnMock.mock.calls[1]?.[2]).toMatchObject({
+      cwd: newRepoRoot,
+    });
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-new-repo',
+      text: '{"status":"review","reply":"new repo done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-new-repo',
+      text: '{"status":"review","reply":"new repo done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-new-repo']).toMatchObject({
+      repoTargetKind: 'new-repo',
+      newRepoName: 'workspace-agent-broker',
+      newRepoRoot,
+      managedRepoLabel: 'workspace-agent-broker',
+      managedRepoRoot: newRepoRoot,
+      requestedRunMode: 'write',
+    });
+    expect(vi.mocked(mergeWorktreeToMain)).not.toHaveBeenCalled();
   });
 
   it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {
@@ -1639,6 +1713,8 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-stalled',
           queueEntryIds: ['q_stalled'],
           assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -1672,6 +1748,8 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-a',
           queueEntryIds: ['q_a'],
           assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/a.ts'],
@@ -1687,6 +1765,8 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-b',
           queueEntryIds: ['q_b'],
           assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/b.ts'],
@@ -1781,6 +1861,8 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-orphaned',
           queueEntryIds: ['q_orphaned'],
           assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -2335,6 +2417,8 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-old',
           queueEntryIds: ['q_old'],
           assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],

@@ -90,6 +90,9 @@ interface ThreadView {
   managedRepoId: string | null;
   managedRepoLabel: string | null;
   managedRepoRoot: string | null;
+  repoTargetKind: 'existing-repo' | 'new-repo' | null;
+  newRepoName: string | null;
+  newRepoRoot: string | null;
   managedBaseBranch: string | null;
   managedVerifyCommand: string | null;
   requestedWorkerRuntime: ManagerWorkerRuntime | null;
@@ -1825,7 +1828,9 @@ function describeWorkItemContext(
   const parts = [
     thread.managedRepoLabel
       ? [
-          `repo: ${thread.managedRepoLabel}`,
+          thread.repoTargetKind === 'new-repo'
+            ? `new repo: ${thread.managedRepoLabel}`
+            : `repo: ${thread.managedRepoLabel}`,
           thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
           `mode: ${humanizeRunMode(thread.requestedRunMode)}`,
         ]
@@ -2811,7 +2816,11 @@ class DetailController {
     const meta = document.createElement('div');
     meta.className = 'detail-meta';
     meta.textContent = [
-      thread.managedRepoLabel ? `repo: ${thread.managedRepoLabel}` : '',
+      thread.managedRepoLabel
+        ? thread.repoTargetKind === 'new-repo'
+          ? `new repo: ${thread.managedRepoLabel}`
+          : `repo: ${thread.managedRepoLabel}`
+        : '',
       thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
       thread.requestedRunMode
         ? `mode: ${humanizeRunMode(thread.requestedRunMode)}`
@@ -3029,7 +3038,6 @@ class ManagerApp {
   #newTaskSheetOpen = false;
   #newTaskSheetSubmitting = false;
   #repoFormSubmitting = false;
-  #pendingManagedRepoSelectionId: string | null = null;
 
   constructor() {
     this.#sections = {
@@ -4573,14 +4581,6 @@ class ManagerApp {
       void this.sendGlobalMessage();
     });
 
-    const repoSelect = document.getElementById(
-      'newTaskRepoSelect'
-    ) as HTMLSelectElement | null;
-    repoSelect?.addEventListener('change', () => {
-      this.#pendingManagedRepoSelectionId = repoSelect.value || null;
-      this.#renderNewTaskSheet();
-    });
-
     const newTaskForm = document.getElementById(
       'newTaskForm'
     ) as HTMLFormElement | null;
@@ -4970,18 +4970,18 @@ class ManagerApp {
     if (copy) {
       copy.textContent =
         this.#managedRepos.length === 0
-          ? '既存 repo を直したいときは、まず local git repo を登録してください。通常の相談は下の送信欄からそのまま送れます。'
-          : '既存 repo は登録済み repo から選んで起票できます。通常の相談は下の送信欄からそのまま送れます。';
+          ? '通常の相談は下の送信欄からそのまま送れます。既存 repo に自動割当したいときだけ、先に local git repo を登録してください。'
+          : 'Manager が登録済み repo に振るか、新しい repo を切るかを判断します。通常の相談は下の送信欄からそのまま送れます。';
     }
     if (steps.length >= 3) {
       steps[0].textContent =
         this.#managedRepos.length === 0
-          ? '1. まず local git repo を登録する'
-          : '1. 「新しい作業」で対象 repo を選ぶ';
+          ? '1. 必要なら local git repo を登録する'
+          : '1. 「新しい作業」にタイトルと依頼を書く';
       steps[1].textContent =
         this.#managedRepos.length === 0
-          ? '2. 「新しい作業」で repo・依頼内容・mode を入れる'
-          : '2. repo・依頼内容・mode を入れて起票する';
+          ? '2. 「新しい作業」で依頼内容と mode を入れる'
+          : '2. mode を決めて起票し、repo 判断は Manager に任せる';
       steps[2].textContent =
         '3. queued / working / review をこの一覧で追い、あとで merge lane へつなげる';
     }
@@ -4996,24 +4996,6 @@ class ManagerApp {
     this.#renderAll();
   }
 
-  #selectedManagedRepo(): ManagedRepo | null {
-    const select = document.getElementById(
-      'newTaskRepoSelect'
-    ) as HTMLSelectElement | null;
-    const requestedId =
-      this.#pendingManagedRepoSelectionId ??
-      (select?.value.trim() ? select.value.trim() : null);
-    if (requestedId) {
-      const matched = this.#managedRepos.find(
-        (repo) => repo.id === requestedId
-      );
-      if (matched) {
-        return matched;
-      }
-    }
-    return this.#managedRepos[0] ?? null;
-  }
-
   #renderNewTaskEntry(): void {
     const summary = document.getElementById('newTaskEntrySummary');
     const openButtons = [
@@ -5025,14 +5007,14 @@ class ManagerApp {
     const hasRepos = this.#managedRepos.length > 0;
     if (summary) {
       summary.textContent = hasRepos
-        ? `${this.#managedRepos.length} repo を登録済みです。既存 repo の修正はここから具体 repo を選んで起票できます。`
-        : 'まだ managed repo はありません。既存 repo を直したいときは、先に local git repo を登録してください。';
+        ? `${this.#managedRepos.length} repo を登録済みです。Manager が既存 repo に割り当てるか、新しい repo を切るかをここで判断します。`
+        : 'まだ managed repo はありません。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたい場合だけ先に local git repo を登録してください。';
     }
     for (const button of openButtons) {
       if (!button) {
         continue;
       }
-      button.textContent = hasRepos ? '新しい作業' : 'repo 登録から始める';
+      button.textContent = '新しい作業';
     }
   }
 
@@ -5043,83 +5025,27 @@ class ManagerApp {
     }
     backdrop.classList.toggle('hidden', !this.#newTaskSheetOpen);
 
-    const select = document.getElementById(
-      'newTaskRepoSelect'
-    ) as HTMLSelectElement | null;
     const repoSummary = document.getElementById('newTaskRepoSummary');
     const runtimeSummary = document.getElementById('newTaskRuntimeSummary');
     const status = document.getElementById('newTaskStatus');
     const submitButton = document.getElementById(
       'newTaskSubmitButton'
     ) as HTMLButtonElement | null;
-    const repoHint = document.getElementById('newTaskRepoHint');
-    const existingFields = document.getElementById('newTaskExistingRepoFields');
-    const baseBranchInput = document.getElementById(
-      'newTaskBaseBranchInput'
-    ) as HTMLInputElement | null;
-
-    if (select) {
-      const selectedId = this.#selectedManagedRepo()?.id ?? '';
-      select.innerHTML = '';
-      if (this.#managedRepos.length === 0) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'managed repo を先に追加してください';
-        select.appendChild(option);
-      } else {
-        for (const repo of this.#managedRepos) {
-          const option = document.createElement('option');
-          option.value = repo.id;
-          option.textContent = repo.label;
-          option.selected = repo.id === selectedId;
-          select.appendChild(option);
-        }
-      }
-    }
-
-    const repo = this.#selectedManagedRepo();
-    if (repo && baseBranchInput) {
-      if (
-        !baseBranchInput.value.trim() ||
-        this.#pendingManagedRepoSelectionId !== null
-      ) {
-        baseBranchInput.value = repo.defaultBranch;
-      }
-    }
-    this.#pendingManagedRepoSelectionId = null;
-    existingFields?.classList.remove('hidden');
 
     if (repoSummary) {
-      repoSummary.textContent = repo
-        ? `${repo.label} / ${repo.repoRoot}`
-        : 'repo を追加すると、ここに base branch と verify の基準を出します。';
+      repoSummary.textContent =
+        this.#managedRepos.length > 0
+          ? `登録済み repo: ${this.#managedRepos.map((repo) => repo.label).join(' / ')}`
+          : '登録済み repo はまだありません。既存 repo に自動割当したい場合だけ、下で local git repo を登録してください。';
     }
     if (runtimeSummary) {
-      runtimeSummary.textContent = repo
-        ? `この run は既定で ${humanizeWorkerRuntime(repo.preferredWorkerRuntime)} worker に割り当てられ、isolated worktree で実行されます。`
-        : 'repo を選ぶと、ここに worker runtime を表示します。';
-    }
-    if (repoHint) {
-      repoHint.textContent = repo
-        ? `標準 verify: ${repo.verifyCommand}`
-        : 'まず local git repo の path を登録してください。';
-    }
-    if (
-      status &&
-      this.#managedRepos.length === 0 &&
-      !status.textContent?.trim()
-    ) {
-      status.textContent = '先に repo を追加してください。';
-    } else if (
-      status &&
-      this.#managedRepos.length > 0 &&
-      status.textContent === '先に repo を追加してください。'
-    ) {
-      status.textContent = '';
+      runtimeSummary.textContent =
+        this.#managedRepos.length > 0
+          ? 'Manager が依頼内容から既存 repo か新規 repo かを判断します。既存 repo に振る場合は、その repo の既定 runtime と base branch を使います。'
+          : 'Manager が新規 repo かどうかは判断できます。既存 repo に振りたいときだけ、先に下で repo を登録してください。';
     }
     if (submitButton) {
-      submitButton.disabled =
-        this.#newTaskSheetSubmitting || this.#managedRepos.length === 0;
+      submitButton.disabled = this.#newTaskSheetSubmitting;
       submitButton.textContent = this.#newTaskSheetSubmitting
         ? '起票中...'
         : 'この内容で起票する';
@@ -5209,7 +5135,6 @@ class ManagerApp {
     }
 
     const saved = (await response.json()) as ManagedRepo;
-    this.#pendingManagedRepoSelectionId = saved.id;
     if (labelInput) {
       labelInput.value = '';
     }
@@ -5235,16 +5160,12 @@ class ManagerApp {
     if (this.#newTaskSheetSubmitting) {
       return;
     }
-    const repo = this.#selectedManagedRepo();
     const titleInput = document.getElementById(
       'newTaskTitleInput'
     ) as HTMLInputElement | null;
     const contentInput = document.getElementById(
       'newTaskContentInput'
     ) as HTMLTextAreaElement | null;
-    const baseBranchInput = document.getElementById(
-      'newTaskBaseBranchInput'
-    ) as HTMLInputElement | null;
     const status = document.getElementById('newTaskStatus');
     const runMode =
       (document.querySelector<HTMLInputElement>(
@@ -5252,13 +5173,6 @@ class ManagerApp {
       )?.value ?? 'write') === 'read-only'
         ? 'read-only'
         : 'write';
-
-    if (!repo) {
-      if (status) {
-        status.textContent = '先に repo を追加してください。';
-      }
-      return;
-    }
 
     const title = titleInput?.value.trim() ?? '';
     const content = contentInput?.value.trim() ?? '';
@@ -5274,11 +5188,8 @@ class ManagerApp {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        repoId: repo.id,
         title,
         content,
-        baseBranch:
-          baseBranchInput?.value.trim() || repo.defaultBranch || 'main',
         runMode,
       }),
     });
@@ -5390,12 +5301,12 @@ class ManagerApp {
         pendingCount > 0
           ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
           : this.#managedRepos.length === 0
-            ? 'まず「新しい作業」から local git repo を追加してください。'
-            : 'いまは待機中です。「新しい作業」から repo を選んで起票できます。';
+            ? 'いまは待機中です。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたいときだけ local git repo を追加してください。'
+            : 'いまは待機中です。「新しい作業」から依頼を起票すると、Manager が repo を判断して進めます。';
     } else if (configured) {
       detail.textContent =
         this.#managedRepos.length === 0
-          ? 'まず「新しい作業」から local git repo を追加してください。登録後はそのまま起票できます。'
+          ? 'まだ始まっていません。新規 repo 前提の作業はそのまま起票でき、既存 repo に振りたいときだけ local git repo を登録してください。'
           : 'まだ始まっていません。「新しい作業」で起票するか、下の送信欄から相談を送ると自動で動きます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =

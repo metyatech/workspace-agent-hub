@@ -15,7 +15,7 @@ The target behavior is:
 6. the human sees the work item graph, assignee, live progress, and resulting
    state in one place
 
-The detailed next-phase operator flow for explicit existing-repo selection,
+The detailed next-phase operator flow for manager-decided repo targeting,
 isolated worktree runs, repo merge lanes, and multi-agent runtime adapters is
 documented in
 [manager-multi-agent-workflow.md](manager-multi-agent-workflow.md).

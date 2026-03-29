@@ -40,7 +40,6 @@ import {
   restoreBuild,
 } from './build-archive.js';
 import {
-  findManagedRepo,
   readManagedRepos,
   upsertManagedRepo,
   type ManagerRunMode,
@@ -487,7 +486,6 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/manager/runs' && input.method === 'POST') {
     const body = await parseBody(input.req);
-    const repoId = typeof body.repoId === 'string' ? body.repoId.trim() : '';
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     const content = typeof body.content === 'string' ? body.content.trim() : '';
     if (!title) {
@@ -508,46 +506,32 @@ export async function handleManagerUiRequest(input: {
       'user',
       'waiting'
     );
-    if (!repoId) {
-      sendError(input.res, 'repoId is required');
-      return true;
-    }
-
-    const repo = await findManagedRepo(input.workspaceRoot, repoId);
-    if (!repo) {
-      sendError(input.res, 'Managed repo not found', 404);
-      return true;
-    }
-    const baseBranch =
-      typeof body.baseBranch === 'string' && body.baseBranch.trim()
-        ? body.baseBranch.trim()
-        : repo.defaultBranch;
     await updateManagerThreadMeta(
       input.workspaceRoot,
       createdThread.id,
       () => ({
-        managedRepoId: repo.id,
-        managedRepoLabel: repo.label,
-        managedRepoRoot: repo.repoRoot,
-        managedBaseBranch: baseBranch,
-        managedVerifyCommand: repo.verifyCommand,
-        requestedWorkerRuntime: repo.preferredWorkerRuntime,
+        managedRepoId: null,
+        managedRepoLabel: null,
+        managedRepoRoot: null,
+        repoTargetKind: null,
+        newRepoName: null,
+        newRepoRoot: null,
+        managedBaseBranch: null,
+        managedVerifyCommand: null,
+        requestedWorkerRuntime: null,
         requestedRunMode: runMode,
       })
     );
     await sendToBuiltinManager(input.workspaceRoot, createdThread.id, content, {
-      dispatchMode: 'direct-worker',
-      writeScopes: runMode === 'write' ? [repo.repoRoot] : [],
-      targetRepoRoot: repo.repoRoot,
+      dispatchMode: 'manager-evaluate',
       requestedRunMode: runMode,
-      requestedWorkerRuntime: repo.preferredWorkerRuntime,
     });
     sendJson(
       input.res,
       {
         queued: true,
         threadId: createdThread.id,
-        detail: `「${repo.label}」向けの作業をキューに追加しました`,
+        detail: '作業をキューに追加しました',
       },
       201
     );

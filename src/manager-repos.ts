@@ -9,6 +9,7 @@ export const MANAGER_REPOS_FILE = '.workspace-agent-hub-manager-repos.json';
 
 export type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
 export type ManagerRunMode = 'read-only' | 'write';
+export type ManagerTargetKind = 'existing-repo' | 'new-repo';
 
 export interface ManagedRepoConfig {
   id: string;
@@ -40,6 +41,7 @@ const VALID_RUNTIMES = new Set<ManagerWorkerRuntime>([
   'gemini',
   'copilot',
 ]);
+const NEW_REPO_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const repoWriteLocks = new Map<string, Promise<void>>();
 
 function managerReposFilePath(dir: string): string {
@@ -204,6 +206,19 @@ export async function findManagedRepo(
   return repos.find((repo) => repo.id === normalizedId) ?? null;
 }
 
+export async function findManagedRepoByRoot(
+  dir: string,
+  repoRoot: string
+): Promise<ManagedRepoConfig | null> {
+  const normalizedRoot = resolvePath(repoRoot).toLowerCase();
+  const repos = await readManagedRepos(dir);
+  return (
+    repos.find(
+      (repo) => resolvePath(repo.repoRoot).toLowerCase() === normalizedRoot
+    ) ?? null
+  );
+}
+
 function uniqueRepoId(
   requestedId: string | null,
   label: string,
@@ -259,6 +274,34 @@ export function validateManagedRepoInput(
     preferredWorkerRuntime,
     mergeLaneEnabled: input.mergeLaneEnabled !== false,
   };
+}
+
+export function normalizeNewRepoName(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function validateNewRepoName(raw: string): string {
+  const normalized = normalizeNewRepoName(raw);
+  if (!normalized) {
+    throw new Error('newRepoName is required');
+  }
+  if (!NEW_REPO_NAME_PATTERN.test(normalized)) {
+    throw new Error(
+      'newRepoName must use only letters, numbers, dots, underscores, or hyphens'
+    );
+  }
+  return normalized;
+}
+
+export function resolveNewRepoRoot(
+  workspaceRoot: string,
+  rawRepoName: string
+): string {
+  return join(resolvePath(workspaceRoot), validateNewRepoName(rawRepoName));
 }
 
 export async function upsertManagedRepo(

@@ -57,6 +57,9 @@ function makeThreadView(
     managedRepoId: null,
     managedRepoLabel: null,
     managedRepoRoot: null,
+    repoTargetKind: null,
+    newRepoName: null,
+    newRepoRoot: null,
     managedBaseBranch: null,
     managedVerifyCommand: null,
     requestedWorkerRuntime: null,
@@ -434,12 +437,14 @@ describe('manager-app DOM auth state matrix', () => {
     );
   });
 
-  it('includes an explicit new-task sheet with repo selection and managed-repo registration', () => {
+  it('includes an explicit new-task sheet with manager-decided repo targeting and managed-repo registration', () => {
     expect(managerHtml).toContain('id="newTaskOpenButton"');
     expect(managerHtml).toContain('id="newTaskSheetBackdrop"');
-    expect(managerHtml).toContain('id="newTaskRepoSelect"');
     expect(managerHtml).toContain('id="managedRepoForm"');
     expect(managerHtml).toContain('isolated worktree');
+    expect(managerHtml).toContain(
+      'Manager が既存 repo か新規 repo かも含めて判断'
+    );
     expect(managerHtml).not.toContain('name="newTaskTargetKind"');
     expect(managerHtml).not.toContain('id="newTaskNewRepoNameInput"');
   });
@@ -503,7 +508,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(hint.classList.contains('hidden')).toBe(true);
   });
 
-  it('opens the explicit new-task sheet and submits a managed repo run', async () => {
+  it('opens the explicit new-task sheet and lets Manager decide the repo target', async () => {
     const validToken = 'new-task-sheet-token';
     const repos = [
       {
@@ -563,11 +568,12 @@ describe('manager-app DOM auth state matrix', () => {
               status: 'waiting',
               uiState: 'queued',
               lastSender: 'user',
-              previewText: '[user] repo registry を追加してください',
+              previewText:
+                '[user] workspace-agent-hub の repo registry を追加してください',
               managedRepoId: 'workspace-agent-hub',
               managedRepoLabel: 'workspace-agent-hub',
               managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
-              managedBaseBranch: String(body['baseBranch']),
+              managedBaseBranch: 'main',
               managedVerifyCommand: 'npm run verify',
               requestedWorkerRuntime: repos[0].preferredWorkerRuntime,
               requestedRunMode: String(body['runMode']),
@@ -634,14 +640,12 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(false);
     expect(
       document.querySelector<HTMLElement>('#newTaskRuntimeSummary')!.textContent
-    ).toContain('Claude');
+    ).toContain('Manager が依頼内容から既存 repo か新規 repo かを判断');
 
     document.querySelector<HTMLInputElement>('#newTaskTitleInput')!.value =
       'Repo registry を追加する';
     document.querySelector<HTMLTextAreaElement>('#newTaskContentInput')!.value =
-      'repo registry を追加してください';
-    document.querySelector<HTMLInputElement>('#newTaskBaseBranchInput')!.value =
-      'main';
+      'workspace-agent-hub の repo registry を追加してください';
     document.querySelector<HTMLInputElement>(
       'input[name="newTaskRunMode"][value="read-only"]'
     )!.checked = true;
@@ -661,10 +665,8 @@ describe('manager-app DOM auth state matrix', () => {
       unknown
     >;
     expect(runBody).toMatchObject({
-      repoId: 'workspace-agent-hub',
-      baseBranch: 'main',
       title: 'Repo registry を追加する',
-      content: 'repo registry を追加してください',
+      content: 'workspace-agent-hub の repo registry を追加してください',
       runMode: 'read-only',
     });
 
@@ -682,7 +684,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('runtime: Claude');
   });
 
-  it('shows only concrete existing-repo controls in the visible new-task sheet', async () => {
+  it('keeps repo-kind selection out of the visible new-task sheet and does not ask the user to pick a repo', async () => {
     const validToken = 'existing-repo-only-sheet-token';
     const document = await loadManagerApp(createManagerFetch(validToken), {
       authRequired: true,
@@ -703,8 +705,11 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLInputElement>('#newTaskNewRepoNameInput')
     ).toBeNull();
     expect(
+      document.querySelector<HTMLSelectElement>('#newTaskRepoSelect')
+    ).toBeNull();
+    expect(
       document.querySelector<HTMLElement>('#newTaskRepoSummary')!.textContent
-    ).toContain('base branch');
+    ).toContain('登録済み repo');
   });
 
   it('submits the managed repo form with the selected preferred runtime', async () => {

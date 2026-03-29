@@ -132,9 +132,6 @@ The normal human flow should be:
 2. Open Manager
 3. Press `新しい作業`
 4. Fill in:
-   - repo
-   - base branch
-   - worker runtime
    - task title
    - request body
    - `read-only` or `write`
@@ -142,13 +139,15 @@ The normal human flow should be:
 6. Watch the run appear in `進行中`
 
 The human should never see `git worktree add` or branch plumbing in the normal
-flow. Existing repos must be named concretely, and the default Manager GUI
-should stay on that path instead of exposing exception-only creation flows.
+flow. Repo targeting should be internal: Manager decides whether the task
+belongs on a concrete registered existing repo or on a brand-new repo under the
+workspace root, and only asks for clarification when that decision is genuinely
+ambiguous.
 
 ### 2. Start a read-only task
 
-Read-only runs follow the same launch surface on top of a managed existing repo
-target.
+Read-only runs follow the same launch surface and the same Manager-owned repo
+decision path.
 
 The important human-visible difference is only the badge:
 
@@ -203,20 +202,16 @@ The human should only be interrupted for:
 
 Fields:
 
-- `Repo`
-- `Base branch`
-- `Worker runtime`
 - `Task title`
 - `Instruction`
 - `Mode`
   - `Read-only`
   - `Write`
-- `Priority`
-- `Optional notes`
 
 Inline teaching copy should be minimal. The screen should make these points
 obvious structurally:
 
+- Manager will decide `existing repo` vs `new repo`
 - existing-repo write tasks run in isolated worktrees automatically
 - merge is handled later by the repo merge lane only for existing repos
 - the human can launch multiple runs safely without touching git

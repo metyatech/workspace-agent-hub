@@ -10,7 +10,11 @@ import {
 } from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
-import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
+import type {
+  ManagerRunMode,
+  ManagerTargetKind,
+  ManagerWorkerRuntime,
+} from './manager-repos.js';
 
 export const MANAGER_THREAD_META_FILE =
   '.workspace-agent-hub-manager-thread-meta.json';
@@ -45,6 +49,9 @@ export interface ManagerThreadMeta {
   managedRepoId?: string | null;
   managedRepoLabel?: string | null;
   managedRepoRoot?: string | null;
+  repoTargetKind?: ManagerTargetKind | null;
+  newRepoName?: string | null;
+  newRepoRoot?: string | null;
   managedBaseBranch?: string | null;
   managedVerifyCommand?: string | null;
   requestedWorkerRuntime?: ManagerWorkerRuntime | null;
@@ -79,6 +86,9 @@ export interface ManagerThreadView extends Thread {
   managedRepoId: string | null;
   managedRepoLabel: string | null;
   managedRepoRoot: string | null;
+  repoTargetKind: ManagerTargetKind | null;
+  newRepoName: string | null;
+  newRepoRoot: string | null;
   managedBaseBranch: string | null;
   managedVerifyCommand: string | null;
   requestedWorkerRuntime: ManagerWorkerRuntime | null;
@@ -244,6 +254,10 @@ function normalizeWorkerRuntimeState(
 
 function normalizeManagedRepoText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeManagerTargetKind(value: unknown): ManagerTargetKind | null {
+  return value === 'existing-repo' || value === 'new-repo' ? value : null;
 }
 
 function normalizeRequestedWorkerRuntime(
@@ -446,6 +460,9 @@ export function deriveManagerThreadViews(input: {
       managedRepoId: normalizeManagedRepoText(meta?.managedRepoId),
       managedRepoLabel: normalizeManagedRepoText(meta?.managedRepoLabel),
       managedRepoRoot: normalizeManagedRepoText(meta?.managedRepoRoot),
+      repoTargetKind: normalizeManagerTargetKind(meta?.repoTargetKind),
+      newRepoName: normalizeManagedRepoText(meta?.newRepoName),
+      newRepoRoot: normalizeManagedRepoText(meta?.newRepoRoot),
       managedBaseBranch: normalizeManagedRepoText(meta?.managedBaseBranch),
       managedVerifyCommand: normalizeManagedRepoText(
         meta?.managedVerifyCommand

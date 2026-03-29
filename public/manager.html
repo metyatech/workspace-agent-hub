@@ -2159,13 +2159,13 @@
           <section id="getting-started" class="card intro-card hidden">
             <div class="intro-pill">最初の使い方</div>
             <h2>
-              repo
-              を選んで起票する作業と、下からそのまま送る相談を分けて使えます
+              Manager
+              に作業を起票する流れと、下からそのまま送る相談を分けて使えます
             </h2>
             <p id="getting-started-copy">
-              最初に local git repo を登録すると、その後は repo を選んで
-              isolated worktree
-              の作業を起票できます。通常の相談は下の送信欄からそのまま送れます。
+              local git repo を登録しておくと、Manager が既存 repo に振るか新規
+              repo
+              を切るかを判断できます。通常の相談は下の送信欄からそのまま送れます。
             </p>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
@@ -2481,12 +2481,13 @@
           <div class="task-sheet-copy">
             <div class="task-sheet-kicker">新しい作業</div>
             <div id="newTaskSheetTitle" class="task-sheet-title">
-              repo と base branch を明示して、isolated worktree
-              の作業を起票します
+              Manager が既存 repo か新規 repo かも含めて判断して、 isolated
+              worktree の作業として起票します
             </div>
             <div id="newTaskSheetSummary" class="task-sheet-summary">
-              まず repo
-              を選び、そのあとタイトルと依頼内容を書いてください。通常の相談は下の送信欄のままでも送れます。
+              タイトルと依頼内容を書いてください。既存 repo への割り当てや新しい
+              repo の切り出しは Manager
+              が決めます。通常の相談は下の送信欄のままでも送れます。
             </div>
           </div>
           <button
@@ -2503,26 +2504,11 @@
           <section class="task-sheet-card">
             <h3>作業を起票する</h3>
             <div class="task-sheet-card-copy">
-              既存 repo の修正は、ここで具体 repo を選んで起票します。
+              ここでは依頼内容だけを書きます。どの repo へ振るか、あるいは新しい
+              repo を切るかは Manager が内部で判断します。
             </div>
             <form id="newTaskForm" class="stack">
-              <div id="newTaskExistingRepoFields" class="stack">
-                <label class="field-group">
-                  <span class="field-label">repo</span>
-                  <select id="newTaskRepoSelect" class="field-select"></select>
-                  <span id="newTaskRepoSummary" class="field-hint"></span>
-                </label>
-              </div>
-              <label class="field-group">
-                <span class="field-label">base branch</span>
-                <input
-                  id="newTaskBaseBranchInput"
-                  class="field-input"
-                  type="text"
-                  value="main"
-                />
-                <span id="newTaskRepoHint" class="field-hint"></span>
-              </label>
+              <div id="newTaskRepoSummary" class="field-hint"></div>
               <label class="field-group">
                 <span class="field-label">title</span>
                 <input
@@ -2537,7 +2523,7 @@
                 <textarea
                   id="newTaskContentInput"
                   class="field-textarea"
-                  placeholder="ここに、その repo に対してやってほしいことを書きます。"
+                  placeholder="ここに、何を作るか・何を直すか・どんな結果にしてほしいかを書きます。"
                 ></textarea>
               </label>
               <div class="field-group">
