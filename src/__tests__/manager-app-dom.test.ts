@@ -57,9 +57,6 @@ function makeThreadView(
     managedRepoId: null,
     managedRepoLabel: null,
     managedRepoRoot: null,
-    repoTargetKind: null,
-    newRepoName: null,
-    newRepoRoot: null,
     managedBaseBranch: null,
     managedVerifyCommand: null,
     requestedWorkerRuntime: null,
@@ -685,7 +682,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('runtime: Claude');
   });
 
-  it('keeps operator-only new-repo creation out of the visible new-task sheet', async () => {
+  it('shows only concrete existing-repo controls in the visible new-task sheet', async () => {
     const validToken = 'existing-repo-only-sheet-token';
     const document = await loadManagerApp(createManagerFetch(validToken), {
       authRequired: true,
@@ -699,7 +696,7 @@ describe('manager-app DOM auth state matrix', () => {
 
     expect(
       document.querySelector<HTMLInputElement>(
-        'input[name="newTaskTargetKind"][value="new-repo"]'
+        'input[name="newTaskTargetKind"]'
       )
     ).toBeNull();
     expect(

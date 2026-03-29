@@ -91,9 +91,8 @@ acceptance:
   cancellation, and supersede application
 - Start, stop, and monitor worker agents
 - Require concrete repo targeting for existing-repo write work
-- Keep operator-only capabilities, such as brand-new repo creation under
-  `D:\ghws`, out of the default human-facing Manager GUI unless explicitly
-  promoted into that surface
+- Keep the Manager focused on concrete existing-repo work selection; do not add
+  exception-only creation paths to the default human-facing GUI
 
 ### Manager responsibilities
 

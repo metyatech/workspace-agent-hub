@@ -90,8 +90,6 @@ sync:
   task_start:
     - refresh managed repo mirror when targeting an existing repo
     - create task branch + isolated worktree for existing-repo write runs
-    - support operator-only repo-creation paths separately from the default
-      human-facing GUI
     - launch worker runtime
   task_finish:
     - verify
@@ -144,10 +142,8 @@ The normal human flow should be:
 6. Watch the run appear in `進行中`
 
 The human should never see `git worktree add` or branch plumbing in the normal
-flow. Existing repos must be named concretely. Operator-only capabilities such
-as brand-new repo creation may exist behind the orchestration layer, but they
-must not appear in the default human-facing Manager GUI unless explicitly
-promoted there.
+flow. Existing repos must be named concretely, and the default Manager GUI
+should stay on that path instead of exposing exception-only creation flows.
 
 ### 2. Start a read-only task
 

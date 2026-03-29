@@ -74,7 +74,6 @@ import {
   createWorkerWorktree,
   mergeWorktreeToMain,
   pushWithRetry,
-  prepareNewRepoWorkspace,
   removeWorktree,
   resolveConflictAndVerify,
   resolveTargetRepoRoot,
@@ -86,10 +85,7 @@ import {
 } from './manager-worktree.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
 import {
-  resolveNewRepoRoot,
-  validateNewRepoName,
   type ManagerRunMode,
-  type ManagerTargetKind,
   type ManagerWorkerRuntime,
 } from './manager-repos.js';
 import {
@@ -199,8 +195,6 @@ export interface ManagerDispatchPayload {
   assignee: 'manager' | 'worker';
   status?: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
   reply?: string;
-  targetKind?: ManagerTargetKind | null;
-  newRepoName?: string | null;
   writeScopes?: string[];
   supersedesThreadIds?: string[];
   reason?: string;
@@ -273,8 +267,6 @@ export interface ManagerActiveAssignment {
   threadId: string;
   queueEntryIds: string[];
   assigneeKind: 'manager' | 'worker';
-  targetKind: ManagerTargetKind;
-  newRepoName: string | null;
   workerRuntime: ManagerWorkerRuntime;
   assigneeLabel: string;
   writeScopes: string[];
@@ -379,8 +371,6 @@ export interface QueueEntry {
   content: string;
   attachments?: QueueEntryAttachment[];
   dispatchMode?: 'direct-worker' | 'manager-evaluate';
-  targetKind?: ManagerTargetKind | null;
-  newRepoName?: string | null;
   writeScopes?: string[];
   targetRepoRoot?: string | null;
   requestedRunMode?: ManagerRunMode | null;
@@ -472,10 +462,6 @@ function normalizeWriteScopes(value: unknown): string[] {
   return Array.from(new Set(scopes));
 }
 
-function normalizeTargetKind(value: unknown): ManagerTargetKind | null {
-  return value === 'new-repo' || value === 'existing-repo' ? value : null;
-}
-
 function normalizeOptionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -519,8 +505,6 @@ function normalizeActiveAssignment(
     threadId,
     queueEntryIds,
     assigneeKind,
-    targetKind: normalizeTargetKind(record['targetKind']) ?? 'existing-repo',
-    newRepoName: normalizeOptionalText(record['newRepoName']),
     workerRuntime,
     assigneeLabel,
     writeScopes: normalizeWriteScopes(record['writeScopes']),
@@ -577,8 +561,6 @@ function normalizeManagerSession(
             threadId: 'unknown',
             queueEntryIds: [session.currentQueueId.trim()],
             assigneeKind: 'worker' as const,
-            targetKind: 'existing-repo' as const,
-            newRepoName: null,
             workerRuntime: 'codex' as const,
             assigneeLabel: workerRuntimeAssigneeLabel('codex'),
             writeScopes: [],
@@ -746,8 +728,6 @@ export async function readQueue(dir: string): Promise<QueueEntry[]> {
 function normalizeQueueEntry(entry: QueueEntry): QueueEntry {
   return {
     ...entry,
-    targetKind: normalizeTargetKind(entry.targetKind),
-    newRepoName: normalizeOptionalText(entry.newRepoName),
     writeScopes: normalizeWriteScopes(entry.writeScopes),
     targetRepoRoot:
       typeof entry.targetRepoRoot === 'string' && entry.targetRepoRoot.trim()
@@ -788,8 +768,6 @@ export async function enqueueMessage(
   content: string,
   options?: {
     dispatchMode?: 'direct-worker' | 'manager-evaluate';
-    targetKind?: ManagerTargetKind | null;
-    newRepoName?: string | null;
     writeScopes?: string[];
     targetRepoRoot?: string | null;
     requestedRunMode?: ManagerRunMode | null;
@@ -807,8 +785,6 @@ export async function enqueueMessage(
     content,
     attachments,
     dispatchMode: options?.dispatchMode ?? 'direct-worker',
-    targetKind: normalizeTargetKind(options?.targetKind),
-    newRepoName: normalizeOptionalText(options?.newRepoName),
     writeScopes: normalizeWriteScopes(options?.writeScopes),
     targetRepoRoot:
       typeof options?.targetRepoRoot === 'string' &&
@@ -1331,9 +1307,6 @@ export function buildWorkerExecutionPrompt(input: {
   resolvedDir: string;
   worktreePath: string | null;
   targetRepoRoot: string | null;
-  repoTargetKind?: ManagerTargetKind | null;
-  newRepoName?: string | null;
-  newRepoRoot?: string | null;
   managedRepoLabel?: string | null;
   managedRepoRoot?: string | null;
   managedBaseBranch?: string | null;
@@ -1349,7 +1322,6 @@ export function buildWorkerExecutionPrompt(input: {
     return [
       `[Topic: ${input.thread.title}]`,
       MANAGER_WORKER_JSON_RULES,
-      `targetKind: ${input.repoTargetKind ?? 'existing-repo'}`,
       `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
       promptContent,
     ].join('\n\n');
@@ -1359,15 +1331,10 @@ export function buildWorkerExecutionPrompt(input: {
     ? input.requestedRunMode === 'read-only'
       ? 'This is an isolated git worktree prepared for inspection. Do NOT modify files, commit, or push. Read the repository state and run read-only verification only.'
       : 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
-    : input.repoTargetKind === 'new-repo'
-      ? 'This task targets a brand-new repository directory under the workspace root. Create and initialize the repository there as needed. Because there is no existing main branch to merge into, you own the direct delivery flow inside that repo.'
-      : '';
+    : '';
   const repoContext = [
-    `Target kind: ${input.repoTargetKind ?? 'existing-repo'}`,
     input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
     input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
-    input.newRepoName ? `New repo name: ${input.newRepoName}` : '',
-    input.newRepoRoot ? `New repo root: ${input.newRepoRoot}` : '',
     input.managedBaseBranch
       ? `Managed base branch: ${input.managedBaseBranch}`
       : '',
@@ -1634,11 +1601,8 @@ function buildDispatchPrompt(input: {
   thread: Thread;
   resolvedDir: string;
   relatedActiveAssignments: ManagerActiveAssignment[];
-  repoTargetKind?: ManagerTargetKind | null;
   managedRepoLabel?: string | null;
   managedRepoRoot?: string | null;
-  newRepoName?: string | null;
-  newRepoRoot?: string | null;
   managedBaseBranch?: string | null;
   managedVerifyCommand?: string | null;
   requestedRunMode?: ManagerRunMode | null;
@@ -1662,22 +1626,18 @@ function buildDispatchPrompt(input: {
 
   return [
     MANAGER_ROUTER_SYSTEM_PROMPT,
-    'Return only strict JSON with keys {"assignee","status","reply","targetKind","newRepoName","writeScopes","supersedesThreadIds","reason"}.',
+    'Return only strict JSON with keys {"assignee","status","reply","writeScopes","supersedesThreadIds","reason"}.',
     'Use assignee "manager" only when you can fully answer now without repository mutation, command execution, long investigation, or a separate worker agent.',
     'Use assignee "manager" for lightweight questions or clarifications you can answer immediately from the current work-item context and your own reasoning.',
     'Use assignee "worker" for anything that needs repository inspection, command execution, code changes, tests, substantial investigation, or a heavier question that should be delegated.',
     'When assignee is "manager", include status and reply.',
     'When assignee is "worker", include writeScopes as a short array of repo-relative write areas. Use an empty array only for truly read-only work.',
-    'If the task modifies an existing repository, the worker target MUST resolve to one concrete repo. Never use "*" or the workspace root as a fallback for existing-repo mutation tasks.',
-    'If the user wants a brand-new repository, set targetKind to "new-repo" and include newRepoName. The repo will be created directly under the workspace root.',
-    'If it is unclear whether the user means an existing repo or a new repo, or which existing repo they mean, do not dispatch a worker. Reply as manager with status "needs-reply" and ask for the concrete repo choice.',
+    'For repository mutation tasks, the worker target MUST resolve to one concrete existing repo. Never use "*" or the workspace root as a fallback.',
+    'If it is unclear which existing repo the user means, do not dispatch a worker. Reply as manager with status "needs-reply" and ask for the concrete repo choice.',
     'Only include supersedesThreadIds when the new work item is a descendant whose result would completely invalidate an already-running descendant task listed below.',
     `Workspace: ${input.resolvedDir}`,
-    input.repoTargetKind ? `Current target kind: ${input.repoTargetKind}` : '',
     input.managedRepoLabel ? `Managed repo: ${input.managedRepoLabel}` : '',
     input.managedRepoRoot ? `Managed repo root: ${input.managedRepoRoot}` : '',
-    input.newRepoName ? `Current new repo name: ${input.newRepoName}` : '',
-    input.newRepoRoot ? `Current new repo root: ${input.newRepoRoot}` : '',
     input.inferredRepoLabel
       ? `Likely repo from context: ${input.inferredRepoLabel}`
       : '',
@@ -1720,8 +1680,7 @@ function buildRepoTargetClarificationReply(
   return {
     assignee: 'manager',
     status: 'needs-reply',
-    reply:
-      '既存 repo を直す作業なら、対象 repo を具体的に指定してください。新規 repo を作る作業なら、「new repo」と repo 名を明示してください。',
+    reply: '既存 repo を直す作業なら、対象 repo を具体的に指定してください。',
     reason,
     writeScopes: [],
   };
@@ -1829,8 +1788,6 @@ function parseManagerDispatchPayload(
       assignee: parsed.assignee,
       status: parsed.status,
       reply: typeof parsed.reply === 'string' ? parsed.reply.trim() : undefined,
-      targetKind: normalizeTargetKind(parsed.targetKind),
-      newRepoName: normalizeOptionalText(parsed.newRepoName),
       writeScopes: normalizeWriteScopes(parsed.writeScopes),
       supersedesThreadIds: normalizeStringArray(parsed.supersedesThreadIds),
       reason:
@@ -3182,21 +3139,9 @@ async function decideDispatchForBatch(input: {
   entries: QueueEntry[];
   relatedActiveAssignments: ManagerActiveAssignment[];
 }): Promise<ManagerDispatchPayload> {
-  const threadTargetKind: ManagerTargetKind =
-    input.threadMeta?.repoTargetKind === 'new-repo' ||
-    input.threadMeta?.newRepoRoot
-      ? 'new-repo'
-      : 'existing-repo';
-  const threadNewRepoName = normalizeOptionalText(
-    input.threadMeta?.newRepoName
-  );
-  const threadNewRepoRoot = normalizeOptionalText(
-    input.threadMeta?.newRepoRoot
-  );
   const inferredRepo =
-    threadTargetKind === 'existing-repo' &&
-    (input.threadMeta?.managedRepoRoot === null ||
-      input.threadMeta?.managedRepoRoot === undefined)
+    input.threadMeta?.managedRepoRoot === null ||
+    input.threadMeta?.managedRepoRoot === undefined
       ? inferRepoContextFromThread({
           resolvedDir: input.resolvedDir,
           thread: input.thread,
@@ -3208,11 +3153,8 @@ async function decideDispatchForBatch(input: {
     thread: stripTrailingUserMessagesFromThread(input.thread),
     resolvedDir: input.resolvedDir,
     relatedActiveAssignments: input.relatedActiveAssignments,
-    repoTargetKind: threadTargetKind,
     managedRepoLabel: input.threadMeta?.managedRepoLabel ?? null,
     managedRepoRoot: input.threadMeta?.managedRepoRoot ?? null,
-    newRepoName: threadNewRepoName,
-    newRepoRoot: threadNewRepoRoot,
     managedBaseBranch: input.threadMeta?.managedBaseBranch ?? null,
     managedVerifyCommand: input.threadMeta?.managedVerifyCommand ?? null,
     requestedRunMode: input.threadMeta?.requestedRunMode ?? null,
@@ -3242,20 +3184,13 @@ async function decideDispatchForBatch(input: {
     : inferredRepo
       ? [inferredRepo.scope]
       : [];
-  const fallbackWriteScopes =
-    threadTargetKind === 'new-repo'
-      ? writeRequestedByThread && threadNewRepoName
-        ? [threadNewRepoName]
-        : []
-      : contextExistingRepoScopes;
+  const fallbackWriteScopes = contextExistingRepoScopes;
   if (!parsed) {
     if (writeRequestedByThread && fallbackWriteScopes.length === 0) {
       return buildRepoTargetClarificationReply('dispatch-fallback');
     }
     return {
       assignee: 'worker',
-      targetKind: threadTargetKind,
-      newRepoName: threadNewRepoName,
       writeScopes: fallbackWriteScopes,
       reason: 'dispatch-fallback',
     };
@@ -3265,46 +3200,12 @@ async function decideDispatchForBatch(input: {
     return parsed;
   }
 
-  const parsedTargetKind =
-    parsed.targetKind ?? threadTargetKind ?? 'existing-repo';
-  const resolvedNewRepoName =
-    parsedTargetKind === 'new-repo'
-      ? (() => {
-          const rawName = parsed.newRepoName ?? threadNewRepoName;
-          if (!rawName) {
-            return null;
-          }
-          try {
-            return validateNewRepoName(rawName);
-          } catch {
-            return null;
-          }
-        })()
-      : null;
-  if (parsedTargetKind === 'new-repo') {
-    if (!resolvedNewRepoName) {
-      return buildRepoTargetClarificationReply('new-repo-name-required');
-    }
-    return {
-      ...parsed,
-      targetKind: 'new-repo',
-      newRepoName: resolvedNewRepoName,
-      writeScopes:
-        (parsed.writeScopes?.length ?? 0) === 0 &&
-        input.threadMeta?.requestedRunMode === 'read-only'
-          ? []
-          : [resolvedNewRepoName],
-    };
-  }
-
   if (
     (parsed.writeScopes?.length ?? 0) === 0 &&
     input.threadMeta?.requestedRunMode === 'read-only'
   ) {
     return {
       ...parsed,
-      targetKind: 'existing-repo',
-      newRepoName: null,
       writeScopes: [],
     };
   }
@@ -3317,8 +3218,6 @@ async function decideDispatchForBatch(input: {
     if (explicitExistingWriteScopes.length > 0) {
       return {
         ...parsed,
-        targetKind: 'existing-repo',
-        newRepoName: null,
         writeScopes: explicitExistingWriteScopes,
       };
     }
@@ -3332,8 +3231,6 @@ async function decideDispatchForBatch(input: {
     }
     return {
       ...parsed,
-      targetKind: 'existing-repo',
-      newRepoName: null,
       writeScopes: [],
     };
   }
@@ -3351,8 +3248,6 @@ async function decideDispatchForBatch(input: {
 
   return {
     ...parsed,
-    targetKind: 'existing-repo',
-    newRepoName: null,
     writeScopes: resolvedExistingWriteScopes,
   };
 }
@@ -3600,9 +3495,6 @@ async function runQueuedAssignment(input: {
               resolvedDir,
               worktreePath: assignment.worktreePath,
               targetRepoRoot: assignment.targetRepoRoot,
-              repoTargetKind: assignment.targetKind,
-              newRepoName: assignment.newRepoName,
-              newRepoRoot: threadMeta?.newRepoRoot ?? null,
               managedRepoLabel: threadMeta?.managedRepoLabel ?? null,
               managedRepoRoot: threadMeta?.managedRepoRoot ?? null,
               managedBaseBranch: threadMeta?.managedBaseBranch ?? null,
@@ -4568,22 +4460,6 @@ export async function processNextQueued(
           })
         : {
             assignee: 'worker' as const,
-            targetKind:
-              nextEntries.find(
-                (entry) =>
-                  entry.targetKind === 'existing-repo' ||
-                  entry.targetKind === 'new-repo'
-              )?.targetKind ??
-              (threadMeta?.repoTargetKind === 'new-repo'
-                ? 'new-repo'
-                : 'existing-repo'),
-            newRepoName:
-              nextEntries.find(
-                (entry) =>
-                  typeof entry.newRepoName === 'string' && entry.newRepoName
-              )?.newRepoName ??
-              threadMeta?.newRepoName ??
-              null,
             writeScopes: (() => {
               const queuedWriteScopes = nextEntries.flatMap(
                 (entry) => entry.writeScopes ?? []
@@ -4602,27 +4478,9 @@ export async function processNextQueued(
             })(),
             reason: 'direct-worker-default',
           };
-      const assignmentTargetKind: ManagerTargetKind =
-        dispatch.targetKind === 'new-repo' ||
-        nextEntries.some((entry) => entry.targetKind === 'new-repo') ||
-        threadMeta?.repoTargetKind === 'new-repo'
-          ? 'new-repo'
-          : 'existing-repo';
-      const assignmentNewRepoName =
-        assignmentTargetKind === 'new-repo'
-          ? normalizeOptionalText(
-              dispatch.newRepoName ??
-                nextEntries.find(
-                  (entry) =>
-                    typeof entry.newRepoName === 'string' && entry.newRepoName
-                )?.newRepoName ??
-                threadMeta?.newRepoName
-            )
-          : null;
       const inferredRepoContext =
-        assignmentTargetKind === 'existing-repo' &&
-        (threadMeta?.managedRepoRoot === null ||
-          threadMeta?.managedRepoRoot === undefined)
+        threadMeta?.managedRepoRoot === null ||
+        threadMeta?.managedRepoRoot === undefined
           ? inferRepoContextFromThread({
               resolvedDir,
               thread,
@@ -4679,11 +4537,7 @@ export async function processNextQueued(
             typeof entry.targetRepoRoot === 'string' &&
             entry.targetRepoRoot.trim()
         )?.targetRepoRoot ??
-        threadMeta?.newRepoRoot ??
         threadMeta?.managedRepoRoot ??
-        (assignmentNewRepoName
-          ? resolveNewRepoRoot(resolvedDir, assignmentNewRepoName)
-          : null) ??
         inferredRepoContext?.repoRoot ??
         null;
       const requestedWorkerRuntime: ManagerWorkerRuntime =
@@ -4756,8 +4610,6 @@ export async function processNextQueued(
         threadId: next.threadId,
         queueEntryIds: batchIds,
         assigneeKind: dispatch.assignee,
-        targetKind: assignmentTargetKind,
-        newRepoName: assignmentNewRepoName,
         workerRuntime: requestedWorkerRuntime,
         assigneeLabel: defaultAssigneeLabel(
           dispatch.assignee,
@@ -4779,20 +4631,13 @@ export async function processNextQueued(
           resolveTargetRepoRoot(resolvedDir, assignmentWriteScopes);
         try {
           assignment.targetRepoRoot = targetRepo;
-          if (assignmentTargetKind === 'new-repo') {
-            await prepareNewRepoWorkspace({
-              workspaceRoot: resolvedDir,
-              targetRepoRoot: targetRepo,
-            });
-          } else {
-            const wt = await createWorkerWorktree({
-              targetRepoRoot: targetRepo,
-              assignmentId: assignment.id,
-            });
-            assignment.worktreePath = wt.worktreePath;
-            assignment.worktreeBranch = wt.branchName;
-            assignment.targetRepoRoot = wt.targetRepoRoot;
-          }
+          const wt = await createWorkerWorktree({
+            targetRepoRoot: targetRepo,
+            assignmentId: assignment.id,
+          });
+          assignment.worktreePath = wt.worktreePath;
+          assignment.worktreeBranch = wt.branchName;
+          assignment.targetRepoRoot = wt.targetRepoRoot;
         } catch (wtErr) {
           const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
           try {
@@ -5386,8 +5231,6 @@ export async function sendToBuiltinManager(
   content: string,
   options?: {
     dispatchMode?: 'direct-worker' | 'manager-evaluate';
-    targetKind?: ManagerTargetKind | null;
-    newRepoName?: string | null;
     writeScopes?: string[];
     targetRepoRoot?: string | null;
     requestedRunMode?: ManagerRunMode | null;

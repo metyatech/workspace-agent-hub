@@ -54,7 +54,6 @@ vi.mock('../manager-worktree.js', () => ({
     branchName: '',
     targetRepoRoot: '',
   }),
-  prepareNewRepoWorkspace: vi.fn().mockResolvedValue(undefined),
   mergeWorktreeToMain: vi.fn().mockResolvedValue({
     success: true,
     conflicted: false,
@@ -126,7 +125,6 @@ import {
 } from '../manager-thread-state.js';
 import {
   createWorkerWorktree,
-  prepareNewRepoWorkspace,
   mergeWorktreeToMain,
   pushWithRetry,
   resolveTargetRepoRoot,
@@ -264,8 +262,6 @@ beforeEach(async () => {
     branchName: '',
     targetRepoRoot: '',
   });
-  vi.mocked(prepareNewRepoWorkspace).mockReset();
-  vi.mocked(prepareNewRepoWorkspace).mockResolvedValue(undefined);
   vi.mocked(mergeWorktreeToMain).mockReset();
   vi.mocked(mergeWorktreeToMain).mockResolvedValue({
     success: true,
@@ -1424,63 +1420,6 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
   });
 
-  it('prepares a direct new-repo workspace instead of creating a worktree', async () => {
-    const workerProc = makeProc(6116);
-    const reviewProc = makeProc(6117);
-    const newRepoRoot = join(tempDir, 'workspace-agent-broker');
-    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-
-    await sendToBuiltinManager(
-      tempDir,
-      'thread-new-repo',
-      '新しい repo を作って',
-      {
-        dispatchMode: 'direct-worker',
-        targetKind: 'new-repo',
-        newRepoName: 'workspace-agent-broker',
-        writeScopes: ['workspace-agent-broker'],
-        targetRepoRoot: newRepoRoot,
-        requestedRunMode: 'write',
-      }
-    );
-
-    await waitFor(() => spawnMock.mock.calls.length === 1);
-    expect(vi.mocked(prepareNewRepoWorkspace)).toHaveBeenCalledWith({
-      workspaceRoot: tempDir,
-      targetRepoRoot: newRepoRoot,
-    });
-    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
-    expect(workerProc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('Target kind: new-repo')
-    );
-    expect(workerProc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('New repo name: workspace-agent-broker')
-    );
-
-    completeCodexTurn(workerProc, {
-      sessionId: 'worker-new-repo',
-      text: JSON.stringify({
-        status: 'review',
-        reply: 'new repo ready',
-        changedFiles: ['README.md'],
-        verificationSummary: 'manual verify',
-      }),
-    });
-
-    await waitFor(() => spawnMock.mock.calls.length === 2);
-    completeCodexTurn(reviewProc, {
-      sessionId: 'review-new-repo',
-      text: JSON.stringify({
-        status: 'review',
-        reply: 'new repo ready',
-      }),
-    });
-
-    await waitFor(() => addMessageMock.mock.calls.length === 1);
-    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-new-repo');
-    expect(addMessageMock.mock.calls[0]?.[2]).toBe('new repo ready');
-  });
-
   it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {
     const workerProc = makeProc(6121);
     const reviewProc = makeProc(6122);
@@ -1700,8 +1639,6 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-stalled',
           queueEntryIds: ['q_stalled'],
           assigneeKind: 'worker',
-          targetKind: 'existing-repo',
-          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -1735,8 +1672,6 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-a',
           queueEntryIds: ['q_a'],
           assigneeKind: 'worker',
-          targetKind: 'existing-repo',
-          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/a.ts'],
@@ -1752,8 +1687,6 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-b',
           queueEntryIds: ['q_b'],
           assigneeKind: 'worker',
-          targetKind: 'existing-repo',
-          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/b.ts'],
@@ -1848,8 +1781,6 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-orphaned',
           queueEntryIds: ['q_orphaned'],
           assigneeKind: 'worker',
-          targetKind: 'existing-repo',
-          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -2404,8 +2335,6 @@ describe('manager backend codex integration', () => {
           threadId: 'thread-old',
           queueEntryIds: ['q_old'],
           assigneeKind: 'worker',
-          targetKind: 'existing-repo',
-          newRepoName: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],

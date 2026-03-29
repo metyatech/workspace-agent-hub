@@ -1021,7 +1021,7 @@ describe('native manager page', () => {
     expect(repos.some((repo) => repo.id === saved.id)).toBe(true);
   });
 
-  it('accepts a new-repo run and records the explicit target under the workspace root', async () => {
+  it('rejects run creation until a concrete existing repo is provided', async () => {
     const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(workspaceRoot),
@@ -1042,8 +1042,6 @@ describe('native manager page', () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          targetKind: 'new-repo',
-          newRepoName: 'workspace-agent-broker',
           title: 'Workspace Agent Broker を作る',
           content: '新しい repo を作成してください',
           baseBranch: 'main',
@@ -1051,15 +1049,9 @@ describe('native manager page', () => {
         }),
       }
     );
-    expect(createResponse.status).toBe(201);
-    const created = (await createResponse.json()) as { threadId: string };
-    const meta = await readManagerThreadMeta(workspaceRoot);
-    expect(meta[created.threadId]).toMatchObject({
-      repoTargetKind: 'new-repo',
-      managedRepoLabel: 'workspace-agent-broker',
-      newRepoName: 'workspace-agent-broker',
-      newRepoRoot: join(workspaceRoot, 'workspace-agent-broker'),
-      requestedRunMode: 'write',
+    expect(createResponse.status).toBe(400);
+    await expect(createResponse.json()).resolves.toMatchObject({
+      error: 'repoId is required',
     });
   });
 });

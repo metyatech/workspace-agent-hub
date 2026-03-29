@@ -50,7 +50,6 @@ type ManagerWorkerRuntimeState =
   | 'cancelled-as-superseded';
 
 type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
-type ManagerTargetKind = 'existing-repo' | 'new-repo';
 
 interface WorkerLiveEntry {
   at: string;
@@ -91,9 +90,6 @@ interface ThreadView {
   managedRepoId: string | null;
   managedRepoLabel: string | null;
   managedRepoRoot: string | null;
-  repoTargetKind: ManagerTargetKind | null;
-  newRepoName: string | null;
-  newRepoRoot: string | null;
   managedBaseBranch: string | null;
   managedVerifyCommand: string | null;
   requestedWorkerRuntime: ManagerWorkerRuntime | null;
@@ -1829,7 +1825,7 @@ function describeWorkItemContext(
   const parts = [
     thread.managedRepoLabel
       ? [
-          `${thread.repoTargetKind === 'new-repo' ? 'new repo' : 'repo'}: ${thread.managedRepoLabel}`,
+          `repo: ${thread.managedRepoLabel}`,
           thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
           `mode: ${humanizeRunMode(thread.requestedRunMode)}`,
         ]
@@ -2815,9 +2811,7 @@ class DetailController {
     const meta = document.createElement('div');
     meta.className = 'detail-meta';
     meta.textContent = [
-      thread.managedRepoLabel
-        ? `${thread.repoTargetKind === 'new-repo' ? 'new repo' : 'repo'}: ${thread.managedRepoLabel}`
-        : '',
+      thread.managedRepoLabel ? `repo: ${thread.managedRepoLabel}` : '',
       thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
       thread.requestedRunMode
         ? `mode: ${humanizeRunMode(thread.requestedRunMode)}`
@@ -5280,9 +5274,7 @@ class ManagerApp {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        targetKind: 'existing-repo',
         repoId: repo.id,
-        newRepoName: '',
         title,
         content,
         baseBranch:
