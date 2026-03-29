@@ -392,12 +392,9 @@ How it works:
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
 5. The user can either:
-   - press `新しい作業`, choose either `existing repo` or `new repo`, then:
-     - for `existing repo`, pick a managed repo, base branch, and run mode and
-       launch an isolated-worktree run explicitly using that repo's preferred
-       worker runtime
-     - for `new repo`, give the repo name explicitly and let Manager create
-       `D:\ghws\<repo-name>` directly instead of guessing a destination
+   - press `新しい作業`, pick a managed repo, base branch, and run mode, and
+     launch an isolated-worktree run explicitly using that repo's preferred
+     worker runtime
    - or keep using the global send dock for ordinary inbox-style routing and
      follow-up discussion
 6. The writing surface stays collapsed on the inbox, then turns into a compact

@@ -16,8 +16,8 @@ The target behavior is:
    state in one place
 
 The detailed next-phase operator flow for explicit existing-repo selection,
-explicit new-repo creation under `D:\ghws`, isolated worktree runs, repo merge
-lanes, and multi-agent runtime adapters is documented in
+isolated worktree runs, repo merge lanes, and multi-agent runtime adapters is
+documented in
 [manager-multi-agent-workflow.md](manager-multi-agent-workflow.md).
 
 The inbox should stay human-first. The human should not need to create folders,
@@ -91,7 +91,9 @@ acceptance:
   cancellation, and supersede application
 - Start, stop, and monitor worker agents
 - Require concrete repo targeting for existing-repo write work
-- Create new repos only through explicit `new repo` targets under `D:\ghws`
+- Keep operator-only capabilities, such as brand-new repo creation under
+  `D:\ghws`, out of the default human-facing Manager GUI unless explicitly
+  promoted into that surface
 
 ### Manager responsibilities
 

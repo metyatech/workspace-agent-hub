@@ -90,12 +90,12 @@ sync:
   task_start:
     - refresh managed repo mirror when targeting an existing repo
     - create task branch + isolated worktree for existing-repo write runs
-    - create D:\ghws\<repo-name> for explicit new-repo runs
+    - support operator-only repo-creation paths separately from the default
+      human-facing GUI
     - launch worker runtime
   task_finish:
     - verify
     - enqueue in repo merge lane for existing repos
-    - keep new-repo delivery on the repo-creation path itself
   integration:
     - rebase or merge onto latest base branch
     - verify again
@@ -134,8 +134,7 @@ The normal human flow should be:
 2. Open Manager
 3. Press `新しい作業`
 4. Fill in:
-   - target kind (`existing repo` or `new repo`)
-   - repo or new repo name
+   - repo
    - base branch
    - worker runtime
    - task title
@@ -145,15 +144,15 @@ The normal human flow should be:
 6. Watch the run appear in `進行中`
 
 The human should never see `git worktree add` or branch plumbing in the normal
-flow. Existing repos must be named concretely. Brand-new repos must also be
-explicit: the human provides the repo name and Manager creates
-`D:\ghws\<repo-name>` directly instead of guessing.
+flow. Existing repos must be named concretely. Operator-only capabilities such
+as brand-new repo creation may exist behind the orchestration layer, but they
+must not appear in the default human-facing Manager GUI unless explicitly
+promoted there.
 
 ### 2. Start a read-only task
 
-Read-only runs follow the same launch surface. Existing repos stay on their
-managed repo target, and new-repo planning runs can still use the explicit
-`D:\ghws\<repo-name>` destination without entering a merge lane.
+Read-only runs follow the same launch surface on top of a managed existing repo
+target.
 
 The important human-visible difference is only the badge:
 
@@ -186,8 +185,6 @@ When an existing-repo write run finishes and passes its run-level verification:
 5. if successful, the merge-lane agent pushes the result
 
 The human should see one queue per existing repo, not one global merge pile.
-New-repo runs should instead show direct repo-creation delivery state because
-there is no pre-existing mainline to merge back into.
 
 ### 5. Handle conflicts
 
@@ -210,11 +207,7 @@ The human should only be interrupted for:
 
 Fields:
 
-- `Target kind`
-  - `Existing repo`
-  - `New repo`
 - `Repo`
-- `New repo name`
 - `Base branch`
 - `Worker runtime`
 - `Task title`
@@ -229,8 +222,6 @@ Inline teaching copy should be minimal. The screen should make these points
 obvious structurally:
 
 - existing-repo write tasks run in isolated worktrees automatically
-- new-repo tasks create `D:\ghws\<repo-name>` directly and skip merge-lane
-  integration
 - merge is handled later by the repo merge lane only for existing repos
 - the human can launch multiple runs safely without touching git
 
