@@ -3703,9 +3703,13 @@ class ManagerApp {
     return true;
   }
 
+  #canAccessManagerApi(): boolean {
+    return !MANAGER_AUTH_REQUIRED || Boolean(this.#authToken);
+  }
+
   #startLiveStream(reason = 'start'): void {
     this.#stopLiveStream('restart');
-    if (!this.#authToken) {
+    if (!this.#canAccessManagerApi()) {
       return;
     }
     this.#recordDiagnosticEvent('live:start', reason);
@@ -3739,7 +3743,7 @@ class ManagerApp {
   #scheduleLiveReconnect(delayMs = 1000, reason = 'reconnect'): void {
     if (
       this.#liveReconnectTimer !== null ||
-      !this.#authToken ||
+      !this.#canAccessManagerApi() ||
       document.visibilityState === 'hidden' ||
       typeof window === 'undefined'
     ) {
@@ -3801,7 +3805,7 @@ class ManagerApp {
 
   #requestLifecycleRefresh(input?: { force?: boolean; reason?: string }): void {
     if (
-      !this.#authToken ||
+      !this.#canAccessManagerApi() ||
       !this.#lifecycleRefreshReady ||
       document.visibilityState === 'hidden'
     ) {
@@ -3825,7 +3829,7 @@ class ManagerApp {
   }
 
   async #refreshAfterResume(reason = 'resume'): Promise<void> {
-    if (!this.#authToken || this.#resumeRefreshInFlight) {
+    if (!this.#canAccessManagerApi() || this.#resumeRefreshInFlight) {
       return;
     }
 
@@ -3850,7 +3854,7 @@ class ManagerApp {
       throw error;
     } finally {
       this.#resumeRefreshInFlight = false;
-      if (this.#authToken) {
+      if (this.#canAccessManagerApi()) {
         this.#startLiveStream(`resume:${reason}`);
       }
     }
@@ -3945,7 +3949,7 @@ class ManagerApp {
       this.#liveStaleTimer = null;
     }
     if (
-      !this.#authToken ||
+      !this.#canAccessManagerApi() ||
       typeof window === 'undefined' ||
       document.visibilityState === 'hidden'
     ) {
@@ -3954,7 +3958,7 @@ class ManagerApp {
     this.#liveStaleTimer = window.setTimeout(() => {
       this.#liveStaleTimer = null;
       if (
-        !this.#authToken ||
+        !this.#canAccessManagerApi() ||
         this.#resumeRefreshInFlight ||
         document.visibilityState === 'hidden'
       ) {

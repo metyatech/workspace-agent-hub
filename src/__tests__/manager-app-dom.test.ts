@@ -4149,6 +4149,147 @@ describe('manager-app live updates', () => {
     ).toBe(true);
   });
 
+  it('keeps the live stream running in no-auth mode and applies pushed snapshots', async () => {
+    const waitingThread = makeThreadView('thread-no-auth', '無認証ライブ確認', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      previewText: '[user] 状態を確認してください',
+      queueDepth: 1,
+    });
+    const workingThread = makeThreadView('thread-no-auth', '無認証ライブ確認', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 状態を確認してください',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex',
+      workerAgentId: 'assign_no_auth',
+      workerRuntimeState: 'worker-running',
+      workerRuntimeDetail: 'README を確認中です。',
+    });
+    const waitingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中 (キュー: 1件)',
+      pendingCount: 1,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+    const workingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '処理中 (無認証ライブ確認)',
+      pendingCount: 0,
+      currentQueueId: 'q_no_auth',
+      currentThreadId: 'thread-no-auth',
+      currentThreadTitle: '無認証ライブ確認',
+    };
+    const encoder = new TextEncoder();
+    let liveRequestCount = 0;
+    const liveStreamControl: {
+      push?: (payload: unknown) => void;
+      close?: () => void;
+    } = {};
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        if (headers.get('X-Workspace-Agent-Hub-Token')) {
+          return new Response(
+            JSON.stringify({
+              error: 'unexpected token for no-auth mode',
+            }),
+            { status: 400 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          liveRequestCount += 1;
+          if (liveRequestCount === 1) {
+            return makeNdjsonResponse([
+              {
+                kind: 'snapshot',
+                emittedAt: '2026-03-30T02:00:00.000Z',
+                threads: [waitingThread],
+                tasks: [],
+                status: waitingStatus,
+              },
+            ]);
+          }
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                liveStreamControl.push = (payload: unknown) => {
+                  controller.enqueue(
+                    encoder.encode(JSON.stringify(payload) + '\n')
+                  );
+                };
+                liveStreamControl.close = () => {
+                  controller.close();
+                };
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'application/x-ndjson; charset=utf-8',
+              },
+            }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([waitingThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(JSON.stringify(waitingStatus), { status: 200 });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: false,
+    });
+
+    await flushAsync(6);
+    expect(liveRequestCount).toBeGreaterThanOrEqual(2);
+    expect(typeof liveStreamControl.push).toBe('function');
+
+    liveStreamControl.push!({
+      kind: 'snapshot',
+      emittedAt: '2026-03-30T02:00:05.000Z',
+      threads: [workingThread],
+      tasks: [],
+      status: workingStatus,
+    });
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('AI が「無認証ライブ確認」を処理中です');
+    const diagnostics = (
+      window as Window & {
+        __workspaceAgentHubManagerDiagnostics?: () => Record<string, unknown>;
+      }
+    ).__workspaceAgentHubManagerDiagnostics?.();
+    expect(diagnostics?.['liveStreamConnected']).toBe(true);
+    expect(diagnostics?.['authTokenPresent']).toBe(false);
+    liveStreamControl.close?.();
+  });
+
   it('does not let an older refresh snapshot overwrite a newer live snapshot', async () => {
     const validToken = 'live-order-token';
     const encoder = new TextEncoder();
