@@ -2,7 +2,8 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
-$nodeModulesPath = Join-Path $repoRoot 'node_modules'
+
+. (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
 
 function Convert-WindowsPathToWslPath {
     param(
@@ -21,7 +22,7 @@ function Convert-WindowsPathToWslPath {
 
 Push-Location $repoRoot
 try {
-    if ((Test-Path -Path $packageJsonPath) -and (-not (Test-Path -Path $nodeModulesPath))) {
+    if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
         npm ci
         if ($LASTEXITCODE -ne 0) {
             throw 'npm ci failed.'
@@ -136,6 +137,12 @@ if (($sessionManagementOutput | Out-String).Trim() -notmatch 'PASS') {
 $webSessionBridgeOutput = & (Join-Path $PSScriptRoot 'test-web-session-bridge.ps1')
 if (($webSessionBridgeOutput | Out-String).Trim() -notmatch 'PASS') {
     Write-Error 'Expected the web-session bridge to start, send to, capture, interrupt, close, and delete a shell session.'
+    exit 1
+}
+
+$npmBootstrapOutput = & (Join-Path $PSScriptRoot 'test-npm-bootstrap.ps1')
+if (($npmBootstrapOutput | Out-String).Trim() -notmatch 'PASS') {
+    Write-Error 'Expected the npm dependency bootstrap probe to reject partial node_modules surfaces and accept a complete install surface.'
     exit 1
 }
 
