@@ -128,13 +128,10 @@ The normal human flow should be:
 
 1. Open Hub
 2. Open Manager
-3. Press `新しい作業`
-4. Fill in:
-   - task title
-   - request body
-   - `read-only` or `write`
-5. Press `開始`
-6. Watch the run appear in `進行中`
+3. Open the bottom composer
+4. Write the request in ordinary language
+5. Send it
+6. Watch Manager turn it into the right work item in the inbox
 
 The human should never see `git worktree add` or branch plumbing in the normal
 flow. Repo targeting should be internal: Manager decides whether the task
@@ -144,13 +141,12 @@ ambiguous.
 
 ### 2. Start a read-only task
 
-Read-only runs follow the same launch surface and the same Manager-owned repo
-decision path.
+Read-only tasks follow the same composer-first launch surface and the same
+Manager-owned repo decision path.
 
-The important human-visible difference is only the badge:
-
-- `read-only`
-- `write`
+If the user explicitly asks for investigation, explanation, or analysis without
+changes, Manager should keep the task read-only internally instead of requiring
+the human to choose a separate mode in the GUI.
 
 ### 3. Observe a running task
 
@@ -196,23 +192,22 @@ The human should only be interrupted for:
 
 ## Primary screens
 
-### New task sheet
+### Primary send composer
 
 Fields:
 
-- `Task title`
 - `Instruction`
-- `Mode`
-  - `Read-only`
-  - `Write`
 
 Inline teaching copy should be minimal. The screen should make these points
 obvious structurally:
 
+- Manager will decide whether this is a follow-up, a new work item, or a
+  clarification case
 - Manager will decide `existing repo` vs `new repo`
 - existing-repo write tasks run in isolated worktrees automatically
 - merge is handled later by the repo merge lane only for existing repos
-- the human can launch multiple runs safely without touching git
+- the human can keep sending from one place without touching git or creating a
+  task manually
 
 ### Runs view
 
@@ -336,21 +331,18 @@ The CLI must describe the same model as the UI:
 
 not raw internal implementation details.
 
-## API surface
+## Current API surface
 
-The Hub web backend should expose explicit resources for the new model instead
-of overloading thread-only endpoints.
+The shipped Manager UI currently routes new work through the existing inbox
+surface and live snapshot stream.
 
-Suggested resources:
+Current resources:
 
-- `GET /api/manager/runs`
-- `POST /api/manager/runs`
-- `GET /api/manager/runs/:id`
-- `POST /api/manager/runs/:id/retry`
-- `POST /api/manager/runs/:id/cancel`
-- `GET /api/manager/lanes`
-- `GET /api/manager/lanes/:repo`
-- `GET /api/manager/needs-human`
+- `GET /api/live`
+- `POST /api/manager/global-send`
+- `GET /api/threads`
+- `PUT /api/threads/:id/resolve`
+- `PUT /api/threads/:id/reopen`
 
 Live updates should continue to use the current push model rather than browser
 polling.
@@ -381,8 +373,9 @@ The simplest day-1 explanation should be:
 
 1. Open Hub
 2. Open Manager
-3. Press `新しい作業`
-4. Write the request
+3. Write the request in the normal composer
+4. Let Manager choose whether it is a follow-up, a new work item, or a
+   clarification path
 5. Let Manager choose the repo path internally
 6. Let the repo lane merge it later
 
@@ -403,7 +396,7 @@ That is the level of complexity the human should need to remember.
 
 1. Expose explicit run and lane state in the Manager UI
 2. Introduce the generic worker-adapter interface
-3. Move task creation to an explicit `新しい作業` flow
+3. Keep task creation on the normal composer and keep repo choice manager-owned
 4. Keep repo choice manager-owned and clarify that in the UI
 5. Add merge-lane and needs-human screens
 6. Add runtime availability checks and richer per-runtime operator controls

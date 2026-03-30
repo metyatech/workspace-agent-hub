@@ -298,7 +298,43 @@ async function loadManagerApp(
   vi.stubGlobal('document', dom.window.document);
   vi.stubGlobal('navigator', dom.window.navigator);
   vi.stubGlobal('localStorage', dom.window.localStorage);
-  vi.stubGlobal('fetch', fetchMock);
+  const managerFetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (isRoute(url, '/live')) {
+        const direct = await fetchMock(input, init);
+        const directContentType = direct.headers.get('content-type') ?? '';
+        if (
+          direct.ok &&
+          direct.body &&
+          directContentType.includes('application/x-ndjson')
+        ) {
+          return direct;
+        }
+
+        const headers = new Headers(init?.headers ?? {});
+        const [threadsRes, tasksRes, statusRes] = await Promise.all([
+          fetchMock('./api/threads', { headers }),
+          fetchMock('./api/tasks', { headers }),
+          fetchMock('./api/manager/status', { headers }),
+        ]);
+        if (threadsRes.ok && tasksRes.ok && statusRes.ok) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: (await threadsRes.json()) as ThreadViewFixture[],
+              tasks: (await tasksRes.json()) as unknown[],
+              status: (await statusRes.json()) as Record<string, unknown>,
+            },
+          ]);
+        }
+        return direct;
+      }
+      return fetchMock(input, init);
+    }
+  ) as unknown as typeof fetch;
+  vi.stubGlobal('fetch', managerFetch);
 
   Object.defineProperty(dom.window, 'GUI_DIR', {
     value: 'D:\\ghws',
@@ -437,16 +473,12 @@ describe('manager-app DOM auth state matrix', () => {
     );
   });
 
-  it('includes an explicit new-task sheet that lets Manager decide the repo internally without repo registration UI', () => {
-    expect(managerHtml).toContain('id="newTaskOpenButton"');
-    expect(managerHtml).toContain('id="newTaskSheetBackdrop"');
+  it('keeps Manager task creation on the normal composer instead of a separate new-task surface', () => {
+    expect(managerHtml).not.toContain('id="newTaskOpenButton"');
+    expect(managerHtml).not.toContain('id="newTaskSheetBackdrop"');
     expect(managerHtml).not.toContain('id="managedRepoForm"');
-    expect(managerHtml).toContain('isolated worktree');
-    expect(managerHtml).toContain(
-      'Manager が既存 repo か新規 repo かも含めて判断'
-    );
-    expect(managerHtml).not.toContain('name="newTaskTargetKind"');
-    expect(managerHtml).not.toContain('id="newTaskNewRepoNameInput"');
+    expect(managerHtml).toContain('下の送信欄に依頼や質問を送るだけで');
+    expect(managerHtml).toMatch(/Manager\s+が既存の作業項目への追記/);
   });
 
   it('moves routed and recently sent items into a separate processing lane', () => {
@@ -472,7 +504,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).toContain('id="getting-started-details"');
     expect(managerHtml).toContain('どう整理されるかを見る');
     expect(managerHtml).toMatch(
-      /<details id="getting-started-details" class="intro-details">[\s\S]*既存の作業項目への追記、新しい作業項目、確認が必要なもの/
+      /<details id="getting-started-details" class="intro-details">[\s\S]*既存の作業項目への追記、新しい作業項目、\s*確認が必要なもの/
     );
 
     const validToken = 'getting-started-details-token';
@@ -506,198 +538,6 @@ describe('manager-app DOM auth state matrix', () => {
     const hint = document.querySelector<HTMLElement>('#composerHint')!;
     expect(hint.textContent).toBe('');
     expect(hint.classList.contains('hidden')).toBe(true);
-  });
-
-  it('opens the explicit new-task sheet and lets Manager decide the repo target', async () => {
-    const validToken = 'new-task-sheet-token';
-    let threads: Array<ReturnType<typeof makeThreadView>> = [];
-    const fetchMock = vi.fn(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        const headers = new Headers(init?.headers ?? {});
-        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
-        if (providedToken !== validToken) {
-          return new Response(
-            JSON.stringify({
-              error: 'Access code required',
-              authRequired: true,
-            }),
-            { status: 401 }
-          );
-        }
-
-        if (isRoute(url, '/threads')) {
-          return new Response(JSON.stringify(threads), { status: 200 });
-        }
-        if (isRoute(url, '/tasks')) {
-          return new Response(JSON.stringify([]), { status: 200 });
-        }
-        if (isRoute(url, '/manager/status')) {
-          return new Response(
-            JSON.stringify({
-              running: false,
-              configured: true,
-              builtinBackend: true,
-              detail: '未起動 — メッセージ送信で自動起動します',
-            }),
-            { status: 200 }
-          );
-        }
-        if (isRoute(url, '/manager/runs')) {
-          const body = JSON.parse(String(init?.body ?? '{}')) as Record<
-            string,
-            unknown
-          >;
-          threads = [
-            makeThreadView(
-              'thread-managed-run',
-              'Workspace Agent Broker を作る',
-              {
-                status: 'waiting',
-                uiState: 'queued',
-                lastSender: 'user',
-                previewText:
-                  '[user] workspace-agent-broker を新しい repo として作成してください',
-                managedRepoLabel: 'workspace-agent-broker',
-                managedRepoRoot: 'D:\\ghws\\workspace-agent-broker',
-                repoTargetKind: 'new-repo',
-                newRepoName: 'workspace-agent-broker',
-                newRepoRoot: 'D:\\ghws\\workspace-agent-broker',
-                requestedWorkerRuntime: 'codex',
-                requestedRunMode: String(body['runMode']),
-                messages: [
-                  {
-                    sender: 'user',
-                    content: String(body['content']),
-                    at: '2026-03-27T00:00:00.000Z',
-                  },
-                ],
-              }
-            ),
-          ];
-          return new Response(
-            JSON.stringify({
-              queued: true,
-              threadId: 'thread-managed-run',
-            }),
-            { status: 201 }
-          );
-        }
-        if (isRoute(url, '/live')) {
-          return makeNdjsonResponse([
-            {
-              kind: 'snapshot',
-              emittedAt: '2026-03-27T00:00:00.000Z',
-              threads,
-              tasks: [],
-              status: {
-                running: false,
-                configured: true,
-                builtinBackend: true,
-                detail: '未起動 — メッセージ送信で自動起動します',
-              },
-            },
-          ]);
-        }
-        if (isRoute(url, '/builds')) {
-          return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
-            status: 200,
-          });
-        }
-        return new Response('{}', { status: 200 });
-      }
-    );
-
-    const document = await loadManagerApp(
-      fetchMock as unknown as typeof fetch,
-      {
-        authRequired: true,
-        beforeImport: (window) => {
-          window.localStorage.setItem(authStorageKey, validToken);
-        },
-      }
-    );
-
-    document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
-    await flushAsync(2);
-
-    expect(
-      document
-        .querySelector<HTMLElement>('#newTaskSheetBackdrop')!
-        .classList.contains('hidden')
-    ).toBe(false);
-    expect(
-      document.querySelector<HTMLElement>('#newTaskRuntimeSummary')!.textContent
-    ).toContain('判断と実行準備は Manager が行います');
-
-    document.querySelector<HTMLInputElement>('#newTaskTitleInput')!.value =
-      'Workspace Agent Broker を作る';
-    document.querySelector<HTMLTextAreaElement>('#newTaskContentInput')!.value =
-      'workspace-agent-broker を新しい repo として作成してください';
-    document.querySelector<HTMLInputElement>(
-      'input[name="newTaskRunMode"][value="read-only"]'
-    )!.checked = true;
-    document
-      .querySelector<HTMLFormElement>('#newTaskForm')!
-      .dispatchEvent(
-        new window.Event('submit', { bubbles: true, cancelable: true })
-      );
-    await flushAsync(6);
-
-    const runCall = fetchMock.mock.calls.find(([input]) =>
-      isRoute(String(input), '/manager/runs')
-    );
-    expect(runCall).toBeTruthy();
-    const runBody = JSON.parse(String(runCall?.[1]?.body ?? '{}')) as Record<
-      string,
-      unknown
-    >;
-    expect(runBody).toMatchObject({
-      title: 'Workspace Agent Broker を作る',
-      content: 'workspace-agent-broker を新しい repo として作成してください',
-      runMode: 'read-only',
-    });
-
-    expect(
-      document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('Workspace Agent Broker を作る');
-    expect(
-      document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('new repo: workspace-agent-broker');
-    expect(
-      document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('mode: read-only');
-    expect(
-      document.querySelector<HTMLElement>('#thread-detail')!.textContent
-    ).toContain('runtime: Codex');
-  });
-
-  it('keeps repo-kind selection out of the visible new-task sheet and does not ask the user to pick a repo', async () => {
-    const validToken = 'existing-repo-only-sheet-token';
-    const document = await loadManagerApp(createManagerFetch(validToken), {
-      authRequired: true,
-      beforeImport: (window) => {
-        window.localStorage.setItem(authStorageKey, validToken);
-      },
-    });
-
-    document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
-    await flushAsync(2);
-
-    expect(
-      document.querySelector<HTMLInputElement>(
-        'input[name="newTaskTargetKind"]'
-      )
-    ).toBeNull();
-    expect(
-      document.querySelector<HTMLInputElement>('#newTaskNewRepoNameInput')
-    ).toBeNull();
-    expect(
-      document.querySelector<HTMLSelectElement>('#newTaskRepoSelect')
-    ).toBeNull();
-    expect(
-      document.querySelector<HTMLElement>('#newTaskRepoSummary')!.textContent
-    ).toContain('workspace の文脈');
   });
 
   it('does not render a managed repo registration form or call its API', async () => {
@@ -768,9 +608,6 @@ describe('manager-app DOM auth state matrix', () => {
         },
       }
     );
-
-    document.querySelector<HTMLButtonElement>('#newTaskOpenButton')!.click();
-    await flushAsync(2);
 
     expect(
       document.querySelector<HTMLFormElement>('#managedRepoForm')
@@ -1043,7 +880,9 @@ describe('manager-app DOM auth state matrix', () => {
         .classList.contains('hidden')
     ).toBe(true);
 
-    document.querySelector<HTMLElement>('.thread-row')!.click();
+    Array.from(document.querySelectorAll<HTMLElement>('.thread-row'))
+      .find((row) => row.textContent?.includes('今見ている task'))
+      ?.click();
     await flushAsync(3);
 
     expect(
@@ -1304,7 +1143,7 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(2);
 
     expect(resolveCallCount).toBe(1);
-    expect(threadFetchCount).toBe(1);
+    expect(threadFetchCount).toBe(0);
 
     settleResolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     await flushAsync(6);
@@ -1315,7 +1154,7 @@ describe('manager-app DOM auth state matrix', () => {
     expect(settledButton.disabled).toBe(false);
     expect(settledButton.textContent).toBe('もう一度開く');
     expect(resolveCallCount).toBe(1);
-    expect(threadFetchCount).toBe(1);
+    expect(threadFetchCount).toBe(0);
   });
 
   it('restores the original thread state when optimistic completion fails', async () => {
@@ -3514,7 +3353,7 @@ describe('manager-app DOM auth state matrix', () => {
 
   it('keeps the same reading position when refresh appends newer messages below it', async () => {
     const validToken = 'good-token';
-    let threadsRequestCount = 0;
+    let liveSnapshotCount = 0;
     const baseMessages = Array.from({ length: 8 }, (_, index) => ({
       sender: (index % 2 === 0 ? 'user' : 'ai') as 'user' | 'ai',
       content: `message-${index}`,
@@ -3541,17 +3380,30 @@ describe('manager-app DOM auth state matrix', () => {
           );
         }
 
-        if (isRoute(url, '/threads')) {
-          threadsRequestCount += 1;
+        if (isRoute(url, '/live')) {
+          liveSnapshotCount += 1;
           const messages =
-            threadsRequestCount >= 2
+            liveSnapshotCount >= 3
               ? [...baseMessages, appendedMessage]
               : baseMessages;
           const thread = makeThreadView('thread-1', '長文トピック', {
             messages,
             previewText: `[ai] ${messages[messages.length - 1]?.content ?? ''}`,
           });
-          return new Response(JSON.stringify([thread]), { status: 200 });
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
         }
 
         if (isRoute(url, '/tasks')) {
@@ -3621,13 +3473,13 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(6);
 
     const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
-    expect(secondMsgArea).not.toBe(firstMsgArea);
     expect(secondMsgArea.scrollTop).toBe(180);
+    expect(secondMsgArea.textContent).toContain('new-bottom-message');
   });
 
   it('keeps the live worker log pinned to the bottom when it grows while the user is already at the bottom', async () => {
     const validToken = 'live-bottom-token';
-    let threadsRequestCount = 0;
+    let liveSnapshotCount = 0;
     const baseMessages = Array.from({ length: 4 }, (_, index) => ({
       sender: (index % 2 === 0 ? 'user' : 'ai') as 'user' | 'ai',
       content: `message-${index}`,
@@ -3650,10 +3502,10 @@ describe('manager-app DOM auth state matrix', () => {
           );
         }
 
-        if (isRoute(url, '/threads')) {
-          threadsRequestCount += 1;
+        if (isRoute(url, '/live')) {
+          liveSnapshotCount += 1;
           const workerLiveLog =
-            threadsRequestCount >= 2
+            liveSnapshotCount >= 3
               ? [
                   {
                     at: '2026-03-21T00:01:00.000Z',
@@ -3685,7 +3537,22 @@ describe('manager-app DOM auth state matrix', () => {
             workerLiveOutput: workerLiveLog[workerLiveLog.length - 1]?.text,
             workerLiveAt: workerLiveLog[workerLiveLog.length - 1]?.at,
           });
-          return new Response(JSON.stringify([thread]), { status: 200 });
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '処理中 (進捗ログ)',
+                currentThreadId: 'thread-live-grow',
+                currentThreadTitle: '進捗ログ',
+              },
+            },
+          ]);
         }
 
         if (isRoute(url, '/tasks')) {
@@ -3790,7 +3657,6 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(6);
 
     const secondMsgArea = document.querySelector<HTMLElement>('.msg-area')!;
-    expect(secondMsgArea).not.toBe(firstMsgArea);
     expect(secondMsgArea.scrollTop).toBe(secondMsgArea.scrollHeight);
     expect(secondMsgArea.textContent).toContain(
       '2行目の live 出力が追加されました。'
@@ -3799,7 +3665,7 @@ describe('manager-app DOM auth state matrix', () => {
 
   it('keeps the open task inline and shows its new state when it moves between buckets', async () => {
     const validToken = 'movement-token';
-    let threadsRequestCount = 0;
+    let liveSnapshotCount = 0;
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -3817,10 +3683,10 @@ describe('manager-app DOM auth state matrix', () => {
           );
         }
 
-        if (isRoute(url, '/threads')) {
-          threadsRequestCount += 1;
+        if (isRoute(url, '/live')) {
+          liveSnapshotCount += 1;
           const thread =
-            threadsRequestCount >= 2
+            liveSnapshotCount >= 3
               ? makeThreadView('thread-move', '移動する task', {
                   status: 'review',
                   uiState: 'ai-finished-awaiting-user-confirmation',
@@ -3835,7 +3701,25 @@ describe('manager-app DOM auth state matrix', () => {
                   isWorking: true,
                   queueDepth: 1,
                 });
-          return new Response(JSON.stringify([thread]), { status: 200 });
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail:
+                  liveSnapshotCount >= 3 ? '待機中' : '処理中 (移動する task)',
+                currentThreadId: liveSnapshotCount >= 3 ? null : 'thread-move',
+                currentThreadTitle:
+                  liveSnapshotCount >= 3 ? null : '移動する task',
+                pendingCount: liveSnapshotCount >= 3 ? 0 : 1,
+              },
+            },
+          ]);
         }
 
         if (isRoute(url, '/tasks')) {
@@ -3849,11 +3733,11 @@ describe('manager-app DOM auth state matrix', () => {
               configured: true,
               builtinBackend: true,
               detail:
-                threadsRequestCount >= 2 ? '待機中' : '処理中 (移動する task)',
-              currentThreadId: threadsRequestCount >= 2 ? null : 'thread-move',
+                liveSnapshotCount >= 3 ? '待機中' : '処理中 (移動する task)',
+              currentThreadId: liveSnapshotCount >= 3 ? null : 'thread-move',
               currentThreadTitle:
-                threadsRequestCount >= 2 ? null : '移動する task',
-              pendingCount: threadsRequestCount >= 2 ? 0 : 1,
+                liveSnapshotCount >= 3 ? null : '移動する task',
+              pendingCount: liveSnapshotCount >= 3 ? 0 : 1,
             }),
             { status: 200 }
           );

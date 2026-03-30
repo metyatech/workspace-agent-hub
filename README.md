@@ -391,12 +391,10 @@ How it works:
 3. The browser moves into Hub's native `/manager/` page on the same origin and in the same tab.
 4. The Manager page reads and writes the workspace `.threads.jsonl` and
    `.tasks.jsonl` files directly through Hub's own API.
-5. The user can either:
-   - press `新しい作業`, write the task title/body and run mode, and let
-     Manager decide whether it should land on an existing workspace repo or a
-     brand-new repo under the workspace root
-   - or keep using the global send dock for ordinary inbox-style routing and
-     follow-up discussion
+5. The user sends requests and follow-ups from the normal bottom composer.
+   Manager decides internally whether the message belongs on an existing work
+   item, should become a new work item, or needs clarification before it can
+   route further.
 6. The writing surface stays collapsed on the inbox, then turns into a compact
    bottom reply bar while a work-item conversation screen is open.
 7. The built-in manager backend splits each message across existing tasks,
@@ -425,8 +423,6 @@ Important behavior:
   repo instead of an existing one, Manager can choose that path internally and
   create it directly under the workspace root.
 - `Open Manager` is now a direct navigation path to Hub's own Manager page.
-- `新しい作業` now asks only for the task itself plus `write` /
-  `read-only`; repo-kind selection stays internal to Manager.
 - Users send from one global dock; they do not need to create or pick a task
   before sending, and the larger text area only opens when they choose to
   write.

@@ -39,7 +39,6 @@ import {
   resolvePackageRoot,
   restoreBuild,
 } from './build-archive.js';
-import { type ManagerRunMode } from './manager-repos.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -112,10 +111,6 @@ function sendText(
 
 function sendError(res: ServerResponse, message: string, status = 400): void {
   sendJson(res, { error: message }, status);
-}
-
-function normalizeRequestedRunMode(value: unknown): ManagerRunMode {
-  return value === 'read-only' ? 'read-only' : 'write';
 }
 
 interface ManagerLiveSnapshot {
@@ -424,60 +419,6 @@ export async function handleManagerUiRequest(input: {
 
   if (localPath === '/api/manager/status' && input.method === 'GET') {
     sendJson(input.res, await getBuiltinManagerStatus(input.workspaceRoot));
-    return true;
-  }
-
-  if (localPath === '/api/manager/runs' && input.method === 'POST') {
-    const body = await parseBody(input.req);
-    const title = typeof body.title === 'string' ? body.title.trim() : '';
-    const content = typeof body.content === 'string' ? body.content.trim() : '';
-    if (!title) {
-      sendError(input.res, 'title is required');
-      return true;
-    }
-    if (!content) {
-      sendError(input.res, 'content is required');
-      return true;
-    }
-
-    const runMode = normalizeRequestedRunMode(body.runMode);
-    const createdThread = await createThread(input.workspaceRoot, title);
-    await addMessage(
-      input.workspaceRoot,
-      createdThread.id,
-      content,
-      'user',
-      'waiting'
-    );
-    await updateManagerThreadMeta(
-      input.workspaceRoot,
-      createdThread.id,
-      () => ({
-        managedRepoId: null,
-        managedRepoLabel: null,
-        managedRepoRoot: null,
-        repoTargetKind: null,
-        newRepoName: null,
-        newRepoRoot: null,
-        managedBaseBranch: null,
-        managedVerifyCommand: null,
-        requestedWorkerRuntime: null,
-        requestedRunMode: runMode,
-      })
-    );
-    await sendToBuiltinManager(input.workspaceRoot, createdThread.id, content, {
-      dispatchMode: 'manager-evaluate',
-      requestedRunMode: runMode,
-    });
-    sendJson(
-      input.res,
-      {
-        queued: true,
-        threadId: createdThread.id,
-        detail: '作業をキューに追加しました',
-      },
-      201
-    );
     return true;
   }
 

@@ -12,7 +12,6 @@ import {
   extractTailscaleServeSetupUrl,
   runCommand,
 } from '../web-ui.js';
-import { readManagerThreadMeta } from '../manager-thread-state.js';
 import { execGit } from '../manager-worktree.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
@@ -1012,7 +1011,7 @@ describe('native manager page', () => {
     expect(listResponse.status).toBe(404);
   });
 
-  it('creates a manager-evaluated run without forcing the user to pick an existing repo first', async () => {
+  it('does not expose the removed new-task creation API', async () => {
     const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(workspaceRoot),
@@ -1039,16 +1038,6 @@ describe('native manager page', () => {
         }),
       }
     );
-    expect(createResponse.status).toBe(201);
-    const created = (await createResponse.json()) as { threadId: string };
-    expect(created.threadId).toBeTruthy();
-
-    const meta = await readManagerThreadMeta(workspaceRoot);
-    expect(meta[created.threadId]).toMatchObject({
-      managedRepoId: null,
-      managedRepoLabel: null,
-      managedRepoRoot: null,
-      requestedRunMode: 'write',
-    });
+    expect(createResponse.status).toBe(404);
   });
 });

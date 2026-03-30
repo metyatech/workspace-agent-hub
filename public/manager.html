@@ -310,242 +310,6 @@
         font-weight: 700;
       }
 
-      .new-task-entry-card {
-        display: grid;
-        gap: 12px;
-        padding: 18px 20px;
-        background: linear-gradient(
-          150deg,
-          rgba(251, 255, 251, 0.98),
-          rgba(239, 248, 242, 0.96)
-        );
-        border: 1px solid rgba(15, 94, 169, 0.12);
-      }
-
-      .new-task-entry-top {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: flex-start;
-        flex-wrap: wrap;
-      }
-
-      .new-task-entry-copy {
-        display: grid;
-        gap: 6px;
-        min-width: 0;
-        flex: 1 1 280px;
-      }
-
-      .new-task-entry-kicker {
-        display: inline-flex;
-        width: fit-content;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: rgba(15, 94, 169, 0.08);
-        color: var(--accent-cool);
-        font-size: 0.72rem;
-        font-weight: 700;
-      }
-
-      .new-task-entry-title {
-        font-size: 1rem;
-        font-weight: 800;
-        letter-spacing: -0.02em;
-      }
-
-      .new-task-entry-summary {
-        color: var(--text-soft);
-        font-size: 0.8rem;
-        line-height: 1.65;
-      }
-
-      .new-task-entry-actions {
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-
-      .sheet-backdrop {
-        position: fixed;
-        inset: 0;
-        z-index: 40;
-        display: flex;
-        justify-content: center;
-        align-items: flex-start;
-        padding: 18px;
-        background: rgba(15, 23, 42, 0.36);
-        backdrop-filter: blur(12px);
-      }
-
-      .task-sheet {
-        width: min(920px, 100%);
-        max-height: calc(100vh - 36px);
-        overflow: auto;
-        border-radius: 28px;
-        border: 1px solid rgba(122, 158, 125, 0.18);
-        background: linear-gradient(
-          180deg,
-          rgba(253, 255, 253, 0.99),
-          rgba(240, 249, 242, 0.98)
-        );
-        box-shadow: 0 28px 80px rgba(15, 23, 42, 0.22);
-        padding: 22px;
-        display: grid;
-        gap: 18px;
-      }
-
-      .task-sheet-top {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: flex-start;
-        flex-wrap: wrap;
-      }
-
-      .task-sheet-copy {
-        display: grid;
-        gap: 6px;
-        min-width: 0;
-        flex: 1 1 320px;
-      }
-
-      .task-sheet-kicker {
-        display: inline-flex;
-        width: fit-content;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: rgba(134, 239, 172, 0.38);
-        color: var(--accent-strong);
-        font-size: 0.72rem;
-        font-weight: 700;
-      }
-
-      .task-sheet-title {
-        font-size: 1.12rem;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-      }
-
-      .task-sheet-summary {
-        color: var(--text-soft);
-        font-size: 0.82rem;
-        line-height: 1.65;
-      }
-
-      .task-sheet-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 16px;
-      }
-
-      .task-sheet-card {
-        display: grid;
-        gap: 12px;
-        padding: 16px;
-        border-radius: 22px;
-        border: 1px solid rgba(122, 158, 125, 0.14);
-        background: rgba(255, 255, 255, 0.82);
-      }
-
-      .task-sheet-card h3 {
-        margin: 0;
-        font-size: 0.92rem;
-        font-weight: 800;
-      }
-
-      .task-sheet-card-copy {
-        color: var(--text-soft);
-        font-size: 0.76rem;
-        line-height: 1.65;
-      }
-
-      .field-group {
-        display: grid;
-        gap: 6px;
-      }
-
-      .field-label {
-        font-size: 0.75rem;
-        font-weight: 700;
-        color: var(--text-soft);
-      }
-
-      .field-input,
-      .field-select,
-      .field-textarea {
-        width: 100%;
-        padding: 12px 14px;
-        border-radius: 16px;
-        border: 1px solid rgba(148, 163, 184, 0.26);
-        background: rgba(255, 255, 255, 0.94);
-        color: var(--text);
-        font: inherit;
-      }
-
-      .field-input:focus,
-      .field-select:focus,
-      .field-textarea:focus {
-        outline: 2px solid rgba(15, 94, 169, 0.22);
-        outline-offset: 2px;
-        border-color: rgba(15, 94, 169, 0.34);
-      }
-
-      .field-textarea {
-        min-height: 150px;
-        resize: vertical;
-      }
-
-      .field-hint {
-        color: var(--text-muted);
-        font-size: 0.72rem;
-        line-height: 1.55;
-      }
-
-      .mode-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-      }
-
-      .mode-option {
-        display: grid;
-        gap: 6px;
-        padding: 12px 14px;
-        border-radius: 18px;
-        border: 1px solid rgba(122, 158, 125, 0.18);
-        background: rgba(246, 252, 247, 0.96);
-      }
-
-      .mode-option input {
-        margin: 0;
-      }
-
-      .mode-option-title {
-        font-size: 0.76rem;
-        font-weight: 700;
-      }
-
-      .mode-option-copy {
-        color: var(--text-muted);
-        font-size: 0.72rem;
-        line-height: 1.55;
-      }
-
-      .sheet-actions {
-        display: flex;
-        gap: 10px;
-        justify-content: flex-end;
-        flex-wrap: wrap;
-      }
-
-      .sheet-status {
-        min-height: 1.4em;
-        color: var(--text-soft);
-        font-size: 0.75rem;
-      }
-
       .focus-move {
         color: #92400e;
         background: rgba(254, 243, 199, 0.92);
@@ -1909,10 +1673,6 @@
           grid-template-columns: 1fr;
         }
 
-        .task-sheet-grid {
-          grid-template-columns: 1fr;
-        }
-
         .detail-card {
           min-height: 0;
         }
@@ -1932,8 +1692,7 @@
 
         .auth-card,
         .intro-card,
-        .composer-card,
-        .task-sheet {
+        .composer-card {
           border-radius: 20px;
         }
 
@@ -1941,22 +1700,9 @@
           padding: 10px;
         }
 
-        .sheet-backdrop {
-          padding: 10px;
-        }
-
-        .task-sheet {
-          padding: 16px;
-        }
-
         .btn {
           width: auto;
           justify-content: center;
-        }
-
-        .new-task-entry-top,
-        .task-sheet-top {
-          flex-direction: column;
         }
 
         .composer-shell {
@@ -1999,10 +1745,6 @@
 
         .bubble {
           max-width: 92%;
-        }
-
-        .mode-grid {
-          grid-template-columns: 1fr;
         }
       }
     </style>
@@ -2128,75 +1870,36 @@
             <div id="activity-counts" class="activity-counts"></div>
           </section>
 
-          <section id="new-task-entry" class="card new-task-entry-card">
-            <div class="new-task-entry-top">
-              <div class="new-task-entry-copy">
-                <div class="new-task-entry-kicker">
-                  isolated worktree で進める入口
-                </div>
-                <div class="new-task-entry-title">
-                  isolated worktree で進めたい作業は、ここから明示的に起票します
-                </div>
-                <div id="newTaskEntrySummary" class="new-task-entry-summary">
-                  repo の選択や新規作成の判断は Manager
-                  が引き受けます。ここでは依頼内容だけを書けば十分です。
-                </div>
-              </div>
-              <div class="new-task-entry-actions">
-                <button
-                  id="newTaskOpenButton"
-                  data-action="open-new-task-sheet"
-                  class="btn btn-primary"
-                  type="button"
-                  style="width: auto"
-                >
-                  新しい作業を起票する
-                </button>
-              </div>
-            </div>
-          </section>
-
           <section id="getting-started" class="card intro-card hidden">
             <div class="intro-pill">最初の使い方</div>
             <h2>
-              Manager
-              に作業を起票する流れと、下からそのまま送る相談を分けて使えます
+              下の送信欄に依頼や質問を送るだけで、Manager
+              が内部で整理して進めます
             </h2>
             <p id="getting-started-copy">
-              通常の相談は下の送信欄からそのまま送れます。isolated worktree
-              で進めたいものだけ「新しい作業」から起票すると、Manager が既存
-              repo か新規 repo かを判断して進めます。
+              下の送信欄に依頼や質問をそのまま送ると、Manager
+              が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。
             </p>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
               <p>
-                「新しい作業」から起票したものは、Manager が既存 repo か新規
-                repo かを判断したうえで isolated worktree
-                に回します。相談として送った内容は、既存の作業項目への追記、新しい作業項目、確認が必要なものに分かれます。
+                送った内容は、既存の作業項目への追記、新しい作業項目、
+                確認が必要なものに分かれます。実装や調査が必要なものは、 Manager
+                が内部で repo と worktree を判断して進めます。
               </p>
             </details>
             <div class="intro-steps">
               <div class="intro-step" data-getting-started-step>
-                1. 「新しい作業」にタイトルと依頼を書く
+                1. 下の送信欄から、やりたいことや確認したいことをそのまま送る
               </div>
               <div class="intro-step" data-getting-started-step>
-                2. mode を決めて起票し、repo 判断は Manager に任せる
+                2. Manager
+                が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する
               </div>
               <div class="intro-step" data-getting-started-step>
-                3. queued / working / review をこの一覧で追い、あとで merge lane
-                へつなげる
+                3. 一覧で queued / working / review
+                を追い、必要な作業項目だけ開いて返す
               </div>
-            </div>
-            <div class="new-task-entry-actions" style="margin-top: 4px">
-              <button
-                id="newTaskOpenButtonSecondary"
-                data-action="open-new-task-sheet"
-                class="btn btn-primary"
-                type="button"
-                style="width: auto"
-              >
-                新しい作業を起票する
-              </button>
             </div>
           </section>
 
@@ -2471,115 +2174,6 @@
         </section>
       </section>
     </main>
-
-    <div id="newTaskSheetBackdrop" class="sheet-backdrop hidden">
-      <section
-        class="task-sheet"
-        aria-labelledby="newTaskSheetTitle"
-        aria-describedby="newTaskSheetSummary"
-      >
-        <div class="task-sheet-top">
-          <div class="task-sheet-copy">
-            <div class="task-sheet-kicker">新しい作業</div>
-            <div id="newTaskSheetTitle" class="task-sheet-title">
-              Manager が既存 repo か新規 repo かも含めて判断して、 isolated
-              worktree の作業として起票します
-            </div>
-            <div id="newTaskSheetSummary" class="task-sheet-summary">
-              タイトルと依頼内容を書いてください。既存 repo への割り当てや新しい
-              repo の切り出しは Manager
-              が決めます。通常の相談は下の送信欄のままでも送れます。
-            </div>
-          </div>
-          <button
-            data-action="close-new-task-sheet"
-            class="btn btn-ghost"
-            type="button"
-            style="width: auto"
-          >
-            閉じる
-          </button>
-        </div>
-
-        <div class="task-sheet-grid">
-          <section class="task-sheet-card">
-            <h3>作業を起票する</h3>
-            <div class="task-sheet-card-copy">
-              ここでは依頼内容だけを書きます。どの repo へ振るか、あるいは新しい
-              repo を切るかは Manager が内部で判断します。
-            </div>
-            <form id="newTaskForm" class="stack">
-              <div id="newTaskRepoSummary" class="field-hint"></div>
-              <label class="field-group">
-                <span class="field-label">title</span>
-                <input
-                  id="newTaskTitleInput"
-                  class="field-input"
-                  type="text"
-                  placeholder="例: Manager の送信欄に画像挿入を追加する"
-                />
-              </label>
-              <label class="field-group">
-                <span class="field-label">依頼内容</span>
-                <textarea
-                  id="newTaskContentInput"
-                  class="field-textarea"
-                  placeholder="ここに、何を作るか・何を直すか・どんな結果にしてほしいかを書きます。"
-                ></textarea>
-              </label>
-              <div class="field-group">
-                <span class="field-label">mode</span>
-                <div class="mode-grid">
-                  <label class="mode-option">
-                    <input
-                      type="radio"
-                      name="newTaskRunMode"
-                      value="write"
-                      checked
-                    />
-                    <span class="mode-option-title">write</span>
-                    <span class="mode-option-copy"
-                      >変更と verify を伴う通常の実装です。</span
-                    >
-                  </label>
-                  <label class="mode-option">
-                    <input
-                      type="radio"
-                      name="newTaskRunMode"
-                      value="read-only"
-                    />
-                    <span class="mode-option-title">read-only</span>
-                    <span class="mode-option-copy"
-                      >調査や確認だけを行い、repo を変更しません。</span
-                    >
-                  </label>
-                </div>
-                <span id="newTaskRuntimeSummary" class="field-hint"></span>
-              </div>
-              <div id="newTaskStatus" class="sheet-status"></div>
-              <div class="sheet-actions">
-                <button
-                  data-action="close-new-task-sheet"
-                  class="btn btn-ghost"
-                  type="button"
-                  style="width: auto"
-                >
-                  キャンセル
-                </button>
-                <button
-                  id="newTaskSubmitButton"
-                  class="btn btn-primary"
-                  type="submit"
-                  style="width: auto"
-                >
-                  この内容で起票する
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
-      </section>
-    </div>
 
     <aside
       id="global-composer-dock"

@@ -1602,7 +1602,7 @@ function renderSelectedSession(): void {
     selectedSessionState.textContent = '← 左で session を選ぶ';
     selectedSessionSummary.className = 'empty-state';
     selectedSessionSummary.textContent =
-      'まず左で新しい作業を始めるか、続きから開く session を選びます。選んだあと、この下の入力欄から AI に続きの指示を送れます。';
+      'まず左で新しい session を始めるか、続きから開く session を選びます。選んだあと、この下の入力欄から AI に続きの指示を送れます。';
     selectedSessionControls.style.display = 'block';
     sessionTranscript.textContent =
       '選んだ session の出力がここに出ます。下の入力欄は、session を選ぶと使えるようになります。';

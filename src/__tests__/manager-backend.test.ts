@@ -1609,6 +1609,7 @@ describe('manager backend codex integration', () => {
 
     const status = await getBuiltinManagerStatus(tempDir);
     expect(status.running).toBe(true);
+    await processNextQueued(tempDir, tempDir);
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
     const prompt = String(workerProc.stdin.write.mock.calls[0]?.[0] ?? '');
@@ -1682,6 +1683,7 @@ describe('manager backend codex integration', () => {
 
     const status = await getBuiltinManagerStatus(tempDir);
     expect(status.running).toBe(true);
+    await processNextQueued(tempDir, tempDir);
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
@@ -1885,6 +1887,7 @@ describe('manager backend codex integration', () => {
     const status = await getBuiltinManagerStatus(tempDir);
     expect(status.detail).toBe('待機中 (キュー: 1件)');
     expect(status.currentThreadId).toBeNull();
+    await processNextQueued(tempDir, tempDir);
 
     await waitFor(() => spawnMock.mock.calls.length === 1);
     const recoveredArgs = spawnMock.mock.calls[0]?.[1] as string[];
@@ -1978,11 +1981,7 @@ describe('manager backend codex integration', () => {
     });
   });
 
-  it('resumes a stuck pending queue when manager status is polled', async () => {
-    const workerProc = makeProc(9101);
-    const reviewProc = makeProc(9102);
-    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-
+  it('does not resume a stuck pending queue just because manager status is polled', async () => {
     const stuckQueuePath = join(
       tempDir,
       '.workspace-agent-hub-manager-queue.jsonl'
@@ -2001,29 +2000,8 @@ describe('manager backend codex integration', () => {
 
     const status = await getBuiltinManagerStatus(tempDir);
     expect(status.running).toBe(true);
-
-    await waitFor(() => spawnMock.mock.calls.length === 1);
-    workerProc.stdout.emit(
-      'data',
-      Buffer.from(
-        [
-          '{"type":"thread.started","thread_id":"codex-thread-stuck"}',
-          '{"type":"item.completed","item":{"type":"agent_message","text":"recovered reply"}}',
-        ].join('\n')
-      )
-    );
-    workerProc.emit('close', 0);
-
-    await waitFor(() => spawnMock.mock.calls.length === 2);
-    completeCodexTurn(reviewProc, {
-      sessionId: 'manager-review-thread-stuck',
-      text: '{"status":"review","reply":"recovered reply"}',
-    });
-
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    expect(status.pendingCount).toBe(1);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('keeps one in-flight codex turn and serializes queued messages without leaking worker continuity across different topics', async () => {

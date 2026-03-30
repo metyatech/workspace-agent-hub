@@ -3020,8 +3020,6 @@ class ManagerApp {
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
   #sortOrders = buildManagerSortOrders();
-  #newTaskSheetOpen = false;
-  #newTaskSheetSubmitting = false;
 
   constructor() {
     this.#sections = {
@@ -3483,37 +3481,60 @@ class ManagerApp {
   }
 
   async loadAll(): Promise<boolean> {
-    const [threadsRes, tasksRes] = await Promise.all([
-      this.apiFetch('/api/threads'),
-      this.apiFetch('/api/tasks'),
-    ]);
-
-    if (!threadsRes || !tasksRes) {
+    const response = await this.apiFetch('/api/live');
+    const contentType = response?.headers.get('content-type') ?? '';
+    if (
+      !response ||
+      !response.ok ||
+      !response.body ||
+      !contentType.includes('application/x-ndjson')
+    ) {
       return false;
     }
 
-    const nextThreads = threadsRes.ok
-      ? ((await threadsRes.json()) as ThreadView[])
-      : this.allThreads;
-    const nextTasks = tasksRes.ok
-      ? ((await tasksRes.json()) as Task[])
-      : this.allTasks;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          const payload = JSON.parse(trimmed) as ManagerLiveSnapshotPayload;
+          if (payload.kind === 'snapshot') {
+            this.#applyLiveSnapshot(payload);
+            return true;
+          }
+        }
+      }
 
-    this.#applySnapshot({
-      threads: nextThreads,
-      tasks: nextTasks,
-    });
-    return true;
-  }
-
-  async loadManagerStatus(): Promise<boolean> {
-    const response = await this.apiFetch('/api/manager/status');
-    if (!response || !response.ok) {
+      buffer += decoder.decode();
+      for (const line of buffer.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const payload = JSON.parse(trimmed) as ManagerLiveSnapshotPayload;
+        if (payload.kind === 'snapshot') {
+          this.#applyLiveSnapshot(payload);
+          return true;
+        }
+      }
       return false;
+    } finally {
+      void reader.cancel().catch(() => {
+        /* ignore */
+      });
     }
-
-    this.#applyManagerStatus((await response.json()) as ManagerStatusPayload);
-    return true;
   }
 
   #applySnapshot(input: { threads: ThreadView[]; tasks: Task[] }): void {
@@ -3786,11 +3807,8 @@ class ManagerApp {
     this.#recordDiagnosticEvent('lifecycle:refresh-start', reason);
     this.#stopLiveStream(`refresh:${reason}`);
     try {
-      const [dataOk, statusOk] = await Promise.all([
-        this.loadAll(),
-        this.loadManagerStatus(),
-      ]);
-      this.#resumeRefreshPending = !(dataOk || statusOk);
+      const dataOk = await this.loadAll();
+      this.#resumeRefreshPending = !dataOk;
       this.#recordDiagnosticEvent(
         this.#resumeRefreshPending
           ? 'lifecycle:refresh-partial'
@@ -4074,7 +4092,7 @@ class ManagerApp {
     if (!response) {
       return;
     }
-    await this.loadManagerStatus();
+    await this.loadAll();
   }
 
   #composerTargetLabel(): string {
@@ -4252,7 +4270,7 @@ class ManagerApp {
     }
 
     const summary = (await response.json()) as ManagerRoutingSummary;
-    await Promise.all([this.loadAll(), this.loadManagerStatus()]);
+    await this.loadAll();
     this.#updateComposerFeedbackEntry(feedbackEntryId, {
       status: 'sent',
       detail: summary.detail,
@@ -4282,12 +4300,9 @@ class ManagerApp {
   }
 
   async #bootAfterAuth(): Promise<void> {
-    const [dataOk, statusOk] = await Promise.all([
-      this.loadAll(),
-      this.loadManagerStatus(),
-    ]);
+    const dataOk = await this.loadAll();
     this.#armLifecycleRefresh();
-    if (dataOk || statusOk) {
+    if (dataOk) {
       this.#startLiveStream();
     }
   }
@@ -4323,14 +4338,8 @@ class ManagerApp {
       }
       const action = target.getAttribute('data-action');
       switch (action) {
-        case 'open-new-task-sheet':
-          this.#setNewTaskSheetOpen(true);
-          break;
-        case 'close-new-task-sheet':
-          this.#setNewTaskSheetOpen(false);
-          break;
         case 'refresh':
-          void Promise.all([this.loadAll(), this.loadManagerStatus()]);
+          void this.loadAll();
           break;
         case 'toggle-done':
           this.#showDone = !this.#showDone;
@@ -4545,22 +4554,6 @@ class ManagerApp {
       void this.sendGlobalMessage();
     });
 
-    const newTaskForm = document.getElementById(
-      'newTaskForm'
-    ) as HTMLFormElement | null;
-    newTaskForm?.addEventListener('submit', (event) => {
-      event.preventDefault();
-      void this.#submitNewTaskForm();
-    });
-
-    document
-      .getElementById('newTaskSheetBackdrop')
-      ?.addEventListener('click', (event) => {
-        if (event.target === event.currentTarget) {
-          this.#setNewTaskSheetOpen(false);
-        }
-      });
-
     const composerTargetClear = document.getElementById(
       'composerTargetClearButton'
     ) as HTMLButtonElement | null;
@@ -4658,14 +4651,11 @@ class ManagerApp {
     this.#setAuthError('');
     submitButton?.setAttribute('disabled', 'true');
 
-    const [dataOk, statusOk] = await Promise.all([
-      this.loadAll(),
-      this.loadManagerStatus(),
-    ]);
+    const dataOk = await this.loadAll();
     this.#armLifecycleRefresh();
 
     submitButton?.removeAttribute('disabled');
-    if (dataOk || statusOk) {
+    if (dataOk) {
       this.#hideAuthPanel();
       this.#startLiveStream();
       return;
@@ -4795,8 +4785,6 @@ class ManagerApp {
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
-    this.#renderNewTaskEntry();
-    this.#renderNewTaskSheet();
     this.#syncComposerDockReserve();
 
     const openThread =
@@ -4925,142 +4913,16 @@ class ManagerApp {
     );
     if (copy) {
       copy.textContent =
-        '通常の相談は下の送信欄からそのまま送れます。isolated worktree で進めたいものだけ「新しい作業」から起票すると、Manager が既存 repo か新規 repo かを判断して進めます。';
+        '下の送信欄に依頼や質問をそのまま送ると、Manager が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。';
     }
     if (steps.length >= 3) {
-      steps[0].textContent = '1. 「新しい作業」にタイトルと依頼を書く';
+      steps[0].textContent =
+        '1. 下の送信欄から、やりたいことや確認したいことをそのまま送る';
       steps[1].textContent =
-        '2. mode を決めて起票し、repo 判断は Manager に任せる';
+        '2. Manager が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する';
       steps[2].textContent =
-        '3. queued / working / review をこの一覧で追い、あとで merge lane へつなげる';
+        '3. 一覧で queued / working / review を追い、必要な作業項目だけ開いて返す';
     }
-  }
-
-  #setNewTaskSheetOpen(open: boolean): void {
-    this.#newTaskSheetOpen = open;
-    const status = document.getElementById('newTaskStatus');
-    if (status && open) {
-      status.textContent = '';
-    }
-    this.#renderAll();
-  }
-
-  #renderNewTaskEntry(): void {
-    const summary = document.getElementById('newTaskEntrySummary');
-    const openButtons = [
-      document.getElementById('newTaskOpenButton') as HTMLButtonElement | null,
-      document.getElementById(
-        'newTaskOpenButtonSecondary'
-      ) as HTMLButtonElement | null,
-    ];
-    if (summary) {
-      summary.textContent =
-        'repo の選択や新規作成の判断は Manager が引き受けます。ここでは依頼内容だけを書けば十分です。';
-    }
-    for (const button of openButtons) {
-      if (!button) {
-        continue;
-      }
-      button.textContent = '新しい作業';
-    }
-  }
-
-  #renderNewTaskSheet(): void {
-    const backdrop = document.getElementById('newTaskSheetBackdrop');
-    if (!backdrop) {
-      return;
-    }
-    backdrop.classList.toggle('hidden', !this.#newTaskSheetOpen);
-
-    const repoSummary = document.getElementById('newTaskRepoSummary');
-    const runtimeSummary = document.getElementById('newTaskRuntimeSummary');
-    const status = document.getElementById('newTaskStatus');
-    const submitButton = document.getElementById(
-      'newTaskSubmitButton'
-    ) as HTMLButtonElement | null;
-
-    if (repoSummary) {
-      repoSummary.textContent =
-        'Manager が workspace の文脈と依頼内容から、既存 repo に振るか新しい repo を切るかを内部で判断します。';
-    }
-    if (runtimeSummary) {
-      runtimeSummary.textContent =
-        '既存 repo に振る場合も新規 repo を切る場合も、判断と実行準備は Manager が行います。ここでは write / read-only だけ選んでください。';
-    }
-    if (submitButton) {
-      submitButton.disabled = this.#newTaskSheetSubmitting;
-      submitButton.textContent = this.#newTaskSheetSubmitting
-        ? '起票中...'
-        : 'この内容で起票する';
-    }
-  }
-
-  async #submitNewTaskForm(): Promise<void> {
-    if (this.#newTaskSheetSubmitting) {
-      return;
-    }
-    const titleInput = document.getElementById(
-      'newTaskTitleInput'
-    ) as HTMLInputElement | null;
-    const contentInput = document.getElementById(
-      'newTaskContentInput'
-    ) as HTMLTextAreaElement | null;
-    const status = document.getElementById('newTaskStatus');
-    const runMode =
-      (document.querySelector<HTMLInputElement>(
-        'input[name="newTaskRunMode"]:checked'
-      )?.value ?? 'write') === 'read-only'
-        ? 'read-only'
-        : 'write';
-
-    const title = titleInput?.value.trim() ?? '';
-    const content = contentInput?.value.trim() ?? '';
-    if (!title || !content) {
-      if (status) {
-        status.textContent = 'タイトルと依頼内容を入力してください。';
-      }
-      return;
-    }
-    this.#newTaskSheetSubmitting = true;
-    this.#renderNewTaskSheet();
-    const response = await this.apiFetch('/api/manager/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        content,
-        runMode,
-      }),
-    });
-    this.#newTaskSheetSubmitting = false;
-    if (!response) {
-      this.#renderNewTaskSheet();
-      return;
-    }
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as {
-        error?: string;
-      } | null;
-      if (status) {
-        status.textContent = payload?.error || '作業を起票できませんでした。';
-      }
-      this.#renderNewTaskSheet();
-      return;
-    }
-
-    const payload = (await response.json()) as { threadId: string };
-    if (titleInput) {
-      titleInput.value = '';
-    }
-    if (contentInput) {
-      contentInput.value = '';
-    }
-    if (status) {
-      status.textContent = '';
-    }
-    this.#setNewTaskSheetOpen(false);
-    await this.loadAll();
-    this.#focusThread(payload.threadId);
   }
 
   #renderActivitySummary(): void {
@@ -5139,10 +5001,10 @@ class ManagerApp {
       detail.textContent =
         pendingCount > 0
           ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
-          : 'いまは待機中です。「新しい作業」から依頼を起票すると、Manager が repo を判断して進めます。';
+          : 'いまは待機中です。下の送信欄から依頼や質問を送ると、Manager が内容を整理して進めます。';
     } else if (configured) {
       detail.textContent =
-        'まだ始まっていません。「新しい作業」で起票するか、下の送信欄から相談を送ると自動で動きます。';
+        'まだ始まっていません。下の送信欄から依頼や質問を送ると自動で動きます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';

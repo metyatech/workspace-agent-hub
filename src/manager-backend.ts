@@ -5455,6 +5455,7 @@ export async function sendGlobalToBuiltinManager(
  */
 export async function eagerReconcile(dir: string): Promise<void> {
   await reconcileActiveAssignments(dir);
+  await processNextQueued(dir, resolvePath(dir));
 }
 
 // ── Public API (consumed by manager-adapter.ts) ────────────────────────────
@@ -5514,7 +5515,6 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
         startedAt: currentSession.startedAt ?? new Date().toISOString(),
       }));
     }
-    void processNextQueued(dir, resolvePath(dir));
     if (latestSession.lastErrorMessage) {
       return {
         running: true,

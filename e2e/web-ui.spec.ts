@@ -391,9 +391,9 @@ test('loads Manager directly without a trailing slash', async ({ page }) => {
     window.sessionStorage.clear();
   });
 
-  const statusResponse = page.waitForResponse(
+  const liveResponse = page.waitForResponse(
     (response) =>
-      response.url().endsWith('/manager/api/manager/status') &&
+      response.url().endsWith('/manager/api/live') &&
       response.request().method() === 'GET' &&
       response.status() === 200
   );
@@ -402,7 +402,7 @@ test('loads Manager directly without a trailing slash', async ({ page }) => {
     waitUntil: 'domcontentloaded',
   });
 
-  await statusResponse;
+  await liveResponse;
   await expect(page.locator('h1.manager-bar-title')).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/manager(?:/(?:#.*)?)?$`));
 });
