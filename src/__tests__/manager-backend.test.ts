@@ -1162,6 +1162,121 @@ describe('manager backend codex integration', () => {
     expect(meta['thread-claude-runtime']?.workerSessionRuntime).toBe('claude');
   });
 
+  it('treats an explicit no-change follow-up as read-only even when the existing topic was previously write-oriented', async () => {
+    const routingProc = makeProc(9201);
+    const dispatchProc = makeProc(9202);
+    const workerProc = makeProc(9203);
+    const reviewProc = makeProc(9204);
+    spawnMock
+      .mockReturnValueOnce(routingProc)
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-readonly-followup',
+        title: 'workspace-agent-hub README 調査',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'README を見て実装方針を確認してください',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    ]);
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title:
+          threadId === 'thread-readonly-followup'
+            ? 'workspace-agent-hub README 調査'
+            : `Thread ${threadId}`,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'README を見て実装方針を確認してください',
+            at: new Date().toISOString(),
+          },
+        ],
+      })
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-readonly-followup': {
+        requestedRunMode: 'write',
+      },
+    });
+
+    const followUp =
+      'QA確認です。workspace-agent-hub の README.md の最上位見出しだけ答えてください。ファイル変更や新しい作業はしないでください。';
+    const sendPromise = sendGlobalToBuiltinManager(tempDir, followUp);
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(routingProc, {
+      sessionId: 'routing-readonly-followup',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'attach-existing',
+            topicRef: 'topic-1',
+            content: followUp,
+            reason: 'README 調査 topic の read-only な続きです',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(dispatchProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('Requested run mode: read-only')
+    );
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-readonly-followup',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: [],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    expect(workerProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('This is a read-only task.')
+    );
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-readonly-followup',
+      text: '{"status":"review","reply":"# workspace-agent-hub"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-readonly-followup',
+      text: '{"status":"review","reply":"# workspace-agent-hub"}',
+    });
+
+    const summary = await sendPromise;
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-readonly-followup']?.requestedRunMode).toBe(
+      'read-only'
+    );
+    expect(summary.items[0]).toMatchObject({
+      threadId: 'thread-readonly-followup',
+      outcome: 'attached-existing',
+    });
+  });
+
   it('keeps direct replies to needs-reply topics in the same topic instead of splitting them', async () => {
     const routingProc = makeProc(8623);
     const dispatchProc = makeProc(8624);

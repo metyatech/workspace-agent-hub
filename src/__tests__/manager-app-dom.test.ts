@@ -4149,6 +4149,216 @@ describe('manager-app live updates', () => {
     ).toBe(true);
   });
 
+  it('does not let an older refresh snapshot overwrite a newer live snapshot', async () => {
+    const validToken = 'live-order-token';
+    const encoder = new TextEncoder();
+    const queuedThread = makeThreadView('thread-readme', 'README 調査', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      previewText: '[user] README を確認してください',
+      queueDepth: 1,
+    });
+    const workingThread = makeThreadView('thread-readme', 'README 調査', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] README を確認してください',
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex',
+      workerAgentId: 'assign_readme',
+      workerRuntimeState: 'worker-running',
+      workerRuntimeDetail: 'README を確認中です。',
+    });
+
+    let liveRequestCount = 0;
+    const liveStreamControl: {
+      push?: (payload: unknown) => void;
+      close?: () => void;
+    } = {};
+    let resolveRefreshSnapshot: ((response: Response) => void) | null = null;
+
+    const queuedStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中 (キュー: 1件)',
+      pendingCount: 1,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+    const workingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '処理中 (README 調査)',
+      pendingCount: 0,
+      currentQueueId: 'q_readme',
+      currentThreadId: 'thread-readme',
+      currentThreadTitle: 'README 調査',
+    };
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-readme',
+                  title: 'README 調査',
+                  outcome: 'attached-existing',
+                  reason: '既存 task に追記しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '1件を処理しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          liveRequestCount += 1;
+          if (liveRequestCount === 1) {
+            return makeNdjsonResponse([
+              {
+                kind: 'snapshot',
+                emittedAt: '2026-03-30T01:00:00.000Z',
+                threads: [queuedThread],
+                tasks: [],
+                status: queuedStatus,
+              },
+            ]);
+          }
+          if (liveRequestCount === 2) {
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  liveStreamControl.push = (payload: unknown) => {
+                    controller.enqueue(
+                      encoder.encode(JSON.stringify(payload) + '\n')
+                    );
+                  };
+                  liveStreamControl.close = () => {
+                    controller.close();
+                  };
+                },
+              }),
+              {
+                status: 200,
+                headers: {
+                  'Content-Type': 'application/x-ndjson; charset=utf-8',
+                },
+              }
+            );
+          }
+          if (liveRequestCount === 3) {
+            return await new Promise<Response>((resolve) => {
+              resolveRefreshSnapshot = resolve;
+            });
+          }
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-30T01:00:05.000Z',
+              threads: [workingThread],
+              tasks: [],
+              status: workingStatus,
+            },
+          ]);
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([queuedThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(JSON.stringify(queuedStatus), { status: 200 });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    await flushAsync(6);
+    expect(typeof liveStreamControl.push).toBe('function');
+
+    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    await flushAsync(2);
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    const sendButton = document.querySelector<HTMLButtonElement>(
+      '#globalComposerSendButton'
+    )!;
+    composer.value = 'README の最上位見出しだけ答えてください';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    sendButton.click();
+    await flushAsync(6);
+
+    expect(liveRequestCount).toBeGreaterThanOrEqual(3);
+    expect(resolveRefreshSnapshot).not.toBeNull();
+
+    liveStreamControl.push!({
+      kind: 'snapshot',
+      emittedAt: '2026-03-30T01:00:05.000Z',
+      threads: [workingThread],
+      tasks: [],
+      status: workingStatus,
+    });
+    await flushAsync(4);
+
+    resolveRefreshSnapshot!(
+      makeNdjsonResponse([
+        {
+          kind: 'snapshot',
+          emittedAt: '2026-03-30T01:00:01.000Z',
+          threads: [queuedThread],
+          tasks: [],
+          status: queuedStatus,
+        },
+      ])
+    );
+    await flushAsync(8);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('AI が「README 調査」を処理中です');
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('AI が「README 調査」を進めています');
+    liveStreamControl.close?.();
+  });
+
   it('refreshes the open work-item after the screen becomes visible again', async () => {
     const initialThread = makeThreadView('thread-resume', '送信中の task', {
       status: 'active',

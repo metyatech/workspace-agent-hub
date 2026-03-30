@@ -174,10 +174,19 @@ interface ManagerClientDiagnostics {
   liveReconnectScheduled: boolean;
   openThreadId: string | null;
   managerCurrentThreadId: string | null;
+  lastAppliedSnapshotAt: string | null;
   lastLifecycleRefreshAt: string | null;
   lastLiveEventAt: string | null;
   lastLiveEventKind: string | null;
   recentEvents: ManagerLifecycleDebugEntry[];
+}
+
+function snapshotEmittedAtValue(emittedAt: string | null | undefined): number {
+  if (typeof emittedAt !== 'string' || !emittedAt.trim()) {
+    return 0;
+  }
+  const parsed = Date.parse(emittedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 interface ManagerRoutingSummaryItem {
@@ -3015,6 +3024,7 @@ class ManagerApp {
   #lastLifecycleRefreshAt = 0;
   #resumeRefreshPending = false;
   #resumeRefreshInFlight = false;
+  #lastAppliedSnapshotAt = 0;
   #lastLiveEventAt = 0;
   #lastLiveEventKind: string | null = null;
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
@@ -3668,13 +3678,29 @@ class ManagerApp {
     this.#renderActivitySummary();
   }
 
-  #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): void {
+  #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): boolean {
+    const nextSnapshotAt = snapshotEmittedAtValue(snapshot.emittedAt);
+    if (
+      nextSnapshotAt > 0 &&
+      this.#lastAppliedSnapshotAt > 0 &&
+      nextSnapshotAt < this.#lastAppliedSnapshotAt
+    ) {
+      this.#recordDiagnosticEvent(
+        'live:snapshot-ignored',
+        snapshot.emittedAt ?? null
+      );
+      return false;
+    }
+    if (nextSnapshotAt > 0) {
+      this.#lastAppliedSnapshotAt = nextSnapshotAt;
+    }
     this.#resumeRefreshPending = false;
     this.#applySnapshot({
       threads: snapshot.threads,
       tasks: snapshot.tasks,
     });
     this.#applyManagerStatus(snapshot.status);
+    return true;
   }
 
   #startLiveStream(reason = 'start'): void {
@@ -3971,6 +3997,9 @@ class ManagerApp {
       liveReconnectScheduled: this.#liveReconnectTimer !== null,
       openThreadId: this.openThreadId,
       managerCurrentThreadId: this.#managerStatus?.currentThreadId ?? null,
+      lastAppliedSnapshotAt: this.#lastAppliedSnapshotAt
+        ? new Date(this.#lastAppliedSnapshotAt).toISOString()
+        : null,
       lastLifecycleRefreshAt: this.#lastLifecycleRefreshAt
         ? new Date(this.#lastLifecycleRefreshAt).toISOString()
         : null,
@@ -4669,6 +4698,7 @@ class ManagerApp {
     this.#lifecycleRefreshReady = false;
     this.#lastLifecycleRefreshAt = 0;
     this.#resumeRefreshPending = false;
+    this.#lastAppliedSnapshotAt = 0;
     this.#lastLiveEventAt = 0;
     this.#lastLiveEventKind = null;
     this.#recordDiagnosticEvent('auth:cleared');
@@ -4690,6 +4720,7 @@ class ManagerApp {
     this.#lifecycleRefreshReady = false;
     this.#lastLifecycleRefreshAt = 0;
     this.#resumeRefreshPending = false;
+    this.#lastAppliedSnapshotAt = 0;
     this.#lastLiveEventAt = 0;
     this.#lastLiveEventKind = null;
     clearStoredAuthToken();

@@ -1774,6 +1774,75 @@ function buildRepoTargetClarificationReply(
   };
 }
 
+function inferRequestedRunModeFromContent(
+  content: string
+): ManagerRunMode | null {
+  const text = buildManagerMessagePromptContent(content).text.trim();
+  if (!text) {
+    return null;
+  }
+
+  const explicitReadOnlyPatterns = [
+    /ファイル変更.*しない/u,
+    /変更.*しない/u,
+    /編集.*しない/u,
+    /コード.*触らない/u,
+    /コミット.*しない/u,
+    /push.*しない/i,
+    /新しい作業.*しない/u,
+    /読むだけ/u,
+    /見るだけ/u,
+    /read[- ]?only/i,
+  ];
+  if (explicitReadOnlyPatterns.some((pattern) => pattern.test(text))) {
+    return 'read-only';
+  }
+
+  const writeIntentPatterns = [
+    /修正/u,
+    /直して/u,
+    /実装/u,
+    /追加/u,
+    /削除/u,
+    /変更/u,
+    /更新/u,
+    /作成/u,
+    /作って/u,
+    /進めて/u,
+    /対応/u,
+    /移行/u,
+    /導入/u,
+    /消して/u,
+  ];
+  if (writeIntentPatterns.some((pattern) => pattern.test(text))) {
+    return 'write';
+  }
+
+  const readOnlyIntentPatterns = [
+    /どうなって/u,
+    /確認/u,
+    /見て/u,
+    /調べ/u,
+    /原因/u,
+    /なぜ/u,
+    /教えて/u,
+    /説明/u,
+    /レビュー/u,
+    /答えて/u,
+    /最上位見出し/u,
+    /何が/u,
+    /どこ/u,
+  ];
+  if (
+    readOnlyIntentPatterns.some((pattern) => pattern.test(text)) ||
+    /[?？]$/.test(text)
+  ) {
+    return 'read-only';
+  }
+
+  return null;
+}
+
 function listWorkspaceRepoCandidates(
   resolvedDir: string
 ): InferredRepoContext[] {
@@ -3262,6 +3331,14 @@ async function decideDispatchForBatch(input: {
           content: mergeQueuedEntryContent(input.entries),
         })
       : null;
+  const effectiveRequestedRunMode: ManagerRunMode | null =
+    input.entries.find(
+      (entry) =>
+        entry.requestedRunMode === 'read-only' ||
+        entry.requestedRunMode === 'write'
+    )?.requestedRunMode ??
+    input.threadMeta?.requestedRunMode ??
+    null;
   const prompt = buildDispatchPrompt({
     content: mergeQueuedEntryContent(input.entries),
     thread: stripTrailingUserMessagesFromThread(input.thread),
@@ -3274,7 +3351,7 @@ async function decideDispatchForBatch(input: {
     newRepoRoot: threadNewRepoRoot,
     managedBaseBranch: input.threadMeta?.managedBaseBranch ?? null,
     managedVerifyCommand: input.threadMeta?.managedVerifyCommand ?? null,
-    requestedRunMode: input.threadMeta?.requestedRunMode ?? null,
+    requestedRunMode: effectiveRequestedRunMode,
     inferredRepoLabel: inferredRepo?.label ?? null,
     inferredRepoRoot: inferredRepo?.repoRoot ?? null,
     inferredRepoScope: inferredRepo?.scope ?? null,
@@ -3296,7 +3373,7 @@ async function decideDispatchForBatch(input: {
   }
 
   const parsed = parseManagerDispatchPayload(runResult.parsed.text);
-  const writeRequestedByThread = input.threadMeta?.requestedRunMode === 'write';
+  const writeRequestedByThread = effectiveRequestedRunMode === 'write';
   const contextExistingRepoScopes = currentManagedRepo
     ? [
         repoWriteScopeForWorkspace(
@@ -3365,7 +3442,7 @@ async function decideDispatchForBatch(input: {
       newRepoName: resolvedNewRepoName,
       writeScopes:
         (parsed.writeScopes?.length ?? 0) === 0 &&
-        input.threadMeta?.requestedRunMode === 'read-only'
+        effectiveRequestedRunMode === 'read-only'
           ? []
           : [resolvedNewRepoName],
     };
@@ -3373,7 +3450,7 @@ async function decideDispatchForBatch(input: {
 
   if (
     (parsed.writeScopes?.length ?? 0) === 0 &&
-    input.threadMeta?.requestedRunMode === 'read-only'
+    effectiveRequestedRunMode === 'read-only'
   ) {
     return {
       ...parsed,
@@ -5255,6 +5332,8 @@ export async function sendGlobalToBuiltinManager(
             action,
             plan.actions.length
           );
+          const requestedRunMode =
+            inferRequestedRunModeFromContent(userMessage);
           await ensureThreadReadyForUserMessage(dir, action.threadId);
           await clearThreadRoutingStatePreservingContinuity(
             resolvedDir,
@@ -5273,6 +5352,7 @@ export async function sendGlobalToBuiltinManager(
             userMessage,
             {
               dispatchMode: 'manager-evaluate',
+              requestedRunMode,
             }
           );
           const attachedThread = await getThread(dir, action.threadId);
@@ -5301,6 +5381,8 @@ export async function sendGlobalToBuiltinManager(
                 parentThread: derivedParentThread,
               })
             : pickThreadUserMessage(content, action, plan.actions.length);
+          const requestedRunMode =
+            inferRequestedRunModeFromContent(userMessage);
           const createdThread = await createThread(
             resolvedDir,
             derivedParentThread
@@ -5333,7 +5415,10 @@ export async function sendGlobalToBuiltinManager(
             resolvedDir,
             createdThread.id,
             userMessage,
-            { dispatchMode: 'manager-evaluate' }
+            {
+              dispatchMode: 'manager-evaluate',
+              requestedRunMode,
+            }
           );
           items.push({
             threadId: createdThread.id,

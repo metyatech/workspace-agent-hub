@@ -292,16 +292,27 @@ export async function handleManagerUiRequest(input: {
         });
     };
 
-    enqueuePayload(await buildManagerLiveSnapshot(input.workspaceRoot));
-
-    const unsubscribe = subscribeManagerUpdates(input.workspaceRoot, () => {
-      void buildManagerLiveSnapshot(input.workspaceRoot)
-        .then((snapshot) => {
-          enqueuePayload(snapshot);
+    const enqueueSnapshot = (): void => {
+      writeChain = writeChain
+        .then(async () => {
+          if (closed || input.res.writableEnded) {
+            return;
+          }
+          const snapshot = await buildManagerLiveSnapshot(input.workspaceRoot);
+          if (closed || input.res.writableEnded) {
+            return;
+          }
+          input.res.write(JSON.stringify(snapshot) + '\n');
         })
         .catch(() => {
           /* ignore snapshot rebuild failures */
         });
+    };
+
+    enqueueSnapshot();
+
+    const unsubscribe = subscribeManagerUpdates(input.workspaceRoot, () => {
+      enqueueSnapshot();
     });
 
     const heartbeat = setInterval(() => {
