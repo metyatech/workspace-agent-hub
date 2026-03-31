@@ -305,7 +305,12 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(tempDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 50,
+  });
 });
 
 describe('manager backend codex integration', () => {
