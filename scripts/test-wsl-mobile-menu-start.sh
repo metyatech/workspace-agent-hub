@@ -7,13 +7,51 @@ menu_session="shell-menu-start-$$"
 session_title="start-menu-check-$$"
 created_session=''
 
+trim_cr() {
+  tr -d '\r'
+}
+
+get_windows_env() {
+  local variable_name="$1"
+  local bridge_name="AI_AGENT_MOBILE_WINDOWS_${variable_name}"
+  local value
+
+  value="${!bridge_name:-}"
+  if [[ -n "${value// }" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  value="$(cmd.exe /c "echo %${variable_name}%" < /dev/null 2>/dev/null | trim_cr || true)"
+  if [[ "$value" == "%${variable_name}%" ]]; then
+    value=''
+  fi
+  printf '%s\n' "$value"
+}
+
+resolve_session_catalog_path() {
+  local windows_userprofile=''
+  local wsl_userprofile=''
+
+  windows_userprofile="$(get_windows_env 'USERPROFILE')"
+  if [[ -n "${windows_userprofile// }" ]]; then
+    wsl_userprofile="$(wslpath "$windows_userprofile" 2>/dev/null || true)"
+    if [[ -n "${wsl_userprofile// }" ]]; then
+      printf '%s\n' "${wsl_userprofile}/agent-handoff/session-catalog.json"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${HOME}/.agent-handoff/session-catalog.json"
+}
+
 cleanup() {
   tmux kill-session -t "$menu_session" >/dev/null 2>&1 || true
   if [[ -n "${created_session// }" ]]; then
     tmux kill-session -t "$created_session" >/dev/null 2>&1 || true
   fi
 
-  SESSION_CATALOG_PATH="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r')")/agent-handoff/session-catalog.json" \
+  SESSION_CATALOG_PATH="$(resolve_session_catalog_path)" \
   SESSION_TITLE="$session_title" \
   SESSION_NAME="$created_session" \
   node <<'NODE' >/dev/null 2>&1 || true
@@ -86,7 +124,7 @@ printf '%s\n' "$pane_output" | grep -q "$session_title"
 
 tmux display-message -p -t "$created_session" '#{pane_current_path}' | grep -qx "$AGENT_SESSION_HUB_REPO_ROOT"
 
-SESSION_CATALOG_PATH="$(wslpath "$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r')")/agent-handoff/session-catalog.json" \
+SESSION_CATALOG_PATH="$(resolve_session_catalog_path)" \
 SESSION_TITLE="$session_title" \
 SESSION_NAME="$created_session" \
 EXPECTED_WORKING_DIRECTORY_WINDOWS="$(wslpath -a -w "$AGENT_SESSION_HUB_REPO_ROOT" | tr -d '\r')" \

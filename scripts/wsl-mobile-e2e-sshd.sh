@@ -105,7 +105,10 @@ resolve_catalog_path() {
     return 0
   fi
 
-  windows_userprofile="$(cmd.exe /c "echo %USERPROFILE%" < /dev/null 2>/dev/null | tr -d '\r' || true)"
+  windows_userprofile="${AI_AGENT_MOBILE_WINDOWS_USERPROFILE:-}"
+  if [[ -z "${windows_userprofile// }" ]]; then
+    windows_userprofile="$(cmd.exe /c "echo %USERPROFILE%" < /dev/null 2>/dev/null | tr -d '\r' || true)"
+  fi
   if [[ -n "${windows_userprofile// }" ]] && [[ "$windows_userprofile" != '%USERPROFILE%' ]]; then
     wsl_userprofile="$(wslpath "$windows_userprofile" 2>/dev/null || true)"
     if [[ -n "${wsl_userprofile// }" ]]; then
