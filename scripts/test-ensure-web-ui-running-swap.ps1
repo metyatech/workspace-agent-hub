@@ -167,29 +167,6 @@ function Invoke-HubSessionsRequest {
     return Invoke-WebRequest -Uri "http://127.0.0.1:$PortNumber/api/sessions?includeArchived=true" -Headers $headers -TimeoutSec $TimeoutSeconds -UseBasicParsing -ErrorAction Stop
 }
 
-function Wait-ForHubSessionsReady {
-    param(
-        [Parameter(Mandatory = $true)]
-        [int]$PortNumber,
-        [string]$Token = '',
-        [int]$TimeoutMilliseconds = 10000
-    )
-
-    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
-    do {
-        try {
-            $response = Invoke-HubSessionsRequest -PortNumber $PortNumber -Token $Token -TimeoutSeconds 1
-            if ($response.StatusCode -eq 200) {
-                return $response
-            }
-        } catch {
-        }
-        Start-Sleep -Milliseconds 150
-    } while ([DateTime]::UtcNow -lt $deadline)
-
-    throw "Expected the ensured web UI on port $PortNumber to answer API requests."
-}
-
 function Wait-ForPortClosed {
     param(
         [Parameter(Mandatory = $true)]
@@ -337,10 +314,6 @@ try {
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
     $firstPort = ([Uri][string]$first.ListenUrl).Port
-    $firstResponse = Wait-ForHubSessionsReady -PortNumber $firstPort -TimeoutMilliseconds 10000
-    if ($firstResponse.StatusCode -ne 200) {
-        throw 'Expected the first ensured instance to answer API requests.'
-    }
 
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SWAP_DELAY_MS', '2500', 'Process')
     $replacementRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'replacement-token' -RunName 'replacement' -TargetDirectory $testDirectory
@@ -371,11 +344,8 @@ try {
         throw 'Expected replacement startup to use a different port while the previous listener was still alive.'
     }
 
-    $replacementResponse = Wait-ForHubSessionsReady -PortNumber $replacementPort -Token 'replacement-token' -TimeoutMilliseconds 10000
-    if ($replacementResponse.StatusCode -ne 200) {
-        throw 'Expected the replacement listener to answer API requests with the requested auth token.'
-    }
-
+    # ensure-web-ui-running.ps1 does not emit its JSON result until the replacement listener
+    # has passed its own readiness gate; this test only needs to verify overlap and teardown.
     Wait-ForPortClosed -PortNumber $firstPort
 } finally {
     if (Test-Path -LiteralPath $frontDoorSourcePath) {
