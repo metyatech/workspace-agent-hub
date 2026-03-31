@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+from getpass import getuser
 from pathlib import Path
 
 
@@ -37,6 +38,22 @@ def resolve_windows_openssh_binary(binary_name: str, *fallback_names: str) -> st
 SSH_EXE = resolve_windows_openssh_binary("ssh.exe", "ssh.exe", "ssh")
 SSH_KEYGEN_EXE = resolve_windows_openssh_binary("ssh-keygen.exe", "ssh-keygen.exe", "ssh-keygen")
 SSHD_EXE = resolve_windows_openssh_binary("sshd.exe")
+
+
+def resolve_windows_ssh_test_user() -> str:
+    candidates = (
+        os.environ.get("WORKSPACE_AGENT_HUB_TEST_SSH_USER"),
+        os.environ.get("USERNAME"),
+        os.environ.get("USER"),
+        getuser(),
+    )
+    for candidate in candidates:
+        if candidate:
+            return candidate.split("\\")[-1]
+    raise RuntimeError("Unable to resolve the Windows SSH test user.")
+
+
+SSH_TEST_USER = resolve_windows_ssh_test_user()
 
 
 def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -178,7 +195,7 @@ class InteractiveSsh:
                 str(key_path),
                 "-p",
                 str(port),
-                "Origin@127.0.0.1",
+                f"{SSH_TEST_USER}@127.0.0.1",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
