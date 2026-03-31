@@ -907,6 +907,110 @@ describe('native manager page', () => {
     });
   });
 
+  it('serves manager status from the latest published live snapshot', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const headers = { 'X-Workspace-Agent-Hub-Token': 'secret-token' };
+    const liveResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/live`,
+      { headers }
+    );
+    expect(liveResponse.status).toBe(200);
+
+    const reader = liveResponse.body?.getReader();
+    expect(reader).toBeTruthy();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    async function readSnapshot(): Promise<{
+      kind: string;
+      status: {
+        running: boolean;
+        detail: string;
+        pendingCount: number;
+      };
+    }> {
+      while (true) {
+        const { done, value } = await reader!.read();
+        if (done) {
+          throw new Error(
+            'Manager live stream closed before the next snapshot arrived.'
+          );
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+          const parsed = JSON.parse(trimmed) as {
+            kind: string;
+            status: {
+              running: boolean;
+              detail: string;
+              pendingCount: number;
+            };
+          };
+          if (parsed.kind !== 'snapshot') {
+            continue;
+          }
+          return parsed;
+        }
+      }
+    }
+
+    const initialSnapshot = await readSnapshot();
+    expect(initialSnapshot.status.pendingCount).toBe(0);
+    expect(initialSnapshot.status.running).toBe(false);
+
+    await writeFile(
+      join(workspaceRoot, '.workspace-agent-hub-manager-queue.jsonl'),
+      `${JSON.stringify({
+        id: 'q_pending',
+        threadId: 'thread-pending',
+        content: 'pending work',
+        createdAt: new Date().toISOString(),
+        processed: false,
+      })}\n`,
+      'utf8'
+    );
+
+    const unpublishedStatusResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers }
+    );
+    expect(unpublishedStatusResponse.status).toBe(200);
+    await expect(unpublishedStatusResponse.json()).resolves.toMatchObject(
+      initialSnapshot.status
+    );
+
+    const updatedSnapshot = await readSnapshot();
+    expect(updatedSnapshot.status.running).toBe(true);
+    expect(updatedSnapshot.status.pendingCount).toBe(1);
+    expect(updatedSnapshot.status.detail).toContain('キュー: 1件');
+
+    const refreshedStatusResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers }
+    );
+    expect(refreshedStatusResponse.status).toBe(200);
+    await expect(refreshedStatusResponse.json()).resolves.toMatchObject(
+      updatedSnapshot.status
+    );
+
+    await reader?.cancel();
+  });
+
   it('creates and lists threads through the native manager API', async () => {
     const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({

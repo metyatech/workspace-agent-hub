@@ -121,6 +121,17 @@ interface ManagerLiveSnapshot {
   status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>;
 }
 
+interface ManagerLiveSnapshotCacheEntry {
+  snapshot: ManagerLiveSnapshot | null;
+  refreshPromise: Promise<ManagerLiveSnapshot> | null;
+  subscriberCount: number;
+}
+
+const managerLiveSnapshotCache = new Map<
+  string,
+  ManagerLiveSnapshotCacheEntry
+>();
+
 function sendUnauthorized(res: ServerResponse): void {
   sendJson(
     res,
@@ -185,6 +196,56 @@ async function buildManagerLiveSnapshot(
     tasks,
     status,
   };
+}
+
+function getOrCreateManagerLiveSnapshotCacheEntry(
+  workspaceRoot: string
+): ManagerLiveSnapshotCacheEntry {
+  const key = resolvePath(workspaceRoot);
+  const existing = managerLiveSnapshotCache.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created: ManagerLiveSnapshotCacheEntry = {
+    snapshot: null,
+    refreshPromise: null,
+    subscriberCount: 0,
+  };
+  managerLiveSnapshotCache.set(key, created);
+  return created;
+}
+
+async function refreshManagerLiveSnapshot(
+  workspaceRoot: string
+): Promise<ManagerLiveSnapshot> {
+  const resolvedRoot = resolvePath(workspaceRoot);
+  const cacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(resolvedRoot);
+  if (cacheEntry.refreshPromise) {
+    return cacheEntry.refreshPromise;
+  }
+
+  const refreshPromise = buildManagerLiveSnapshot(resolvedRoot)
+    .then((snapshot) => {
+      cacheEntry.snapshot = snapshot;
+      return snapshot;
+    })
+    .finally(() => {
+      if (cacheEntry.refreshPromise === refreshPromise) {
+        cacheEntry.refreshPromise = null;
+      }
+    });
+  cacheEntry.refreshPromise = refreshPromise;
+  return refreshPromise;
+}
+
+async function readManagerLiveSnapshot(
+  workspaceRoot: string
+): Promise<ManagerLiveSnapshot> {
+  const cacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(workspaceRoot);
+  if (cacheEntry.snapshot && cacheEntry.subscriberCount > 0) {
+    return cacheEntry.snapshot;
+  }
+  return refreshManagerLiveSnapshot(workspaceRoot);
 }
 
 export function isManagerUiPath(pathname: string): boolean {
@@ -268,6 +329,10 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/live' && input.method === 'GET') {
+    const snapshotCacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(
+      input.workspaceRoot
+    );
+    snapshotCacheEntry.subscriberCount += 1;
     input.res.writeHead(200, {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -298,7 +363,9 @@ export async function handleManagerUiRequest(input: {
           if (closed || input.res.writableEnded) {
             return;
           }
-          const snapshot = await buildManagerLiveSnapshot(input.workspaceRoot);
+          const snapshot = await refreshManagerLiveSnapshot(
+            input.workspaceRoot
+          );
           if (closed || input.res.writableEnded) {
             return;
           }
@@ -327,6 +394,10 @@ export async function handleManagerUiRequest(input: {
         return;
       }
       closed = true;
+      snapshotCacheEntry.subscriberCount = Math.max(
+        0,
+        snapshotCacheEntry.subscriberCount - 1
+      );
       activeSseConnections.delete(input.res);
       clearInterval(heartbeat);
       unsubscribe();
@@ -429,7 +500,8 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/manager/status' && input.method === 'GET') {
-    sendJson(input.res, await getBuiltinManagerStatus(input.workspaceRoot));
+    const snapshot = await readManagerLiveSnapshot(input.workspaceRoot);
+    sendJson(input.res, snapshot.status);
     return true;
   }
 

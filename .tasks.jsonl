@@ -75,3 +75,4 @@
 {"id":"veuYEt-R","description":"Dogfood workspace-agent-hub Manager single-composer flow and verify expected behavior","stage":"done","createdAt":"2026-03-30T03:03:27.211Z","updatedAt":"2026-03-30T03:12:54.242Z"}
 {"id":"3Yo0CmFz","description":"Fix workspace-agent-hub commit-hook test environment so vitest resolves during git commit","stage":"done","createdAt":"2026-03-30T03:27:00.014Z","updatedAt":"2026-03-30T03:37:31.235Z"}
 {"id":"ZE-swrm3","description":"Fix workspace-agent-hub Manager stale cross-session state sync and read-only routing inference","stage":"committed","createdAt":"2026-03-30T13:37:10.321Z","updatedAt":"2026-03-30T14:11:04.727Z","committedEventId":"UrZCjpLIEyoBdrjG"}
+{"id":"mASOLDrQ","description":"Unify workspace-agent-hub manager status and live snapshot from one authoritative state to remove short race","stage":"committed","createdAt":"2026-03-31T00:08:27.022Z","updatedAt":"2026-03-31T00:13:22.826Z","committedEventId":"robc4_ivyGjPiuhd"}
