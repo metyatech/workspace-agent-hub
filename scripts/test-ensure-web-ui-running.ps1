@@ -135,21 +135,40 @@ function Wait-ForProcessSuccess {
         [int]$TimeoutSeconds = 30
     )
 
-    Start-Sleep -Milliseconds 500
-    if (-not (Test-Path -Path $ProcessInfo.StdErrPath)) {
+    try {
+        Wait-Process -Id $ProcessInfo.Process.Id -Timeout $TimeoutSeconds -ErrorAction Stop
+    } catch {
         return
     }
 
-    $stderrRaw = Get-Content -Path $ProcessInfo.StdErrPath -Raw -Encoding utf8
-    if ($null -eq $stderrRaw) {
-        $stderrRaw = ''
+    $exitCode = $null
+    try {
+        $exitCode = $ProcessInfo.Process.ExitCode
+    } catch {
     }
-    $stderrText = $stderrRaw.Trim()
-    if (-not $stderrText) {
+    if ($null -eq $exitCode -or $exitCode -eq 0) {
         return
     }
 
-    throw "ensure-web-ui-running.ps1 emitted stderr during launch verification. $stderrText"
+    $detail = ''
+    if (Test-Path -Path $ProcessInfo.StdErrPath) {
+        $stderrRaw = Get-Content -Path $ProcessInfo.StdErrPath -Raw -Encoding utf8
+        if ($null -ne $stderrRaw -and $stderrRaw.Trim()) {
+            $detail = $stderrRaw.Trim()
+        }
+    }
+    if (-not $detail -and (Test-Path -Path $ProcessInfo.StdOutPath)) {
+        $stdoutRaw = Get-Content -Path $ProcessInfo.StdOutPath -Raw -Encoding utf8
+        if ($null -ne $stdoutRaw -and $stdoutRaw.Trim()) {
+            $detail = $stdoutRaw.Trim()
+        }
+    }
+
+    if ($detail) {
+        throw "ensure-web-ui-running.ps1 exited with code $exitCode during launch verification. $detail"
+    }
+
+    throw "ensure-web-ui-running.ps1 exited with code $exitCode during launch verification."
 }
 
 function Wait-ForApiReady {
