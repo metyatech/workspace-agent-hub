@@ -38,6 +38,7 @@ def resolve_windows_openssh_binary(binary_name: str, *fallback_names: str) -> st
 SSH_EXE = resolve_windows_openssh_binary("ssh.exe", "ssh.exe", "ssh")
 SSH_KEYGEN_EXE = resolve_windows_openssh_binary("ssh-keygen.exe", "ssh-keygen.exe", "ssh-keygen")
 SSHD_EXE = resolve_windows_openssh_binary("sshd.exe")
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 def resolve_windows_ssh_test_user() -> str:
@@ -54,6 +55,14 @@ def resolve_windows_ssh_test_user() -> str:
 
 
 SSH_TEST_USER = resolve_windows_ssh_test_user()
+
+
+def to_openssh_path(path: str | Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
 
 
 def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -284,20 +293,23 @@ class TemporarySshd:
 
         public_key = self.user_key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
         self.authorized_keys_path.write_text(public_key + "\n", encoding="utf-8")
+        bootstrap_script_wsl = to_wsl_path(SCRIPT_DIR / "wsl-mobile-login-bootstrap.sh")
+        force_command = f"wsl.exe -d Ubuntu -- bash -lc {tmux_quote(bootstrap_script_wsl)}"
 
         config = "\n".join(
             [
                 f"Port {self.port}",
                 "ListenAddress 127.0.0.1",
-                f"PidFile {str(self.temp_dir / 'sshd.pid').replace('\\', '/')}",
-                f"AuthorizedKeysFile {str(self.authorized_keys_path).replace('\\', '/')}",
-                f"HostKey {str(self.host_key_path).replace('\\', '/')}",
+                f"PidFile {to_openssh_path(self.temp_dir / 'sshd.pid')}",
+                f"AuthorizedKeysFile {to_openssh_path(self.authorized_keys_path)}",
+                f"HostKey {to_openssh_path(self.host_key_path)}",
                 "PubkeyAuthentication yes",
                 "PasswordAuthentication no",
                 "KbdInteractiveAuthentication no",
                 "StrictModes no",
                 "LogLevel VERBOSE",
                 "Subsystem sftp sftp-server.exe",
+                f"ForceCommand {force_command}",
                 "",
             ]
         )
@@ -351,11 +363,12 @@ def kill_tmux_session(session_name: str) -> None:
 def parse_session_index(output: str, title: str, folder: str | None = None) -> str:
     lines = output.splitlines()
     for line in lines:
-        if title not in line:
+        plain_line = strip_ansi(line)
+        if title not in plain_line:
             continue
-        if folder and f"folder={folder}" not in line:
+        if folder and f"folder={folder}" not in plain_line:
             continue
-        match = re.search(r"^\[(\d+)\]", line)
+        match = re.search(r"\[(\d+)\]", plain_line)
         if match:
             return match.group(1)
     raise RuntimeError(f"Unable to find a session index for title={title!r} folder={folder!r}.\nOutput:\n{output}")
