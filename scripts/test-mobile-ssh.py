@@ -304,6 +304,7 @@ class TemporarySshd:
                     "if ($env:SSH_CONNECTION) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION = $env:SSH_CONNECTION }",
                     "if ($env:SSH_CLIENT) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_CLIENT = $env:SSH_CLIENT }",
                     "if ($env:SSH_TTY) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_TTY = $env:SSH_TTY }",
+                    "if ($env:USERPROFILE) { $env:AI_AGENT_MOBILE_WINDOWS_USERPROFILE = $env:USERPROFILE }",
                     f"& wsl.exe -d Ubuntu -- bash -lc {tmux_quote(bootstrap_script_wsl)}",
                     "exit $LASTEXITCODE",
                     "",
