@@ -60,6 +60,25 @@ function Invoke-SyncCodexAuthJson {
     return ($text | ConvertFrom-Json)
 }
 
+function Get-WslHomeDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Distro
+    )
+
+    $homeOutput = @(& wsl.exe -d $Distro -- bash -lc 'printf ''%s\n'' "$HOME"')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Expected to resolve the WSL home directory for distro '$Distro'."
+    }
+
+    $homePath = (($homeOutput | Out-String).Trim()).TrimEnd('/')
+    if (-not $homePath) {
+        throw "Expected the WSL home directory for distro '$Distro' to be non-empty."
+    }
+
+    return $homePath
+}
+
 try {
     if (Test-Path -Path $liveTranscriptPath) {
         [IO.File]::Delete($liveTranscriptPath)
@@ -141,8 +160,10 @@ try {
         throw 'Expected to capture the isolated tmux pane after startup-command test.'
     }
     $paneText = ($paneOutput | Out-String)
-    if ($paneText -notmatch '/home/[^/\s]+/\.local/bin/codex') {
-        throw "Expected startup command output to contain the WSL home path for codex. Output: $paneText"
+    $wslHomeDirectory = Get-WslHomeDirectory -Distro 'Ubuntu'
+    $expectedCodexPath = [regex]::Escape("$wslHomeDirectory/.local/bin/codex")
+    if ($paneText -notmatch $expectedCodexPath) {
+        throw "Expected startup command output to contain '$wslHomeDirectory/.local/bin/codex'. Output: $paneText"
     }
     if ($paneText -match 'C:Users|C:\\Users') {
         throw "Startup command leaked a Windows-style home path into tmux. Output: $paneText"
