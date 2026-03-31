@@ -283,6 +283,7 @@ class TemporarySshd:
         self.authorized_keys_path = self.temp_dir / "authorized_keys"
         self.known_hosts_path = self.temp_dir / "known_hosts"
         self.config_path = self.temp_dir / "sshd_config"
+        self.force_command_script_path = self.temp_dir / "force-command.ps1"
         self.process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
@@ -294,7 +295,26 @@ class TemporarySshd:
         public_key = self.user_key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
         self.authorized_keys_path.write_text(public_key + "\n", encoding="utf-8")
         bootstrap_script_wsl = to_wsl_path(SCRIPT_DIR / "wsl-mobile-login-bootstrap.sh")
-        force_command = f"wsl.exe -d Ubuntu -- bash -lc {tmux_quote(bootstrap_script_wsl)}"
+        self.force_command_script_path.write_text(
+            "\n".join(
+                [
+                    "Set-StrictMode -Version Latest",
+                    "$ErrorActionPreference = 'Stop'",
+                    "$env:AI_AGENT_MOBILE_ASSUME_TTY = '1'",
+                    "if ($env:SSH_CONNECTION) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION = $env:SSH_CONNECTION }",
+                    "if ($env:SSH_CLIENT) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_CLIENT = $env:SSH_CLIENT }",
+                    "if ($env:SSH_TTY) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_TTY = $env:SSH_TTY }",
+                    f"& wsl.exe -d Ubuntu -- bash -lc {tmux_quote(bootstrap_script_wsl)}",
+                    "exit $LASTEXITCODE",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        force_command = (
+            "powershell.exe"
+            f" -NoProfile -ExecutionPolicy Bypass -File {to_openssh_path(self.force_command_script_path)}"
+        )
 
         config = "\n".join(
             [
