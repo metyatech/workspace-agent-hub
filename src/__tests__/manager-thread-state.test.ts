@@ -352,4 +352,68 @@ describe('manager thread state derivation', () => {
     expect(child?.derivedFromThreadIds).toEqual(['thread-parent']);
     expect(child?.derivedChildThreadIds).toEqual([]);
   });
+
+  it('does not surface plain waiting threads with no manager footprint as AI queue', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-dummy',
+          title: 'x',
+          status: 'waiting',
+          updatedAt: '2026-03-29T01:10:13.388Z',
+          createdAt: '2026-03-29T01:10:13.381Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'y',
+              at: '2026-03-29T01:10:13.388Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-real',
+          title: 'README 調査',
+          status: 'waiting',
+          updatedAt: '2026-03-31T00:00:00.000Z',
+          createdAt: '2026-03-31T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'README を確認してください',
+              at: '2026-03-31T00:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-03-31T00:00:00.000Z',
+        lastMessageAt: '2026-03-31T00:00:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        activeAssignments: [],
+      },
+      queue: [
+        {
+          id: 'queue-real',
+          threadId: 'thread-real',
+          content: 'README を確認してください',
+          createdAt: '2026-03-31T00:00:01.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+      ],
+      meta: {},
+    });
+
+    expect(views.map((view) => view.id)).toEqual(['thread-real']);
+    expect(views[0]?.uiState).toBe('queued');
+  });
 });

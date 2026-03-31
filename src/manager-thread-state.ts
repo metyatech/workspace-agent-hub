@@ -303,6 +303,47 @@ function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
   });
 }
 
+function hasManagerThreadFootprint(meta: ManagerThreadMeta | null): boolean {
+  if (!meta) {
+    return false;
+  }
+  return Object.values(meta).some((value) => {
+    if (Array.isArray(value)) {
+      return value.some((entry) =>
+        typeof entry === 'string' ? entry.trim().length > 0 : Boolean(entry)
+      );
+    }
+    if (typeof value === 'string') {
+      return value.trim().length > 0;
+    }
+    if (typeof value === 'number') {
+      return value > 0;
+    }
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    return value != null;
+  });
+}
+
+function shouldIncludeInManagerThreadViews(input: {
+  thread: Thread;
+  meta: ManagerThreadMeta | null;
+  queueDepth: number;
+  isWorking: boolean;
+}): boolean {
+  if (input.thread.status !== 'waiting') {
+    return true;
+  }
+  if (input.queueDepth > 0 || input.isWorking) {
+    return true;
+  }
+  if (hasManagerThreadFootprint(input.meta)) {
+    return true;
+  }
+  return lastSender(input.thread) === 'ai';
+}
+
 function deriveUiState(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
@@ -333,7 +374,20 @@ function deriveUiState(input: {
     return 'ai-working';
   }
 
-  if (input.thread.status === 'waiting' || input.queueDepth > 0) {
+  if (input.thread.status === 'waiting') {
+    if (
+      input.queueDepth > 0 ||
+      input.isWorking ||
+      hasManagerThreadFootprint(input.meta)
+    ) {
+      return 'queued';
+    }
+    if (lastSender(input.thread) === 'ai') {
+      return 'ai-finished-awaiting-user-confirmation';
+    }
+  }
+
+  if (input.queueDepth > 0) {
     return 'queued';
   }
 
@@ -434,12 +488,22 @@ export function deriveManagerThreadViews(input: {
     }
   }
 
-  const views = input.threads.map((thread) => {
+  const views = input.threads.flatMap((thread) => {
     const meta = input.meta[thread.id] ?? null;
     const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
     const isWorking = (input.session.activeAssignments ?? []).some(
       (assignment) => assignment.threadId === thread.id
     );
+    if (
+      !shouldIncludeInManagerThreadViews({
+        thread,
+        meta,
+        queueDepth,
+        isWorking,
+      })
+    ) {
+      return [];
+    }
     const uiState = deriveUiState({
       thread,
       meta,
@@ -447,61 +511,67 @@ export function deriveManagerThreadViews(input: {
       isWorking,
     });
 
-    return {
-      ...thread,
-      uiState,
-      previewText: previewText(thread),
-      lastSender: lastSender(thread),
-      hiddenByDefault: uiState === 'done',
-      routingConfirmationNeeded: Boolean(meta?.routingConfirmationNeeded),
-      routingHint: meta?.routingHint ?? null,
-      derivedFromThreadIds: derivedFromByThread.get(thread.id) ?? [],
-      derivedChildThreadIds: derivedChildrenByThread.get(thread.id) ?? [],
-      managedRepoId: normalizeManagedRepoText(meta?.managedRepoId),
-      managedRepoLabel: normalizeManagedRepoText(meta?.managedRepoLabel),
-      managedRepoRoot: normalizeManagedRepoText(meta?.managedRepoRoot),
-      repoTargetKind: normalizeManagerTargetKind(meta?.repoTargetKind),
-      newRepoName: normalizeManagedRepoText(meta?.newRepoName),
-      newRepoRoot: normalizeManagedRepoText(meta?.newRepoRoot),
-      managedBaseBranch: normalizeManagedRepoText(meta?.managedBaseBranch),
-      managedVerifyCommand: normalizeManagedRepoText(
-        meta?.managedVerifyCommand
-      ),
-      requestedWorkerRuntime: normalizeRequestedWorkerRuntime(
-        meta?.requestedWorkerRuntime
-      ),
-      requestedRunMode: normalizeRequestedRunMode(meta?.requestedRunMode),
-      queueDepth,
-      isWorking,
-      queueOrder: queueOrderByThread.get(thread.id) ?? null,
-      queuePriority: queuePriorityByThread.get(thread.id) ?? null,
-      assigneeKind: meta?.assigneeKind ?? null,
-      assigneeLabel: meta?.assigneeLabel ?? null,
-      workerAgentId:
-        typeof meta?.workerAgentId === 'string'
-          ? meta.workerAgentId.trim() || null
-          : null,
-      workerRuntimeState: normalizeWorkerRuntimeState(meta?.workerRuntimeState),
-      workerRuntimeDetail:
-        typeof meta?.workerRuntimeDetail === 'string'
-          ? meta.workerRuntimeDetail.trim() || null
-          : null,
-      workerWriteScopes: normalizeDerivedFromThreadIds(meta?.workerWriteScopes),
-      workerBlockedByThreadIds: normalizeDerivedFromThreadIds(
-        meta?.workerBlockedByThreadIds
-      ),
-      supersededByThreadId:
-        typeof meta?.supersededByThreadId === 'string'
-          ? meta.supersededByThreadId.trim() || null
-          : null,
-      workerLiveLog: normalizeWorkerLiveLog(meta?.workerLiveLog),
-      workerLiveOutput:
-        typeof meta?.workerLiveOutput === 'string'
-          ? meta.workerLiveOutput
-          : null,
-      workerLiveAt:
-        typeof meta?.workerLiveAt === 'string' ? meta.workerLiveAt : null,
-    } satisfies ManagerThreadView;
+    return [
+      {
+        ...thread,
+        uiState,
+        previewText: previewText(thread),
+        lastSender: lastSender(thread),
+        hiddenByDefault: uiState === 'done',
+        routingConfirmationNeeded: Boolean(meta?.routingConfirmationNeeded),
+        routingHint: meta?.routingHint ?? null,
+        derivedFromThreadIds: derivedFromByThread.get(thread.id) ?? [],
+        derivedChildThreadIds: derivedChildrenByThread.get(thread.id) ?? [],
+        managedRepoId: normalizeManagedRepoText(meta?.managedRepoId),
+        managedRepoLabel: normalizeManagedRepoText(meta?.managedRepoLabel),
+        managedRepoRoot: normalizeManagedRepoText(meta?.managedRepoRoot),
+        repoTargetKind: normalizeManagerTargetKind(meta?.repoTargetKind),
+        newRepoName: normalizeManagedRepoText(meta?.newRepoName),
+        newRepoRoot: normalizeManagedRepoText(meta?.newRepoRoot),
+        managedBaseBranch: normalizeManagedRepoText(meta?.managedBaseBranch),
+        managedVerifyCommand: normalizeManagedRepoText(
+          meta?.managedVerifyCommand
+        ),
+        requestedWorkerRuntime: normalizeRequestedWorkerRuntime(
+          meta?.requestedWorkerRuntime
+        ),
+        requestedRunMode: normalizeRequestedRunMode(meta?.requestedRunMode),
+        queueDepth,
+        isWorking,
+        queueOrder: queueOrderByThread.get(thread.id) ?? null,
+        queuePriority: queuePriorityByThread.get(thread.id) ?? null,
+        assigneeKind: meta?.assigneeKind ?? null,
+        assigneeLabel: meta?.assigneeLabel ?? null,
+        workerAgentId:
+          typeof meta?.workerAgentId === 'string'
+            ? meta.workerAgentId.trim() || null
+            : null,
+        workerRuntimeState: normalizeWorkerRuntimeState(
+          meta?.workerRuntimeState
+        ),
+        workerRuntimeDetail:
+          typeof meta?.workerRuntimeDetail === 'string'
+            ? meta.workerRuntimeDetail.trim() || null
+            : null,
+        workerWriteScopes: normalizeDerivedFromThreadIds(
+          meta?.workerWriteScopes
+        ),
+        workerBlockedByThreadIds: normalizeDerivedFromThreadIds(
+          meta?.workerBlockedByThreadIds
+        ),
+        supersededByThreadId:
+          typeof meta?.supersededByThreadId === 'string'
+            ? meta.supersededByThreadId.trim() || null
+            : null,
+        workerLiveLog: normalizeWorkerLiveLog(meta?.workerLiveLog),
+        workerLiveOutput:
+          typeof meta?.workerLiveOutput === 'string'
+            ? meta.workerLiveOutput
+            : null,
+        workerLiveAt:
+          typeof meta?.workerLiveAt === 'string' ? meta.workerLiveAt : null,
+      } satisfies ManagerThreadView,
+    ];
   });
 
   return views.sort(compareByPriority);
