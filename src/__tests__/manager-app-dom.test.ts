@@ -1295,7 +1295,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toEqual(['返事が必要']);
   });
 
-  it('collapses empty sections by default and reopens them when items arrive', async () => {
+  it('hides empty sections and reopens them when items arrive', async () => {
     const validToken = 'auto-reopen-empty-sections-token';
     let threads: Array<ReturnType<typeof makeThreadView>> = [];
 
@@ -1363,34 +1363,13 @@ describe('manager-app DOM auth state matrix', () => {
       },
     });
 
+    const replySection = document.querySelector<HTMLElement>(
+      '#sec-user-reply-needed'
+    )!;
     const replyBody = document.querySelector<HTMLElement>(
       '#body-user-reply-needed'
     )!;
-    expect(replyBody.style.display).toBe('none');
-    expect(
-      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
-        ?.textContent
-    ).toBe('▼');
-
-    document
-      .querySelector<HTMLElement>('[data-section-key="user-reply-needed"]')!
-      .click();
-    await flushAsync(2);
-
-    expect(replyBody.style.display).toBe('');
-    expect(
-      document.querySelector<HTMLElement>('#chevron-user-reply-needed')
-        ?.textContent
-    ).toBe('▲');
-    expect(
-      replyBody.querySelector<HTMLElement>('.section-empty')?.textContent
-    ).toContain('あなたの返信が必要な作業項目はありません');
-
-    document
-      .querySelector<HTMLElement>('[data-section-key="user-reply-needed"]')!
-      .click();
-    await flushAsync(2);
-
+    expect(replySection.classList.contains('hidden')).toBe(true);
     expect(replyBody.style.display).toBe('none');
     expect(
       document.querySelector<HTMLElement>('#chevron-user-reply-needed')
@@ -1411,6 +1390,7 @@ describe('manager-app DOM auth state matrix', () => {
       .click();
     await flushAsync(6);
 
+    expect(replySection.classList.contains('hidden')).toBe(false);
     expect(replyBody.style.display).toBe('');
     expect(
       document.querySelector<HTMLElement>('#chevron-user-reply-needed')
@@ -1458,18 +1438,22 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('#activity-primary')!.textContent
     ).toContain('AI の順番待ちがあります');
     expect(
-      document.querySelector<HTMLElement>('#body-routing-confirmation-needed')!
-        .style.display
-    ).toBe('none');
+      document
+        .querySelector<HTMLElement>('#sec-routing-confirmation-needed')!
+        .classList.contains('hidden')
+    ).toBe(true);
     expect(
-      document.querySelector<HTMLElement>('#body-user-reply-needed')!.style
-        .display
-    ).toBe('none');
+      document
+        .querySelector<HTMLElement>('#sec-user-reply-needed')!
+        .classList.contains('hidden')
+    ).toBe(true);
     expect(
-      document.querySelector<HTMLElement>(
-        '#body-ai-finished-awaiting-user-confirmation'
-      )!.style.display
-    ).toBe('none');
+      document
+        .querySelector<HTMLElement>(
+          '#sec-ai-finished-awaiting-user-confirmation'
+        )!
+        .classList.contains('hidden')
+    ).toBe(true);
     const chips = Array.from(
       document.querySelectorAll<HTMLElement>('.activity-chip')
     ).map((element) => element.textContent ?? '');

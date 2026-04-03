@@ -24,6 +24,11 @@ export interface WorktreeInfo {
   targetRepoRoot: string;
 }
 
+export interface IntegrationWorktreeInfo extends WorktreeInfo {
+  remoteName: string;
+  remoteBranch: string;
+}
+
 export interface MergeResult {
   success: boolean;
   conflicted: boolean;
@@ -198,6 +203,38 @@ function normalizeGitHubRepoSlug(
   }
 
   return null;
+}
+
+function parseRemoteBranchSpec(
+  raw: string | null | undefined
+): { remoteName: string; remoteBranch: string } | null {
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw
+    .trim()
+    .replace(/^refs\/remotes\//, '')
+    .replace(/^remotes\//, '');
+  if (!normalized) {
+    return null;
+  }
+
+  const slashIndex = normalized.indexOf('/');
+  if (slashIndex <= 0 || slashIndex === normalized.length - 1) {
+    return null;
+  }
+
+  return {
+    remoteName: normalized.slice(0, slashIndex),
+    remoteBranch: normalized.slice(slashIndex + 1),
+  };
+}
+
+async function gitRefExists(cwd: string, ref: string): Promise<boolean> {
+  const result = await execGit(cwd, ['rev-parse', '--verify', ref]).catch(
+    () => null
+  );
+  return result?.code === 0;
 }
 
 interface PublishablePackageInfo {
@@ -381,6 +418,127 @@ export async function prepareNewRepoWorkspace(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Shared isolated-worktree helpers
+// ---------------------------------------------------------------------------
+
+function linkNodeModules(targetRepoRoot: string, worktreePath: string): void {
+  const nmSource = join(targetRepoRoot, 'node_modules');
+  const nmTarget = join(worktreePath, 'node_modules');
+  if (existsSync(nmSource) && !existsSync(nmTarget)) {
+    symlinkSync(nmSource, nmTarget, 'junction');
+  }
+}
+
+async function createIsolatedWorktree(input: {
+  targetRepoRoot: string;
+  worktreePath: string;
+  branchName: string;
+  startPoint: string;
+}): Promise<void> {
+  const { targetRepoRoot, worktreePath, branchName, startPoint } = input;
+
+  const tryCreate = async (): Promise<void> => {
+    await cleanupStaleBranch(targetRepoRoot, worktreePath, branchName);
+
+    const result = await execGit(targetRepoRoot, [
+      'worktree',
+      'add',
+      worktreePath,
+      '-b',
+      branchName,
+      startPoint,
+    ]);
+    if (result.code !== 0) {
+      throw new Error(
+        `git worktree add failed (code ${result.code}): ${result.stderr}`
+      );
+    }
+
+    linkNodeModules(targetRepoRoot, worktreePath);
+  };
+
+  try {
+    await tryCreate();
+  } catch {
+    await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
+    try {
+      await tryCreate();
+    } catch (retryErr) {
+      await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
+      throw retryErr;
+    }
+  }
+}
+
+async function resolveIntegrationBase(input: {
+  targetRepoRoot: string;
+}): Promise<{
+  remoteName: string;
+  remoteBranch: string;
+  startPoint: string;
+}> {
+  const { targetRepoRoot } = input;
+
+  const upstreamResult = await execGit(targetRepoRoot, [
+    'rev-parse',
+    '--abbrev-ref',
+    '--symbolic-full-name',
+    '@{u}',
+  ]).catch(() => null);
+  const upstream = parseRemoteBranchSpec(upstreamResult?.stdout ?? null);
+  let remoteName = upstream?.remoteName ?? 'origin';
+  let remoteBranch = upstream?.remoteBranch ?? null;
+
+  if (!remoteBranch) {
+    const currentBranchResult = await execGit(targetRepoRoot, [
+      'branch',
+      '--show-current',
+    ]).catch(() => null);
+    const currentBranch =
+      currentBranchResult?.code === 0 && currentBranchResult.stdout.trim()
+        ? currentBranchResult.stdout.trim()
+        : null;
+    if (currentBranch) {
+      remoteBranch = currentBranch;
+    }
+  }
+
+  if (!remoteBranch) {
+    const remoteHeadResult = await execGit(targetRepoRoot, [
+      'symbolic-ref',
+      '--quiet',
+      '--short',
+      'refs/remotes/origin/HEAD',
+    ]).catch(() => null);
+    const remoteHead = parseRemoteBranchSpec(remoteHeadResult?.stdout ?? null);
+    if (remoteHead) {
+      remoteName = remoteHead.remoteName;
+      remoteBranch = remoteHead.remoteBranch;
+    }
+  }
+
+  if (!remoteBranch) {
+    throw new Error(
+      'Could not determine the integration target branch from the current checkout.'
+    );
+  }
+
+  await execGit(targetRepoRoot, ['fetch', remoteName, remoteBranch]).catch(
+    () => {}
+  );
+  const remoteRef = `refs/remotes/${remoteName}/${remoteBranch}`;
+  const startPoint = (await gitRefExists(targetRepoRoot, remoteRef))
+    ? remoteRef
+    : remoteBranch;
+
+  return {
+    remoteName,
+    remoteBranch,
+    startPoint,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // createWorkerWorktree
 // ---------------------------------------------------------------------------
 
@@ -397,46 +555,43 @@ export async function createWorkerWorktree(input: {
   const branchName = `wah-worker-${assignmentId}`;
   const worktreePath = join(tmpdir(), `wah-wt-${assignmentId}`);
 
-  const tryCreate = async (): Promise<void> => {
-    // Clean up leftovers from a previous crashed run.
-    await cleanupStaleBranch(targetRepoRoot, worktreePath, branchName);
-
-    const result = await execGit(targetRepoRoot, [
-      'worktree',
-      'add',
-      worktreePath,
-      '-b',
-      branchName,
-      'HEAD',
-    ]);
-    if (result.code !== 0) {
-      throw new Error(
-        `git worktree add failed (code ${result.code}): ${result.stderr}`
-      );
-    }
-
-    // Junction for node_modules (Windows directory junction — instant, no admin)
-    const nmSource = join(targetRepoRoot, 'node_modules');
-    const nmTarget = join(worktreePath, 'node_modules');
-    if (existsSync(nmSource) && !existsSync(nmTarget)) {
-      symlinkSync(nmSource, nmTarget, 'junction');
-    }
-  };
-
-  try {
-    await tryCreate();
-  } catch (firstErr) {
-    // One retry after cleaning up any partial state.
-    await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
-    try {
-      await tryCreate();
-    } catch (retryErr) {
-      await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
-      throw retryErr;
-    }
-  }
+  await createIsolatedWorktree({
+    targetRepoRoot,
+    worktreePath,
+    branchName,
+    startPoint: 'HEAD',
+  });
 
   return { worktreePath, branchName, targetRepoRoot };
+}
+
+// ---------------------------------------------------------------------------
+// createIntegrationWorktree
+// ---------------------------------------------------------------------------
+
+export async function createIntegrationWorktree(input: {
+  targetRepoRoot: string;
+  assignmentId: string;
+}): Promise<IntegrationWorktreeInfo> {
+  const { targetRepoRoot, assignmentId } = input;
+  const branchName = `wah-merge-${assignmentId}`;
+  const worktreePath = join(tmpdir(), `wah-merge-${assignmentId}`);
+  const integrationBase = await resolveIntegrationBase({ targetRepoRoot });
+
+  await createIsolatedWorktree({
+    targetRepoRoot,
+    worktreePath,
+    branchName,
+    startPoint: integrationBase.startPoint,
+  });
+
+  return {
+    worktreePath,
+    branchName,
+    targetRepoRoot,
+    remoteName: integrationBase.remoteName,
+    remoteBranch: integrationBase.remoteBranch,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -469,10 +624,11 @@ export async function abortStaleMerge(
 export async function mergeWorktreeToMain(input: {
   targetRepoRoot: string;
   branchName: string;
+  lockRepoRoot?: string;
 }): Promise<MergeResult> {
-  const { targetRepoRoot, branchName } = input;
+  const { targetRepoRoot, branchName, lockRepoRoot } = input;
 
-  return withMergeLock(targetRepoRoot, async () => {
+  return withMergeLock(lockRepoRoot ?? targetRepoRoot, async () => {
     // Recover from a previous crash that may have left a stale merge state.
     await abortStaleMerge(targetRepoRoot);
 
@@ -612,11 +768,21 @@ export async function resolveConflictAndVerify(input: {
 export async function pushWithRetry(input: {
   targetRepoRoot: string;
   maxRetries?: number;
+  remoteName?: string;
+  remoteBranch?: string;
 }): Promise<{ success: boolean; detail: string }> {
-  const { targetRepoRoot, maxRetries = 2 } = input;
+  const { targetRepoRoot, maxRetries = 2, remoteName, remoteBranch } = input;
+  const pushArgs =
+    remoteName && remoteBranch
+      ? ['push', remoteName, `HEAD:${remoteBranch}`]
+      : ['push'];
+  const pullArgs =
+    remoteName && remoteBranch
+      ? ['pull', '--rebase', '--no-edit', remoteName, remoteBranch]
+      : ['pull', '--rebase', '--no-edit'];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const result = await execGit(targetRepoRoot, ['push']);
+    const result = await execGit(targetRepoRoot, pushArgs);
     if (result.code === 0) {
       return { success: true, detail: 'pushed' };
     }
@@ -628,11 +794,7 @@ export async function pushWithRetry(input: {
       result.stderr.includes('fetch first');
 
     if (isRejection && attempt < maxRetries) {
-      const pullResult = await execGit(targetRepoRoot, [
-        'pull',
-        '--rebase',
-        '--no-edit',
-      ]);
+      const pullResult = await execGit(targetRepoRoot, pullArgs);
       if (pullResult.code !== 0) {
         return {
           success: false,
@@ -1070,7 +1232,7 @@ export async function removeWorktree(input: {
 /**
  * Remove worktrees whose assignment ID is no longer active.
  * Reads `git worktree list --porcelain` and matches branch names
- * against the `wah-worker-` prefix.
+ * against the `wah-worker-` / `wah-merge-` prefixes.
  */
 export async function cleanupOrphanedWorktrees(
   targetRepoRoot: string,
@@ -1090,14 +1252,15 @@ export async function cleanupOrphanedWorktrees(
   const blocks = result.stdout.split('\n\n');
   for (const block of blocks) {
     const pathMatch = block.match(/^worktree (.+)$/m);
-    const branchMatch = block.match(/^branch refs\/heads\/(wah-worker-.+)$/m);
+    const branchMatch = block.match(
+      /^branch refs\/heads\/((?:wah-worker|wah-merge)-.+)$/m
+    );
     if (!pathMatch || !branchMatch) {
       continue;
     }
     const wtPath = pathMatch[1]!;
     const branchName = branchMatch[1]!;
-    // Extract assignment ID from branch name: wah-worker-assign_q_xxxxx
-    const assignmentId = branchName.replace(/^wah-worker-/, '');
+    const assignmentId = branchName.replace(/^wah-(?:worker|merge)-/, '');
     if (!activeAssignmentIds.includes(assignmentId)) {
       await removeWorktree({
         targetRepoRoot,

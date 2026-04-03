@@ -93,6 +93,7 @@ sync:
     - verify
     - enqueue in repo merge lane for existing repos
   integration:
+    - create a clean integration worktree from the latest upstream base branch
     - rebase or merge onto latest base branch
     - verify again
     - push

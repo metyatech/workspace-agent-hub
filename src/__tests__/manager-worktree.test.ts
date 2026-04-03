@@ -15,6 +15,7 @@ vi.mock('child_process', () => ({
 import {
   abortStaleMerge,
   cleanupOrphanedWorktrees,
+  createIntegrationWorktree,
   execGit,
   findGitRoot,
   mergeWorktreeToMain,
@@ -193,6 +194,52 @@ describe('mergeWorktreeToMain', () => {
   });
 });
 
+describe('createIntegrationWorktree', () => {
+  it('bases the integration worktree on the latest upstream branch', async () => {
+    const gitArgs: string[][] = [];
+    const calls = [
+      gitResult(0, 'origin/main'),
+      gitResult(0, 'fetched'),
+      gitResult(0, 'refs/remotes/origin/main'),
+      gitResult(0, ''),
+      gitResult(0, ''),
+      gitResult(0, ''),
+    ];
+    let callIndex = 0;
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      const factory = calls[callIndex] ?? gitResult(0, '');
+      callIndex++;
+      return factory();
+    });
+
+    const result = await createIntegrationWorktree({
+      targetRepoRoot: '/repo-int',
+      assignmentId: 'assign-upstream',
+    });
+
+    expect(result.worktreePath).toContain('wah-merge-assign-upstream');
+    expect(result.branchName).toBe('wah-merge-assign-upstream');
+    expect(result.remoteName).toBe('origin');
+    expect(result.remoteBranch).toBe('main');
+    expect(gitArgs).toEqual(
+      expect.arrayContaining([
+        ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+        ['fetch', 'origin', 'main'],
+        ['rev-parse', '--verify', 'refs/remotes/origin/main'],
+        [
+          'worktree',
+          'add',
+          result.worktreePath,
+          '-b',
+          'wah-merge-assign-upstream',
+          'refs/remotes/origin/main',
+        ],
+      ])
+    );
+  });
+});
+
 describe('pushWithRetry', () => {
   it('returns success on first attempt', async () => {
     spawnMock.mockImplementation(gitResult(0, 'pushed'));
@@ -239,6 +286,35 @@ describe('pushWithRetry', () => {
     const result = await pushWithRetry({ targetRepoRoot: '/repo' });
 
     expect(result.success).toBe(false);
+  });
+
+  it('pushes an integration worktree back to the tracked base branch', async () => {
+    const gitArgs: string[][] = [];
+    const calls = [
+      gitResult(1, '', 'rejected'),
+      gitResult(0, 'rebased'),
+      gitResult(0, 'pushed'),
+    ];
+    let callIndex = 0;
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      const factory = calls[callIndex] ?? gitResult(0, '');
+      callIndex++;
+      return factory();
+    });
+
+    const result = await pushWithRetry({
+      targetRepoRoot: '/repo-merge',
+      remoteName: 'origin',
+      remoteBranch: 'main',
+    });
+
+    expect(result.success).toBe(true);
+    expect(gitArgs).toEqual([
+      ['push', 'origin', 'HEAD:main'],
+      ['pull', '--rebase', '--no-edit', 'origin', 'main'],
+      ['push', 'origin', 'HEAD:main'],
+    ]);
   });
 });
 
@@ -399,6 +475,31 @@ describe('cleanupOrphanedWorktrees', () => {
     await cleanupOrphanedWorktrees('/repo', ['active-id']);
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes orphaned merge-lane worktrees too', async () => {
+    const porcelain = [
+      'worktree /repo',
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+      'worktree /tmp/wah-merge-orphan',
+      'HEAD def456',
+      'branch refs/heads/wah-merge-orphan-id',
+    ].join('\n');
+
+    let firstCall = true;
+    spawnMock.mockImplementation(() => {
+      if (firstCall) {
+        firstCall = false;
+        return gitResult(0, porcelain)();
+      }
+      return gitResult(0, '')();
+    });
+
+    await cleanupOrphanedWorktrees('/repo', []);
+
+    expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
   });
 });
 

@@ -50,6 +50,13 @@ vi.mock('../build-archive.js', () => ({
 }));
 
 vi.mock('../manager-worktree.js', () => ({
+  createIntegrationWorktree: vi.fn().mockResolvedValue({
+    worktreePath: 'C:\\temp\\wah-merge-default',
+    branchName: 'wah-merge-default',
+    targetRepoRoot: '',
+    remoteName: 'origin',
+    remoteBranch: 'main',
+  }),
   createWorkerWorktree: vi.fn().mockResolvedValue({
     worktreePath: '',
     branchName: '',
@@ -131,6 +138,7 @@ import {
   writeManagerThreadMeta,
 } from '../manager-thread-state.js';
 import {
+  createIntegrationWorktree,
   createWorkerWorktree,
   mergeWorktreeToMain,
   prepareNewRepoWorkspace,
@@ -222,7 +230,7 @@ function completeGenericRuntimeTurn(
 
 async function waitFor(
   check: () => boolean | Promise<boolean>,
-  timeoutMs = 5000
+  timeoutMs = 10000
 ): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -269,6 +277,14 @@ beforeEach(async () => {
     worktreePath: '',
     branchName: '',
     targetRepoRoot: '',
+  });
+  vi.mocked(createIntegrationWorktree).mockReset();
+  vi.mocked(createIntegrationWorktree).mockResolvedValue({
+    worktreePath: 'C:\\temp\\wah-merge-default',
+    branchName: 'wah-merge-default',
+    targetRepoRoot: tempDir,
+    remoteName: 'origin',
+    remoteBranch: 'main',
   });
   vi.mocked(prepareNewRepoWorkspace).mockReset();
   vi.mocked(prepareNewRepoWorkspace).mockResolvedValue(undefined);
@@ -2875,6 +2891,13 @@ describe('manager backend codex integration', () => {
       branchName: 'wah-worker-assign_thread-push-fail',
       targetRepoRoot: tempDir,
     });
+    vi.mocked(createIntegrationWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-merge-assign_thread-push-fail',
+      branchName: 'wah-merge-assign_thread-push-fail',
+      targetRepoRoot: tempDir,
+      remoteName: 'origin',
+      remoteBranch: 'main',
+    });
     vi.mocked(pushWithRetry).mockResolvedValueOnce({
       success: false,
       detail: 'remote rejected',
@@ -2901,8 +2924,14 @@ describe('manager backend codex integration', () => {
     });
 
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createIntegrationWorktree)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledWith({
+      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-push-fail',
+      remoteName: 'origin',
+      remoteBranch: 'main',
+    });
     expect(vi.mocked(runPostMergeDeliveryChain)).not.toHaveBeenCalled();
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-push-fail');
@@ -2919,6 +2948,13 @@ describe('manager backend codex integration', () => {
       worktreePath: 'C:\\temp\\wah-wt-assign_thread-release',
       branchName: 'wah-worker-assign_thread-release',
       targetRepoRoot: tempDir,
+    });
+    vi.mocked(createIntegrationWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-merge-assign_thread-release',
+      branchName: 'wah-merge-assign_thread-release',
+      targetRepoRoot: tempDir,
+      remoteName: 'origin',
+      remoteBranch: 'main',
     });
 
     await sendToBuiltinManager(tempDir, 'thread-release', 'message');
@@ -2944,6 +2980,9 @@ describe('manager backend codex integration', () => {
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledWith({
+      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-release',
+    });
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-release');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');

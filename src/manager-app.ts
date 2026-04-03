@@ -352,17 +352,6 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   done: '完了',
 };
 
-const STATE_EMPTY_COPY: Record<ManagerUiState, string> = {
-  'routing-confirmation-needed': '振り分け確認が必要な作業項目はありません',
-  'user-reply-needed': 'あなたの返信が必要な作業項目はありません',
-  'ai-finished-awaiting-user-confirmation':
-    'あなたに確認してほしい返答はありません',
-  queued: 'AI の順番待ちはありません',
-  'ai-working': 'AI が作業中の作業項目はありません',
-  'cancelled-as-superseded': '置き換えで停止した作業項目はありません',
-  done: '完了済みの作業項目はありません',
-};
-
 const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
   'routing-confirmation-needed': {
     bg: 'rgba(127, 29, 29, 0.82)',
@@ -2107,6 +2096,7 @@ function feedbackLaneSummaryText(entries: ComposerFeedbackEntry[]): string {
 
 class ThreadSectionController {
   #key: ManagerUiState;
+  #section: HTMLElement | null;
   #body: HTMLElement | null;
   #count: HTMLElement | null;
   #chevron: HTMLElement | null;
@@ -2123,6 +2113,7 @@ class ThreadSectionController {
 
   constructor(key: ManagerUiState) {
     this.#key = key;
+    this.#section = document.getElementById(`sec-${key}`);
     this.#body = document.getElementById(`body-${key}`);
     this.#count = document.getElementById(`count-${key}`);
     this.#chevron = document.getElementById(`chevron-${key}`);
@@ -2131,6 +2122,10 @@ class ThreadSectionController {
 
   getRow(threadId: string): HTMLElement | null {
     return this.#rows.get(threadId) ?? null;
+  }
+
+  #setHidden(hidden: boolean): void {
+    this.#section?.classList.toggle('hidden', hidden);
   }
 
   setCollapsed(collapsed: boolean): void {
@@ -2173,15 +2168,22 @@ class ThreadSectionController {
     this.#lastThreadsById = threadsById;
     const previousCount = this.#lastThreadCount;
     this.#lastThreadCount = threads.length;
+    const hasThreads = threads.length > 0;
 
-    if (threads.length === 0 && previousCount > 0) {
+    this.#setHidden(!hasThreads);
+
+    if (!hasThreads) {
       this.setCollapsed(true);
-    } else if (threads.length > 0 && previousCount === 0) {
+    } else if (previousCount === 0) {
       this.setCollapsed(false);
     }
 
     if (this.#count) {
-      this.#count.textContent = threads.length > 0 ? `(${threads.length})` : '';
+      this.#count.textContent = hasThreads ? `(${threads.length})` : '';
+    }
+    if (!hasThreads) {
+      this.#body?.querySelector('.section-empty')?.remove();
+      return;
     }
     if (!this.#body || this.#collapsed) {
       return;
@@ -2196,21 +2198,6 @@ class ThreadSectionController {
         row?.remove();
         this.#rows.delete(id);
       }
-    }
-
-    if (threads.length === 0) {
-      for (const row of this.#rows.values()) {
-        row.remove();
-      }
-      this.#rows.clear();
-      this.#orderedIds = [];
-      if (!existingEmpty) {
-        const empty = document.createElement('div');
-        empty.className = 'section-empty';
-        empty.textContent = STATE_EMPTY_COPY[this.#key];
-        this.#body.appendChild(empty);
-      }
-      return;
     }
 
     existingEmpty?.remove();
@@ -4804,13 +4791,8 @@ class ManagerApp {
     }
 
     const doneSection = document.getElementById('sec-done');
-    doneSection?.classList.toggle(
-      'hidden',
-      !this.#showDone && (grouped.get('done')?.length ?? 0) === 0
-    );
-    if (!this.#showDone) {
-      doneSection?.classList.add('hidden');
-    }
+    const doneCount = grouped.get('done')?.length ?? 0;
+    doneSection?.classList.toggle('hidden', doneCount === 0 || !this.#showDone);
     this.#renderDoneToggle();
 
     this.#taskSection.render(this.allTasks, this.#sortOrders.tasks);

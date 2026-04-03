@@ -71,6 +71,7 @@ import {
 } from './manager-queue-priority.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
 import {
+  createIntegrationWorktree,
   createWorkerWorktree,
   mergeWorktreeToMain,
   prepareNewRepoWorkspace,
@@ -4340,42 +4341,20 @@ async function runQueuedAssignment(input: {
           )
         );
 
-        let mergeResult = await mergeWorktreeToMain({
-          targetRepoRoot,
-          branchName: assignment.worktreeBranch,
-        });
-
-        if (!mergeResult.success && mergeResult.conflicted) {
-          await appendWorkerLiveOutput({
-            dir: resolvedDir,
-            threadId: thread.id,
-            text: `コンフリクト検出（${mergeResult.conflictFiles.length} ファイル）。Manager が解消中…`,
-            kind: 'status',
-            assigneeKind: 'manager',
-            assigneeLabel: defaultAssigneeLabel('manager'),
-            workerSessionId,
-            workerAgentId: assignment.id,
-            runtimeState: 'manager-answering',
-            runtimeDetail: 'マージコンフリクト解消中…',
-            workerWriteScopes: assignment.writeScopes,
-          });
-          mergeResult = await resolveConflictAndVerify({
+        let integrationWorktree: Awaited<
+          ReturnType<typeof createIntegrationWorktree>
+        > | null = null;
+        try {
+          integrationWorktree = await createIntegrationWorktree({
             targetRepoRoot,
-            conflictFiles: mergeResult.conflictFiles,
-            runCodexTurnFn: async (prompt, cwd) => {
-              const result = await runCodexTurn({
-                dir,
-                resolvedDir: cwd,
-                prompt,
-                sessionId: null,
-              });
-              return { code: result.code, stderr: result.stderr };
-            },
+            assignmentId: assignment.id,
           });
-        }
-
-        if (!mergeResult.success) {
-          const errMsg = `[Manager] マージに失敗しました: ${mergeResult.detail}`;
+        } catch (integrationErr) {
+          const errMsg = `[Manager] クリーンな統合 worktree の準備に失敗しました: ${
+            integrationErr instanceof Error
+              ? integrationErr.message
+              : String(integrationErr)
+          }`;
           try {
             await addMessage(
               resolvedDir,
@@ -4397,86 +4376,97 @@ async function runQueuedAssignment(input: {
           return;
         }
 
-        // Push after successful merge.
-        await appendWorkerLiveOutput({
-          dir: resolvedDir,
-          threadId: thread.id,
-          text: 'マージ完了。リモートへ push しています…',
-          kind: 'status',
-          assigneeKind: 'manager',
-          assigneeLabel: defaultAssigneeLabel('manager'),
-          workerSessionId,
-          workerAgentId: assignment.id,
-          runtimeState: 'manager-answering',
-          runtimeDetail: 'リモートへ push 中…',
-          workerWriteScopes: assignment.writeScopes,
-        });
-        const pushResult = await pushWithRetry({ targetRepoRoot });
-        const pushFailureDetail = pushResult.success ? null : pushResult.detail;
+        try {
+          let mergeResult = await mergeWorktreeToMain({
+            targetRepoRoot: integrationWorktree.worktreePath,
+            branchName: assignment.worktreeBranch,
+            lockRepoRoot: targetRepoRoot,
+          });
 
-        // Clean up worktree.
-        await removeWorktree({
-          targetRepoRoot,
-          worktreePath: assignment.worktreePath,
-          branchName: assignment.worktreeBranch,
-        }).catch(() => {});
-
-        if (pushFailureDetail) {
-          const errMsg = `[Manager] コミットは反映されましたが、リモートへの push に失敗しました: ${pushFailureDetail}`;
-          try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              errMsg,
-              'ai',
-              'needs-reply'
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
-          await updateQueueLocked(dir, (queue) =>
-            queue.filter(
-              (entry) => !assignment.queueEntryIds.includes(entry.id)
-            )
-          );
-          await clearWorkerLiveOutput(
-            resolvedDir,
-            thread.id,
-            assignment.assigneeKind,
-            assignment.assigneeLabel,
-            {
+          if (!mergeResult.success && mergeResult.conflicted) {
+            await appendWorkerLiveOutput({
+              dir: resolvedDir,
+              threadId: thread.id,
+              text: `コンフリクト検出（${mergeResult.conflictFiles.length} ファイル）。Manager が解消中…`,
+              kind: 'status',
+              assigneeKind: 'manager',
+              assigneeLabel: defaultAssigneeLabel('manager'),
+              workerSessionId,
               workerAgentId: assignment.id,
-              runtimeState: null,
-              runtimeDetail: null,
+              runtimeState: 'manager-answering',
+              runtimeDetail: 'マージコンフリクト解消中…',
               workerWriteScopes: assignment.writeScopes,
-              workerBlockedByThreadIds: [],
-              supersededByThreadId: null,
-            }
-          );
-          await removeAssignment(dir, assignment.id);
-          void processNextQueued(dir, resolvedDir);
-          return;
-        }
+            });
+            mergeResult = await resolveConflictAndVerify({
+              targetRepoRoot: integrationWorktree.worktreePath,
+              conflictFiles: mergeResult.conflictFiles,
+              runCodexTurnFn: async (prompt, cwd) => {
+                const result = await runCodexTurn({
+                  dir,
+                  resolvedDir: cwd,
+                  prompt,
+                  sessionId: null,
+                });
+                return { code: result.code, stderr: result.stderr };
+              },
+            });
+          }
 
-        if (deliveryAheadCommitCount > 0) {
+          if (!mergeResult.success) {
+            const errMsg = `[Manager] マージに失敗しました: ${mergeResult.detail}`;
+            try {
+              await addMessage(
+                resolvedDir,
+                thread.id,
+                errMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            await removeWorktree({
+              targetRepoRoot,
+              worktreePath: assignment.worktreePath,
+              branchName: assignment.worktreeBranch,
+            }).catch(() => {});
+            await removeAssignment(dir, assignment.id);
+            void processNextQueued(dir, resolvedDir);
+            return;
+          }
+
+          // Push after successful merge.
           await appendWorkerLiveOutput({
             dir: resolvedDir,
             threadId: thread.id,
-            text: 'push 完了。必要な release / publish を続けて実行しています…',
+            text: 'マージ完了。リモートへ push しています…',
             kind: 'status',
             assigneeKind: 'manager',
             assigneeLabel: defaultAssigneeLabel('manager'),
             workerSessionId,
             workerAgentId: assignment.id,
             runtimeState: 'manager-answering',
-            runtimeDetail: 'release / publish の最終確認中…',
+            runtimeDetail: 'リモートへ push 中…',
             workerWriteScopes: assignment.writeScopes,
           });
-          const deliveryResult = await runPostMergeDeliveryChain({
-            targetRepoRoot,
+          const pushResult = await pushWithRetry({
+            targetRepoRoot: integrationWorktree.worktreePath,
+            remoteName: integrationWorktree.remoteName,
+            remoteBranch: integrationWorktree.remoteBranch,
           });
-          if (!deliveryResult.success) {
-            const errMsg = `[Manager] コミットと push は完了しましたが、release / publish の完了前に停止しました: ${deliveryResult.detail}`;
+          const pushFailureDetail = pushResult.success
+            ? null
+            : pushResult.detail;
+
+          // Clean up the worker authoring worktree once its commits are merged.
+          await removeWorktree({
+            targetRepoRoot,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+          }).catch(() => {});
+
+          if (pushFailureDetail) {
+            const errMsg = `[Manager] コミットは反映されましたが、リモートへの push に失敗しました: ${pushFailureDetail}`;
             try {
               await addMessage(
                 resolvedDir,
@@ -4510,6 +4500,69 @@ async function runQueuedAssignment(input: {
             await removeAssignment(dir, assignment.id);
             void processNextQueued(dir, resolvedDir);
             return;
+          }
+
+          if (deliveryAheadCommitCount > 0) {
+            await appendWorkerLiveOutput({
+              dir: resolvedDir,
+              threadId: thread.id,
+              text: 'push 完了。必要な release / publish を続けて実行しています…',
+              kind: 'status',
+              assigneeKind: 'manager',
+              assigneeLabel: defaultAssigneeLabel('manager'),
+              workerSessionId,
+              workerAgentId: assignment.id,
+              runtimeState: 'manager-answering',
+              runtimeDetail: 'release / publish の最終確認中…',
+              workerWriteScopes: assignment.writeScopes,
+            });
+            const deliveryResult = await runPostMergeDeliveryChain({
+              targetRepoRoot: integrationWorktree.worktreePath,
+            });
+            if (!deliveryResult.success) {
+              const errMsg = `[Manager] コミットと push は完了しましたが、release / publish の完了前に停止しました: ${deliveryResult.detail}`;
+              try {
+                await addMessage(
+                  resolvedDir,
+                  thread.id,
+                  errMsg,
+                  'ai',
+                  'needs-reply'
+                );
+              } catch {
+                /* thread may have been deleted */
+              }
+              await updateQueueLocked(dir, (queue) =>
+                queue.filter(
+                  (entry) => !assignment.queueEntryIds.includes(entry.id)
+                )
+              );
+              await clearWorkerLiveOutput(
+                resolvedDir,
+                thread.id,
+                assignment.assigneeKind,
+                assignment.assigneeLabel,
+                {
+                  workerAgentId: assignment.id,
+                  runtimeState: null,
+                  runtimeDetail: null,
+                  workerWriteScopes: assignment.writeScopes,
+                  workerBlockedByThreadIds: [],
+                  supersededByThreadId: null,
+                }
+              );
+              await removeAssignment(dir, assignment.id);
+              void processNextQueued(dir, resolvedDir);
+              return;
+            }
+          }
+        } finally {
+          if (integrationWorktree) {
+            await removeWorktree({
+              targetRepoRoot,
+              worktreePath: integrationWorktree.worktreePath,
+              branchName: integrationWorktree.branchName,
+            }).catch(() => {});
           }
         }
       }

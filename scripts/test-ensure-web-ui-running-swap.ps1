@@ -157,14 +157,71 @@ function Invoke-HubSessionsRequest {
         [int]$TimeoutSeconds = 3
     )
 
-    $headers = @{
-        Connection = 'close'
-    }
+    $headers = @{}
     if ($Token -and $Token.Trim() -and $Token.Trim().ToLowerInvariant() -ne 'none') {
         $headers['X-Workspace-Agent-Hub-Token'] = $Token.Trim()
     }
 
-    return Invoke-WebRequest -Uri "http://127.0.0.1:$PortNumber/api/sessions?includeArchived=true" -Headers $headers -TimeoutSec $TimeoutSeconds -UseBasicParsing -ErrorAction Stop
+    return Invoke-WebRequest -Uri "http://127.0.0.1:$PortNumber/api/sessions?includeArchived=true" -Headers $headers -TimeoutSec $TimeoutSeconds -DisableKeepAlive -UseBasicParsing -ErrorAction Stop
+}
+
+function Wait-ForHubSessionsReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [string]$Token = '',
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $lastFailure = 'No response received.'
+    do {
+        try {
+            $response = Invoke-HubSessionsRequest -PortNumber $PortNumber -Token $Token -TimeoutSeconds 1
+            if ($response.StatusCode -eq 200) {
+                return $response
+            }
+            $lastFailure = "HTTP $([int]$response.StatusCode)"
+        } catch {
+            $statusCode = $null
+            $responseBody = ''
+            $exception = $_.Exception
+            $responseProperty = $null
+            if ($exception -and $exception.PSObject.Properties.Match('Response').Count -gt 0) {
+                $responseProperty = $exception.Response
+            }
+            if ($responseProperty) {
+                try {
+                    $statusCode = [int]$responseProperty.StatusCode
+                } catch {
+                }
+                try {
+                    $responseStream = $responseProperty.GetResponseStream()
+                    if ($responseStream) {
+                        $reader = [IO.StreamReader]::new($responseStream)
+                        try {
+                            $responseBody = $reader.ReadToEnd()
+                        } finally {
+                            $reader.Dispose()
+                        }
+                    }
+                } catch {
+                }
+            }
+            if ($null -ne $statusCode) {
+                if ($responseBody) {
+                    $lastFailure = "HTTP $statusCode $responseBody"
+                } else {
+                    $lastFailure = "HTTP $statusCode"
+                }
+            } else {
+                $lastFailure = $_.Exception.Message
+            }
+        }
+        Start-Sleep -Milliseconds 150
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Expected the ensured Hub endpoint on port $PortNumber to answer API requests. Last failure: $lastFailure"
 }
 
 function Wait-ForPortClosed {
@@ -314,17 +371,22 @@ try {
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
     $firstPort = ([Uri][string]$first.ListenUrl).Port
+    $firstFrontDoorPort = ([Uri][string]$first.FrontDoorListenUrl).Port
+    $firstFrontDoorResponse = Wait-ForHubSessionsReady -PortNumber $firstFrontDoorPort -TimeoutMilliseconds 10000
+    if ($firstFrontDoorResponse.StatusCode -ne 200) {
+        throw 'Expected the first ensured front door to answer API requests.'
+    }
 
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SWAP_DELAY_MS', '2500', 'Process')
     $replacementRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'replacement-token' -RunName 'replacement' -TargetDirectory $testDirectory
 
-    $oldPortStayedAvailable = $false
+    $frontDoorStayedAvailable = $false
     $availabilityDeadline = [DateTime]::UtcNow.AddSeconds(2)
     do {
         try {
-            $response = Invoke-HubSessionsRequest -PortNumber $firstPort -TimeoutSeconds 1
+            $response = Invoke-HubSessionsRequest -PortNumber $firstFrontDoorPort -TimeoutSeconds 1
             if ($response.StatusCode -eq 200) {
-                $oldPortStayedAvailable = $true
+                $frontDoorStayedAvailable = $true
                 break
             }
         } catch {
@@ -332,20 +394,26 @@ try {
         Start-Sleep -Milliseconds 150
     } while ([DateTime]::UtcNow -lt $availabilityDeadline)
 
-    if (-not $oldPortStayedAvailable) {
-        throw 'Expected the previous Hub listener to stay available while the replacement instance was still starting.'
+    if (-not $frontDoorStayedAvailable) {
+        throw 'Expected the stable front door to stay available while the replacement instance was still starting.'
     }
 
     $replacement = Wait-ForLaunchMetadata -ProcessInfo $replacementRun
     Wait-ForProcessSuccess -ProcessInfo $replacementRun
 
     $replacementPort = ([Uri][string]$replacement.ListenUrl).Port
+    $replacementFrontDoorPort = ([Uri][string]$replacement.FrontDoorListenUrl).Port
     if ($replacementPort -eq $firstPort) {
         throw 'Expected replacement startup to use a different port while the previous listener was still alive.'
     }
+    if ($replacementFrontDoorPort -ne $firstFrontDoorPort) {
+        throw 'Expected replacement startup to keep the same front-door port while swapping the upstream listener.'
+    }
+    $replacementFrontDoorResponse = Wait-ForHubSessionsReady -PortNumber $replacementFrontDoorPort -Token 'replacement-token' -TimeoutMilliseconds 10000
+    if ($replacementFrontDoorResponse.StatusCode -ne 200) {
+        throw 'Expected the stable front door to route to the replacement listener after swap.'
+    }
 
-    # ensure-web-ui-running.ps1 does not emit its JSON result until the replacement listener
-    # has passed its own readiness gate; this test only needs to verify overlap and teardown.
     Wait-ForPortClosed -PortNumber $firstPort
 } finally {
     if (Test-Path -LiteralPath $frontDoorSourcePath) {
