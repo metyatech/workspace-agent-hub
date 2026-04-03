@@ -361,6 +361,25 @@ console.log(
 
 [IO.File]::WriteAllText($mockCliPath, $mockCliContent, [Text.UTF8Encoding]::new($false))
 
+function Stop-ProcessesForStatePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $escapedStatePath = [regex]::Escape($TargetStatePath)
+    $processes = Get-CimInstance Win32_Process | Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine -match $escapedStatePath
+    }
+    foreach ($processInfo in $processes) {
+        try {
+            Stop-Process -Id ([int]$processInfo.ProcessId) -Force -ErrorAction Stop
+        } catch {
+        }
+    }
+}
+
 try {
     (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1)
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
@@ -423,12 +442,25 @@ try {
     if (Test-Path -Path $statePath) {
         try {
             $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
-            if ($state.ProcessId) {
-                Stop-Process -Id ([int]$state.ProcessId) -Force -ErrorAction SilentlyContinue
+            foreach ($propertyName in @('ProcessId', 'FrontDoorProcessId')) {
+                if (
+                    $state.PSObject.Properties.Match($propertyName).Count -gt 0 -and
+                    $state.$propertyName
+                ) {
+                    try {
+                        Stop-Process -Id ([int]$state.$propertyName) -Force -ErrorAction Stop
+                    } catch {
+                    }
+                    try {
+                        Wait-Process -Id ([int]$state.$propertyName) -Timeout 5 -ErrorAction Stop
+                    } catch {
+                    }
+                }
             }
         } catch {
         }
     }
+    Stop-ProcessesForStatePath -TargetStatePath $statePath
 
     if ($null -eq $originalCliPath) {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $null, 'Process')
