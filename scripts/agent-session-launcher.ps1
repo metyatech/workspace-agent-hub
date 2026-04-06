@@ -685,7 +685,7 @@ function Sync-CodexAuthForWsl {
         [string]$TargetDistro
     )
 
-    $captured = & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $codexAuthSyncScriptPath -Distro $TargetDistro -Json 2>&1
+    $captured = & $codexAuthSyncScriptPath -Distro $TargetDistro -Json 2>&1
     if ($LASTEXITCODE -ne 0) {
         $detail = (($captured | Out-String).Trim())
         if (-not $detail) {

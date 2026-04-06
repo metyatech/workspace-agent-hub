@@ -208,6 +208,37 @@ function Invoke-LauncherCommand {
     return @($captured | ForEach-Object { [string]$_ })
 }
 
+function ConvertTo-ScriptParameters {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $scriptParameters = @{}
+    $index = 0
+    while ($index -lt $Arguments.Count) {
+        $token = [string]$Arguments[$index]
+        if (-not $token.StartsWith('-')) {
+            throw "Script argument token must start with '-'. Got '$token'."
+        }
+
+        $parameterName = $token.TrimStart('-')
+        $nextIsValue =
+            ($index + 1) -lt $Arguments.Count -and
+            -not (([string]$Arguments[$index + 1]).StartsWith('-'))
+        if ($nextIsValue) {
+            $scriptParameters[$parameterName] = [string]$Arguments[$index + 1]
+            $index += 2
+            continue
+        }
+
+        $scriptParameters[$parameterName] = $true
+        $index += 1
+    }
+
+    return $scriptParameters
+}
+
 function Invoke-LauncherJson {
     param(
         [Parameter(Mandatory = $true)]
@@ -305,7 +336,8 @@ function Invoke-TmuxScriptCommand {
         [string[]]$Arguments
     )
 
-    $captured = & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $wslTmuxScriptPath @Arguments 2>&1
+    $scriptParameters = ConvertTo-ScriptParameters -Arguments $Arguments
+    $captured = & $wslTmuxScriptPath @scriptParameters 2>&1
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         $detail = (($captured | Out-String).Trim())

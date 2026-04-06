@@ -10,18 +10,56 @@ $sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
 $liveTranscriptPath = Join-Path $sessionLiveRootPath ($sessionName + '.log')
 $liveEventPath = Join-Path $sessionLiveRootPath ($sessionName + '.event')
 
+function ConvertTo-ScriptParameters {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $scriptParameters = @{}
+    $index = 0
+    while ($index -lt $Arguments.Count) {
+        $token = [string]$Arguments[$index]
+        if (-not $token.StartsWith('-')) {
+            throw "Expected named script argument token. Got '$token'."
+        }
+
+        $parameterName = $token.TrimStart('-')
+        $nextIsValue =
+            ($index + 1) -lt $Arguments.Count -and
+            -not (([string]$Arguments[$index + 1]).StartsWith('-'))
+        if ($nextIsValue) {
+            $scriptParameters[$parameterName] = [string]$Arguments[$index + 1]
+            $index += 2
+            continue
+        }
+
+        $scriptParameters[$parameterName] = $true
+        $index += 1
+    }
+
+    return $scriptParameters
+}
+
 function Invoke-TmuxScript {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments
     )
 
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmuxScriptPath @Arguments
+    $scriptParameters = ConvertTo-ScriptParameters -Arguments $Arguments
+    try {
+        $output = & $tmuxScriptPath @scriptParameters 2>&1
+    } catch {
+        $detail = (($_ | Out-String).Trim())
+        throw "wsl-tmux.ps1 failed. Args: $($Arguments -join ' ') $detail"
+    }
+
     if ($LASTEXITCODE -ne 0) {
         throw "wsl-tmux.ps1 failed. Args: $($Arguments -join ' ')"
     }
 
-    return @($output)
+    return @($output | ForEach-Object { [string]$_ })
 }
 
 function Invoke-TmuxJson {
@@ -52,7 +90,14 @@ function Invoke-SyncCodexAuthJson {
         [string[]]$Arguments
     )
 
-    $text = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $codexAuthSyncScriptPath @Arguments | Out-String).Trim()
+    $scriptParameters = ConvertTo-ScriptParameters -Arguments $Arguments
+    try {
+        $text = (& $codexAuthSyncScriptPath @scriptParameters 2>&1 | Out-String).Trim()
+    } catch {
+        $detail = (($_ | Out-String).Trim())
+        throw "sync-codex-auth.ps1 failed. Args: $($Arguments -join ' ') $detail"
+    }
+
     if ($LASTEXITCODE -ne 0) {
         throw "sync-codex-auth.ps1 failed. Args: $($Arguments -join ' ')"
     }
