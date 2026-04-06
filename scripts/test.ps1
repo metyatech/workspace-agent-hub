@@ -24,6 +24,157 @@ function Convert-WindowsPathToWslPath {
     return (($output | Out-String).Trim())
 }
 
+function Get-PowerShellPath {
+    $pwsh = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
+    if ($pwsh) {
+        return $pwsh.Source
+    }
+
+    return (Get-Command 'powershell.exe' -ErrorAction Stop).Source
+}
+
+function Get-NpmCommandPath {
+    return (Get-Command 'npm.cmd' -ErrorAction Stop).Source
+}
+
+function ConvertTo-QuotedArgumentString {
+    param(
+        [string[]]$ArgumentList = @()
+    )
+
+    $quoted = foreach ($argument in $ArgumentList) {
+        $value = [string]$argument
+        if (-not $value.Length) {
+            '""'
+            continue
+        }
+        if ($value -notmatch '[\s"]') {
+            $value
+            continue
+        }
+
+        $escaped = $value -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        '"' + $escaped + '"'
+    }
+
+    return ($quoted -join ' ')
+}
+
+function New-TestIsolationState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $rootPath = Join-Path $testStateRoot $Label
+    $catalogPath = Join-Path $rootPath 'session-catalog.json'
+    $liveDirPath = Join-Path $rootPath 'session-live'
+    [System.IO.Directory]::CreateDirectory($liveDirPath) | Out-Null
+    Set-Content -Path $catalogPath -Value '[]' -Encoding utf8
+    return [pscustomobject]@{
+        CatalogPath = $catalogPath
+        LiveDirPath = $liveDirPath
+        TmuxSocketName = 'workspace-agent-hub-' + $Label + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    }
+}
+
+function Start-TestLaneProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [hashtable]$EnvironmentOverrides = @{},
+        [string]$WorkingDirectory = $repoRoot
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    foreach ($entry in $EnvironmentOverrides.GetEnumerator()) {
+        $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+    }
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $ArgumentList) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-QuotedArgumentString -ArgumentList $ArgumentList
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+
+    return [pscustomobject]@{
+        Name = $Name
+        Process = $process
+        StdOutTask = $process.StandardOutput.ReadToEndAsync()
+        StdErrTask = $process.StandardError.ReadToEndAsync()
+    }
+}
+
+function Wait-TestLaneProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        $ProcessInfo
+    )
+
+    $ProcessInfo.Process.WaitForExit()
+    $stdoutText = $ProcessInfo.StdOutTask.GetAwaiter().GetResult()
+    $stderrText = $ProcessInfo.StdErrTask.GetAwaiter().GetResult()
+    if ($ProcessInfo.Process.ExitCode -eq 0) {
+        return
+    }
+
+    $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+    if ($detail) {
+        throw "$($ProcessInfo.Name) failed. $detail"
+    }
+
+    throw "$($ProcessInfo.Name) failed with exit code $($ProcessInfo.Process.ExitCode)."
+}
+
+function Wait-TestLaneProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$ProcessInfos
+    )
+
+    Wait-Process -Id (@($ProcessInfos | ForEach-Object { $_.Process.Id }))
+    foreach ($processInfo in $ProcessInfos) {
+        Wait-TestLaneProcess -ProcessInfo $processInfo
+    }
+}
+
+function Stop-TestLaneProcesses {
+    param(
+        [object[]]$ProcessInfos = @()
+    )
+
+    foreach ($processInfo in @($ProcessInfos)) {
+        try {
+            if ($processInfo.Process -and -not $processInfo.Process.HasExited) {
+                $processInfo.Process.Kill()
+                $processInfo.Process.WaitForExit()
+            }
+        } catch {
+        }
+
+        if ($processInfo.Process) {
+            $processInfo.Process.Dispose()
+        }
+    }
+}
+
 Push-Location $repoRoot
 try {
     if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
@@ -116,17 +267,40 @@ try {
         exit 1
     }
 
-$primaryPathMatrixOutput = & (Join-Path $PSScriptRoot 'test-primary-path-matrix.ps1')
-if (($primaryPathMatrixOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the PC-side primary path matrix verification to pass for start, inventory, and resume availability.'
-    exit 1
-}
-
-$mobileSshOutput = python (Join-Path $PSScriptRoot 'test-mobile-ssh.py')
-if (($mobileSshOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the SSH -> WSL mobile menu path to pass the mobile primary path matrix verification.'
-    exit 1
-}
+    $laneProcesses = @()
+    try {
+        $integrationIsolation = New-TestIsolationState -Label 'integration'
+        $npmTestIsolation = New-TestIsolationState -Label 'npmtest'
+        $laneProcesses = @(
+            (Start-TestLaneProcess `
+                -Name 'session-integration-lane' `
+                -FilePath (Get-PowerShellPath) `
+                -ArgumentList @(
+                    '-NoProfile',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    (Join-Path $PSScriptRoot 'test-session-integration-lane.ps1')
+                ) `
+                -EnvironmentOverrides @{
+                    AI_AGENT_SESSION_CATALOG_PATH = $integrationIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $integrationIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $integrationIsolation.TmuxSocketName
+                }),
+            (Start-TestLaneProcess `
+                -Name 'npm-test-lane' `
+                -FilePath (Get-NpmCommandPath) `
+                -ArgumentList @('run', 'test') `
+                -EnvironmentOverrides @{
+                    AI_AGENT_SESSION_CATALOG_PATH = $npmTestIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $npmTestIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $npmTestIsolation.TmuxSocketName
+                })
+        )
+        Wait-TestLaneProcesses -ProcessInfos $laneProcesses
+    } finally {
+        Stop-TestLaneProcesses -ProcessInfos $laneProcesses
+    }
 
 $runAndroidMobileE2E = ($env:WORKSPACE_AGENT_HUB_RUN_ANDROID_MOBILE_E2E -eq '1')
 if ($runAndroidMobileE2E) {
@@ -145,69 +319,34 @@ if ($runAndroidMobileE2E) {
     Write-Output 'Skipping Android emulator mobile E2E. Set WORKSPACE_AGENT_HUB_RUN_ANDROID_MOBILE_E2E=1 to run the emulator-backed ConnectBot check.'
 }
 
-$sessionManagementOutput = & (Join-Path $PSScriptRoot 'test-session-management.ps1')
-if (($sessionManagementOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the launcher session management commands to rename, archive, close, and delete sessions.'
-    exit 1
-}
-
-$webSessionBridgeOutput = & (Join-Path $PSScriptRoot 'test-web-session-bridge.ps1')
-if (($webSessionBridgeOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the web-session bridge to start, send to, capture, interrupt, close, and delete a shell session.'
-    exit 1
-}
-
 $npmBootstrapOutput = & (Join-Path $PSScriptRoot 'test-npm-bootstrap.ps1')
 if (($npmBootstrapOutput | Out-String).Trim() -notmatch 'PASS') {
     Write-Error 'Expected the npm dependency bootstrap probe to reject partial node_modules surfaces and accept a complete install surface.'
     exit 1
 }
 
-Push-Location $repoRoot
-try {
-    if (Test-Path -Path $packageJsonPath) {
-        npm run test
-        if ($LASTEXITCODE -ne 0) {
-            throw 'npm run test failed.'
-        }
+    $postProcesses = @()
+    try {
+        $postProcesses = @(
+            (Start-TestLaneProcess -Name 'cli-json-output' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-cli-json-output.ps1'))),
+            (Start-TestLaneProcess -Name 'wrapper-failure' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1'))),
+            (Start-TestLaneProcess -Name 'shortcut-install' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1'))),
+            (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')))
+        )
+        Wait-TestLaneProcesses -ProcessInfos $postProcesses
+    } finally {
+        Stop-TestLaneProcesses -ProcessInfos $postProcesses
     }
-} finally {
-    Pop-Location
-}
 
-$cliJsonOutput = & (Join-Path $PSScriptRoot 'test-cli-json-output.ps1')
-if (($cliJsonOutput | Out-String).Trim() -notmatch 'OK') {
-    Write-Error 'Expected the built CLI to emit machine-readable web-ui launch metadata through --json.'
-    exit 1
-}
+    $wrapperJsonOutput = & (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper.ps1')
+    if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
+        Write-Error 'Expected the PowerShell start-web-ui wrapper to launch and emit machine-readable web-ui metadata.'
+        exit 1
+    }
 
-$wrapperJsonOutput = & (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper.ps1')
-if (($wrapperJsonOutput | Out-String).Trim() -notmatch 'OK') {
-    Write-Error 'Expected the PowerShell start-web-ui wrapper to launch and emit machine-readable web-ui metadata.'
-    exit 1
-}
-
-$wrapperFailureOutput = & (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1')
-if (($wrapperFailureOutput | Out-String).Trim() -notmatch 'OK') {
-    Write-Error 'Expected the PowerShell start-web-ui wrapper to preserve child stderr and report a concrete exit code on failure.'
-    exit 1
-}
-
-$shortcutInstallOutput = & (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1')
-if (($shortcutInstallOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the shortcut installer to create Workspace Agent Hub shortcuts and remove stale AI Agent Sessions shortcuts.'
-    exit 1
-}
-
-$ensureSwapOutput = & (Join-Path $PSScriptRoot 'test-ensure-web-ui-running-swap.ps1')
-if (($ensureSwapOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected ensure-web-ui-running.ps1 to keep the previous listener available until the replacement instance is ready.'
-    exit 1
-}
-
-    $phoneReadyWatchdogOutput = & (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')
-    if (($phoneReadyWatchdogOutput | Out-String).Trim() -notmatch 'PASS') {
-        Write-Error 'Expected the phone-ready watchdog to rerun ensure-web-ui-running.ps1 and reject duplicate instances cleanly.'
+    $ensureSwapOutput = & (Join-Path $PSScriptRoot 'test-ensure-web-ui-running-swap.ps1')
+    if (($ensureSwapOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected ensure-web-ui-running.ps1 to keep the previous listener available until the replacement instance is ready.'
         exit 1
     }
 
