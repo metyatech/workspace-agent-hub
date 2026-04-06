@@ -271,6 +271,37 @@ https://agent-hub.example.ts.net (tailnet only)
         }
     }
 
+    $directPromoteStatePath = Join-Path $tempRoot 'direct-promote-state\hub.json'
+    $directPromoteCounterPath = Join-Path $tempRoot 'direct-promote-counter.txt'
+    $directPromoteStatusPort = Get-FreeTcpPort
+    $directPromoteFrontDoorPort = Get-FreeTcpPort
+    $directPromoteManagerJob = Start-MockManagerStatusServer -PortNumber $directPromoteStatusPort -StatusJson '{"running":true,"configured":true,"builtinBackend":true,"currentQueueId":"q_direct_promote"}'
+    $directPromoteFrontDoorJob = Start-MockFrontDoorServer -PortNumber $directPromoteFrontDoorPort -StatusCode 200
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $directPromoteStatePath)) | Out-Null
+    [pscustomobject]@{
+        ListenUrl = "http://127.0.0.1:$directPromoteStatusPort/"
+        FrontDoorListenUrl = "http://127.0.0.1:$directPromoteFrontDoorPort/"
+        PreferredConnectUrlSource = 'tailscale-direct'
+        AuthDisabled = $true
+        RequestedPhoneReady = $true
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $directPromoteStatePath -Encoding utf8
+
+    $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $directPromoteCounterPath
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://agent-hub.example.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$directPromoteFrontDoorPort
+"@
+    & $scriptPath `
+        -EnsureScriptPath $mockEnsurePath `
+        -StatePath $directPromoteStatePath `
+        -IntervalSeconds 1 `
+        -MaxIterations 1
+
+    $directPromoteCount = [int]((Get-Content -Path $directPromoteCounterPath -Raw -Encoding utf8).Trim())
+    if ($directPromoteCount -ne 1) {
+        throw "Expected watchdog to rerun ensure-web-ui-running.ps1 when direct mode can be promoted to the matching Tailscale Serve front door. Got $directPromoteCount."
+    }
+
     $staleServeStatePath = Join-Path $tempRoot 'stale-serve-state\hub.json'
     $staleServeCounterPath = Join-Path $tempRoot 'stale-serve-counter.txt'
     $staleServeStatusPort = Get-FreeTcpPort
@@ -441,7 +472,7 @@ https://agent-hub.example.ts.net (tailnet only)
         }
     }
 
-    foreach ($job in @($staleServeManagerJob, $frontDoorHealthyJob, $frontDoorStaleServeJob)) {
+    foreach ($job in @($directPromoteManagerJob, $directPromoteFrontDoorJob, $staleServeManagerJob, $frontDoorHealthyJob, $frontDoorStaleServeJob)) {
         if (-not $job) {
             continue
         }

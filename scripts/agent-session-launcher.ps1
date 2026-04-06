@@ -998,8 +998,12 @@ function Test-ExistingSessionName {
         [string]$TargetDistro
     )
 
-    $session = Get-SessionRecordByName -TargetSessionName $TargetSessionName -TargetDistro $TargetDistro
-    return ($session -and [bool]$session.IsLive)
+    $existsText = ((Invoke-TmuxScript -Parameters @{
+        Action = 'exists'
+        Distro = $TargetDistro
+        SessionName = $TargetSessionName
+    }) | Out-String).Trim().ToLowerInvariant()
+    return ($existsText -eq 'true')
 }
 
 function Resolve-TypedSessionName {

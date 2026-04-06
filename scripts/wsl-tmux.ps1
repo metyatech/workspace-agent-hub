@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('ensure', 'attach', 'attach-hidden', 'ensure-live-updates', 'list', 'kill')]
+    [ValidateSet('ensure', 'attach', 'attach-hidden', 'ensure-live-updates', 'list', 'exists', 'kill')]
     [string]$Action = 'ensure',
 
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
@@ -490,6 +490,15 @@ if ($Action -eq 'kill') {
 
 $tmuxShellCommand = Get-TmuxShellCommand
 $sessionExists = Test-TmuxSessionExists -TargetSessionName $resolvedSessionName
+
+if ($Action -eq 'exists') {
+    if ($sessionExists) {
+        Write-Output 'true'
+    } else {
+        Write-Output 'false'
+    }
+    exit 0
+}
 
 if (-not $sessionExists -and $Action -eq 'attach') {
     throw "tmux session '$resolvedSessionName' does not exist in distro '$Distro'."

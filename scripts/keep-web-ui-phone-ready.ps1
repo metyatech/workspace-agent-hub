@@ -185,10 +185,6 @@ function Test-TailscaleServeTargetsFrontDoor {
     }
 
     $preferredConnectUrlSource = Get-StateString -State $state -PropertyName 'PreferredConnectUrlSource'
-    if ($preferredConnectUrlSource -ne 'tailscale-serve') {
-        return $true
-    }
-
     $frontDoorListenUrl = Get-StateString -State $state -PropertyName 'FrontDoorListenUrl'
     if (-not $frontDoorListenUrl) {
         return $false
@@ -208,11 +204,21 @@ function Test-TailscaleServeTargetsFrontDoor {
         $expectedUri = [Uri]$frontDoorListenUrl
         $proxyUri = [Uri]$proxyTarget
         $loopbackHosts = @('127.0.0.1', 'localhost', '::1', '[::1]')
-        return (
+        $serveTargetsFrontDoor = (
             $proxyUri.Scheme -eq 'http' -and
             $loopbackHosts -contains $proxyUri.Host.ToLowerInvariant() -and
             $proxyUri.Port -eq $expectedUri.Port
         )
+        if ($preferredConnectUrlSource -eq 'tailscale-serve') {
+            return $serveTargetsFrontDoor
+        }
+        if ($preferredConnectUrlSource -eq 'tailscale-direct') {
+            # Direct mode is only healthy while Serve is absent or mismatched. If
+            # Serve now targets the front door, rerun ensure so it can re-probe
+            # HTTPS and promote the saved connect URL without interrupting work.
+            return (-not $serveTargetsFrontDoor)
+        }
+        return $true
     } catch {
         return $false
     }

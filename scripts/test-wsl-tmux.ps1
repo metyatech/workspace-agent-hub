@@ -97,6 +97,16 @@ try {
         throw 'Expected a fresh tmux socket to list zero sessions.'
     }
 
+    $existsBeforeEnsure = ((Invoke-TmuxScript -Arguments @(
+        '-Action', 'exists',
+        '-SessionName', $sessionName,
+        '-Distro', 'Ubuntu',
+        '-SocketName', $socketName
+    )) | Out-String).Trim()
+    if ($existsBeforeEnsure -ne 'false') {
+        throw "Expected exists to report false before ensure. Got: $existsBeforeEnsure"
+    }
+
     [void](Invoke-TmuxScript -Arguments @(
         '-Action', 'ensure',
         '-SessionType', 'shell',
@@ -120,6 +130,16 @@ try {
     }
     if (-not (Test-Path -Path $liveTranscriptPath)) {
         throw 'Expected ensure to provision the authoritative transcript log file.'
+    }
+
+    $existsAfterEnsure = ((Invoke-TmuxScript -Arguments @(
+        '-Action', 'exists',
+        '-SessionName', $sessionName,
+        '-Distro', 'Ubuntu',
+        '-SocketName', $socketName
+    )) | Out-String).Trim()
+    if ($existsAfterEnsure -ne 'true') {
+        throw "Expected exists to report true after ensure. Got: $existsAfterEnsure"
     }
 
     [void](@(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' send-keys -t '$sessionName' -l 'echo live-bridge-pass' && tmux -L '$socketName' send-keys -t '$sessionName' Enter"))
