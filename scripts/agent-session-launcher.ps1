@@ -29,6 +29,7 @@ if (-not (Test-Path -Path $codexAuthSyncScriptPath)) {
 
 $repoRootPath = Resolve-Path (Join-Path $PSScriptRoot '..')
 $sessionCatalogPath = Join-Path $env:USERPROFILE 'agent-handoff\session-catalog.json'
+$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
 $workspaceRootPath = Split-Path -Parent $repoRootPath
 
 $profiles = @{
@@ -180,8 +181,12 @@ function Get-SessionCatalogEntryByName {
 }
 
 function Get-SessionCatalogMap {
+    param(
+        [object[]]$Entries = @()
+    )
+
     $map = @{}
-    foreach ($entry in @(Get-SessionCatalogEntries)) {
+    foreach ($entry in @($Entries)) {
         $map[[string]$entry.session_name] = $entry
     }
     return $map
@@ -401,6 +406,21 @@ function Get-SessionPreviewText {
         [string]$TargetDistro
     )
 
+    $transcriptPath = Join-Path $sessionLiveRootPath ($TargetSessionName + '.log')
+    if (Test-Path -Path $transcriptPath -PathType Leaf) {
+        try {
+            $tailLines = @(Get-Content -Path $transcriptPath -Tail 40 -Encoding utf8 -ErrorAction Stop)
+            for ($index = $tailLines.Count - 1; $index -ge 0; $index -= 1) {
+                $candidate = [string]$tailLines[$index]
+                if ($candidate.Trim()) {
+                    return $candidate.Trim()
+                }
+            }
+        } catch {
+            # Fall back to tmux capture when the transcript log is temporarily unavailable.
+        }
+    }
+
     $preview = & wsl.exe -d $TargetDistro -- bash -lc "tmux capture-pane -pt '$TargetSessionName' -S -40 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1"
     if ($LASTEXITCODE -ne 0) {
         return ''
@@ -515,6 +535,44 @@ function Get-SessionWorkingDirectoryWindows {
     }
 
     return Convert-WslPathToWindowsPath -WslPath $panePath
+}
+
+function Get-LiveSessionWorkingDirectoryMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDistro
+    )
+
+    $map = @{}
+    $paneRows = @(& wsl.exe -d $TargetDistro -- bash -lc "tmux list-panes -a -F '#{session_name}`t#{pane_active}`t#{pane_current_path}' 2>/dev/null || true")
+    if ($LASTEXITCODE -ne 0) {
+        return $map
+    }
+
+    foreach ($row in $paneRows) {
+        $text = ([string]$row).Trim()
+        if (-not $text) {
+            continue
+        }
+
+        $parts = $text -split "`t", 3
+        if ($parts.Count -lt 3) {
+            continue
+        }
+
+        $sessionNameValue = [string]$parts[0]
+        $isActive = [string]$parts[1]
+        $panePath = Convert-WslPathToWindowsPath -WslPath ([string]$parts[2])
+        if (-not $sessionNameValue -or -not $panePath) {
+            continue
+        }
+
+        if ($isActive -eq '1' -or -not $map.ContainsKey($sessionNameValue)) {
+            $map[$sessionNameValue] = $panePath
+        }
+    }
+
+    return $map
 }
 
 function Get-DefaultSessionTitle {
@@ -814,7 +872,9 @@ function Get-ExistingSessions {
         $parsed = $raw | ConvertFrom-Json
         $liveSessions = if ($parsed -is [System.Array]) { @($parsed) } else { @($parsed) }
     }
-    $catalogMap = Get-SessionCatalogMap
+    $catalogEntries = @(Get-SessionCatalogEntries)
+    $catalogMap = Get-SessionCatalogMap -Entries $catalogEntries
+    $liveWorkingDirectoryMap = Get-LiveSessionWorkingDirectoryMap -TargetDistro $TargetDistro
     $results = [System.Collections.Generic.List[object]]::new()
     $seenSessionNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
@@ -827,6 +887,9 @@ function Get-ExistingSessions {
         $workingDirectoryValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'working_directory_windows') { [string]$metadata.working_directory_windows } else { '' }
         $archivedValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'archived') { Get-CatalogBooleanValue -Value $metadata.archived } else { $false }
         $closedUtcValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'closed_utc') { [string]$metadata.closed_utc } else { '' }
+        if (-not $workingDirectoryValue) {
+            $workingDirectoryValue = [string]$liveWorkingDirectoryMap[$sessionNameValue]
+        }
         if (-not $workingDirectoryValue) {
             $workingDirectoryValue = Get-SessionWorkingDirectoryWindows -TargetSessionName $sessionNameValue -TargetDistro $TargetDistro
         }
@@ -843,7 +906,7 @@ function Get-ExistingSessions {
     }
 
     if ($IncludeCatalogOnly) {
-        foreach ($entry in @(Get-SessionCatalogEntries)) {
+        foreach ($entry in $catalogEntries) {
             $sessionNameValue = [string]$entry.session_name
             if (-not $sessionNameValue -or $seenSessionNames.Contains($sessionNameValue)) {
                 continue

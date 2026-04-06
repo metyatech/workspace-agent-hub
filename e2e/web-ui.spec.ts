@@ -3,7 +3,9 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { AxeResults } from 'axe-core';
 import type { Server } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { PowerShellSessionBridge } from '../src/session-bridge.js';
 import { createWebUiServer } from '../src/web-ui.js';
@@ -13,26 +15,70 @@ const authToken = 'playwright-token';
 const titlePrefix = 'Playwright E2E';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = resolve(repoRoot, '..');
+const sessionCatalogPath = join(
+  process.env.USERPROFILE ?? homedir(),
+  'agent-handoff',
+  'session-catalog.json'
+);
 
 let server: Server;
 let bridge: PowerShellSessionBridge;
 
-async function cleanupPlaywrightSessions(): Promise<void> {
-  const sessions = await bridge.listSessions(true);
-  const targets = sessions.filter((session) =>
-    session.DisplayTitle.startsWith(titlePrefix)
-  );
+interface SessionCatalogEntry {
+  session_name?: string;
+  title?: string;
+}
 
-  for (const session of targets) {
+async function readSessionCatalogEntries(): Promise<SessionCatalogEntry[]> {
+  try {
+    const raw = (await readFile(sessionCatalogPath, 'utf8')).trim();
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as SessionCatalogEntry | SessionCatalogEntry[];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+async function findPlaywrightSessionNames(): Promise<string[]> {
+  const entries = await readSessionCatalogEntries();
+  if (entries.length > 0) {
+    return entries
+      .filter(
+        (entry) =>
+          typeof entry.session_name === 'string' &&
+          typeof entry.title === 'string' &&
+          entry.title.startsWith(titlePrefix)
+      )
+      .map((entry) => entry.session_name!.trim())
+      .filter((sessionName) => sessionName.length > 0);
+  }
+  const sessions = await bridge.listSessions(true);
+  return sessions
+    .filter((session) => session.DisplayTitle.startsWith(titlePrefix))
+    .map((session) => session.Name);
+}
+
+async function hasCatalogSessionWithTitle(title: string): Promise<boolean> {
+  return (await readSessionCatalogEntries()).some(
+    (entry) =>
+      typeof entry.session_name === 'string' &&
+      typeof entry.title === 'string' &&
+      entry.title === title
+  );
+}
+
+async function cleanupPlaywrightSessions(): Promise<void> {
+  for (const sessionName of await findPlaywrightSessionNames()) {
     try {
-      if (session.IsLive) {
-        await bridge.closeSession(session.Name);
-      }
+      await bridge.closeSession(sessionName);
     } catch {
       /* best-effort cleanup */
     }
     try {
-      await bridge.deleteSession(session.Name);
+      await bridge.deleteSession(sessionName);
     } catch {
       /* best-effort cleanup */
     }
@@ -96,6 +142,7 @@ test.setTimeout(600000);
 
 test.beforeAll(async () => {
   bridge = new PowerShellSessionBridge();
+  await cleanupPlaywrightSessions();
   const started = await createWebUiServer({
     host: '127.0.0.1',
     port: 0,
@@ -112,6 +159,7 @@ test.afterAll(async () => {
   if (!server) {
     return;
   }
+  await cleanupPlaywrightSessions();
   await new Promise<void>((resolvePromise, reject) => {
     server.close((error) => {
       if (error) {
@@ -156,124 +204,114 @@ test('authenticates and manages a shell session from the browser UI', async ({
   const title = `${titlePrefix} ${Date.now()}-${test.info().repeatEachIndex}`;
   const workingDirectory = repoRoot;
 
-  try {
-    await cleanupPlaywrightSessions();
-    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    await page.evaluate(() => {
-      window.localStorage.clear();
-      window.sessionStorage.clear();
-    });
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await expectAuthScreenOwnsViewport(page);
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await expectAuthScreenOwnsViewport(page);
 
-    await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
-    await page.getByRole('button', { name: '開く', exact: true }).click();
+  await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
+  await page.getByRole('button', { name: '開く', exact: true }).click();
 
-    await expect(
-      page.getByRole('heading', { name: '最初にやること' })
-    ).toBeVisible();
-    await expect(page.locator('#workingDirectoryInput')).toHaveValue(
-      workspaceRoot
-    );
-    await expect(page.locator('#connectionHint')).toContainText('接続');
-    await expect(page.locator('#installHint')).toContainText('ホーム画面');
-    await expect(page.locator('#pairingHint')).toContainText(
-      'この URL をスマホで開きます'
-    );
-    await expect(page.locator('#pairingUrlInput')).toHaveValue(
-      /#accessCode=playwright-token$/
-    );
-    await expect(page.locator('#pairingCodeInput')).toHaveValue(
-      'playwright-token'
-    );
-    await expect(page.locator('#pairingQrImage')).toHaveAttribute(
-      'src',
-      /data:image\/png;base64,/
-    );
-    await expect(page.locator('#secureLaunchShell')).toBeHidden();
+  await expect(
+    page.getByRole('heading', { name: '最初にやること' })
+  ).toBeVisible();
+  await expect(page.locator('#workingDirectoryInput')).toHaveValue(
+    workspaceRoot
+  );
+  await expect(page.locator('#connectionHint')).toContainText('接続');
+  await expect(page.locator('#installHint')).toContainText('ホーム画面');
+  await expect(page.locator('#pairingHint')).toContainText(
+    'この URL をスマホで開きます'
+  );
+  await expect(page.locator('#pairingUrlInput')).toHaveValue(
+    /#accessCode=playwright-token$/
+  );
+  await expect(page.locator('#pairingCodeInput')).toHaveValue(
+    'playwright-token'
+  );
+  await expect(page.locator('#pairingQrImage')).toHaveAttribute(
+    'src',
+    /data:image\/png;base64,/
+  );
+  await expect(page.locator('#secureLaunchShell')).toBeHidden();
 
-    await expect
-      .poll(async () =>
-        page.evaluate(
-          () =>
-            document.documentElement.scrollWidth <=
-            document.documentElement.clientWidth
-        )
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth
       )
-      .toBe(true);
+    )
+    .toBe(true);
 
-    await page.selectOption('#sessionTypeSelect', 'shell');
-    await page.locator('#sessionTitleInput').fill(title);
-    await page.locator('#workingDirectoryInput').fill(workingDirectory);
-    await page.locator('#startSessionButton').click();
+  await page.selectOption('#sessionTypeSelect', 'shell');
+  await page.locator('#sessionTitleInput').fill(title);
+  await page.locator('#workingDirectoryInput').fill(workingDirectory);
+  await page.locator('#startSessionButton').click();
 
-    await expect(page.locator('#startSessionButton')).toBeEnabled({
-      timeout: 120000,
-    });
-    await expectSessionCard(page, title);
-    await expect(page.locator('#sessionSearchInput')).toBeVisible();
-    await expect(page.locator('#favoriteSessionsOnlyButton')).toBeVisible();
-    await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
-    await expect(page.locator('#selectedSessionSummary')).toContainText(
-      workingDirectory
-    );
-    await expect(page.locator('#sessionPromptHint')).toContainText(
-      'この入力欄のすぐ上にある出力欄'
-    );
-    await expect(page.locator('#sessionPromptInput')).toBeFocused();
+  await expect(page.locator('#startSessionButton')).toBeEnabled({
+    timeout: 120000,
+  });
+  await expectSessionCard(page, title);
+  await expect(page.locator('#sessionSearchInput')).toBeVisible();
+  await expect(page.locator('#favoriteSessionsOnlyButton')).toBeVisible();
+  await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
+  await expect(page.locator('#selectedSessionSummary')).toContainText(
+    workingDirectory
+  );
+  await expect(page.locator('#sessionPromptHint')).toContainText(
+    'この入力欄のすぐ上にある出力欄'
+  );
+  await expect(page.locator('#sessionPromptInput')).toBeFocused();
 
-    const sessions = await bridge.listSessions(true);
-    const created = sessions.find((session) => session.DisplayTitle === title);
-    expect(created).toBeTruthy();
+  await expect
+    .poll(async () => hasCatalogSessionWithTitle(title))
+    .toBe(true);
 
-    await page.locator('#sessionPromptInput').fill('draft-before-reload');
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await expect(page.locator('#lastSessionCard')).toBeVisible();
-    await expect(page.locator('#lastSessionTitle')).toContainText(title);
-    if (
-      !(await page.locator('#selectedSessionState').textContent())?.includes(
-        'SHELL'
-      )
-    ) {
-      await page.getByRole('button', { name: '前回の session を開く' }).click();
-    }
-    await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
-    await expect(page.locator('#sessionPromptInput')).toHaveValue(
-      'draft-before-reload'
-    );
-
-    await page
-      .locator('#sessionPromptInput')
-      .fill('echo playwright-browser-path-pass');
-    await page.getByRole('button', { name: 'AI に送る' }).click();
-    await expect(page.locator('#sessionTranscript')).toContainText(
-      'playwright-browser-path-pass',
-      { timeout: 60000 }
-    );
-    await expect(page.locator('#selectedSessionSummary')).not.toContainText(
-      '下書きあり',
-      { timeout: 60000 }
-    );
-
-    await page.getByRole('button', { name: '一覧から隠す' }).click();
-    await expect(page.locator('#selectedSessionSummary')).toContainText(
-      '一覧では非表示',
-      { timeout: 60000 }
-    );
-    await page.getByRole('button', { name: '一覧へ戻す' }).click();
-    await expect(page.locator('#selectedSessionSummary')).not.toContainText(
-      '一覧では非表示',
-      { timeout: 60000 }
-    );
-
-    page.once('dialog', (dialog) => void dialog.accept());
-    await page.getByRole('button', { name: 'この端末をロック' }).click();
-    await expect(
-      page.getByRole('heading', { name: 'この画面を開くコードを入力' })
-    ).toBeVisible();
-  } finally {
-    await cleanupPlaywrightSessions();
+  await page.locator('#sessionPromptInput').fill('draft-before-reload');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#lastSessionCard')).toBeVisible();
+  await expect(page.locator('#lastSessionTitle')).toContainText(title);
+  if (
+    !(await page.locator('#selectedSessionState').textContent())?.includes(
+      'SHELL'
+    )
+  ) {
+    await page.getByRole('button', { name: '前回の session を開く' }).click();
   }
+  await expect(page.locator('#selectedSessionState')).toContainText('SHELL');
+  await expect(page.locator('#sessionPromptInput')).toHaveValue(
+    'draft-before-reload'
+  );
+
+  await page
+    .locator('#sessionPromptInput')
+    .fill('echo playwright-browser-path-pass');
+  await page.getByRole('button', { name: 'AI に送る' }).click();
+  await expect(page.locator('#sessionTranscript')).toContainText(
+    'playwright-browser-path-pass',
+    { timeout: 60000 }
+  );
+  await expect(page.locator('#selectedSessionSummary')).not.toContainText(
+    '下書きあり',
+    { timeout: 60000 }
+  );
+
+  await page.getByRole('button', { name: '一覧から隠す' }).click();
+  await expect(page.locator('#selectedSessionSummary')).toContainText(
+    '一覧では非表示',
+    { timeout: 60000 }
+  );
+  await page.getByRole('button', { name: '一覧へ戻す' }).click();
+  await expect(page.locator('#selectedSessionSummary')).not.toContainText(
+    '一覧では非表示',
+    { timeout: 60000 }
+  );
+
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: 'この端末をロック' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'この画面を開くコードを入力' })
+  ).toBeVisible();
 });
 
 test('keeps the access-code screen above the hub on desktop and mobile widths', async ({
@@ -285,22 +323,12 @@ test('keeps the access-code screen above the hub on desktop and mobile widths', 
   ]) {
     await page.setViewportSize(viewport);
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    await page.evaluate(() => {
-      window.localStorage.clear();
-      window.sessionStorage.clear();
-    });
-    await page.reload({ waitUntil: 'domcontentloaded' });
     await expectAuthScreenOwnsViewport(page);
   }
 });
 
 test('opens Manager from Hub in the same tab on desktop', async ({ page }) => {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
 
   await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
   await page.getByRole('button', { name: '開く', exact: true }).click();
@@ -325,11 +353,6 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
 
   await page.getByLabel('この画面を開くアクセスコード').fill(authToken);
   await page.getByRole('button', { name: '開く', exact: true }).click();
@@ -370,11 +393,6 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
 
 test('keeps the Manager auth screen accessible', async ({ page }) => {
   await page.goto(`${baseUrl}/manager/`, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-  });
-  await page.reload({ waitUntil: 'domcontentloaded' });
 
   await expect(
     page.getByRole('heading', {
@@ -386,10 +404,6 @@ test('keeps the Manager auth screen accessible', async ({ page }) => {
 
 test('loads Manager directly without a trailing slash', async ({ page }) => {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.evaluate(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-  });
 
   const liveResponse = page.waitForResponse(
     (response) =>

@@ -27,7 +27,7 @@ const DEFAULT_BRIDGE_SCRIPT = join(
   'session-web-bridge.ps1'
 );
 const DEFAULT_POWERSHELL_COMMAND =
-  process.platform === 'win32' ? 'pwsh.exe' : 'pwsh';
+  process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
 const DEFAULT_AGENT_HANDOFF_ROOT = join(
   process.env.USERPROFILE ?? homedir(),
   'agent-handoff'
