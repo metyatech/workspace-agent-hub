@@ -200,11 +200,6 @@ $env:AI_AGENT_SESSION_LIVE_DIR_PATH = $testSessionLiveDirPath
 $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME = $testTmuxSocketName
 
 try {
-    $bootstrapScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'wsl-mobile-login-bootstrap.sh')
-    $startMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-start.sh')
-    $manageMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-manage.sh')
-    $catalogPathScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-catalog-path.sh')
-
     @(
         @{
             Probe = 'tmux -V'
@@ -224,77 +219,76 @@ try {
         }
     }
 
-    $probeViaWslEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 SSH_CONNECTION=test-via-wsl bash -lc "$bootstrapScript --probe"
-    if (($probeViaWslEnv | Out-String).Trim() -ne 'open-menu') {
-        Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is present in WSL.'
-        exit 1
-    }
-
-    $probeViaWindowsEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION=test-via-windows bash -lc "$bootstrapScript --probe"
-
-    if (($probeViaWindowsEnv | Out-String).Trim() -ne 'open-menu') {
-        Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is available only through the Windows-side fallback bridge.'
-        exit 1
-    }
-
-    $probeBypassed = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_BYPASS=1 SSH_CONNECTION=test-bypass bash -lc "$bootstrapScript --probe"
-    if (($probeBypassed | Out-String).Trim() -ne 'skip-menu') {
-        Write-Error 'Expected mobile menu probe to skip when AI_AGENT_MOBILE_BYPASS is set.'
-        exit 1
-    }
-
-    $startMenuOutput = wsl.exe -d Ubuntu -- bash -lc $startMenuScript
-    if (($startMenuOutput | Out-String).Trim() -notmatch 'PASS') {
-        Write-Error 'Expected start-menu flow to create a session with the requested title and directory.'
-        exit 1
-    }
-
-    $manageMenuOutput = wsl.exe -d Ubuntu -- bash -lc $manageMenuScript
-    if (($manageMenuOutput | Out-String).Trim() -notmatch 'PASS') {
-        Write-Error 'Expected mobile session management commands to rename, archive, close, and delete sessions.'
-        exit 1
-    }
-
-    $catalogPathOutput = wsl.exe -d Ubuntu -- bash -lc $catalogPathScript
-    if (($catalogPathOutput | Out-String).Trim() -notmatch 'PASS') {
-        Write-Error 'Expected the mobile menu to fall back cleanly when Windows USERPROFILE is unavailable and to honor AI_AGENT_SESSION_CATALOG_PATH overrides.'
-        exit 1
-    }
-
-    $wslTmuxOutput = & (Join-Path $PSScriptRoot 'test-wsl-tmux.ps1')
-    if (($wslTmuxOutput | Out-String).Trim() -notmatch 'PASS') {
-        Write-Error 'Expected wsl-tmux to list an empty isolated socket cleanly and to create, list, and kill sessions without relying on a pre-existing tmux server.'
-        exit 1
-    }
-
     $laneProcesses = @()
     try {
-        $integrationIsolation = New-TestIsolationState -Label 'integration'
-        $npmTestIsolation = New-TestIsolationState -Label 'npmtest'
+        $wslFoundationIsolation = New-TestIsolationState -Label 'wsl-foundation'
+        $mobilePrimaryIsolation = New-TestIsolationState -Label 'mobile-primary'
+        $sessionBridgeIsolation = New-TestIsolationState -Label 'session-bridge'
+        $npmUnitIsolation = New-TestIsolationState -Label 'npm-unit'
+        $npmE2eIsolation = New-TestIsolationState -Label 'npm-e2e'
         $laneProcesses = @(
             (Start-TestLaneProcess `
-                -Name 'session-integration-lane' `
+                -Name 'wsl-foundation-lane' `
                 -FilePath (Get-PowerShellPath) `
                 -ArgumentList @(
                     '-NoProfile',
                     '-ExecutionPolicy',
                     'Bypass',
                     '-File',
-                    (Join-Path $PSScriptRoot 'test-session-integration-lane.ps1')
+                    (Join-Path $PSScriptRoot 'test-wsl-foundation-lane.ps1')
                 ) `
                 -EnvironmentOverrides @{
-                    AI_AGENT_SESSION_CATALOG_PATH = $integrationIsolation.CatalogPath
-                    AI_AGENT_SESSION_LIVE_DIR_PATH = $integrationIsolation.LiveDirPath
-                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $integrationIsolation.TmuxSocketName
+                    AI_AGENT_SESSION_CATALOG_PATH = $wslFoundationIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $wslFoundationIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $wslFoundationIsolation.TmuxSocketName
                 }),
             (Start-TestLaneProcess `
-                -Name 'npm-test-lane' `
-                -FilePath (Get-NpmCommandPath) `
-                -ArgumentList @('run', 'test') `
+                -Name 'mobile-primary-lane' `
+                -FilePath (Get-PowerShellPath) `
+                -ArgumentList @(
+                    '-NoProfile',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    (Join-Path $PSScriptRoot 'test-mobile-primary-lane.ps1')
+                ) `
                 -EnvironmentOverrides @{
-                    AI_AGENT_SESSION_CATALOG_PATH = $npmTestIsolation.CatalogPath
-                    AI_AGENT_SESSION_LIVE_DIR_PATH = $npmTestIsolation.LiveDirPath
-                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $npmTestIsolation.TmuxSocketName
+                    AI_AGENT_SESSION_CATALOG_PATH = $mobilePrimaryIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $mobilePrimaryIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $mobilePrimaryIsolation.TmuxSocketName
+                }),
+            (Start-TestLaneProcess `
+                -Name 'session-bridge-lane' `
+                -FilePath (Get-PowerShellPath) `
+                -ArgumentList @(
+                    '-NoProfile',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    (Join-Path $PSScriptRoot 'test-session-bridge-lane.ps1')
+                ) `
+                -EnvironmentOverrides @{
+                    AI_AGENT_SESSION_CATALOG_PATH = $sessionBridgeIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $sessionBridgeIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $sessionBridgeIsolation.TmuxSocketName
+                }),
+            (Start-TestLaneProcess `
+                -Name 'npm-unit-lane' `
+                -FilePath (Get-NpmCommandPath) `
+                -ArgumentList @('run', 'test:unit') `
+                -EnvironmentOverrides @{
+                    AI_AGENT_SESSION_CATALOG_PATH = $npmUnitIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $npmUnitIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $npmUnitIsolation.TmuxSocketName
+                }),
+            (Start-TestLaneProcess `
+                -Name 'npm-e2e-lane' `
+                -FilePath (Get-NpmCommandPath) `
+                -ArgumentList @('run', 'test:e2e') `
+                -EnvironmentOverrides @{
+                    AI_AGENT_SESSION_CATALOG_PATH = $npmE2eIsolation.CatalogPath
+                    AI_AGENT_SESSION_LIVE_DIR_PATH = $npmE2eIsolation.LiveDirPath
+                    AI_AGENT_SESSION_TMUX_SOCKET_NAME = $npmE2eIsolation.TmuxSocketName
                 })
         )
         Wait-TestLaneProcesses -ProcessInfos $laneProcesses

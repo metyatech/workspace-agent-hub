@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -n "${AI_AGENT_SESSION_TMUX_SOCKET_NAME:-}" ]]; then
+  tmux() {
+    command tmux -L "${AI_AGENT_SESSION_TMUX_SOCKET_NAME}" "$@"
+  }
+fi
+
 if [[ -n "${AGENT_SESSION_HUB_PATH_HELPERS_LOADED:-}" ]]; then
   return 0 2>/dev/null || exit 0
 fi
