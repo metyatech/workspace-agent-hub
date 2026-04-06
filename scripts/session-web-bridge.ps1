@@ -25,7 +25,22 @@ $OutputEncoding = $utf8Encoding
 $launcherScriptPath = Join-Path $PSScriptRoot 'agent-session-launcher.ps1'
 $wslBridgeScriptPath = Join-Path $PSScriptRoot 'wsl-session-bridge.sh'
 $wslTmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
-$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$sessionLiveRootPath = if (
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
+$tmuxSocketName = if (
+    $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME -and
+    $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME.Trim()
+) {
+    $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME.Trim()
+} else {
+    ''
+}
 
 if (-not (Test-Path -Path $launcherScriptPath)) {
     throw "Missing script: $launcherScriptPath"
@@ -322,7 +337,12 @@ function Invoke-WslBridge {
         "'$argument'"
     }
     $commandText = "$bridgeWslPath $($quotedArguments -join ' ')"
-    $result = Invoke-HiddenConsoleCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $Distro, '--', 'bash', '-lc', $commandText) -ErrorContext 'WSL bridge failed.'
+    $argumentList = @('-d', $Distro, '--')
+    if ($tmuxSocketName) {
+        $argumentList += @('env', "AI_AGENT_SESSION_TMUX_SOCKET_NAME=$tmuxSocketName")
+    }
+    $argumentList += @('bash', '-lc', $commandText)
+    $result = Invoke-HiddenConsoleCommand -FilePath 'wsl.exe' -ArgumentList $argumentList -ErrorContext 'WSL bridge failed.'
     if ($result.ExitCode -ne 0) {
         $detail = if ($result.StdErr.Trim()) { $result.StdErr.Trim() } elseif ($result.StdOut.Trim()) { $result.StdOut.Trim() } else { "Exit code $($result.ExitCode)." }
         throw "WSL bridge failed. Args: $($BridgeArguments -join ' ') $detail"
@@ -480,6 +500,20 @@ if ($Action -in @('rename', 'archive', 'unarchive', 'close', 'delete')) {
 
     [void](Invoke-LauncherCommand -Arguments $launcherArgs)
 
+    if ($Action -eq 'delete') {
+        $result = [pscustomobject]@{
+            Deleted = $true
+            SessionName = $SessionName
+        }
+
+        if ($Json) {
+            $result | ConvertTo-Json -Depth 6
+        } else {
+            $result
+        }
+        exit 0
+    }
+
     $session = switch ($Action) {
         'rename' {
             Wait-ForSessionByName -TargetSessionName $SessionName -Condition {
@@ -500,16 +534,8 @@ if ($Action -in @('rename', 'archive', 'unarchive', 'close', 'delete')) {
             Wait-ForSessionByName -TargetSessionName $SessionName -Condition { param($candidate) -not [bool]$candidate.IsLive }
             break
         }
-        default {
-            Get-SessionByName -TargetSessionName $SessionName
-        }
     }
-    if ($Action -eq 'delete') {
-        $result = [pscustomobject]@{
-            Deleted = $true
-            SessionName = $SessionName
-        }
-    } elseif ($session) {
+    if ($session) {
         $result = $session
     } else {
         $result = [pscustomobject]@{

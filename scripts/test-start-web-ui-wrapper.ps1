@@ -48,6 +48,39 @@ function Wait-ForSingleJsonOutput {
     throw "Expected the wrapper to emit exactly one JSON line on stdout. Actual stdout: $stdoutPreview Actual stderr: $stderrPreview"
 }
 
+function Wait-ForHttpReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Headers,
+        [int]$TimeoutMilliseconds = 15000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $lastDetail = 'No response received.'
+    do {
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $Uri `
+                -Headers $Headers `
+                -Method Get `
+                -TimeoutSec 2 `
+                -UseBasicParsing `
+                -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+                return $response
+            }
+            $lastDetail = "HTTP $([int]$response.StatusCode)"
+        } catch {
+            $lastDetail = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Expected the wrapper to start the web UI server. Last failure: $lastDetail"
+}
+
 try {
     (Get-Item -LiteralPath $rebuildSourcePath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1)
 
@@ -84,13 +117,9 @@ try {
     }
 
     $listenUrlForRequest = ([string]$payload.listenUrl) -replace '^http://0\.0\.0\.0:', 'http://127.0.0.1:'
-    $response = Invoke-WebRequest `
-        -Uri (($listenUrlForRequest.TrimEnd('/')) + '/api/sessions?includeArchived=true') `
-        -Headers @{ 'X-Workspace-Agent-Hub-Token' = 'secret-token' } `
-        -Method Get `
-        -TimeoutSec 3 `
-        -UseBasicParsing `
-        -ErrorAction Stop
+    $response = Wait-ForHttpReady `
+        -Uri ($listenUrlForRequest.TrimEnd('/') + '/') `
+        -Headers @{}
     if ($response.StatusCode -ne 200) {
         throw "Expected the PowerShell wrapper to start the web UI server. Actual status: $($response.StatusCode)"
     }

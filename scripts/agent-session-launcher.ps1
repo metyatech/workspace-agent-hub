@@ -28,8 +28,22 @@ if (-not (Test-Path -Path $codexAuthSyncScriptPath)) {
 }
 
 $repoRootPath = Resolve-Path (Join-Path $PSScriptRoot '..')
-$sessionCatalogPath = Join-Path $env:USERPROFILE 'agent-handoff\session-catalog.json'
-$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$sessionCatalogPath = if (
+    $env:AI_AGENT_SESSION_CATALOG_PATH -and
+    $env:AI_AGENT_SESSION_CATALOG_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_CATALOG_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-catalog.json'
+}
+$sessionLiveRootPath = if (
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
 $workspaceRootPath = Split-Path -Parent $repoRootPath
 
 $profiles = @{

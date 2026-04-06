@@ -15,11 +15,9 @@ const authToken = 'playwright-token';
 const titlePrefix = 'Playwright E2E';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspaceRoot = resolve(repoRoot, '..');
-const sessionCatalogPath = join(
-  process.env.USERPROFILE ?? homedir(),
-  'agent-handoff',
-  'session-catalog.json'
-);
+const sessionCatalogPath =
+  process.env.AI_AGENT_SESSION_CATALOG_PATH?.trim() ||
+  join(process.env.USERPROFILE ?? homedir(), 'agent-handoff', 'session-catalog.json');
 
 let server: Server;
 let bridge: PowerShellSessionBridge;
@@ -72,11 +70,6 @@ async function hasCatalogSessionWithTitle(title: string): Promise<boolean> {
 
 async function cleanupPlaywrightSessions(): Promise<void> {
   for (const sessionName of await findPlaywrightSessionNames()) {
-    try {
-      await bridge.closeSession(sessionName);
-    } catch {
-      /* best-effort cleanup */
-    }
     try {
       await bridge.deleteSession(sessionName);
     } catch {
@@ -160,7 +153,7 @@ test.afterAll(async () => {
     return;
   }
   await cleanupPlaywrightSessions();
-  await new Promise<void>((resolvePromise, reject) => {
+  const closePromise = new Promise<void>((resolvePromise, reject) => {
     server.close((error) => {
       if (error) {
         reject(error);
@@ -169,6 +162,12 @@ test.afterAll(async () => {
       resolvePromise();
     });
   });
+  server.closeIdleConnections?.();
+  server.closeAllConnections?.();
+  await Promise.race([
+    closePromise,
+    new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1000)),
+  ]);
 });
 
 async function expectAuthScreenOwnsViewport(page: Page): Promise<void> {

@@ -28,17 +28,36 @@ const DEFAULT_BRIDGE_SCRIPT = join(
 );
 const DEFAULT_POWERSHELL_COMMAND =
   process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+function resolveEnvOverridePath(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? resolve(trimmed) : null;
+}
+
+function resolveHubWatchRoot(
+  sessionCatalogPath: string,
+  sessionLiveDirPath: string
+): string {
+  const catalogRoot = dirname(sessionCatalogPath);
+  const liveRoot = dirname(sessionLiveDirPath);
+  if (catalogRoot === liveRoot) {
+    return catalogRoot;
+  }
+  return DEFAULT_AGENT_HANDOFF_ROOT;
+}
+
 const DEFAULT_AGENT_HANDOFF_ROOT = join(
   process.env.USERPROFILE ?? homedir(),
   'agent-handoff'
 );
-const DEFAULT_SESSION_CATALOG_PATH = join(
-  DEFAULT_AGENT_HANDOFF_ROOT,
-  'session-catalog.json'
-);
-const DEFAULT_SESSION_LIVE_DIR_PATH = join(
-  DEFAULT_AGENT_HANDOFF_ROOT,
-  'session-live'
+const DEFAULT_SESSION_CATALOG_PATH =
+  resolveEnvOverridePath(process.env.AI_AGENT_SESSION_CATALOG_PATH) ??
+  join(DEFAULT_AGENT_HANDOFF_ROOT, 'session-catalog.json');
+const DEFAULT_SESSION_LIVE_DIR_PATH =
+  resolveEnvOverridePath(process.env.AI_AGENT_SESSION_LIVE_DIR_PATH) ??
+  join(DEFAULT_AGENT_HANDOFF_ROOT, 'session-live');
+const DEFAULT_HUB_WATCH_ROOT = resolveHubWatchRoot(
+  DEFAULT_SESSION_CATALOG_PATH,
+  DEFAULT_SESSION_LIVE_DIR_PATH
 );
 
 function normalizeJson<T>(stdout: string): T {
@@ -125,7 +144,7 @@ export class PowerShellSessionBridge implements SessionBridge {
 
   getHubLiveUpdateWatchConfig(): HubLiveUpdateWatchConfig {
     return {
-      watchRootPath: DEFAULT_AGENT_HANDOFF_ROOT,
+      watchRootPath: DEFAULT_HUB_WATCH_ROOT,
       sessionCatalogPath: DEFAULT_SESSION_CATALOG_PATH,
       sessionLiveDirPath: DEFAULT_SESSION_LIVE_DIR_PATH,
     };

@@ -6,7 +6,14 @@ $codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
 $socketName = 'workspace-agent-hub-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $sessionLabel = 'isolated-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $sessionName = "shell-$sessionLabel"
-$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$sessionLiveRootPath = if (
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
 $liveTranscriptPath = Join-Path $sessionLiveRootPath ($sessionName + '.log')
 $liveEventPath = Join-Path $sessionLiveRootPath ($sessionName + '.event')
 

@@ -157,7 +157,12 @@ def launcher_assert_resume_available(session_name: str) -> None:
 
 
 def wsl_bash(command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run_command(["wsl.exe", "-d", "Ubuntu", "--", "bash", "-lc", command], check=check)
+    args = ["wsl.exe", "-d", "Ubuntu", "--"]
+    tmux_socket_name = (os.environ.get("AI_AGENT_SESSION_TMUX_SOCKET_NAME") or "").strip()
+    if tmux_socket_name:
+        args.extend(["env", f"AI_AGENT_SESSION_TMUX_SOCKET_NAME={tmux_socket_name}"])
+    args.extend(["bash", "-lc", command])
+    return run_command(args, check=check)
 
 
 def to_wsl_path(path: Path) -> str:
@@ -295,6 +300,10 @@ class TemporarySshd:
         public_key = self.user_key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
         self.authorized_keys_path.write_text(public_key + "\n", encoding="utf-8")
         bootstrap_script_wsl = to_wsl_path(SCRIPT_DIR / "wsl-mobile-login-bootstrap.sh")
+        catalog_path_wsl = ""
+        catalog_path_value = (os.environ.get("AI_AGENT_SESSION_CATALOG_PATH") or "").strip()
+        if catalog_path_value:
+            catalog_path_wsl = to_wsl_path(Path(catalog_path_value))
         self.force_command_script_path.write_text(
             "\n".join(
                 [
@@ -305,7 +314,11 @@ class TemporarySshd:
                     "if ($env:SSH_CLIENT) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_CLIENT = $env:SSH_CLIENT }",
                     "if ($env:SSH_TTY) { $env:AI_AGENT_MOBILE_WINDOWS_SSH_TTY = $env:SSH_TTY }",
                     "if ($env:USERPROFILE) { $env:AI_AGENT_MOBILE_WINDOWS_USERPROFILE = $env:USERPROFILE }",
-                    f"& wsl.exe -d Ubuntu -- bash -lc {tmux_quote(bootstrap_script_wsl)}",
+                    "$wslArgs = @('-d', 'Ubuntu', '--')",
+                    "if ($env:AI_AGENT_SESSION_TMUX_SOCKET_NAME) { $wslArgs += @('env', \"AI_AGENT_SESSION_TMUX_SOCKET_NAME=$($env:AI_AGENT_SESSION_TMUX_SOCKET_NAME)\") }",
+                    f"if ({tmux_quote(catalog_path_wsl)}) {{ $wslArgs += @('env', \"AI_AGENT_SESSION_CATALOG_PATH={catalog_path_wsl}\") }}",
+                    f"$wslArgs += @('bash', '-lc', {tmux_quote(bootstrap_script_wsl)})",
+                    "& wsl.exe @wslArgs",
                     "exit $LASTEXITCODE",
                     "",
                 ]

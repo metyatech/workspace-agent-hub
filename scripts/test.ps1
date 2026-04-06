@@ -2,6 +2,10 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
+$testStateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('workspace-agent-hub-test-state-' + [guid]::NewGuid().ToString('N'))
+$testSessionCatalogPath = Join-Path $testStateRoot 'session-catalog.json'
+$testSessionLiveDirPath = Join-Path $testStateRoot 'session-live'
+$testTmuxSocketName = 'workspace-agent-hub-suite-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
 
@@ -32,72 +36,85 @@ try {
     Pop-Location
 }
 
-$bootstrapScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'wsl-mobile-login-bootstrap.sh')
-$startMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-start.sh')
-$manageMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-manage.sh')
-$catalogPathScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-catalog-path.sh')
+[System.IO.Directory]::CreateDirectory($testStateRoot) | Out-Null
+[System.IO.Directory]::CreateDirectory($testSessionLiveDirPath) | Out-Null
+Set-Content -Path $testSessionCatalogPath -Value '[]' -Encoding utf8
 
-@(
-    @{
-        Probe = 'tmux -V'
-        Description = 'tmux'
-        InstallHint = 'Install tmux inside the Ubuntu WSL distro before running verify.'
-    },
-    @{
-        Probe = 'node --version'
-        Description = 'Node.js'
-        InstallHint = 'Run sudo ./scripts/install-wsl-node.sh inside the repository WSL path before running verify.'
+$previousSessionCatalogPath = $env:AI_AGENT_SESSION_CATALOG_PATH
+$previousSessionLiveDirPath = $env:AI_AGENT_SESSION_LIVE_DIR_PATH
+$previousTmuxSocketName = $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME
+
+$env:AI_AGENT_SESSION_CATALOG_PATH = $testSessionCatalogPath
+$env:AI_AGENT_SESSION_LIVE_DIR_PATH = $testSessionLiveDirPath
+$env:AI_AGENT_SESSION_TMUX_SOCKET_NAME = $testTmuxSocketName
+
+try {
+    $bootstrapScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'wsl-mobile-login-bootstrap.sh')
+    $startMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-start.sh')
+    $manageMenuScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-manage.sh')
+    $catalogPathScript = Convert-WindowsPathToWslPath -WindowsPath (Join-Path $PSScriptRoot 'test-wsl-mobile-menu-catalog-path.sh')
+
+    @(
+        @{
+            Probe = 'tmux -V'
+            Description = 'tmux'
+            InstallHint = 'Install tmux inside the Ubuntu WSL distro before running verify.'
+        },
+        @{
+            Probe = 'node --version'
+            Description = 'Node.js'
+            InstallHint = 'Run sudo ./scripts/install-wsl-node.sh inside the repository WSL path before running verify.'
+        }
+    ) | ForEach-Object {
+        $probeOutput = & wsl.exe -d Ubuntu -- bash -lc $_.Probe
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Expected $($_.Description) to be installed inside the Ubuntu WSL distro. $($_.InstallHint)"
+            exit 1
+        }
     }
-) | ForEach-Object {
-    $probeOutput = & wsl.exe -d Ubuntu -- bash -lc $_.Probe
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Expected $($_.Description) to be installed inside the Ubuntu WSL distro. $($_.InstallHint)"
+
+    $probeViaWslEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 SSH_CONNECTION=test-via-wsl bash -lc "$bootstrapScript --probe"
+    if (($probeViaWslEnv | Out-String).Trim() -ne 'open-menu') {
+        Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is present in WSL.'
         exit 1
     }
-}
 
-$probeViaWslEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 SSH_CONNECTION=test-via-wsl bash -lc "$bootstrapScript --probe"
-if (($probeViaWslEnv | Out-String).Trim() -ne 'open-menu') {
-    Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is present in WSL.'
-    exit 1
-}
+    $probeViaWindowsEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION=test-via-windows bash -lc "$bootstrapScript --probe"
 
-$probeViaWindowsEnv = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_WINDOWS_SSH_CONNECTION=test-via-windows bash -lc "$bootstrapScript --probe"
+    if (($probeViaWindowsEnv | Out-String).Trim() -ne 'open-menu') {
+        Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is available only through the Windows-side fallback bridge.'
+        exit 1
+    }
 
-if (($probeViaWindowsEnv | Out-String).Trim() -ne 'open-menu') {
-    Write-Error 'Expected mobile menu probe to open when SSH_CONNECTION is available only through the Windows-side fallback bridge.'
-    exit 1
-}
+    $probeBypassed = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_BYPASS=1 SSH_CONNECTION=test-bypass bash -lc "$bootstrapScript --probe"
+    if (($probeBypassed | Out-String).Trim() -ne 'skip-menu') {
+        Write-Error 'Expected mobile menu probe to skip when AI_AGENT_MOBILE_BYPASS is set.'
+        exit 1
+    }
 
-$probeBypassed = wsl.exe -d Ubuntu -- env AI_AGENT_MOBILE_ASSUME_TTY=1 AI_AGENT_MOBILE_BYPASS=1 SSH_CONNECTION=test-bypass bash -lc "$bootstrapScript --probe"
-if (($probeBypassed | Out-String).Trim() -ne 'skip-menu') {
-    Write-Error 'Expected mobile menu probe to skip when AI_AGENT_MOBILE_BYPASS is set.'
-    exit 1
-}
+    $startMenuOutput = wsl.exe -d Ubuntu -- bash -lc $startMenuScript
+    if (($startMenuOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected start-menu flow to create a session with the requested title and directory.'
+        exit 1
+    }
 
-$startMenuOutput = wsl.exe -d Ubuntu -- bash -lc $startMenuScript
-if (($startMenuOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected start-menu flow to create a session with the requested title and directory.'
-    exit 1
-}
+    $manageMenuOutput = wsl.exe -d Ubuntu -- bash -lc $manageMenuScript
+    if (($manageMenuOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected mobile session management commands to rename, archive, close, and delete sessions.'
+        exit 1
+    }
 
-$manageMenuOutput = wsl.exe -d Ubuntu -- bash -lc $manageMenuScript
-if (($manageMenuOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected mobile session management commands to rename, archive, close, and delete sessions.'
-    exit 1
-}
+    $catalogPathOutput = wsl.exe -d Ubuntu -- bash -lc $catalogPathScript
+    if (($catalogPathOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected the mobile menu to fall back cleanly when Windows USERPROFILE is unavailable and to honor AI_AGENT_SESSION_CATALOG_PATH overrides.'
+        exit 1
+    }
 
-$catalogPathOutput = wsl.exe -d Ubuntu -- bash -lc $catalogPathScript
-if (($catalogPathOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the mobile menu to fall back cleanly when Windows USERPROFILE is unavailable and to honor AI_AGENT_SESSION_CATALOG_PATH overrides.'
-    exit 1
-}
-
-$wslTmuxOutput = & (Join-Path $PSScriptRoot 'test-wsl-tmux.ps1')
-if (($wslTmuxOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected wsl-tmux to list an empty isolated socket cleanly and to create, list, and kill sessions without relying on a pre-existing tmux server.'
-    exit 1
-}
+    $wslTmuxOutput = & (Join-Path $PSScriptRoot 'test-wsl-tmux.ps1')
+    if (($wslTmuxOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected wsl-tmux to list an empty isolated socket cleanly and to create, list, and kill sessions without relying on a pre-existing tmux server.'
+        exit 1
+    }
 
 $primaryPathMatrixOutput = & (Join-Path $PSScriptRoot 'test-primary-path-matrix.ps1')
 if (($primaryPathMatrixOutput | Out-String).Trim() -notmatch 'PASS') {
@@ -188,11 +205,11 @@ if (($ensureSwapOutput | Out-String).Trim() -notmatch 'PASS') {
     exit 1
 }
 
-$phoneReadyWatchdogOutput = & (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')
-if (($phoneReadyWatchdogOutput | Out-String).Trim() -notmatch 'PASS') {
-    Write-Error 'Expected the phone-ready watchdog to rerun ensure-web-ui-running.ps1 and reject duplicate instances cleanly.'
-    exit 1
-}
+    $phoneReadyWatchdogOutput = & (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')
+    if (($phoneReadyWatchdogOutput | Out-String).Trim() -notmatch 'PASS') {
+        Write-Error 'Expected the phone-ready watchdog to rerun ensure-web-ui-running.ps1 and reject duplicate instances cleanly.'
+        exit 1
+    }
 
 $tls12 = [Net.SecurityProtocolType]::Tls12
 if (-not ([Net.ServicePointManager]::SecurityProtocol.HasFlag($tls12))) {
@@ -203,25 +220,42 @@ $urls = @(
     'https://github.com/metyatech/workspace-agent-hub'
 )
 
-foreach ($url in $urls) {
-    try {
-        $response = Invoke-WebRequest `
-            -Uri $url `
-            -Method Get `
-            -MaximumRedirection 5 `
-            -TimeoutSec 20 `
-            -Headers @{ 'User-Agent' = 'workspace-agent-hub-link-check' } `
-            -UseBasicParsing `
-            -ErrorAction Stop
-    } catch {
-        Write-Error "Link check failed for $url. $($_.Exception.Message)"
-        exit 1
+    foreach ($url in $urls) {
+        try {
+            $response = Invoke-WebRequest `
+                -Uri $url `
+                -Method Get `
+                -MaximumRedirection 5 `
+                -TimeoutSec 20 `
+                -Headers @{ 'User-Agent' = 'workspace-agent-hub-link-check' } `
+                -UseBasicParsing `
+                -ErrorAction Stop
+        } catch {
+            Write-Error "Link check failed for $url. $($_.Exception.Message)"
+            exit 1
+        }
+
+        $statusCode = [int]$response.StatusCode
+        if ($statusCode -lt 200 -or $statusCode -ge 400) {
+            Write-Error "Link check returned status $statusCode for $url"
+            exit 1
+        }
+    }
+} finally {
+    foreach ($entry in @(
+            @{ Name = 'AI_AGENT_SESSION_CATALOG_PATH'; Value = $previousSessionCatalogPath },
+            @{ Name = 'AI_AGENT_SESSION_LIVE_DIR_PATH'; Value = $previousSessionLiveDirPath },
+            @{ Name = 'AI_AGENT_SESSION_TMUX_SOCKET_NAME'; Value = $previousTmuxSocketName }
+        )) {
+        if ($null -eq $entry.Value) {
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        } else {
+            [Environment]::SetEnvironmentVariable($entry.Name, $entry.Value, 'Process')
+        }
     }
 
-    $statusCode = [int]$response.StatusCode
-    if ($statusCode -lt 200 -or $statusCode -ge 400) {
-        Write-Error "Link check returned status $statusCode for $url"
-        exit 1
+    if (Test-Path -Path $testStateRoot) {
+        [System.IO.Directory]::Delete($testStateRoot, $true)
     }
 }
 

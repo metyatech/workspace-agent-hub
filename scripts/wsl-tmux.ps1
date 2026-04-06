@@ -24,6 +24,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (
+    -not $PSBoundParameters.ContainsKey('SocketName') -and
+    $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME -and
+    $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME.Trim()
+) {
+    $SocketName = $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME.Trim()
+}
+
 $startupOnAttachScriptWindowsPath = Join-Path $PSScriptRoot 'wsl-startup-on-attach.sh'
 if (-not (Test-Path -Path $startupOnAttachScriptWindowsPath)) {
     throw "Missing helper script: $startupOnAttachScriptWindowsPath"
@@ -33,7 +41,14 @@ if (-not (Test-Path -Path $sessionLivePipeScriptWindowsPath)) {
     throw "Missing helper script: $sessionLivePipeScriptWindowsPath"
 }
 
-$sessionLiveRootWindowsPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$sessionLiveRootWindowsPath = if (
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
 
 function ConvertTo-QuotedArgumentString {
     param(

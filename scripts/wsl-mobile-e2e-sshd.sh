@@ -151,6 +151,9 @@ set -euo pipefail
 if [[ -z "\${GHWS_MOBILE_E2E_MENU_ACTIVE:-}" ]]; then
   export GHWS_MOBILE_E2E_MENU_ACTIVE=1
   export AI_AGENT_SESSION_CATALOG_PATH='$resolved_catalog_path'
+  if [[ -n '${AI_AGENT_SESSION_TMUX_SOCKET_NAME:-}' ]]; then
+    export AI_AGENT_SESSION_TMUX_SOCKET_NAME='${AI_AGENT_SESSION_TMUX_SOCKET_NAME:-}'
+  fi
   if [[ -n '${AUTO_RESUME_SESSION}' ]]; then
     rm -f '$TMUX_ATTACHED_FLAG_PATH'
     tmux set-hook -t '${AUTO_RESUME_SESSION}' client-attached "run-shell 'printf attached > $TMUX_ATTACHED_FLAG_PATH'" >/dev/null 2>&1 || true

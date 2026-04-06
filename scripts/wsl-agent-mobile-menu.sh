@@ -66,6 +66,14 @@ resolve_session_catalog_path() {
 
 SESSION_CATALOG_PATH="$(resolve_session_catalog_path)"
 
+tmux() {
+  if [[ -n "${AI_AGENT_SESSION_TMUX_SOCKET_NAME:-}" ]]; then
+    command tmux -L "${AI_AGENT_SESSION_TMUX_SOCKET_NAME}" "$@"
+    return
+  fi
+  command tmux "$@"
+}
+
 no_attach_requested() {
   [[ -n "${AI_AGENT_SESSION_NO_ATTACH:-}" ]] && return 0
   [[ -n "$(get_windows_env 'AI_AGENT_SESSION_NO_ATTACH')" ]] && return 0

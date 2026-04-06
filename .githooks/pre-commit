@@ -7,6 +7,6 @@ else
   PSH=powershell
 fi
 
-"$PSH" -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/../scripts/verify.ps1"
+WORKSPACE_AGENT_HUB_SKIP_COMPOSE=1 "$PSH" -NoProfile -ExecutionPolicy Bypass -File "$(dirname "$0")/../scripts/verify.ps1"
 compose-agentsmd --compose
 git add AGENTS.md CLAUDE.md

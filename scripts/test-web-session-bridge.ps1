@@ -8,7 +8,14 @@ $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
 $codexSessionLabel = 'web-codex-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedCodexSessionName = "codex-$codexSessionLabel"
-$sessionLiveRootPath = Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+$sessionLiveRootPath = if (
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
+    $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
+) {
+    [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
+} else {
+    Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
 $shellEventPath = Join-Path $sessionLiveRootPath ($resolvedSessionName + '.event')
 $shellTranscriptPath = Join-Path $sessionLiveRootPath ($resolvedSessionName + '.log')
 
