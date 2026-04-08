@@ -22,6 +22,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   images from a mobile-friendly picker and insert them back at the remembered
   cursor position while desktop drag-and-drop and Ctrl/Cmd+V insertion
   continue to work
+- Replaced the Manager composer mobile image-picker text button with a compact
+  icon button so the control still fits cleanly beside the send actions on
+  narrow screens
 - Kept the Web UI replacement/swap path machine-readable during automatic
   rebuilds by redirecting PowerShell wrapper `npm` build output away from
   stdout, so phone-ready restarts can keep the previous listener alive until

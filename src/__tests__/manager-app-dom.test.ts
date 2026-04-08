@@ -415,10 +415,19 @@ afterEach(() => {
 
 describe('manager-app DOM auth state matrix', () => {
   it('describes mobile and desktop image insertion paths in the composer', () => {
-    expect(managerHtml).toContain(
-      'スマホは「画像を選ぶ」、PC はドラッグ&ドロップか Ctrl /'
+    const document = new JSDOM(managerHtml).window.document;
+    const pickerButton = document.querySelector<HTMLButtonElement>(
+      '#composerImagePickerButton'
     );
-    expect(managerHtml).toContain('id="composerImagePickerButton"');
+
+    expect(managerHtml).toContain(
+      'スマホは画像アイコン、PC はドラッグ&ドロップか Ctrl /'
+    );
+    expect(pickerButton).not.toBeNull();
+    expect(pickerButton?.getAttribute('aria-label')).toBe('画像を選ぶ');
+    expect(pickerButton?.getAttribute('title')).toBe('画像を選ぶ');
+    expect(pickerButton?.textContent?.trim()).toBe('');
+    expect(pickerButton?.querySelector('svg')).not.toBeNull();
     expect(managerHtml).toContain('id="composerImagePickerInput"');
   });
 

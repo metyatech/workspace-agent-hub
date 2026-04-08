@@ -1563,7 +1563,22 @@
       }
 
       .composer-actions .composer-image-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        padding: 0;
         flex-shrink: 0;
+      }
+
+      .composer-actions .composer-image-button svg {
+        width: 19px;
+        height: 19px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       .composer-actions .composer-hint {
@@ -2215,7 +2230,7 @@
           ></textarea>
           <div class="composer-tools">
             <span id="composerMediaHint" class="composer-hint"
-              >スマホは「画像を選ぶ」、PC はドラッグ&ドロップか Ctrl / Cmd + V
+              >スマホは画像アイコン、PC はドラッグ&ドロップか Ctrl / Cmd + V
               でカーソル位置へ差し込めます。</span
             >
           </div>
@@ -2240,8 +2255,19 @@
               id="composerImagePickerButton"
               class="btn btn-ghost composer-image-button"
               type="button"
+              aria-label="画像を選ぶ"
+              title="画像を選ぶ"
             >
-              画像を選ぶ
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4.75" y="5.5" width="14.5" height="13" rx="2.25" />
+                <circle cx="9" cy="10" r="1.2" />
+                <path
+                  d="m6.75 16.5 3.35-3.35a1.25 1.25 0 0 1 1.77 0l1.76 1.76"
+                />
+                <path
+                  d="m13.1 15.05 1.8-1.8a1.25 1.25 0 0 1 1.77 0l1.58 1.58"
+                />
+              </svg>
             </button>
             <input
               id="composerImagePickerInput"
