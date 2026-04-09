@@ -454,16 +454,20 @@ function deriveUiState(input: {
     return 'cancelled-as-superseded';
   }
 
+  if (input.isWorking) {
+    return 'ai-working';
+  }
+
+  if (input.queueDepth > 0) {
+    return 'queued';
+  }
+
   if (input.thread.status === 'needs-reply') {
     return 'user-reply-needed';
   }
 
   if (input.thread.status === 'review') {
     return 'ai-finished-awaiting-user-confirmation';
-  }
-
-  if (input.isWorking) {
-    return 'ai-working';
   }
 
   if (input.thread.status === 'waiting') {
@@ -477,10 +481,6 @@ function deriveUiState(input: {
     if (lastSender(input.thread) === 'ai') {
       return 'ai-finished-awaiting-user-confirmation';
     }
-  }
-
-  if (input.queueDepth > 0) {
-    return 'queued';
   }
 
   if (input.thread.status === 'active') {

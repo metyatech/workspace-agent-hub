@@ -149,6 +149,183 @@ describe('manager thread state derivation', () => {
     expect(views[1]?.uiState).toBe('ai-working');
   });
 
+  it('treats an in-flight needs-reply thread as ai-working while the assignment is still active', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-retrying',
+          title: '再開中の task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:36:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:36:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '[Manager] いったん失敗しました',
+              at: '2026-04-09T10:47:34.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'busy',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: 46588,
+        currentQueueId: 'queue-retrying',
+        startedAt: '2026-04-09T10:36:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: '2026-04-09T10:58:00.000Z',
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        activeAssignments: [
+          {
+            id: 'assign-retrying',
+            threadId: 'thread-retrying',
+            queueEntryIds: ['queue-retrying'],
+            assigneeKind: 'worker',
+            targetKind: 'existing-repo',
+            newRepoName: null,
+            workingDirectory:
+              'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-retrying',
+            workerRuntime: 'codex',
+            assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+            writeScopes: ['src'],
+            pid: 46588,
+            startedAt: '2026-04-09T10:47:27.000Z',
+            lastProgressAt: '2026-04-09T10:58:00.000Z',
+            worktreePath:
+              'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-retrying',
+            worktreeBranch: 'wah-worker-assign-retrying',
+            targetRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          },
+        ],
+      },
+      queue: [
+        {
+          id: 'queue-retrying',
+          threadId: 'thread-retrying',
+          content: '続けてください',
+          createdAt: '2026-04-09T10:36:04.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+      ],
+      meta: {
+        'thread-retrying': {
+          assigneeKind: 'manager',
+          assigneeLabel: 'Manager gpt-5.4 (xhigh)',
+          workerAgentId: 'assign-retrying',
+          workerRuntimeState: 'manager-answering',
+          workerRuntimeDetail:
+            'Manager が worker の成果をレビューし、必要な反映と引き渡しを進めています。',
+          workerWriteScopes: ['src'],
+          workerLiveOutput: 'Manager が worker の成果を確認しています…',
+          workerLiveAt: '2026-04-09T10:58:00.000Z',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('ai-working');
+    expect(views[0]?.isWorking).toBe(true);
+  });
+
+  it('treats a requeued needs-reply thread as queued instead of leaving it under user reply needed', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-requeued',
+          title: '再投入済みの task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:40:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '左端切れを直してください',
+              at: '2026-04-09T10:40:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '[Manager] Worker 隔離環境の作成に失敗しました',
+              at: '2026-04-09T10:47:59.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'busy',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: 46588,
+        currentQueueId: 'queue-working',
+        startedAt: '2026-04-09T10:40:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: '2026-04-09T10:58:00.000Z',
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        activeAssignments: [
+          {
+            id: 'assign-working',
+            threadId: 'thread-other',
+            queueEntryIds: ['queue-working'],
+            assigneeKind: 'worker',
+            targetKind: 'existing-repo',
+            newRepoName: null,
+            workingDirectory:
+              'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-working',
+            workerRuntime: 'codex',
+            assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+            writeScopes: ['src'],
+            pid: 46588,
+            startedAt: '2026-04-09T10:47:27.000Z',
+            lastProgressAt: '2026-04-09T10:58:00.000Z',
+            worktreePath:
+              'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-working',
+            worktreeBranch: 'wah-worker-assign-working',
+            targetRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          },
+        ],
+      },
+      queue: [
+        {
+          id: 'queue-requeued',
+          threadId: 'thread-requeued',
+          content: '左端切れを直してください',
+          createdAt: '2026-04-09T10:40:31.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+      ],
+      meta: {
+        'thread-requeued': {
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+          workerRuntimeState: 'blocked-by-scope',
+          workerRuntimeDetail:
+            '別の worker agent と書き込み範囲が重なるため待機しています。',
+          workerWriteScopes: ['src'],
+          workerBlockedByThreadIds: ['thread-other'],
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('queued');
+    expect(views[0]?.queueDepth).toBe(1);
+    expect(views[0]?.isWorking).toBe(false);
+  });
+
   it('orders queued threads by dispatch priority instead of newest update time', () => {
     const views = deriveManagerThreadViews({
       threads: [

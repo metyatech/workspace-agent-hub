@@ -1678,6 +1678,64 @@ export async function cleanupOrphanedWorktrees(
   });
 }
 
+async function listRegisteredWorktreePathsForBranch(
+  targetRepoRoot: string,
+  branchName: string
+): Promise<string[]> {
+  const result = await execGit(targetRepoRoot, [
+    'worktree',
+    'list',
+    '--porcelain',
+  ]).catch(() => null);
+  if (!result || result.code !== 0) {
+    return [];
+  }
+
+  const repoRoot = resolvePath(targetRepoRoot);
+  const paths: string[] = [];
+  for (const block of result.stdout.split('\n\n')) {
+    const pathMatch = block.match(/^worktree (.+)$/m);
+    const branchMatch = block.match(/^branch refs\/heads\/(.+)$/m);
+    if (!pathMatch?.[1] || !branchMatch?.[1]) {
+      continue;
+    }
+    if (branchMatch[1].trim() !== branchName) {
+      continue;
+    }
+    const resolvedWorktreePath = resolvePath(pathMatch[1].trim());
+    if (resolvedWorktreePath === repoRoot) {
+      continue;
+    }
+    paths.push(resolvedWorktreePath);
+  }
+
+  return [...new Set(paths)];
+}
+
+async function removeRegisteredWorktreesForBranch(
+  targetRepoRoot: string,
+  branchName: string
+): Promise<void> {
+  const stalePaths = await listRegisteredWorktreePathsForBranch(
+    targetRepoRoot,
+    branchName
+  );
+  for (const stalePath of stalePaths) {
+    await execGit(targetRepoRoot, [
+      'worktree',
+      'remove',
+      stalePath,
+      '--force',
+    ]).catch(() => {});
+    const cleanupFailure = await removeWorktreeDirectory(stalePath);
+    if (cleanupFailure) {
+      throw new Error(
+        `Failed to clear stale registered worktree before recreation: ${cleanupFailure}`
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -1688,6 +1746,8 @@ async function cleanupStaleBranch(
   worktreePath: string,
   branchName: string
 ): Promise<void> {
+  await removeRegisteredWorktreesForBranch(targetRepoRoot, branchName);
+
   // Remove existing worktree at the path (if any).
   if (existsSync(worktreePath)) {
     await execGit(targetRepoRoot, [
@@ -1703,6 +1763,10 @@ async function cleanupStaleBranch(
       );
     }
   }
+
+  // Prune stale worktree refs before deleting the branch so git no longer
+  // considers the temp branch checked out elsewhere.
+  await execGit(targetRepoRoot, ['worktree', 'prune']).catch(() => {});
 
   // Delete the branch if it already exists.
   await execGit(targetRepoRoot, ['branch', '-D', branchName]).catch(() => {});

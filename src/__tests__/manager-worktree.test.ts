@@ -281,6 +281,59 @@ describe('createWorkerWorktree', () => {
       }
     }
   });
+
+  it('removes a stale registered worktree for the same temp branch before recreating it', async () => {
+    const assignmentId = `assign-registered-${Date.now()}`;
+    const branchName = `wah-worker-${assignmentId}`;
+    const stalePath = join(tmpdir(), `wah-wt-${assignmentId}-stale`);
+    const gitArgs: string[][] = [];
+
+    await rm(stalePath, { recursive: true, force: true });
+    await mkdir(stalePath, { recursive: true });
+    await writeFile(join(stalePath, 'trace.txt'), 'stale branch checkout');
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'list') {
+        return gitResult(
+          0,
+          [
+            'worktree /repo-worker',
+            'HEAD abc123',
+            'branch refs/heads/main',
+            '',
+            `worktree ${stalePath.replace(/\\/g, '/')}`,
+            'HEAD def456',
+            `branch refs/heads/${branchName}`,
+          ].join('\n')
+        )();
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      const result = await createWorkerWorktree({
+        targetRepoRoot: '/repo-worker',
+        assignmentId,
+      });
+
+      expect(result.worktreePath).toBe(
+        join(tmpdir(), `wah-wt-${assignmentId}`)
+      );
+      expect(result.branchName).toBe(branchName);
+      expect(existsSync(stalePath)).toBe(false);
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['worktree', 'list', '--porcelain'],
+          ['worktree', 'remove', stalePath, '--force'],
+          ['branch', '-D', branchName],
+          ['worktree', 'add', result.worktreePath, '-b', branchName, 'HEAD'],
+        ])
+      );
+    } finally {
+      await rm(stalePath, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('pushWithRetry', () => {
