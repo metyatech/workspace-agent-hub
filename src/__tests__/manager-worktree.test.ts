@@ -470,6 +470,30 @@ describe('removeWorktree', () => {
     expect(gitArgs.some((a) => a.includes('prune'))).toBe(true);
   });
 
+  it('deletes leaked remote temp branches during cleanup', async () => {
+    const gitArgs: string[][] = [];
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (args[0] === 'remote') {
+        return gitResult(0, 'origin')();
+      }
+      return gitResult(0, '')();
+    });
+
+    await removeWorktree({
+      targetRepoRoot: '/repo',
+      worktreePath: '/tmp/wah-wt-test',
+      branchName: 'wah-worker-test',
+    });
+
+    expect(gitArgs).toEqual(
+      expect.arrayContaining([
+        ['remote'],
+        ['push', 'origin', '--delete', 'wah-worker-test'],
+      ])
+    );
+  });
+
   it('releases task-owned WSL tmux sockets before deleting a Windows worktree directory', async () => {
     if (process.platform !== 'win32') {
       return;
@@ -597,7 +621,12 @@ describe('cleanupOrphanedWorktrees', () => {
     try {
       await cleanupOrphanedWorktrees('/repo', ['active-id'], { tempRoot });
 
-      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(
+        spawnMock.mock.calls.some(
+          (call) =>
+            Array.isArray(call[1]) && (call[1] as string[]).includes('--delete')
+        )
+      ).toBe(false);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -628,6 +657,54 @@ describe('cleanupOrphanedWorktrees', () => {
       await cleanupOrphanedWorktrees('/repo', [], { tempRoot });
 
       expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('removes inactive remote temp branches left on the remote', async () => {
+    const gitArgs: string[][] = [];
+    const tempRoot = await mkdtemp(join(tmpdir(), 'wah-cleanup-root-'));
+    let callIndex = 0;
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (callIndex === 0) {
+        callIndex++;
+        return gitResult(
+          0,
+          ['worktree /repo', 'HEAD abc123', 'branch refs/heads/main'].join('\n')
+        )();
+      }
+      if (args[0] === 'remote') {
+        return gitResult(0, 'origin')();
+      }
+      if (args[0] === 'ls-remote') {
+        return gitResult(
+          0,
+          [
+            'abc\trefs/heads/wah-worker-orphan-id',
+            'def\trefs/heads/wah-merge-active-id',
+          ].join('\n')
+        )();
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      await cleanupOrphanedWorktrees('/repo', ['active-id'], { tempRoot });
+
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['remote'],
+          ['ls-remote', '--heads', 'origin', 'wah-worker-*', 'wah-merge-*'],
+          ['push', 'origin', '--delete', 'wah-worker-orphan-id'],
+        ])
+      );
+      expect(gitArgs).not.toEqual(
+        expect.arrayContaining([
+          ['push', 'origin', '--delete', 'wah-merge-active-id'],
+        ])
+      );
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

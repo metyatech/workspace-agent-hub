@@ -151,7 +151,7 @@ const MANAGER_WORKER_SYSTEM_PROMPT =
   'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
   'Do not stop at acknowledgement-only replies. ' +
   'Return concise user-facing progress/result text, but only after you have genuinely attempted the work. ' +
-  'Implement and verify the task yourself, but normally leave commit, push, release, and publish actions for the Manager review step after your work finishes. ' +
+  'Implement and verify the task yourself, but in isolated Manager worktrees do not commit, push, release, or publish; the Manager backend handles delivery after review. ' +
   'Write user-facing replies in plain, natural Japanese that reads like a capable coworker, not a tool log. ' +
   'Avoid internal AI/platform/process jargon unless the user explicitly asked for it or it is necessary to unblock them. ' +
   'Prefer ordinary task language, complete sentences, and direct explanations of what changed or what is still needed. ' +
@@ -174,7 +174,7 @@ const MANAGER_REVIEW_SYSTEM_PROMPT =
   'Treat the worker report as internal input only; your final reply must directly answer the latest user request in this work item. ' +
   'Do not frame the final reply as commentary on the worker unless the user explicitly asked for a review of the worker. ' +
   'Run the repo-standard verification needed for this task when necessary. ' +
-  'If the work is acceptable, own the in-scope delivery chain yourself: commit, push, and if this repository or package normally requires release or publish for completion and it applies to this task, continue through that release or publish path as well. ' +
+  'If the work is acceptable, leave it in the correct state for the Manager backend to deliver through the appropriate commit/merge/push/release path for this repository target. ' +
   'Keep the scope limited to this work item. Prefer the worker-reported changed files and declared write scopes when reviewing or staging changes, and do not include unrelated repository changes. ' +
   'If review fails or you still need human input, do not commit, push, release, or publish. ' +
   'Write the user-facing reply in plain, natural Japanese. ' +
@@ -1577,8 +1577,8 @@ export function buildManagerReviewPrompt(input: {
 
   const deliveryInstruction =
     input.worktreePath && input.requestedRunMode !== 'read-only'
-      ? 'Commit your verified changes in this worktree branch. If this repository normally requires release or publish for completion, prepare that release metadata in this branch now (for example version/changelog updates) so the Manager backend can finish the post-merge delivery chain. Do NOT push, release, or publish yourself. Do not return status "review" unless the branch is left fully committed and ready for the Manager backend to merge to the main branch, push, and run any required release/publish follow-through.'
-      : '';
+      ? 'This review is running inside an isolated worktree for an existing repository. Commit your verified changes in this temporary branch when needed, but do NOT push, release, or publish from this worktree. The Manager backend will merge to the integration worktree, push to the tracked base branch, and run any required release/publish follow-through. Do not return status "review" unless the branch is left fully committed and ready for that backend delivery chain.'
+      : 'If this review is for a direct-delivery target without an isolated worktree and the work is acceptable, you own the in-scope delivery chain yourself: commit, push, and continue through release or publish when it is required for completion.';
 
   const structuralSection =
     input.structuralWarnings && input.structuralWarnings.length > 0

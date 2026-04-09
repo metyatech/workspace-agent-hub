@@ -545,8 +545,15 @@ describe('manager backend codex integration', () => {
     expect(reviewPrompt).toContain(
       'workingDirectory: C:\\temp\\wah-wt-review\\packages\\manager'
     );
-    expect(reviewPrompt).toContain('commit, push');
-    expect(reviewPrompt).toContain('release or publish path as well');
+    expect(reviewPrompt).toContain(
+      'Commit your verified changes in this temporary branch when needed'
+    );
+    expect(reviewPrompt).toContain(
+      'do NOT push, release, or publish from this worktree'
+    );
+    expect(reviewPrompt).toContain(
+      'The Manager backend will merge to the integration worktree'
+    );
     expect(reviewPrompt).toContain('Do not return status "review"');
     expect(reviewPrompt).toContain(
       'Latest user request that the final reply must answer:'
@@ -1884,7 +1891,9 @@ describe('manager backend codex integration', () => {
       expect.stringContaining('npm run verify PASS')
     );
     expect(reviewProc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('commit, push')
+      expect.stringContaining(
+        'own the in-scope delivery chain yourself: commit, push'
+      )
     );
 
     completeCodexTurn(reviewProc, {

@@ -1447,17 +1447,37 @@ export async function removeWorktree(input: {
     console.error(
       `[manager-worktree] Failed to fully remove worktree directory: ${cleanupFailure}`
     );
-    throw new Error(
-      `Failed to fully remove worktree directory: ${cleanupFailure}`
-    );
   }
 
   // 5. Prune stale worktree references.
   await execGit(targetRepoRoot, ['worktree', 'prune']).catch(() => {});
+
+  // 6. Remove any leaked remote temp branch that should never survive
+  // cleanup of an isolated Manager worktree.
+  await deleteLeakedRemoteTempBranch({ targetRepoRoot, branchName }).catch(
+    () => {}
+  );
+
+  if (cleanupFailure) {
+    throw new Error(
+      `Failed to fully remove worktree directory: ${cleanupFailure}`
+    );
+  }
 }
 
 function isManagedTempWorktreeName(name: string): boolean {
   return name.startsWith('wah-wt-') || name.startsWith('wah-merge-');
+}
+
+function isManagedTempBranchName(name: string): boolean {
+  return name.startsWith('wah-worker-') || name.startsWith('wah-merge-');
+}
+
+function extractManagedAssignmentIdFromBranch(
+  branchName: string
+): string | null {
+  const match = branchName.match(/^wah-(?:worker|merge)-(.+)$/);
+  return match?.[1] ?? null;
 }
 
 function tempWorktreeBelongsToActiveAssignment(
@@ -1512,6 +1532,83 @@ async function cleanupUnregisteredTempWorktrees(input: {
       console.error(
         `[manager-worktree] Failed to remove orphaned temp worktree directory: ${cleanupFailure}`
       );
+    }
+  }
+}
+
+async function listGitRemotes(targetRepoRoot: string): Promise<string[]> {
+  const remotesResult = await execGit(targetRepoRoot, ['remote'], {
+    timeoutMs: 10_000,
+  }).catch(() => null);
+  if (!remotesResult || remotesResult.code !== 0) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      remotesResult.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+async function deleteLeakedRemoteTempBranch(input: {
+  targetRepoRoot: string;
+  branchName: string;
+}): Promise<void> {
+  if (!isManagedTempBranchName(input.branchName)) {
+    return;
+  }
+
+  const remotes = await listGitRemotes(input.targetRepoRoot);
+  for (const remoteName of remotes) {
+    await execGit(
+      input.targetRepoRoot,
+      ['push', remoteName, '--delete', input.branchName],
+      { timeoutMs: 15_000 }
+    ).catch(() => {});
+  }
+}
+
+async function cleanupInactiveRemoteTempBranches(input: {
+  targetRepoRoot: string;
+  activeAssignmentIds: string[];
+}): Promise<void> {
+  const remotes = await listGitRemotes(input.targetRepoRoot);
+  for (const remoteName of remotes) {
+    const remoteHeadsResult = await execGit(
+      input.targetRepoRoot,
+      ['ls-remote', '--heads', remoteName, 'wah-worker-*', 'wah-merge-*'],
+      { timeoutMs: 15_000 }
+    ).catch(() => null);
+    if (!remoteHeadsResult || remoteHeadsResult.code !== 0) {
+      continue;
+    }
+
+    const branchNames = [
+      ...new Set(
+        remoteHeadsResult.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => line.match(/refs\/heads\/(.+)$/)?.[1] ?? null)
+          .filter((name): name is string => Boolean(name))
+          .filter((name) => isManagedTempBranchName(name))
+      ),
+    ];
+
+    for (const branchName of branchNames) {
+      const assignmentId = extractManagedAssignmentIdFromBranch(branchName);
+      if (assignmentId && input.activeAssignmentIds.includes(assignmentId)) {
+        continue;
+      }
+      await execGit(
+        input.targetRepoRoot,
+        ['push', remoteName, '--delete', branchName],
+        { timeoutMs: 15_000 }
+      ).catch(() => {});
     }
   }
 }
@@ -1573,6 +1670,11 @@ export async function cleanupOrphanedWorktrees(
     registeredWorktreePaths,
     activeAssignmentIds,
     tempRoot: options?.tempRoot,
+  });
+
+  await cleanupInactiveRemoteTempBranches({
+    targetRepoRoot,
+    activeAssignmentIds,
   });
 }
 
