@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   spawnMock,
+  execFileMock,
   addMessageMock,
   createThreadMock,
   getThreadMock,
@@ -15,6 +16,7 @@ const {
   resolveThreadMock,
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
+  execFileMock: vi.fn(),
   addMessageMock: vi.fn(),
   createThreadMock: vi.fn(),
   getThreadMock: vi.fn(),
@@ -25,6 +27,7 @@ const {
 
 vi.mock('child_process', () => ({
   spawn: spawnMock,
+  execFile: execFileMock,
 }));
 
 vi.mock('@metyatech/thread-inbox', () => ({
@@ -253,6 +256,7 @@ let tempDir = '';
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
   spawnMock.mockReset();
+  execFileMock.mockReset();
   addMessageMock.mockReset();
   createThreadMock.mockReset();
   getThreadMock.mockReset();
@@ -278,6 +282,20 @@ beforeEach(async () => {
   listThreadsMock.mockResolvedValue([]);
   reopenThreadMock.mockResolvedValue(undefined);
   resolveThreadMock.mockResolvedValue(undefined);
+  execFileMock.mockImplementation(
+    (
+      _command: string,
+      _args: string[],
+      _options: object,
+      callback?: (error: Error | null) => void
+    ) => {
+      const proc = new EventEmitter();
+      process.nextTick(() => {
+        callback?.(null);
+      });
+      return proc;
+    }
+  );
   vi.mocked(createWorkerWorktree).mockReset();
   vi.mocked(createWorkerWorktree).mockResolvedValue({
     worktreePath: '',
@@ -326,6 +344,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
+  delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
   await rm(tempDir, {
     recursive: true,
@@ -3195,6 +3214,7 @@ describe('manager backend codex integration', () => {
     process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS =
       '50';
     process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS = '5000';
+    process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS = '5000';
 
     const workerProc = makeProc(8601);
     const reviewProc = makeProc(8602);
@@ -3239,6 +3259,103 @@ describe('manager backend codex integration', () => {
       'review done after stall'
     );
   }, 15000);
+
+  it('keeps waiting through quiet periods and only posts a notice before the hard timeout', async () => {
+    process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS = '50';
+    process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS = '5000';
+
+    const workerProc = makeProc(8611);
+    const reviewProc = makeProc(8612);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-quiet-turn', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(addMessageMock).not.toHaveBeenCalled();
+    const quietMeta = await readManagerThreadMeta(tempDir);
+    expect(
+      quietMeta['thread-quiet-turn']?.workerLiveLog?.some((entry) =>
+        entry.text.includes('has produced no output')
+      )
+    ).toBe(true);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-quiet-turn-worker',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'codex-thread-quiet-turn-manager',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('review done');
+  });
+
+  it('terminates a silent Codex turn only when the hard timeout is exceeded', async () => {
+    process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS = '5000';
+    process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS = '50';
+
+    const workerProc = makeProc(8621);
+    spawnMock.mockReturnValueOnce(workerProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-hard-timeout', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    await waitFor(() => addMessageMock.mock.calls.length === 1, 2000);
+
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-hard-timeout');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('exited with code 124');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'exceeded the total runtime limit'
+    );
+  });
+
+  it('logs worktree cleanup failures instead of swallowing them silently', async () => {
+    const cleanupError = new Error('cleanup blocked by lingering lock');
+    const consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const workerProc = makeProc(8631);
+    spawnMock.mockReturnValueOnce(workerProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-cleanup-warning',
+      branchName: 'wah-worker-assign_thread-cleanup-warning',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(removeWorktree).mockRejectedValueOnce(cleanupError);
+
+    try {
+      await sendToBuiltinManager(tempDir, 'thread-cleanup-warning', 'message');
+      await waitFor(() => spawnMock.mock.calls.length === 1);
+
+      workerProc.stderr.emit('data', Buffer.from('worker failed hard'));
+      workerProc.emit('close', 1);
+
+      await waitFor(async () => {
+        const queue = await readQueue(tempDir);
+        const session = await readSession(tempDir);
+        return queue.length === 0 && session.status === 'idle';
+      });
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed turn cleanup for assign_q_')
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 
   it('consumes the queue entry even if writing a successful reply back to thread storage fails', async () => {
     const workerProc = makeProc(8301);

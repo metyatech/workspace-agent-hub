@@ -379,6 +379,13 @@ function codexIdleTimeoutMs(): number {
   );
 }
 
+function codexTurnTimeoutMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS',
+    60 * 60_000
+  );
+}
+
 function codexStructuredReplyCloseGraceMs(): number {
   return parseEnvDurationMs(
     'WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS',
@@ -1184,13 +1191,12 @@ async function reconcileActiveAssignments(
   );
   for (const assignment of droppedAssignments) {
     // Clean up worktree for dropped assignment.
-    if (assignment.worktreePath && assignment.worktreeBranch) {
-      await removeWorktree({
-        targetRepoRoot: assignment.targetRepoRoot ?? dir,
-        worktreePath: assignment.worktreePath,
-        branchName: assignment.worktreeBranch,
-      }).catch(() => {});
-    }
+    await cleanupWorktreeBestEffort({
+      targetRepoRoot: assignment.targetRepoRoot ?? dir,
+      worktreePath: assignment.worktreePath,
+      branchName: assignment.worktreeBranch,
+      context: `Dropped assignment cleanup for ${assignment.id}`,
+    });
     if (survivingThreadIds.has(assignment.threadId)) {
       continue;
     }
@@ -2718,11 +2724,13 @@ async function runCliTurn(input: {
   let latestProgressSessionId: string | null = input.sessionId;
   let sawStructuredReply = false;
   let progressChain = Promise.resolve();
-  let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+  let quietNoticeTimeout: ReturnType<typeof setTimeout> | null = null;
+  let turnTimeout: ReturnType<typeof setTimeout> | null = null;
   let structuredReplyTimeout: ReturnType<typeof setTimeout> | null = null;
   let forcedExitResult: { code: number | null; stderrSuffix: string } | null =
     null;
   const idleTimeoutMs = codexIdleTimeoutMs();
+  const turnTimeoutMs = codexTurnTimeoutMs();
   const structuredReplyCloseGraceMs = codexStructuredReplyCloseGraceMs();
 
   let resolveExitCode!: (code: number | null) => void;
@@ -2735,9 +2743,13 @@ async function runCliTurn(input: {
   );
 
   const clearStallTimers = (): void => {
-    if (idleTimeout !== null) {
-      clearTimeout(idleTimeout);
-      idleTimeout = null;
+    if (quietNoticeTimeout !== null) {
+      clearTimeout(quietNoticeTimeout);
+      quietNoticeTimeout = null;
+    }
+    if (turnTimeout !== null) {
+      clearTimeout(turnTimeout);
+      turnTimeout = null;
     }
     if (structuredReplyTimeout !== null) {
       clearTimeout(structuredReplyTimeout);
@@ -2761,16 +2773,37 @@ async function runCliTurn(input: {
     resolveExitCode(code);
   };
 
-  const armStallTimers = (): void => {
-    clearStallTimers();
-    idleTimeout = setTimeout(() => {
-      void forceCompletion(
-        124,
-        `[Manager error] ${input.runtimeLabel} produced no progress for ${Math.round(
-          idleTimeoutMs / 1000
-        )} seconds and was terminated as stalled.`
-      );
+  const armQuietNoticeTimer = (): void => {
+    if (quietNoticeTimeout !== null) {
+      clearTimeout(quietNoticeTimeout);
+      quietNoticeTimeout = null;
+    }
+    quietNoticeTimeout = setTimeout(() => {
+      const quietNotice = `[Manager notice] ${input.runtimeLabel} has produced no output for ${Math.round(
+        idleTimeoutMs / 1000
+      )} seconds, but the process is still running. Continuing to wait.`;
+      enqueueProgress({
+        sessionId: latestProgressSessionId,
+        latestText: quietNotice,
+        liveEntries: [
+          {
+            at: new Date().toISOString(),
+            text: quietNotice,
+            kind: 'status',
+          },
+        ],
+        structuredReply: null,
+      });
+      armQuietNoticeTimer();
     }, idleTimeoutMs);
+  };
+
+  const armTurnTimers = (): void => {
+    armQuietNoticeTimer();
+    if (structuredReplyTimeout !== null) {
+      clearTimeout(structuredReplyTimeout);
+      structuredReplyTimeout = null;
+    }
 
     if (sawStructuredReply) {
       structuredReplyTimeout = setTimeout(() => {
@@ -2782,6 +2815,20 @@ async function runCliTurn(input: {
         );
       }, structuredReplyCloseGraceMs);
     }
+  };
+
+  const armHardTurnTimeout = (): void => {
+    if (turnTimeout !== null) {
+      clearTimeout(turnTimeout);
+    }
+    turnTimeout = setTimeout(() => {
+      void forceCompletion(
+        124,
+        `[Manager error] ${input.runtimeLabel} exceeded the total runtime limit of ${Math.round(
+          turnTimeoutMs / 1000
+        )} seconds and was terminated.`
+      );
+    }, turnTimeoutMs);
   };
 
   const enqueueProgress = (state: CodexProgressState): void => {
@@ -2813,7 +2860,7 @@ async function runCliTurn(input: {
         structuredReply: progress.structuredReply,
       });
     }
-    armStallTimers();
+    armTurnTimers();
   };
 
   const handleStderrLine = (line: string): void => {
@@ -2833,7 +2880,7 @@ async function runCliTurn(input: {
       ],
       structuredReply: null,
     });
-    armStallTimers();
+    armTurnTimers();
   };
 
   proc.stdout?.on('data', (chunk: Buffer) => {
@@ -2859,7 +2906,7 @@ async function runCliTurn(input: {
     } catch {
       /* keep waiting for the rest of the line */
     }
-    armStallTimers();
+    armTurnTimers();
   });
   proc.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
@@ -2873,7 +2920,7 @@ async function runCliTurn(input: {
       handleStderrLine(line);
     }
 
-    armStallTimers();
+    armTurnTimers();
   });
   proc.stdin?.on('error', () => {
     /* ignore prompt pipe teardown races */
@@ -2893,7 +2940,8 @@ async function runCliTurn(input: {
   });
 
   await input.onSpawn?.(proc.pid ?? null);
-  armStallTimers();
+  armHardTurnTimeout();
+  armTurnTimers();
 
   const exitCode = await exitCodePromise;
 
@@ -3411,6 +3459,30 @@ async function clearWorkerLiveOutput(
   });
 }
 
+async function cleanupWorktreeBestEffort(input: {
+  targetRepoRoot: string;
+  worktreePath: string | null | undefined;
+  branchName: string | null | undefined;
+  context: string;
+}): Promise<string | null> {
+  if (!input.worktreePath || !input.branchName) {
+    return null;
+  }
+
+  try {
+    await removeWorktree({
+      targetRepoRoot: input.targetRepoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+    });
+    return null;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[manager-backend] ${input.context}: ${detail}`);
+    return detail;
+  }
+}
+
 async function reserveAssignment(input: {
   dir: string;
   assignment: ManagerActiveAssignment;
@@ -3795,13 +3867,12 @@ async function stopSupersededAssignments(input: {
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
     await removeAssignment(input.dir, assignment.id);
-    if (assignment.worktreePath && assignment.worktreeBranch) {
-      await removeWorktree({
-        targetRepoRoot: assignment.targetRepoRoot ?? input.dir,
-        worktreePath: assignment.worktreePath,
-        branchName: assignment.worktreeBranch,
-      }).catch(() => {});
-    }
+    await cleanupWorktreeBestEffort({
+      targetRepoRoot: assignment.targetRepoRoot ?? input.dir,
+      worktreePath: assignment.worktreePath,
+      branchName: assignment.worktreeBranch,
+      context: `Superseded assignment cleanup for ${assignment.id}`,
+    });
     await clearWorkerLiveOutput(
       input.dir,
       assignment.threadId,
@@ -4263,13 +4334,12 @@ async function runQueuedAssignment(input: {
             }
           );
           await removeAssignment(dir, assignment.id);
-          if (assignment.worktreePath && assignment.worktreeBranch) {
-            await removeWorktree({
-              targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-              worktreePath: assignment.worktreePath,
-              branchName: assignment.worktreeBranch,
-            }).catch(() => {});
-          }
+          await cleanupWorktreeBestEffort({
+            targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+            context: `Escalated recovery cleanup for ${assignment.id}`,
+          });
           void processNextQueued(dir, resolvedDir);
           return;
         }
@@ -4302,13 +4372,12 @@ async function runQueuedAssignment(input: {
             }
           );
           await removeAssignment(dir, assignment.id);
-          if (assignment.worktreePath && assignment.worktreeBranch) {
-            await removeWorktree({
-              targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-              worktreePath: assignment.worktreePath,
-              branchName: assignment.worktreeBranch,
-            }).catch(() => {});
-          }
+          await cleanupWorktreeBestEffort({
+            targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+            context: `Restart recovery cleanup for ${assignment.id}`,
+          });
           // Queue entries are NOT removed — they will be re-dispatched
           await writeWorkerSessionId(
             resolvedDir,
@@ -4505,13 +4574,12 @@ async function runQueuedAssignment(input: {
           }
         );
         await removeAssignment(dir, assignment.id);
-        if (assignment.worktreePath && assignment.worktreeBranch) {
-          await removeWorktree({
-            targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-            worktreePath: assignment.worktreePath,
-            branchName: assignment.worktreeBranch,
-          }).catch(() => {});
-        }
+        await cleanupWorktreeBestEffort({
+          targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+          worktreePath: assignment.worktreePath,
+          branchName: assignment.worktreeBranch,
+          context: `Exhausted recovery cleanup for ${assignment.id}`,
+        });
         void processNextQueued(dir, resolvedDir);
         return;
       }
@@ -4583,11 +4651,12 @@ async function runQueuedAssignment(input: {
           } catch {
             /* thread may have been deleted */
           }
-          await removeWorktree({
+          await cleanupWorktreeBestEffort({
             targetRepoRoot,
             worktreePath: assignment.worktreePath,
             branchName: assignment.worktreeBranch,
-          }).catch(() => {});
+            context: `Integration preparation cleanup for ${assignment.id}`,
+          });
           await removeAssignment(dir, assignment.id);
           void processNextQueued(dir, resolvedDir);
           return;
@@ -4642,11 +4711,12 @@ async function runQueuedAssignment(input: {
             } catch {
               /* thread may have been deleted */
             }
-            await removeWorktree({
+            await cleanupWorktreeBestEffort({
               targetRepoRoot,
               worktreePath: assignment.worktreePath,
               branchName: assignment.worktreeBranch,
-            }).catch(() => {});
+              context: `Merge failure cleanup for ${assignment.id}`,
+            });
             await removeAssignment(dir, assignment.id);
             void processNextQueued(dir, resolvedDir);
             return;
@@ -4676,11 +4746,12 @@ async function runQueuedAssignment(input: {
             : pushResult.detail;
 
           // Clean up the worker authoring worktree once its commits are merged.
-          await removeWorktree({
+          await cleanupWorktreeBestEffort({
             targetRepoRoot,
             worktreePath: assignment.worktreePath,
             branchName: assignment.worktreeBranch,
-          }).catch(() => {});
+            context: `Post-merge worker cleanup for ${assignment.id}`,
+          });
 
           if (pushFailureDetail) {
             const errMsg = `[Manager] コミットは反映されましたが、リモートへの push に失敗しました: ${pushFailureDetail}`;
@@ -4774,13 +4845,12 @@ async function runQueuedAssignment(input: {
             }
           }
         } finally {
-          if (integrationWorktree) {
-            await removeWorktree({
-              targetRepoRoot,
-              worktreePath: integrationWorktree.worktreePath,
-              branchName: integrationWorktree.branchName,
-            }).catch(() => {});
-          }
+          await cleanupWorktreeBestEffort({
+            targetRepoRoot,
+            worktreePath: integrationWorktree?.worktreePath,
+            branchName: integrationWorktree?.branchName,
+            context: `Integration worktree cleanup for ${assignment.id}`,
+          });
         }
       }
 
@@ -4861,13 +4931,12 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
-    if (assignment.worktreePath && assignment.worktreeBranch) {
-      await removeWorktree({
-        targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-        worktreePath: assignment.worktreePath,
-        branchName: assignment.worktreeBranch,
-      }).catch(() => {});
-    }
+    await cleanupWorktreeBestEffort({
+      targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+      worktreePath: assignment.worktreePath,
+      branchName: assignment.worktreeBranch,
+      context: `Failed turn cleanup for ${assignment.id}`,
+    });
     void processNextQueued(dir, resolvedDir);
   } catch (error) {
     const stillTracked = (await readSession(dir)).activeAssignments.some(
@@ -4905,13 +4974,12 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
-    if (assignment.worktreePath && assignment.worktreeBranch) {
-      await removeWorktree({
-        targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-        worktreePath: assignment.worktreePath,
-        branchName: assignment.worktreeBranch,
-      }).catch(() => {});
-    }
+    await cleanupWorktreeBestEffort({
+      targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+      worktreePath: assignment.worktreePath,
+      branchName: assignment.worktreeBranch,
+      context: `Unhandled runQueuedAssignment failure cleanup for ${assignment.id}`,
+    });
     void processNextQueued(dir, resolvedDir);
   }
 }

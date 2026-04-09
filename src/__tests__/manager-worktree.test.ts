@@ -473,6 +473,7 @@ describe('removeWorktree', () => {
 
 describe('cleanupOrphanedWorktrees', () => {
   it('removes worktrees not in active assignments', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'wah-cleanup-root-'));
     const porcelain = [
       'worktree /repo',
       'HEAD abc123',
@@ -496,13 +497,18 @@ describe('cleanupOrphanedWorktrees', () => {
       return gitResult(0, '')();
     });
 
-    await cleanupOrphanedWorktrees('/repo', ['active-id']);
+    try {
+      await cleanupOrphanedWorktrees('/repo', ['active-id'], { tempRoot });
 
-    // First call is worktree list, subsequent calls are for removing orphan
-    expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+      // First call is worktree list, subsequent calls are for removing orphan
+      expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('does nothing when all worktrees are active', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'wah-cleanup-root-'));
     const porcelain = [
       'worktree /repo',
       'HEAD abc123',
@@ -515,12 +521,17 @@ describe('cleanupOrphanedWorktrees', () => {
 
     spawnMock.mockImplementation(gitResult(0, porcelain));
 
-    await cleanupOrphanedWorktrees('/repo', ['active-id']);
+    try {
+      await cleanupOrphanedWorktrees('/repo', ['active-id'], { tempRoot });
 
-    expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('removes orphaned merge-lane worktrees too', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'wah-cleanup-root-'));
     const porcelain = [
       'worktree /repo',
       'HEAD abc123',
@@ -540,16 +551,21 @@ describe('cleanupOrphanedWorktrees', () => {
       return gitResult(0, '')();
     });
 
-    await cleanupOrphanedWorktrees('/repo', []);
+    try {
+      await cleanupOrphanedWorktrees('/repo', [], { tempRoot });
 
-    expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+      expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('removes unregistered temp worktree directories that are no longer active', async () => {
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const orphanWorkerDir = join(tmpdir(), `wah-wt-orphan-${nonce}`);
-    const orphanMergeDir = join(tmpdir(), `wah-merge-orphan-${nonce}`);
-    const activeDir = join(tmpdir(), `wah-wt-active-id-${nonce}`);
+    const tempRoot = await mkdtemp(join(tmpdir(), 'wah-cleanup-root-'));
+    const orphanWorkerDir = join(tempRoot, `wah-wt-orphan-${nonce}`);
+    const orphanMergeDir = join(tempRoot, `wah-merge-orphan-${nonce}`);
+    const activeDir = join(tempRoot, `wah-wt-active-id-${nonce}`);
 
     await rm(orphanWorkerDir, { recursive: true, force: true });
     await rm(orphanMergeDir, { recursive: true, force: true });
@@ -570,12 +586,13 @@ describe('cleanupOrphanedWorktrees', () => {
     spawnMock.mockImplementation(gitResult(0, porcelain));
 
     try {
-      await cleanupOrphanedWorktrees('/repo', ['active-id']);
+      await cleanupOrphanedWorktrees('/repo', ['active-id'], { tempRoot });
 
       expect(existsSync(orphanWorkerDir)).toBe(false);
       expect(existsSync(orphanMergeDir)).toBe(false);
       expect(existsSync(activeDir)).toBe(true);
     } finally {
+      await rm(tempRoot, { recursive: true, force: true });
       await rm(orphanWorkerDir, { recursive: true, force: true });
       await rm(orphanMergeDir, { recursive: true, force: true });
       await rm(activeDir, { recursive: true, force: true });

@@ -14,10 +14,9 @@ import {
   readdirSync,
   symlinkSync,
   unlinkSync,
-  rmSync,
   type Dirent,
 } from 'fs';
-import { mkdir, readFile, readdir } from 'fs/promises';
+import { mkdir, readFile, readdir, rm as rmAsync } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
 
@@ -470,28 +469,54 @@ function describeBlockingWorktreePath(worktreePath: string): string {
   return `${worktreePath} still exists after cleanup.${suffix}`;
 }
 
-function removeWorktreeDirectory(worktreePath: string): string | null {
+const WORKTREE_DIRECTORY_CLEANUP_ATTEMPTS = 5;
+const WORKTREE_DIRECTORY_CLEANUP_RETRY_MS = 200;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeWorktreeDirectory(
+  worktreePath: string
+): Promise<string | null> {
   if (!existsSync(worktreePath)) {
     return null;
   }
 
-  const nmJunction = join(worktreePath, 'node_modules');
-  try {
-    if (existsSync(nmJunction)) {
-      unlinkSync(nmJunction);
+  for (
+    let attempt = 0;
+    attempt < WORKTREE_DIRECTORY_CLEANUP_ATTEMPTS;
+    attempt++
+  ) {
+    const nmJunction = join(worktreePath, 'node_modules');
+    try {
+      if (existsSync(nmJunction)) {
+        unlinkSync(nmJunction);
+      }
+    } catch {
+      /* best-effort */
     }
-  } catch {
-    /* best-effort */
-  }
-  try {
-    rmSync(worktreePath, { recursive: true, force: true });
-  } catch {
-    /* best-effort */
+
+    try {
+      await rmAsync(worktreePath, {
+        recursive: true,
+        force: true,
+        maxRetries: 0,
+      });
+    } catch {
+      /* best-effort */
+    }
+
+    if (!existsSync(worktreePath)) {
+      return null;
+    }
+
+    if (attempt < WORKTREE_DIRECTORY_CLEANUP_ATTEMPTS - 1) {
+      await wait(WORKTREE_DIRECTORY_CLEANUP_RETRY_MS * (attempt + 1));
+    }
   }
 
-  return existsSync(worktreePath)
-    ? describeBlockingWorktreePath(worktreePath)
-    : null;
+  return describeBlockingWorktreePath(worktreePath);
 }
 
 function enrichWorktreeCreateError(
@@ -1287,8 +1312,11 @@ export async function removeWorktree(input: {
   await execGit(targetRepoRoot, ['branch', '-D', branchName]).catch(() => {});
 
   // 3. Manual cleanup if the directory still exists.
-  const cleanupFailure = removeWorktreeDirectory(worktreePath);
+  const cleanupFailure = await removeWorktreeDirectory(worktreePath);
   if (cleanupFailure) {
+    console.error(
+      `[manager-worktree] Failed to fully remove worktree directory: ${cleanupFailure}`
+    );
     throw new Error(
       `Failed to fully remove worktree directory: ${cleanupFailure}`
     );
@@ -1320,8 +1348,9 @@ function tempWorktreeBelongsToActiveAssignment(
 async function cleanupUnregisteredTempWorktrees(input: {
   registeredWorktreePaths: Set<string>;
   activeAssignmentIds: string[];
+  tempRoot?: string;
 }): Promise<void> {
-  const tempRoot = tmpdir();
+  const tempRoot = input.tempRoot ?? tmpdir();
   let tempEntries: Dirent[];
   try {
     tempEntries = await readdir(tempRoot, { withFileTypes: true });
@@ -1348,7 +1377,7 @@ async function cleanupUnregisteredTempWorktrees(input: {
       continue;
     }
 
-    const cleanupFailure = removeWorktreeDirectory(candidatePath);
+    const cleanupFailure = await removeWorktreeDirectory(candidatePath);
     if (cleanupFailure) {
       console.error(
         `[manager-worktree] Failed to remove orphaned temp worktree directory: ${cleanupFailure}`
@@ -1368,7 +1397,10 @@ async function cleanupUnregisteredTempWorktrees(input: {
  */
 export async function cleanupOrphanedWorktrees(
   targetRepoRoot: string,
-  activeAssignmentIds: string[]
+  activeAssignmentIds: string[],
+  options?: {
+    tempRoot?: string;
+  }
 ): Promise<void> {
   const result = await execGit(targetRepoRoot, [
     'worktree',
@@ -1410,6 +1442,7 @@ export async function cleanupOrphanedWorktrees(
   await cleanupUnregisteredTempWorktrees({
     registeredWorktreePaths,
     activeAssignmentIds,
+    tempRoot: options?.tempRoot,
   });
 }
 
@@ -1431,7 +1464,7 @@ async function cleanupStaleBranch(
       worktreePath,
       '--force',
     ]).catch(() => {});
-    const cleanupFailure = removeWorktreeDirectory(worktreePath);
+    const cleanupFailure = await removeWorktreeDirectory(worktreePath);
     if (cleanupFailure) {
       throw new Error(
         `Failed to clear stale worktree path before recreation: ${cleanupFailure}`
