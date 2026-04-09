@@ -175,6 +175,30 @@ function Stop-TestLaneProcesses {
     }
 }
 
+function Stop-TestTmuxSocketServers {
+    param(
+        [string[]]$SocketNames = @()
+    )
+
+    $resolvedSockets = @(
+        $SocketNames |
+            Where-Object { $_ -and $_.Trim() } |
+            ForEach-Object { $_.Trim() } |
+            Select-Object -Unique
+    )
+    if ($resolvedSockets.Count -eq 0) {
+        return
+    }
+
+    $tmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
+    foreach ($socketName in $resolvedSockets) {
+        try {
+            [void](& $tmuxScriptPath -Action kill-server -Distro 'Ubuntu' -SocketName $socketName)
+        } catch {
+        }
+    }
+}
+
 Push-Location $repoRoot
 try {
     if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
@@ -220,12 +244,20 @@ try {
     }
 
     $laneProcesses = @()
+    $laneIsolationSockets = @()
     try {
         $wslFoundationIsolation = New-TestIsolationState -Label 'wsl-foundation'
         $mobilePrimaryIsolation = New-TestIsolationState -Label 'mobile-primary'
         $sessionBridgeIsolation = New-TestIsolationState -Label 'session-bridge'
         $npmUnitIsolation = New-TestIsolationState -Label 'npm-unit'
         $npmE2eIsolation = New-TestIsolationState -Label 'npm-e2e'
+        $laneIsolationSockets = @(
+            $wslFoundationIsolation.TmuxSocketName,
+            $mobilePrimaryIsolation.TmuxSocketName,
+            $sessionBridgeIsolation.TmuxSocketName,
+            $npmUnitIsolation.TmuxSocketName,
+            $npmE2eIsolation.TmuxSocketName
+        )
         $laneProcesses = @(
             (Start-TestLaneProcess `
                 -Name 'wsl-foundation-lane' `
@@ -294,6 +326,7 @@ try {
         Wait-TestLaneProcesses -ProcessInfos $laneProcesses
     } finally {
         Stop-TestLaneProcesses -ProcessInfos $laneProcesses
+        Stop-TestTmuxSocketServers -SocketNames $laneIsolationSockets
     }
 
 $runAndroidMobileE2E = ($env:WORKSPACE_AGENT_HUB_RUN_ANDROID_MOBILE_E2E -eq '1')
@@ -377,6 +410,9 @@ $urls = @(
         }
     }
 } finally {
+    Stop-TestTmuxSocketServers -SocketNames @(
+        $testTmuxSocketName
+    )
     foreach ($entry in @(
             @{ Name = 'AI_AGENT_SESSION_CATALOG_PATH'; Value = $previousSessionCatalogPath },
             @{ Name = 'AI_AGENT_SESSION_LIVE_DIR_PATH'; Value = $previousSessionLiveDirPath },

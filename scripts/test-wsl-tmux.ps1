@@ -323,6 +323,17 @@ try {
         throw 'Expected the isolated tmux socket to be empty after kill.'
     }
 
+    [void](Invoke-TmuxScript -Arguments @(
+        '-Action', 'kill-server',
+        '-Distro', 'Ubuntu',
+        '-SocketName', $socketName
+    ))
+
+    [void](& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' list-sessions >/dev/null 2>&1")
+    if ($LASTEXITCODE -eq 0) {
+        throw 'Expected kill-server to remove the isolated tmux server entirely.'
+    }
+
     Write-Output 'PASS'
 } finally {
     if (Test-Path -Path $liveTranscriptPath) {

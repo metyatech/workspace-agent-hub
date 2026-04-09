@@ -174,6 +174,33 @@ async function execCommand(
   });
 }
 
+async function execWsl(
+  args: string[],
+  options?: { timeoutMs?: number }
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('wsl.exe', args, {
+      env: createSpawnEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: options?.timeoutMs ?? 30_000,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      resolve({ stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code });
+    });
+  });
+}
+
 function summarizeCommandFailure(
   label: string,
   result: { stdout: string; stderr: string; code: number | null }
@@ -183,6 +210,101 @@ function summarizeCommandFailure(
     result.stdout ||
     `${label} exited with code ${result.code ?? '?'}.`;
   return `${label} failed: ${detail}`;
+}
+
+function toBashSingleQuotedLiteral(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function isPathWithinWslWorktree(
+  panePath: string,
+  worktreePath: string
+): boolean {
+  return panePath === worktreePath || panePath.startsWith(`${worktreePath}/`);
+}
+
+async function releaseTaskOwnedWslTmuxLocks(
+  worktreePath: string
+): Promise<void> {
+  if (process.platform !== 'win32' || !existsSync(worktreePath)) {
+    return;
+  }
+
+  const distro = process.env.WORKSPACE_AGENT_HUB_WSL_DISTRO?.trim() || 'Ubuntu';
+  const wslPathResult = await execWsl(
+    [
+      '-d',
+      distro,
+      '--',
+      'wslpath',
+      '-a',
+      '-u',
+      worktreePath.replace(/\\/g, '/'),
+    ],
+    { timeoutMs: 15_000 }
+  ).catch(() => null);
+  const targetWslPath = wslPathResult?.stdout.trim();
+  if (!targetWslPath || wslPathResult?.code !== 0) {
+    return;
+  }
+
+  const socketListResult = await execWsl(
+    [
+      '-d',
+      distro,
+      '--',
+      'bash',
+      '-lc',
+      "find /tmp -maxdepth 2 -type s -path '/tmp/tmux-*/*' -printf '%f\\n' 2>/dev/null || true",
+    ],
+    { timeoutMs: 15_000 }
+  ).catch(() => null);
+  if (!socketListResult || socketListResult.code !== 0) {
+    return;
+  }
+
+  const socketNames = [
+    ...new Set(
+      socketListResult.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(
+          (line) => line.length > 0 && line.startsWith('workspace-agent-hub-')
+        )
+    ),
+  ];
+
+  for (const socketName of socketNames) {
+    const paneListResult = await execWsl(
+      [
+        '-d',
+        distro,
+        '--',
+        'bash',
+        '-lc',
+        `tmux -L ${toBashSingleQuotedLiteral(socketName)} list-panes -a -F '#{pane_current_path}' 2>/dev/null || true`,
+      ],
+      { timeoutMs: 15_000 }
+    ).catch(() => null);
+    if (!paneListResult || paneListResult.code !== 0) {
+      continue;
+    }
+
+    const holdsWorktree = paneListResult.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .some((panePath) => isPathWithinWslWorktree(panePath, targetWslPath));
+    if (!holdsWorktree) {
+      continue;
+    }
+
+    await execWsl(
+      ['-d', distro, '--', 'tmux', '-L', socketName, 'kill-server'],
+      { timeoutMs: 15_000 }
+    ).catch(() => {});
+    await wait(WORKTREE_DIRECTORY_CLEANUP_RETRY_MS);
+  }
 }
 
 function normalizeGitHubRepoSlug(
@@ -1311,8 +1433,16 @@ export async function removeWorktree(input: {
   // 2. Delete temporary branch (may already be gone).
   await execGit(targetRepoRoot, ['branch', '-D', branchName]).catch(() => {});
 
-  // 3. Manual cleanup if the directory still exists.
-  const cleanupFailure = await removeWorktreeDirectory(worktreePath);
+  // 3. Best-effort release of leaked task-owned WSL/tmux locks before
+  // deleting the temp directory on Windows.
+  await releaseTaskOwnedWslTmuxLocks(worktreePath).catch(() => {});
+
+  // 4. Manual cleanup if the directory still exists.
+  let cleanupFailure = await removeWorktreeDirectory(worktreePath);
+  if (cleanupFailure) {
+    await releaseTaskOwnedWslTmuxLocks(worktreePath).catch(() => {});
+    cleanupFailure = await removeWorktreeDirectory(worktreePath);
+  }
   if (cleanupFailure) {
     console.error(
       `[manager-worktree] Failed to fully remove worktree directory: ${cleanupFailure}`
@@ -1322,7 +1452,7 @@ export async function removeWorktree(input: {
     );
   }
 
-  // 4. Prune stale worktree references.
+  // 5. Prune stale worktree references.
   await execGit(targetRepoRoot, ['worktree', 'prune']).catch(() => {});
 }
 

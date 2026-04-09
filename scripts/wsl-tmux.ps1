@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('ensure', 'attach', 'attach-hidden', 'ensure-live-updates', 'list', 'exists', 'kill')]
+    [ValidateSet('ensure', 'attach', 'attach-hidden', 'ensure-live-updates', 'list', 'exists', 'kill', 'kill-server')]
     [string]$Action = 'ensure',
 
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
@@ -482,6 +482,19 @@ if ($Action -eq 'list') {
         }
     } else {
         $sorted
+    }
+    exit 0
+}
+
+if ($Action -eq 'kill-server') {
+    $killServerExitCode = Invoke-WslCommand -Arguments (Get-TmuxCommandArguments -TmuxArguments @(
+        'kill-server'
+    )) -AllowNonZeroExit
+
+    if ($killServerExitCode -eq 0) {
+        Write-Output "Killed tmux server for socket '$SocketName' in distro '$Distro'."
+    } else {
+        Write-Output "tmux server for socket '$SocketName' was already absent in distro '$Distro'."
     }
     exit 0
 }

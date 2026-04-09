@@ -469,6 +469,79 @@ describe('removeWorktree', () => {
     expect(gitArgs.some((a) => a.includes('-D'))).toBe(true);
     expect(gitArgs.some((a) => a.includes('prune'))).toBe(true);
   });
+
+  it('releases task-owned WSL tmux sockets before deleting a Windows worktree directory', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const worktreePath = await mkdtemp(join(tmpdir(), 'wah-remove-lock-'));
+    const wslPath =
+      '/mnt/c/Users/Origin/AppData/Local/Temp/wah-remove-lock-test';
+    const childCalls: Array<{ cmd: string; args: string[] }> = [];
+
+    spawnMock.mockImplementation((cmd: string, args: string[]) => {
+      childCalls.push({ cmd, args });
+      if (cmd === 'git') {
+        return gitResult(0, '')();
+      }
+      if (cmd === 'wsl.exe') {
+        if (args.includes('wslpath')) {
+          return gitResult(0, wslPath)();
+        }
+        const finalArg = args[args.length - 1] ?? '';
+        if (finalArg.includes('find /tmp -maxdepth 2 -type s')) {
+          return gitResult(
+            0,
+            ['workspace-agent-hub-npm-e2e-deadbeef', 'unrelated-socket'].join(
+              '\n'
+            )
+          )();
+        }
+        if (finalArg.includes('list-panes -a -F')) {
+          return gitResult(0, [wslPath, '/home/tester'].join('\n'))();
+        }
+        if (args.includes('kill-server')) {
+          return gitResult(0, '')();
+        }
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      await removeWorktree({
+        targetRepoRoot: 'D:\\repo',
+        worktreePath,
+        branchName: 'wah-worker-locked',
+      });
+
+      expect(existsSync(worktreePath)).toBe(false);
+      expect(
+        childCalls.some(
+          ({ cmd, args }) => cmd === 'wsl.exe' && args.includes('wslpath')
+        )
+      ).toBe(true);
+      expect(
+        childCalls.some(
+          ({ cmd, args }) =>
+            cmd === 'wsl.exe' &&
+            (args[args.length - 1] ?? '').includes(
+              'find /tmp -maxdepth 2 -type s'
+            )
+        )
+      ).toBe(true);
+      expect(
+        childCalls.some(
+          ({ cmd, args }) =>
+            cmd === 'wsl.exe' &&
+            args.includes('kill-server') &&
+            args.includes('workspace-agent-hub-npm-e2e-deadbeef')
+        )
+      ).toBe(true);
+    } finally {
+      await rm(worktreePath, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('cleanupOrphanedWorktrees', () => {
