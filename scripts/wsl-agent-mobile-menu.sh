@@ -177,7 +177,9 @@ if (existingIndex >= 0) {
   });
 }
 
-fs.writeFileSync(catalogPath, `${JSON.stringify(entries, null, 2)}\n`);
+const tempPath = `${catalogPath}.${process.pid}.${Date.now()}.tmp`;
+fs.writeFileSync(tempPath, `${JSON.stringify(entries, null, 2)}\n`);
+fs.renameSync(tempPath, catalogPath);
 NODE
 }
 
@@ -248,7 +250,9 @@ if (existingIndex >= 0) {
   });
 }
 
-fs.writeFileSync(catalogPath, `${JSON.stringify(entries, null, 2)}\n`);
+const tempPath = `${catalogPath}.${process.pid}.${Date.now()}.tmp`;
+fs.writeFileSync(tempPath, `${JSON.stringify(entries, null, 2)}\n`);
+fs.renameSync(tempPath, catalogPath);
 NODE
 }
 
@@ -326,7 +330,9 @@ if (existingIndex >= 0) {
   entries[entries.length - 1] = entry;
 }
 
-fs.writeFileSync(catalogPath, `${JSON.stringify(entries, null, 2)}\n`);
+const tempPath = `${catalogPath}.${process.pid}.${Date.now()}.tmp`;
+fs.writeFileSync(tempPath, `${JSON.stringify(entries, null, 2)}\n`);
+fs.renameSync(tempPath, catalogPath);
 NODE
 }
 
@@ -354,7 +360,9 @@ try {
 }
 
 const filtered = entries.filter((entry) => String(entry.session_name) !== sessionName);
-fs.writeFileSync(catalogPath, `${JSON.stringify(filtered, null, 2)}\n`);
+const tempPath = `${catalogPath}.${process.pid}.${Date.now()}.tmp`;
+fs.writeFileSync(tempPath, `${JSON.stringify(filtered, null, 2)}\n`);
+fs.renameSync(tempPath, catalogPath);
 NODE
 }
 

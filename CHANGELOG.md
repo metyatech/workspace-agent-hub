@@ -18,6 +18,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Hardened cross-process session-catalog updates so both the PowerShell launcher
+  and the WSL mobile menu now write atomically, and added verify coverage for
+  transient partial-catalog recovery so pre-commit and CI catch the same race
+  before merge
 - Fixed the native Manager reply bar so sending from an open work-item
   conversation now queues that reply back into the same work item directly
   instead of re-routing it through another task by mistake
