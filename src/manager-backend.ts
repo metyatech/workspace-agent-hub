@@ -25,11 +25,12 @@ import {
   execFile as execFileCb,
 } from 'child_process';
 import { readFile, writeFile, appendFile } from 'fs/promises';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import {
   basename,
   dirname,
+  isAbsolute,
   join,
   relative,
   resolve as resolvePath,
@@ -211,6 +212,7 @@ export interface ManagerDispatchPayload {
   targetKind?: ManagerTargetKind | null;
   repoId?: string | null;
   newRepoName?: string | null;
+  workingDirectory?: string | null;
   writeScopes?: string[];
   supersedesThreadIds?: string[];
   reason?: string;
@@ -294,6 +296,7 @@ export interface ManagerActiveAssignment {
   worktreePath: string | null;
   worktreeBranch: string | null;
   targetRepoRoot: string | null;
+  workingDirectory: string | null;
 }
 
 export type ManagerHealth = 'ok' | 'error';
@@ -392,6 +395,7 @@ export interface QueueEntry {
   targetKind?: ManagerTargetKind | null;
   repoId?: string | null;
   newRepoName?: string | null;
+  workingDirectory?: string | null;
   writeScopes?: string[];
   targetRepoRoot?: string | null;
   requestedRunMode?: ManagerRunMode | null;
@@ -487,6 +491,102 @@ function normalizeOptionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function isPathWithin(baseDir: string, candidatePath: string): boolean {
+  const normalizedBase = resolvePath(baseDir);
+  const normalizedCandidate = resolvePath(candidatePath);
+  const relPath = relative(normalizedBase, normalizedCandidate);
+  return (
+    relPath === '' ||
+    (!!relPath && !relPath.startsWith('..') && !isAbsolute(relPath))
+  );
+}
+
+function resolveAssignmentWorkingDirectory(input: {
+  requestedWorkingDirectory: string | null;
+  workerRoot: string;
+  targetRepoRoot: string | null;
+}):
+  | {
+      resolvedWorkingDirectory: string;
+      error: null;
+    }
+  | {
+      resolvedWorkingDirectory: null;
+      error: string;
+    } {
+  const workerRoot = resolvePath(input.workerRoot);
+  const requestedWorkingDirectory = normalizeOptionalText(
+    input.requestedWorkingDirectory
+  );
+  if (!requestedWorkingDirectory) {
+    return {
+      resolvedWorkingDirectory: workerRoot,
+      error: null,
+    };
+  }
+
+  let resolvedWorkingDirectory: string;
+  if (isAbsolute(requestedWorkingDirectory)) {
+    const absoluteRequested = resolvePath(requestedWorkingDirectory);
+    if (isPathWithin(workerRoot, absoluteRequested)) {
+      resolvedWorkingDirectory = absoluteRequested;
+    } else if (
+      input.targetRepoRoot &&
+      isPathWithin(input.targetRepoRoot, absoluteRequested)
+    ) {
+      resolvedWorkingDirectory = resolvePath(
+        workerRoot,
+        relative(resolvePath(input.targetRepoRoot), absoluteRequested)
+      );
+    } else {
+      return {
+        resolvedWorkingDirectory: null,
+        error: `Manager requested workingDirectory "${requestedWorkingDirectory}", but it is outside the assigned repository rooted at "${workerRoot}".`,
+      };
+    }
+  } else {
+    resolvedWorkingDirectory = resolvePath(
+      workerRoot,
+      requestedWorkingDirectory
+    );
+  }
+
+  if (!isPathWithin(workerRoot, resolvedWorkingDirectory)) {
+    return {
+      resolvedWorkingDirectory: null,
+      error: `Manager requested workingDirectory "${requestedWorkingDirectory}", but it resolves outside the assigned repository rooted at "${workerRoot}".`,
+    };
+  }
+  if (!existsSync(resolvedWorkingDirectory)) {
+    return {
+      resolvedWorkingDirectory: null,
+      error: `Manager requested workingDirectory "${requestedWorkingDirectory}", but "${resolvedWorkingDirectory}" does not exist.`,
+    };
+  }
+
+  try {
+    if (!statSync(resolvedWorkingDirectory).isDirectory()) {
+      return {
+        resolvedWorkingDirectory: null,
+        error: `Manager requested workingDirectory "${requestedWorkingDirectory}", but "${resolvedWorkingDirectory}" is not a directory.`,
+      };
+    }
+  } catch (error) {
+    return {
+      resolvedWorkingDirectory: null,
+      error:
+        error instanceof Error
+          ? `Manager requested workingDirectory "${requestedWorkingDirectory}", but it could not be checked: ${error.message}`
+          : `Manager requested workingDirectory "${requestedWorkingDirectory}", but it could not be checked.`,
+    };
+  }
+
+  return {
+    resolvedWorkingDirectory,
+    error: null,
+  };
+}
+
 function normalizeTargetKind(value: unknown): ManagerTargetKind | null {
   return value === 'existing-repo' || value === 'new-repo' ? value : null;
 }
@@ -532,6 +632,7 @@ function normalizeActiveAssignment(
     assigneeKind,
     targetKind: normalizeTargetKind(record['targetKind']) ?? 'existing-repo',
     newRepoName: normalizeOptionalText(record['newRepoName']),
+    workingDirectory: normalizeOptionalText(record['workingDirectory']),
     workerRuntime,
     assigneeLabel,
     writeScopes: normalizeWriteScopes(record['writeScopes']),
@@ -559,7 +660,7 @@ function normalizeActiveAssignment(
       typeof record['targetRepoRoot'] === 'string' && record['targetRepoRoot']
         ? record['targetRepoRoot']
         : null,
-  };
+  } satisfies ManagerActiveAssignment;
 }
 
 function normalizeManagerSession(
@@ -590,6 +691,7 @@ function normalizeManagerSession(
             assigneeKind: 'worker' as const,
             targetKind: 'existing-repo' as const,
             newRepoName: null,
+            workingDirectory: null,
             workerRuntime: 'codex' as const,
             assigneeLabel: workerRuntimeAssigneeLabel('codex'),
             writeScopes: [],
@@ -760,6 +862,7 @@ function normalizeQueueEntry(entry: QueueEntry): QueueEntry {
     targetKind: normalizeTargetKind(entry.targetKind),
     repoId: normalizeOptionalText(entry.repoId),
     newRepoName: normalizeOptionalText(entry.newRepoName),
+    workingDirectory: normalizeOptionalText(entry.workingDirectory),
     writeScopes: normalizeWriteScopes(entry.writeScopes),
     targetRepoRoot:
       typeof entry.targetRepoRoot === 'string' && entry.targetRepoRoot.trim()
@@ -803,6 +906,7 @@ export async function enqueueMessage(
     targetKind?: ManagerTargetKind | null;
     repoId?: string | null;
     newRepoName?: string | null;
+    workingDirectory?: string | null;
     writeScopes?: string[];
     targetRepoRoot?: string | null;
     requestedRunMode?: ManagerRunMode | null;
@@ -823,6 +927,7 @@ export async function enqueueMessage(
     targetKind: normalizeTargetKind(options?.targetKind),
     repoId: normalizeOptionalText(options?.repoId),
     newRepoName: normalizeOptionalText(options?.newRepoName),
+    workingDirectory: normalizeOptionalText(options?.workingDirectory),
     writeScopes: normalizeWriteScopes(options?.writeScopes),
     targetRepoRoot:
       typeof options?.targetRepoRoot === 'string' &&
@@ -1359,6 +1464,7 @@ export function buildWorkerExecutionPrompt(input: {
   content: string;
   thread: Thread;
   resolvedDir: string;
+  workingDirectory: string | null;
   worktreePath: string | null;
   targetRepoRoot: string | null;
   repoTargetKind?: ManagerTargetKind | null;
@@ -1374,7 +1480,10 @@ export function buildWorkerExecutionPrompt(input: {
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
   const workspace =
-    input.worktreePath ?? input.targetRepoRoot ?? input.resolvedDir;
+    input.workingDirectory ??
+    input.worktreePath ??
+    input.targetRepoRoot ??
+    input.resolvedDir;
   if (!input.isFirstTurn) {
     return [
       `[Topic: ${input.thread.title}]`,
@@ -1382,6 +1491,9 @@ export function buildWorkerExecutionPrompt(input: {
       'You are continuing an existing topic. Treat the newest user request below as the main thing to answer in this turn.',
       'Do not merely restate your previous conclusion unless it directly answers the new request.',
       `targetKind: ${input.repoTargetKind ?? 'existing-repo'}`,
+      input.workingDirectory
+        ? `workingDirectory: ${input.workingDirectory}`
+        : '',
       `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
       'Latest user request:',
       promptContent,
@@ -1401,6 +1513,9 @@ export function buildWorkerExecutionPrompt(input: {
     input.managedRepoRoot ? `Target repo root: ${input.managedRepoRoot}` : '',
     input.newRepoName ? `New repo name: ${input.newRepoName}` : '',
     input.newRepoRoot ? `New repo root: ${input.newRepoRoot}` : '',
+    input.workingDirectory
+      ? `Worker working directory: ${input.workingDirectory}`
+      : '',
     input.managedBaseBranch
       ? `Repo branch hint: ${input.managedBaseBranch}`
       : '',
@@ -1433,12 +1548,14 @@ export function buildManagerReviewPrompt(input: {
   currentUserRequest: string;
   workerResult: ManagerWorkerResultPayload;
   resolvedDir: string;
+  workingDirectory: string | null;
   worktreePath: string | null;
   writeScopes: string[];
   requestedRunMode?: ManagerRunMode | null;
   structuralWarnings?: string[];
 }): string {
-  const workspace = input.worktreePath ?? input.resolvedDir;
+  const workspace =
+    input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const changedFiles =
     input.workerResult.changedFiles.length > 0
       ? input.workerResult.changedFiles.map((path) => `- ${path}`).join('\n')
@@ -1477,9 +1594,54 @@ export function buildManagerReviewPrompt(input: {
     `reply:\n${input.workerResult.reply}`,
     `changedFiles:\n${changedFiles}`,
     `verificationSummary:\n${verificationSummary}`,
+    input.workingDirectory ? `workingDirectory: ${input.workingDirectory}` : '',
     `declaredWriteScopes: ${declaredWriteScopes}`,
     ...(structuralSection ? [structuralSection] : []),
   ].join('\n\n');
+}
+
+function buildWorkingDirectoryRecoveryPrompt(input: {
+  thread: Thread;
+  currentUserRequest: string;
+  workerRoot: string;
+  targetRepoRoot: string | null;
+  worktreePath: string | null;
+  workingDirectory: string | null;
+  writeScopes: string[];
+  error: string;
+}): string {
+  const currentUserRequest = buildManagerMessagePromptContent(
+    input.currentUserRequest
+  ).text;
+  const declaredWriteScopes =
+    input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+
+  return [
+    MANAGER_ROUTER_SYSTEM_PROMPT,
+    'A worker dispatch selected a workingDirectory that the backend could not use.',
+    'Return only strict JSON with keys {"assignee","status","reply","workingDirectory"}.',
+    'Use assignee "worker" when you can continue by correcting workingDirectory or by omitting it to use the worker root directly.',
+    'Use assignee "manager" with status "needs-reply" and reply only when you genuinely need the user to clarify the correct folder.',
+    'Do not change the repo target or write scopes in this recovery step.',
+    'Do not repeat the same unusable workingDirectory.',
+    `Workspace: ${input.workerRoot}`,
+    `Worker root: ${input.workerRoot}`,
+    input.targetRepoRoot ? `Target repo root: ${input.targetRepoRoot}` : '',
+    input.worktreePath ? `Isolated worktree root: ${input.worktreePath}` : '',
+    input.workingDirectory
+      ? `Attempted workingDirectory: ${input.workingDirectory}`
+      : 'Attempted workingDirectory: (worker root)',
+    `declaredWriteScopes: ${declaredWriteScopes}`,
+    'Error:',
+    input.error,
+    `[Work item: ${input.thread.title}]`,
+    'Recent work-item history:',
+    formatThreadHistory(input.thread),
+    'Latest user request:',
+    currentUserRequest,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,9 +1707,11 @@ export function buildManagerRecoveryPrompt(input: {
   thread: Thread;
   errorContext: string;
   resolvedDir: string;
+  workingDirectory: string | null;
   worktreePath: string | null;
 }): string {
-  const workspace = input.worktreePath ?? input.resolvedDir;
+  const workspace =
+    input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   return [
     MANAGER_RECOVERY_SYSTEM_PROMPT,
     `Workspace: ${workspace}`,
@@ -1563,10 +1727,12 @@ function buildManagerRecoveryFixPrompt(input: {
   instructions: string;
   thread: Thread;
   resolvedDir: string;
+  workingDirectory: string | null;
   worktreePath: string | null;
   writeScopes: string[];
 }): string {
-  const workspace = input.worktreePath ?? input.resolvedDir;
+  const workspace =
+    input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
   return [
@@ -1584,9 +1750,11 @@ function buildWorkerRetryPrompt(input: {
   instructions: string;
   thread: Thread;
   resolvedDir: string;
+  workingDirectory: string | null;
   worktreePath: string | null;
 }): string {
-  const workspace = input.worktreePath ?? input.resolvedDir;
+  const workspace =
+    input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const worktreeNotice = input.worktreePath
     ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
     : '';
@@ -1724,11 +1892,12 @@ function buildDispatchPrompt(input: {
 
   return [
     MANAGER_ROUTER_SYSTEM_PROMPT,
-    'Return only strict JSON with keys {"assignee","status","reply","targetKind","repoId","newRepoName","writeScopes","supersedesThreadIds","reason"}.',
+    'Return only strict JSON with keys {"assignee","status","reply","targetKind","repoId","newRepoName","workingDirectory","writeScopes","supersedesThreadIds","reason"}.',
     'Use assignee "manager" only when you can fully answer now without repository mutation, command execution, long investigation, or a separate worker agent.',
     'Use assignee "manager" for lightweight questions or clarifications you can answer immediately from the current work-item context and your own reasoning.',
     'Use assignee "worker" for anything that needs repository inspection, command execution, code changes, tests, substantial investigation, or a heavier question that should be delegated.',
     'When assignee is "manager", include status and reply.',
+    'When assignee is "worker", workingDirectory is optional. Use it only when the worker should start in a more specific directory inside the selected repo or worktree. Omit it to use the repo root / worktree root.',
     'When assignee is "worker", include writeScopes as a short array of repo-relative write areas. Use an empty array only for truly read-only work.',
     'If the task modifies an existing repository, set targetKind to "existing-repo" and include repoId using one repoRef from the discovered workspace repo list below.',
     'If the user wants a brand-new repository, set targetKind to "new-repo" and include newRepoName. The repo will be created directly under the workspace root.',
@@ -1980,6 +2149,7 @@ function parseManagerDispatchPayload(
       targetKind: normalizeTargetKind(parsed.targetKind),
       repoId: normalizeOptionalText(parsed.repoId),
       newRepoName: normalizeOptionalText(parsed.newRepoName),
+      workingDirectory: normalizeOptionalText(parsed.workingDirectory),
       writeScopes: normalizeWriteScopes(parsed.writeScopes),
       supersedesThreadIds: normalizeStringArray(parsed.supersedesThreadIds),
       reason:
@@ -3670,8 +3840,9 @@ async function runQueuedAssignment(input: {
   entries: QueueEntry[];
 }): Promise<void> {
   const { dir, resolvedDir, assignment, thread, entries } = input;
-  const workerCwd =
+  const workerRepoRoot =
     assignment.worktreePath ?? assignment.targetRepoRoot ?? resolvedDir;
+  const workerCwd = assignment.workingDirectory ?? workerRepoRoot;
   const targetRepoRoot = assignment.targetRepoRoot ?? resolvedDir;
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
@@ -3821,6 +3992,7 @@ async function runQueuedAssignment(input: {
               content: promptContent,
               thread: promptThread,
               resolvedDir,
+              workingDirectory: assignment.workingDirectory,
               worktreePath: assignment.worktreePath,
               targetRepoRoot: assignment.targetRepoRoot,
               repoTargetKind: assignment.targetKind,
@@ -3914,7 +4086,7 @@ async function runQueuedAssignment(input: {
       );
       reviewStepAttempted = true;
       const structuralWarnings = await runStructuralChecks(
-        workerCwd,
+        workerRepoRoot,
         workerResult.changedFiles
       );
       finalResult = await runTurn({
@@ -3923,6 +4095,7 @@ async function runQueuedAssignment(input: {
           currentUserRequest: promptContent,
           workerResult,
           resolvedDir,
+          workingDirectory: assignment.workingDirectory,
           worktreePath: assignment.worktreePath,
           writeScopes: assignment.writeScopes,
           requestedRunMode,
@@ -4028,6 +4201,7 @@ async function runQueuedAssignment(input: {
             thread: promptThread,
             errorContext: recoveryErrorContext,
             resolvedDir,
+            workingDirectory: assignment.workingDirectory,
             worktreePath: assignment.worktreePath,
           }),
           sessionId: null,
@@ -4154,6 +4328,7 @@ async function runQueuedAssignment(input: {
               instructions: decision.instructions ?? recoveryErrorContext,
               thread: promptThread,
               resolvedDir,
+              workingDirectory: assignment.workingDirectory,
               worktreePath: assignment.worktreePath,
               writeScopes: assignment.writeScopes,
             }),
@@ -4173,6 +4348,7 @@ async function runQueuedAssignment(input: {
               instructions: decision.instructions ?? recoveryErrorContext,
               thread: promptThread,
               resolvedDir,
+              workingDirectory: assignment.workingDirectory,
               worktreePath: assignment.worktreePath,
             }),
             sessionId: null,
@@ -4215,7 +4391,7 @@ async function runQueuedAssignment(input: {
         };
         latestReportedChangedFiles = fixWorkerResult.changedFiles;
         const reStructuralWarnings = await runStructuralChecks(
-          workerCwd,
+          workerRepoRoot,
           fixWorkerResult.changedFiles
         );
         const reReviewResult = await runTurn({
@@ -4224,6 +4400,7 @@ async function runQueuedAssignment(input: {
             currentUserRequest: promptContent,
             workerResult: fixWorkerResult,
             resolvedDir,
+            workingDirectory: assignment.workingDirectory,
             worktreePath: assignment.worktreePath,
             writeScopes: assignment.writeScopes,
             requestedRunMode,
@@ -5099,6 +5276,7 @@ export async function processNextQueued(
         assigneeKind: dispatch.assignee,
         targetKind: assignmentTargetKind,
         newRepoName: assignmentNewRepoName,
+        workingDirectory: null,
         workerRuntime: requestedWorkerRuntime,
         assigneeLabel: defaultAssigneeLabel(
           dispatch.assignee,
@@ -5115,6 +5293,14 @@ export async function processNextQueued(
 
       // Create isolated worktree for worker assignments.
       if (dispatch.assignee === 'worker') {
+        const requestedWorkingDirectory =
+          dispatch.workingDirectory ??
+          nextEntries.find(
+            (entry) =>
+              typeof entry.workingDirectory === 'string' &&
+              entry.workingDirectory.trim()
+          )?.workingDirectory ??
+          null;
         const targetRepo =
           assignmentTargetRepoRoot ??
           resolveTargetRepoRoot(resolvedDir, assignmentWriteScopes);
@@ -5133,6 +5319,120 @@ export async function processNextQueued(
             assignment.worktreePath = wt.worktreePath;
             assignment.worktreeBranch = wt.branchName;
             assignment.targetRepoRoot = wt.targetRepoRoot;
+          }
+
+          const workerRoot =
+            assignment.worktreePath ?? assignment.targetRepoRoot ?? targetRepo;
+          const workingDirectoryResolution = resolveAssignmentWorkingDirectory({
+            requestedWorkingDirectory,
+            workerRoot,
+            targetRepoRoot: assignment.targetRepoRoot ?? targetRepo,
+          });
+          if (!workingDirectoryResolution.error) {
+            assignment.workingDirectory =
+              workingDirectoryResolution.resolvedWorkingDirectory;
+          } else {
+            const recoveryResult = await runCodexTurn({
+              dir,
+              resolvedDir: workerRoot,
+              prompt: buildWorkingDirectoryRecoveryPrompt({
+                thread: stripTrailingUserMessagesFromThread(thread),
+                currentUserRequest: mergeQueuedEntryContent(nextEntries),
+                workerRoot,
+                targetRepoRoot: assignment.targetRepoRoot ?? targetRepo,
+                worktreePath: assignment.worktreePath,
+                workingDirectory: requestedWorkingDirectory,
+                writeScopes: assignmentWriteScopes,
+                error: workingDirectoryResolution.error,
+              }),
+              sessionId: null,
+              imagePaths: queueEntriesImagePaths(nextEntries),
+            });
+            const recoveryPayload =
+              recoveryResult.code === 0
+                ? parseManagerDispatchPayload(recoveryResult.parsed.text)
+                : null;
+
+            if (
+              recoveryPayload?.assignee === 'worker' ||
+              (recoveryPayload?.assignee === 'manager' &&
+                recoveryPayload.status === 'needs-reply' &&
+                recoveryPayload.reply)
+            ) {
+              if (recoveryPayload.assignee === 'manager') {
+                try {
+                  await addMessage(
+                    resolvedDir,
+                    thread.id,
+                    recoveryPayload.reply!,
+                    'ai',
+                    recoveryPayload.status
+                  );
+                } catch {
+                  /* thread may have been deleted */
+                }
+                if (assignment.worktreePath && assignment.worktreeBranch) {
+                  await removeWorktree({
+                    targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+                    worktreePath: assignment.worktreePath,
+                    branchName: assignment.worktreeBranch,
+                  }).catch(() => {});
+                }
+                continue;
+              }
+
+              const recoveredWorkingDirectory =
+                recoveryPayload.workingDirectory ?? null;
+              const recoveredResolution = resolveAssignmentWorkingDirectory({
+                requestedWorkingDirectory: recoveredWorkingDirectory,
+                workerRoot,
+                targetRepoRoot: assignment.targetRepoRoot ?? targetRepo,
+              });
+              if (!recoveredResolution.error) {
+                assignment.workingDirectory =
+                  recoveredResolution.resolvedWorkingDirectory;
+              } else {
+                try {
+                  await addMessage(
+                    resolvedDir,
+                    thread.id,
+                    `[Manager] Worker の workingDirectory を確定できませんでした。\n${recoveredResolution.error}`,
+                    'ai',
+                    'needs-reply'
+                  );
+                } catch {
+                  /* thread may have been deleted */
+                }
+                if (assignment.worktreePath && assignment.worktreeBranch) {
+                  await removeWorktree({
+                    targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+                    worktreePath: assignment.worktreePath,
+                    branchName: assignment.worktreeBranch,
+                  }).catch(() => {});
+                }
+                continue;
+              }
+            } else {
+              try {
+                await addMessage(
+                  resolvedDir,
+                  thread.id,
+                  `[Manager] Worker の workingDirectory を確定できませんでした。\n${workingDirectoryResolution.error}`,
+                  'ai',
+                  'needs-reply'
+                );
+              } catch {
+                /* thread may have been deleted */
+              }
+              if (assignment.worktreePath && assignment.worktreeBranch) {
+                await removeWorktree({
+                  targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+                  worktreePath: assignment.worktreePath,
+                  branchName: assignment.worktreeBranch,
+                }).catch(() => {});
+              }
+              continue;
+            }
           }
         } catch (wtErr) {
           const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
@@ -5812,6 +6112,7 @@ export async function sendToBuiltinManager(
     targetKind?: ManagerTargetKind | null;
     repoId?: string | null;
     newRepoName?: string | null;
+    workingDirectory?: string | null;
     writeScopes?: string[];
     targetRepoRoot?: string | null;
     requestedRunMode?: ManagerRunMode | null;
