@@ -146,12 +146,16 @@ const MANAGER_REPLY_JSON_RULES =
   'Prefer "review" or "needs-reply"; do not use "active" unless you cannot finish this turn yet still want the topic left explicitly in progress. ' +
   'Do not wrap JSON in markdown fences.';
 
+const MANAGER_TOPIC_SCOPE_GUARD =
+  'Stay inside the current work item. Do not mention other work items, unrelated CI/build failures, or adjacent repository issues unless the latest user request explicitly asks for them or they are required evidence for this exact task.';
+
 const MANAGER_WORKER_SYSTEM_PROMPT =
   'You are the built-in execution worker for Workspace Agent Hub. ' +
   'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
   'Do not stop at acknowledgement-only replies. ' +
   'Return concise user-facing progress/result text, but only after you have genuinely attempted the work. ' +
   'Implement and verify the task yourself, but in isolated Manager worktrees do not commit, push, release, or publish; the Manager backend handles delivery after review. ' +
+  `${MANAGER_TOPIC_SCOPE_GUARD} ` +
   'Write user-facing replies in plain, natural Japanese that reads like a capable coworker, not a tool log. ' +
   'Avoid internal AI/platform/process jargon unless the user explicitly asked for it or it is necessary to unblock them. ' +
   'Prefer ordinary task language, complete sentences, and direct explanations of what changed or what is still needed. ' +
@@ -175,7 +179,10 @@ const MANAGER_REVIEW_SYSTEM_PROMPT =
   'Do not frame the final reply as commentary on the worker unless the user explicitly asked for a review of the worker. ' +
   'Run the repo-standard verification needed for this task when necessary. ' +
   'If the work is acceptable, leave it in the correct state for the Manager backend to deliver through the appropriate commit/merge/push/release path for this repository target. ' +
+  'The user sees your final reply only after the Manager backend finishes any required merge, push, release, or publish work, so describe the delivered end state rather than a future backend step. ' +
   'Keep the scope limited to this work item. Prefer the worker-reported changed files and declared write scopes when reviewing or staging changes, and do not include unrelated repository changes. ' +
+  `${MANAGER_TOPIC_SCOPE_GUARD} ` +
+  'When the user asks what happened when, use the exact message timestamps provided in this prompt plus repository evidence instead of guessing from relative timing. ' +
   'If review fails or you still need human input, do not commit, push, release, or publish. ' +
   'Write the user-facing reply in plain, natural Japanese. ' +
   'Do not wrap JSON in markdown fences.';
@@ -1453,17 +1460,52 @@ export function buildManagerReplyPrompt(
 }
 
 function formatThreadHistory(thread: Thread): string {
+  return formatThreadHistoryForPrompt(thread);
+}
+
+function formatThreadHistoryForPrompt(
+  thread: Thread,
+  options?: {
+    maxMessages?: number;
+    includeTimestamps?: boolean;
+  }
+): string {
   if (thread.messages.length === 0) {
     return 'No previous messages in this topic.';
   }
 
+  const maxMessages = options?.maxMessages ?? 12;
   return thread.messages
-    .slice(-12)
-    .map((message) => {
-      const sender = message.sender === 'ai' ? 'AI' : 'User';
-      return `${sender}:\n${buildManagerMessagePromptContent(message.content).text}`;
-    })
+    .slice(-maxMessages)
+    .map((message) =>
+      formatThreadMessageForPrompt(message, {
+        includeTimestamp: options?.includeTimestamps ?? false,
+      })
+    )
     .join('\n\n');
+}
+
+function formatThreadMessageForPrompt(
+  message: Thread['messages'][number],
+  options?: { includeTimestamp?: boolean }
+): string {
+  const sender = message.sender === 'ai' ? 'AI' : 'User';
+  const prefix = options?.includeTimestamp
+    ? `[${message.at}] ${sender}`
+    : sender;
+  return `${prefix}:\n${buildManagerMessagePromptContent(message.content).text}`;
+}
+
+function findLatestAiMessage(
+  thread: Thread
+): Thread['messages'][number] | null {
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index];
+    if (message?.sender === 'ai') {
+      return message;
+    }
+  }
+  return null;
 }
 
 export function buildWorkerExecutionPrompt(input: {
@@ -1574,6 +1616,10 @@ export function buildManagerReviewPrompt(input: {
   const currentUserRequest = buildManagerMessagePromptContent(
     input.currentUserRequest
   ).text;
+  const latestAiMessage = findLatestAiMessage(input.thread);
+  const latestAiReply = latestAiMessage
+    ? formatThreadMessageForPrompt(latestAiMessage, { includeTimestamp: true })
+    : 'No previous AI reply exists in this work item before the latest user request.';
 
   const deliveryInstruction =
     input.worktreePath && input.requestedRunMode !== 'read-only'
@@ -1591,8 +1637,13 @@ export function buildManagerReviewPrompt(input: {
     `Workspace: ${workspace}`,
     ...(deliveryInstruction ? [deliveryInstruction] : []),
     `[Work item: ${input.thread.title}]`,
-    'Recent work-item history:',
-    formatThreadHistory(input.thread),
+    'Most recent AI reply before the latest user request:',
+    latestAiReply,
+    'Recent same-topic history (timestamps included):',
+    formatThreadHistoryForPrompt(input.thread, {
+      maxMessages: 8,
+      includeTimestamps: true,
+    }),
     'Latest user request that the final reply must answer:',
     currentUserRequest,
     'Worker completion report:',
@@ -1641,8 +1692,11 @@ function buildWorkingDirectoryRecoveryPrompt(input: {
     'Error:',
     input.error,
     `[Work item: ${input.thread.title}]`,
-    'Recent work-item history:',
-    formatThreadHistory(input.thread),
+    'Recent same-topic history (timestamps included):',
+    formatThreadHistoryForPrompt(input.thread, {
+      maxMessages: 8,
+      includeTimestamps: true,
+    }),
     'Latest user request:',
     currentUserRequest,
   ]
@@ -1672,6 +1726,7 @@ const MANAGER_RECOVERY_FIX_SYSTEM_PROMPT =
   'You are the Manager for Workspace Agent Hub. ' +
   "The review found issues with the worker's output. " +
   'Fix the specified issues in this workspace. Run verification after your fix. ' +
+  `${MANAGER_TOPIC_SCOPE_GUARD} ` +
   'Write the user-facing reply in plain, natural Japanese. ' +
   'Do not wrap JSON in markdown fences.';
 
@@ -1722,8 +1777,11 @@ export function buildManagerRecoveryPrompt(input: {
     MANAGER_RECOVERY_SYSTEM_PROMPT,
     `Workspace: ${workspace}`,
     `[Work item: ${input.thread.title}]`,
-    'Recent work-item history:',
-    formatThreadHistory(input.thread),
+    'Recent same-topic history (timestamps included):',
+    formatThreadHistoryForPrompt(input.thread, {
+      maxMessages: 8,
+      includeTimestamps: true,
+    }),
     'Error / review output:',
     input.errorContext,
   ].join('\n\n');
