@@ -464,19 +464,19 @@ Important behavior:
   `WORKSPACE_AGENT_HUB_CODEX_EFFORT`,
   `WORKSPACE_AGENT_HUB_CLAUDE_MODEL`, and
   `WORKSPACE_AGENT_HUB_CLAUDE_EFFORT` are not the normal automatic routing
-  source of truth. They are only used when you explicitly force that runtime
-  or when live ranking / `ai-quota` selection cannot produce a winner and the
-  backend needs a final runtime-local fallback.
+  source of truth. They are only used when you explicitly force that runtime.
 - Automatic worker routing uses three live task classes:
   `codebase-qna` -> SWE Atlas QnA, `test-writing` -> SWE Atlas Test Writing,
   `implementation` -> SWE-Bench Pro public/private. The backend walks the
   live-ranked candidates from the top, checks the corresponding runtime with
   `ai-quota`, and launches the first candidate whose runtime still has enough
-  quota headroom.
+  quota headroom. If live ranking or `ai-quota` cannot produce an eligible
+  worker, Manager stops and surfaces a `needs-reply` error instead of silently
+  bypassing that gate with a static fallback.
 - A repo-level `preferredWorkerRuntime` is treated only as a runtime
   constraint. It limits which worker runtime family can be auto-selected, but
   it does not pin a specific model. Inside that runtime constraint, the actual
-  model/effort still comes from live ranking or the runtime-local fallback.
+  model/effort still comes from live ranking.
 - The global send dock now shows an explicit send target. From the inbox it
   can hint a selected work item while still using normal routing, and from an
   open work-item conversation it sends straight back into that same work item

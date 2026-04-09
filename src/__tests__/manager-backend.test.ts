@@ -1541,10 +1541,7 @@ describe('manager backend codex integration', () => {
     );
   });
 
-  it('falls back to runtime defaults when live ranking cannot be resolved', async () => {
-    const workerProc = makeProc(9113);
-    const reviewProc = makeProc(9114);
-    queueSpawnResults(workerProc, reviewProc);
+  it('does not launch a worker when live ranking or ai-quota cannot produce an eligible model', async () => {
     execFileMock.mockImplementationOnce(
       (
         command: string,
@@ -1570,42 +1567,33 @@ describe('manager backend codex integration', () => {
 
     await sendToBuiltinManager(
       tempDir,
-      'thread-live-selection-fallback',
+      'thread-live-selection-error',
       'README を見て要点だけ教えてください'
     );
-
-    await waitFor(() => spawnMock.mock.calls.length === 1);
-    expect(spawnedCommandLine(0)).toContain('"--model" "gpt-5.4"');
-    expect(spawnedCommandLine(0)).toContain(
-      '"model_reasoning_effort=""xhigh"""'
-    );
-
-    completeCodexTurn(workerProc, {
-      sessionId: 'codex-ranked-fallback',
-      text: '{"status":"review","reply":"README の要点です"}',
-    });
-
-    await waitFor(() => spawnMock.mock.calls.length === 2);
-    completeCodexTurn(reviewProc, {
-      sessionId: 'manager-review-ranked-fallback',
-      text: '{"status":"review","reply":"README の要点です"}',
-    });
 
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
       const session = await readSession(tempDir);
-      return queue.length === 0 && session.status === 'idle';
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        addMessageMock.mock.calls.length === 1
+      );
     });
 
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-live-selection-error'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Live worker model selection failed before a worker could start'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('ai-quota unavailable');
+
     const meta = await readManagerThreadMeta(tempDir);
-    expect(meta['thread-live-selection-fallback']?.workerSessionRuntime).toBe(
-      'codex'
-    );
-    expect(meta['thread-live-selection-fallback']?.workerSessionModel).toBe(
-      'gpt-5.4'
-    );
-    expect(meta['thread-live-selection-fallback']?.assigneeLabel).toBe(
-      'Worker Codex gpt-5.4 (xhigh)'
+    expect(meta['thread-live-selection-error']?.workerSessionRuntime).toBe(
+      undefined
     );
   });
 

@@ -104,10 +104,7 @@ import {
   workerRuntimeDefaults,
   workerRuntimeAssigneeLabel,
 } from './manager-worker-runtime.js';
-import {
-  selectRankedWorkerModel,
-  type WorkerModelCandidate,
-} from './manager-worker-model-selection.js';
+import { selectRankedWorkerModel } from './manager-worker-model-selection.js';
 import {
   isWindowsBatchCommand,
   wrapWindowsBatchCommandForSpawn,
@@ -4097,20 +4094,6 @@ function runtimeConstraintCandidates(input: {
   return supported;
 }
 
-function fallbackWorkerSelection(
-  runtime: Extract<ManagerWorkerRuntime, 'codex' | 'claude'>
-): WorkerModelCandidate {
-  const defaults = workerRuntimeDefaults(runtime);
-  return {
-    runtime,
-    model: defaults.model,
-    effort: defaults.effort,
-    score: Number.NEGATIVE_INFINITY,
-    sourceUrls: [],
-    sourceModels: [],
-  };
-}
-
 function blockingScopeDetail(input: {
   blockingAssignments: ManagerActiveAssignment[];
   threadById: Map<string, Thread>;
@@ -5728,19 +5711,53 @@ export async function processNextQueued(
             selectedWorkerModel = liveSelection.selected.model;
             selectedWorkerEffort = liveSelection.selected.effort;
           } catch (selectionErr) {
-            const fallbackSelection = fallbackWorkerSelection(
+            const detail =
+              selectionErr instanceof Error
+                ? selectionErr.message
+                : String(selectionErr);
+            const quotaBlocked = /sufficient quota/i.test(detail);
+            const assigneeLabel = defaultAssigneeLabel(
+              'worker',
               automaticWorkerRuntimes[0] ?? 'codex'
             );
+            const errMsg = quotaBlocked
+              ? `[Manager error] Live worker model selection could not find any currently eligible worker with sufficient quota. ${detail}\nFree quota or retry later, then resend the request.`
+              : `[Manager error] Live worker model selection failed before a worker could start. ${detail}\nFix the live benchmark or ai-quota path, then resend the request.`;
             console.warn(
-              `[manager-backend] live worker selection failed for ${next.threadId}; falling back to ${fallbackSelection.runtime} ${fallbackSelection.model}${fallbackSelection.effort ? ` (${fallbackSelection.effort})` : ''}: ${
-                selectionErr instanceof Error
-                  ? selectionErr.message
-                  : String(selectionErr)
-              }`
+              `[manager-backend] live worker selection failed for ${next.threadId}: ${detail}`
             );
-            selectedWorkerRuntime = fallbackSelection.runtime;
-            selectedWorkerModel = fallbackSelection.model;
-            selectedWorkerEffort = fallbackSelection.effort;
+            await clearWorkerLiveOutput(
+              resolvedDir,
+              next.threadId,
+              'worker',
+              assigneeLabel,
+              {
+                workerAgentId: null,
+                runtimeState: null,
+                runtimeDetail: null,
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+              }
+            );
+            try {
+              await addMessage(
+                resolvedDir,
+                next.threadId,
+                errMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            if (!quotaBlocked) {
+              await setManagerRuntimeError(dir, errMsg);
+            }
+            await updateQueueLocked(dir, (currentQueue) =>
+              currentQueue.filter((entry) => !batchIds.includes(entry.id))
+            );
+            continue;
           }
         }
       }
