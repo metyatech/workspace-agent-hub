@@ -566,6 +566,9 @@ describe('manager backend codex integration', () => {
     );
     expect(reviewPrompt).toContain('Do not return status "review"');
     expect(reviewPrompt).toContain(
+      'The user sees your final reply only after the Manager backend finishes any required merge'
+    );
+    expect(reviewPrompt).toContain(
       'Do not mention other work items, unrelated CI/build failures'
     );
     expect(reviewPrompt).toContain(

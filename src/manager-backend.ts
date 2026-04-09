@@ -179,6 +179,7 @@ const MANAGER_REVIEW_SYSTEM_PROMPT =
   'Do not frame the final reply as commentary on the worker unless the user explicitly asked for a review of the worker. ' +
   'Run the repo-standard verification needed for this task when necessary. ' +
   'If the work is acceptable, leave it in the correct state for the Manager backend to deliver through the appropriate commit/merge/push/release path for this repository target. ' +
+  'The user sees your final reply only after the Manager backend finishes any required merge, push, release, or publish work, so describe the delivered end state rather than a future backend step. ' +
   'Keep the scope limited to this work item. Prefer the worker-reported changed files and declared write scopes when reviewing or staging changes, and do not include unrelated repository changes. ' +
   `${MANAGER_TOPIC_SCOPE_GUARD} ` +
   'When the user asks what happened when, use the exact message timestamps provided in this prompt plus repository evidence instead of guessing from relative timing. ' +
