@@ -2370,6 +2370,21 @@ function parseManagerDispatchPayload(
   }
 }
 
+function isImmediateManagerDispatchReply(
+  dispatch: ManagerDispatchPayload
+): dispatch is ManagerDispatchPayload & {
+  assignee: 'manager';
+  status: 'review' | 'needs-reply';
+  reply: string;
+} {
+  return (
+    dispatch.assignee === 'manager' &&
+    typeof dispatch.reply === 'string' &&
+    !!dispatch.reply.trim() &&
+    (dispatch.status === 'review' || dispatch.status === 'needs-reply')
+  );
+}
+
 function buildRoutingPrompt(input: {
   content: string;
   resolvedDir: string;
@@ -5865,6 +5880,30 @@ export async function processNextQueued(
         )?.requestedRunMode ??
         threadMeta?.requestedRunMode ??
         null;
+      if (isImmediateManagerDispatchReply(dispatch)) {
+        try {
+          await addMessage(
+            resolvedDir,
+            next.threadId,
+            dispatch.reply,
+            'ai',
+            dispatch.status
+          );
+        } catch {
+          /* thread may have been deleted */
+        }
+        await updateQueueLocked(dir, (currentQueue) =>
+          currentQueue.filter((entry) => !batchIds.includes(entry.id))
+        );
+        await clearWorkerLiveOutput(resolvedDir, next.threadId, null, null, {
+          runtimeState: null,
+          runtimeDetail: null,
+          workerWriteScopes: [],
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+        });
+        continue;
+      }
       if (
         dispatch.assignee === 'manager' &&
         activeManagerAssignments >= MAX_PARALLEL_MANAGER_ASSIGNMENTS
