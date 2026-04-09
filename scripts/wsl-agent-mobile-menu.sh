@@ -77,13 +77,33 @@ tmux() {
 set_tmux_session_display_title() {
   local session_name="$1"
   local session_title="${2:-}"
+  local current_title=''
 
   if [[ -n "${session_title// }" ]]; then
-    tmux set-option -q -t "$session_name" @workspace_agent_session_title "$session_title" >/dev/null 2>&1 || true
-    return 0
+    for _ in $(seq 1 50); do
+      tmux set-option -q -t "$session_name" @workspace_agent_session_title "$session_title" >/dev/null 2>&1 || true
+      current_title="$(tmux show-options -qv -t "$session_name" @workspace_agent_session_title 2>/dev/null || true)"
+      if [[ "$current_title" == "$session_title" ]]; then
+        return 0
+      fi
+      sleep 0.1
+    done
+
+    printf 'Failed to persist session title for %s.\n' "$session_name" >&2
+    return 1
   fi
 
-  tmux set-option -qu -t "$session_name" @workspace_agent_session_title >/dev/null 2>&1 || true
+  for _ in $(seq 1 50); do
+    tmux set-option -qu -t "$session_name" @workspace_agent_session_title >/dev/null 2>&1 || true
+    current_title="$(tmux show-options -qv -t "$session_name" @workspace_agent_session_title 2>/dev/null || true)"
+    if [[ -z "$current_title" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  printf 'Failed to clear session title for %s.\n' "$session_name" >&2
+  return 1
 }
 
 no_attach_requested() {
