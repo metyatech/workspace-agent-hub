@@ -3161,6 +3161,57 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
   });
 
+  it('skips integration merge and push when the approved worktree has no deliverable commits', async () => {
+    const workerProc = makeProc(8451);
+    const reviewProc = makeProc(8452);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-noop-delivery',
+      branchName: 'wah-worker-assign_thread-noop-delivery',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(validateWorktreeReadyForMerge).mockResolvedValueOnce({
+      ready: true,
+      detail: 'Ready to merge; no repository changes need to be delivered.',
+      aheadCommitCount: 0,
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-noop-delivery', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-noop-delivery',
+      text: '{"status":"review","reply":"no files changed","changedFiles":[],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-noop-delivery',
+      text: '{"status":"review","reply":"no-op review done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createIntegrationWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(mergeWorktreeToMain)).not.toHaveBeenCalled();
+    expect(vi.mocked(pushWithRetry)).not.toHaveBeenCalled();
+    expect(vi.mocked(runPostMergeDeliveryChain)).not.toHaveBeenCalled();
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith({
+      targetRepoRoot: tempDir,
+      worktreePath: 'C:\\temp\\wah-wt-assign_thread-noop-delivery',
+      branchName: 'wah-worker-assign_thread-noop-delivery',
+    });
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-noop-delivery');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('no-op review done');
+  });
+
   it('runs the post-merge delivery chain before posting a successful review result', async () => {
     const workerProc = makeProc(8501);
     const reviewProc = makeProc(8502);

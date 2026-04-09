@@ -4590,7 +4590,36 @@ async function runQueuedAssignment(input: {
     // -----------------------------------------------------------------------
 
     if (approved) {
-      if (assignment.worktreePath && assignment.worktreeBranch) {
+      const shouldDeliverWorktreeChanges =
+        !!assignment.worktreePath &&
+        !!assignment.worktreeBranch &&
+        deliveryAheadCommitCount > 0;
+
+      if (
+        assignment.worktreePath &&
+        assignment.worktreeBranch &&
+        !shouldDeliverWorktreeChanges
+      ) {
+        await appendWorkerLiveOutput({
+          dir: resolvedDir,
+          threadId: thread.id,
+          text: 'リポジトリ変更がないため、マージと push をスキップして返信を返します…',
+          kind: 'status',
+          assigneeKind: 'manager',
+          assigneeLabel: defaultAssigneeLabel('manager'),
+          workerSessionId,
+          workerAgentId: assignment.id,
+          runtimeState: 'manager-answering',
+          runtimeDetail: '変更なしのため delivery を省略中…',
+          workerWriteScopes: assignment.writeScopes,
+        });
+        await cleanupWorktreeBestEffort({
+          targetRepoRoot,
+          worktreePath: assignment.worktreePath,
+          branchName: assignment.worktreeBranch,
+          context: `No-op delivery cleanup for ${assignment.id}`,
+        });
+      } else if (assignment.worktreePath && assignment.worktreeBranch) {
         await appendWorkerLiveOutput({
           dir: resolvedDir,
           threadId: thread.id,
