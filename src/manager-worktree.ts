@@ -9,7 +9,14 @@
  */
 
 import { spawn } from 'child_process';
-import { existsSync, symlinkSync, unlinkSync, rmSync } from 'fs';
+import {
+  existsSync,
+  readdirSync,
+  symlinkSync,
+  unlinkSync,
+  rmSync,
+  type Dirent,
+} from 'fs';
 import { mkdir, readFile, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
@@ -429,6 +436,75 @@ function linkNodeModules(targetRepoRoot: string, worktreePath: string): void {
   }
 }
 
+function allocateWorktreePath(baseName: string): string {
+  const basePath = join(tmpdir(), baseName);
+  if (!existsSync(basePath)) {
+    return basePath;
+  }
+
+  const nonce = `${process.pid.toString(36)}-${Date.now().toString(36)}`;
+  for (let attempt = 1; attempt <= 64; attempt++) {
+    const candidate = `${basePath}-${nonce}-${attempt.toString(36)}`;
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `Could not allocate a unique worktree path for ${basePath}; too many stale temp directories remain.`
+  );
+}
+
+function describeBlockingWorktreePath(worktreePath: string): string {
+  if (!existsSync(worktreePath)) {
+    return `${worktreePath} no longer exists`;
+  }
+
+  const entries = readdirSync(worktreePath, { withFileTypes: true })
+    .slice(0, 8)
+    .map((entry) => entry.name);
+  const suffix =
+    entries.length > 0
+      ? ` Directory still contains: ${entries.join(', ')}${entries.length === 8 ? ', ...' : ''}.`
+      : ' Directory is still present but empty.';
+  return `${worktreePath} still exists after cleanup.${suffix}`;
+}
+
+function removeWorktreeDirectory(worktreePath: string): string | null {
+  if (!existsSync(worktreePath)) {
+    return null;
+  }
+
+  const nmJunction = join(worktreePath, 'node_modules');
+  try {
+    if (existsSync(nmJunction)) {
+      unlinkSync(nmJunction);
+    }
+  } catch {
+    /* best-effort */
+  }
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+
+  return existsSync(worktreePath)
+    ? describeBlockingWorktreePath(worktreePath)
+    : null;
+}
+
+function enrichWorktreeCreateError(
+  error: unknown,
+  cleanupDetail: string | null
+): Error {
+  const baseMessage = error instanceof Error ? error.message : String(error);
+  if (!cleanupDetail) {
+    return error instanceof Error ? error : new Error(baseMessage);
+  }
+  return new Error(`${baseMessage}\nCleanup detail: ${cleanupDetail}`);
+}
+
 async function createIsolatedWorktree(input: {
   targetRepoRoot: string;
   worktreePath: string;
@@ -436,6 +512,7 @@ async function createIsolatedWorktree(input: {
   startPoint: string;
 }): Promise<void> {
   const { targetRepoRoot, worktreePath, branchName, startPoint } = input;
+  let cleanupDetail: string | null = null;
 
   const tryCreate = async (): Promise<void> => {
     await cleanupStaleBranch(targetRepoRoot, worktreePath, branchName);
@@ -460,12 +537,18 @@ async function createIsolatedWorktree(input: {
   try {
     await tryCreate();
   } catch {
-    await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
+    cleanupDetail = await safeRemoveWorktree(
+      targetRepoRoot,
+      worktreePath,
+      branchName
+    );
     try {
       await tryCreate();
     } catch (retryErr) {
-      await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName);
-      throw retryErr;
+      cleanupDetail =
+        (await safeRemoveWorktree(targetRepoRoot, worktreePath, branchName)) ??
+        cleanupDetail;
+      throw enrichWorktreeCreateError(retryErr, cleanupDetail);
     }
   }
 }
@@ -553,7 +636,7 @@ export async function createWorkerWorktree(input: {
 }): Promise<WorktreeInfo> {
   const { targetRepoRoot, assignmentId } = input;
   const branchName = `wah-worker-${assignmentId}`;
-  const worktreePath = join(tmpdir(), `wah-wt-${assignmentId}`);
+  const worktreePath = allocateWorktreePath(`wah-wt-${assignmentId}`);
 
   await createIsolatedWorktree({
     targetRepoRoot,
@@ -575,7 +658,7 @@ export async function createIntegrationWorktree(input: {
 }): Promise<IntegrationWorktreeInfo> {
   const { targetRepoRoot, assignmentId } = input;
   const branchName = `wah-merge-${assignmentId}`;
-  const worktreePath = join(tmpdir(), `wah-merge-${assignmentId}`);
+  const worktreePath = allocateWorktreePath(`wah-merge-${assignmentId}`);
   const integrationBase = await resolveIntegrationBase({ targetRepoRoot });
 
   await createIsolatedWorktree({
@@ -1204,25 +1287,74 @@ export async function removeWorktree(input: {
   await execGit(targetRepoRoot, ['branch', '-D', branchName]).catch(() => {});
 
   // 3. Manual cleanup if the directory still exists.
-  if (existsSync(worktreePath)) {
-    // Remove the node_modules junction first (it's a junction, not real files).
-    const nmJunction = join(worktreePath, 'node_modules');
-    try {
-      if (existsSync(nmJunction)) {
-        unlinkSync(nmJunction);
-      }
-    } catch {
-      /* best-effort */
-    }
-    try {
-      rmSync(worktreePath, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
+  const cleanupFailure = removeWorktreeDirectory(worktreePath);
+  if (cleanupFailure) {
+    throw new Error(
+      `Failed to fully remove worktree directory: ${cleanupFailure}`
+    );
   }
 
   // 4. Prune stale worktree references.
   await execGit(targetRepoRoot, ['worktree', 'prune']).catch(() => {});
+}
+
+function isManagedTempWorktreeName(name: string): boolean {
+  return name.startsWith('wah-wt-') || name.startsWith('wah-merge-');
+}
+
+function tempWorktreeBelongsToActiveAssignment(
+  name: string,
+  activeAssignmentIds: string[]
+): boolean {
+  return activeAssignmentIds.some((assignmentId) => {
+    for (const prefix of ['wah-wt-', 'wah-merge-']) {
+      const baseName = `${prefix}${assignmentId}`;
+      if (name === baseName || name.startsWith(`${baseName}-`)) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+async function cleanupUnregisteredTempWorktrees(input: {
+  registeredWorktreePaths: Set<string>;
+  activeAssignmentIds: string[];
+}): Promise<void> {
+  const tempRoot = tmpdir();
+  let tempEntries: Dirent[];
+  try {
+    tempEntries = await readdir(tempRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of tempEntries) {
+    if (!entry.isDirectory() || !isManagedTempWorktreeName(entry.name)) {
+      continue;
+    }
+
+    if (
+      tempWorktreeBelongsToActiveAssignment(
+        entry.name,
+        input.activeAssignmentIds
+      )
+    ) {
+      continue;
+    }
+
+    const candidatePath = resolvePath(tempRoot, entry.name);
+    if (input.registeredWorktreePaths.has(candidatePath)) {
+      continue;
+    }
+
+    const cleanupFailure = removeWorktreeDirectory(candidatePath);
+    if (cleanupFailure) {
+      console.error(
+        `[manager-worktree] Failed to remove orphaned temp worktree directory: ${cleanupFailure}`
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,8 +1363,8 @@ export async function removeWorktree(input: {
 
 /**
  * Remove worktrees whose assignment ID is no longer active.
- * Reads `git worktree list --porcelain` and matches branch names
- * against the `wah-worker-` / `wah-merge-` prefixes.
+ * Removes both git-registered orphaned worktrees and stray temp directories
+ * left behind after earlier cleanup failures.
  */
 export async function cleanupOrphanedWorktrees(
   targetRepoRoot: string,
@@ -1250,8 +1382,13 @@ export async function cleanupOrphanedWorktrees(
   // Parse porcelain output.  Each worktree block is separated by a blank
   // line and contains "worktree <path>" and "branch refs/heads/<name>".
   const blocks = result.stdout.split('\n\n');
+  const registeredWorktreePaths = new Set<string>();
   for (const block of blocks) {
     const pathMatch = block.match(/^worktree (.+)$/m);
+    if (pathMatch?.[1]) {
+      registeredWorktreePaths.add(resolvePath(pathMatch[1]));
+    }
+
     const branchMatch = block.match(
       /^branch refs\/heads\/((?:wah-worker|wah-merge)-.+)$/m
     );
@@ -1269,6 +1406,11 @@ export async function cleanupOrphanedWorktrees(
       }).catch(() => {});
     }
   }
+
+  await cleanupUnregisteredTempWorktrees({
+    registeredWorktreePaths,
+    activeAssignmentIds,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,18 +1431,11 @@ async function cleanupStaleBranch(
       worktreePath,
       '--force',
     ]).catch(() => {});
-    if (existsSync(worktreePath)) {
-      const nmJunction = join(worktreePath, 'node_modules');
-      try {
-        if (existsSync(nmJunction)) unlinkSync(nmJunction);
-      } catch {
-        /* best-effort */
-      }
-      try {
-        rmSync(worktreePath, { recursive: true, force: true });
-      } catch {
-        /* best-effort */
-      }
+    const cleanupFailure = removeWorktreeDirectory(worktreePath);
+    if (cleanupFailure) {
+      throw new Error(
+        `Failed to clear stale worktree path before recreation: ${cleanupFailure}`
+      );
     }
   }
 
@@ -1316,10 +1451,11 @@ async function safeRemoveWorktree(
   targetRepoRoot: string,
   worktreePath: string,
   branchName: string
-): Promise<void> {
+): Promise<string | null> {
   try {
     await removeWorktree({ targetRepoRoot, worktreePath, branchName });
+    return null;
   } catch {
-    /* swallow — this is a cleanup path */
+    return describeBlockingWorktreePath(worktreePath);
   }
 }

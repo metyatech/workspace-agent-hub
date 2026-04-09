@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -16,6 +17,7 @@ import {
   abortStaleMerge,
   cleanupOrphanedWorktrees,
   createIntegrationWorktree,
+  createWorkerWorktree,
   execGit,
   findGitRoot,
   mergeWorktreeToMain,
@@ -237,6 +239,47 @@ describe('createIntegrationWorktree', () => {
         ],
       ])
     );
+  });
+});
+
+describe('createWorkerWorktree', () => {
+  it('allocates a fresh temp path when the legacy assignment path is already occupied', async () => {
+    const assignmentId = `assign-stale-${Date.now()}`;
+    const stalePath = join(tmpdir(), `wah-wt-${assignmentId}`);
+    let createdPath: string | null = null;
+    const gitArgs: string[][] = [];
+
+    await rm(stalePath, { recursive: true, force: true });
+    await mkdir(stalePath, { recursive: true });
+    await writeFile(join(stalePath, 'trace.zip'), 'stale residue');
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      return gitResult(0, '')();
+    });
+
+    try {
+      const result = await createWorkerWorktree({
+        targetRepoRoot: '/repo-worker',
+        assignmentId,
+      });
+      createdPath = result.worktreePath;
+
+      const worktreeAddCall =
+        gitArgs.find((args) => args[0] === 'worktree' && args[1] === 'add') ??
+        null;
+
+      expect(worktreeAddCall).not.toBeNull();
+      expect(worktreeAddCall?.[2]).toBe(createdPath);
+      expect(createdPath).not.toBe(stalePath);
+      expect(createdPath).toContain(`wah-wt-${assignmentId}-`);
+      expect(result.branchName).toBe(`wah-worker-${assignmentId}`);
+    } finally {
+      await rm(stalePath, { recursive: true, force: true });
+      if (createdPath) {
+        await rm(createdPath, { recursive: true, force: true });
+      }
+    }
   });
 });
 
@@ -500,6 +543,43 @@ describe('cleanupOrphanedWorktrees', () => {
     await cleanupOrphanedWorktrees('/repo', []);
 
     expect(spawnMock.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('removes unregistered temp worktree directories that are no longer active', async () => {
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const orphanWorkerDir = join(tmpdir(), `wah-wt-orphan-${nonce}`);
+    const orphanMergeDir = join(tmpdir(), `wah-merge-orphan-${nonce}`);
+    const activeDir = join(tmpdir(), `wah-wt-active-id-${nonce}`);
+
+    await rm(orphanWorkerDir, { recursive: true, force: true });
+    await rm(orphanMergeDir, { recursive: true, force: true });
+    await rm(activeDir, { recursive: true, force: true });
+    await mkdir(orphanWorkerDir, { recursive: true });
+    await mkdir(orphanMergeDir, { recursive: true });
+    await mkdir(activeDir, { recursive: true });
+    await writeFile(join(orphanWorkerDir, 'trace.txt'), 'stale');
+    await writeFile(join(orphanMergeDir, 'trace.txt'), 'stale');
+    await writeFile(join(activeDir, 'trace.txt'), 'active');
+
+    const porcelain = [
+      'worktree /repo',
+      'HEAD abc123',
+      'branch refs/heads/main',
+    ].join('\n');
+
+    spawnMock.mockImplementation(gitResult(0, porcelain));
+
+    try {
+      await cleanupOrphanedWorktrees('/repo', ['active-id']);
+
+      expect(existsSync(orphanWorkerDir)).toBe(false);
+      expect(existsSync(orphanMergeDir)).toBe(false);
+      expect(existsSync(activeDir)).toBe(true);
+    } finally {
+      await rm(orphanWorkerDir, { recursive: true, force: true });
+      await rm(orphanMergeDir, { recursive: true, force: true });
+      await rm(activeDir, { recursive: true, force: true });
+    }
   });
 });
 
