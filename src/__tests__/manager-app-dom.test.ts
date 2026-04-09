@@ -2086,10 +2086,14 @@ describe('manager-app DOM auth state matrix', () => {
     expect(aiBubble.textContent).not.toContain('_bX_UpQR');
   });
 
-  it('opens a topic screen with that topic preselected and can return to global routing', async () => {
+  it('sends directly to the open topic and can still switch back to global routing', async () => {
     const validToken = 'target-send-token';
     const thread = makeThreadView('thread-target', '特定 task');
-    const seenBodies: Array<{
+    const seenDirectBodies: Array<{
+      threadId: string;
+      content: string;
+    }> = [];
+    const seenGlobalBodies: Array<{
       content: string;
       contextThreadId: string | null;
     }> = [];
@@ -2130,8 +2134,29 @@ describe('manager-app DOM auth state matrix', () => {
           );
         }
 
+        if (isRoute(url, '/manager/send')) {
+          seenDirectBodies.push(JSON.parse(String(init?.body)));
+          return new Response(
+            JSON.stringify({
+              queued: true,
+              items: [
+                {
+                  threadId: 'thread-target',
+                  title: '特定 task',
+                  outcome: 'attached-existing',
+                  reason: 'この会話に追加しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: 'この会話に追加しました',
+            }),
+            { status: 200 }
+          );
+        }
+
         if (isRoute(url, '/manager/global-send')) {
-          seenBodies.push(JSON.parse(String(init?.body)));
+          seenGlobalBodies.push(JSON.parse(String(init?.body)));
           return new Response(
             JSON.stringify({
               items: [
@@ -2201,10 +2226,11 @@ describe('manager-app DOM auth state matrix', () => {
       .click();
     await flushAsync(6);
 
-    expect(seenBodies[0]).toEqual({
+    expect(seenDirectBodies[0]).toEqual({
+      threadId: 'thread-target',
       content: 'この task を続けて',
-      contextThreadId: 'thread-target',
     });
+    expect(seenGlobalBodies).toEqual([]);
     expect(
       document
         .querySelector<HTMLElement>('#composerPanel')!
@@ -2223,6 +2249,24 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLButtonElement>('#composerTargetClearButton')!
         .textContent
     ).toContain('この会話に戻す');
+
+    composer.value = 'これは別件です';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    document
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+      .click();
+    await flushAsync(6);
+
+    expect(seenGlobalBodies[0]).toEqual({
+      content: 'これは別件です',
+      contextThreadId: null,
+    });
+    expect(seenDirectBodies).toHaveLength(1);
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(false);
 
     document
       .querySelector<HTMLButtonElement>('#composerTargetClearButton')!
@@ -2283,7 +2327,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(true);
     expect(
       document.querySelector<HTMLElement>('#composerHint')!.textContent
-    ).toContain('この会話の続きはここから追加指示として送れます');
+    ).toContain('この会話の続きはここへ追加指示として直接送れます');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('送信先: この会話（追加指示）');

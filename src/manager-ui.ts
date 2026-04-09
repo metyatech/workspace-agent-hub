@@ -17,8 +17,8 @@ import {
   getBuiltinManagerStatus,
   readQueue,
   readSession,
-  sendToBuiltinManager,
   sendGlobalToBuiltinManager,
+  sendThreadFollowUpToBuiltinManager,
   startBuiltinManager,
 } from './manager-backend.js';
 import { readActiveTasks } from './manager-tasks.js';
@@ -521,15 +521,19 @@ export async function handleManagerUiRequest(input: {
       sendError(input.res, 'content is required');
       return true;
     }
-    await sendToBuiltinManager(
-      input.workspaceRoot,
-      body.threadId,
-      body.content
+    const thread = await getThread(input.workspaceRoot, body.threadId);
+    if (!thread) {
+      sendError(input.res, 'Thread not found', 404);
+      return true;
+    }
+    sendJson(
+      input.res,
+      await sendThreadFollowUpToBuiltinManager(
+        input.workspaceRoot,
+        body.threadId,
+        body.content
+      )
     );
-    sendJson(input.res, {
-      queued: true,
-      detail: 'メッセージをマネージャーキューに追加しました',
-    });
     return true;
   }
 

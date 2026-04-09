@@ -276,8 +276,10 @@ The Manager screen must make these points obvious without external explanation:
   text contains an internal ID anyway, render it back to the human as the
   corresponding work-item title instead of showing the raw ID
 - Make the current composer target obvious: either whole-inbox routing or a
-  specific selected task mention hint, without turning that hint into a forced
-  destination
+  specific selected task target. In the inbox that target stays a routing hint,
+  but inside an open task conversation the compact reply bar should send
+  directly back to that same task unless the human explicitly switches to a
+  separate item
 - Preserve real conversation shape inside a work item: multiline user messages,
   inline image evidence inserted by a phone-friendly image picker or by
   desktop drag-and-drop / clipboard paste at the current cursor position, and

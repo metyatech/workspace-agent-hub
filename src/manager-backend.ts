@@ -5584,6 +5584,37 @@ export async function sendGlobalToBuiltinManager(
   });
 }
 
+export async function sendThreadFollowUpToBuiltinManager(
+  dir: string,
+  threadId: string,
+  content: string
+): Promise<ManagerRoutingSummary> {
+  const resolvedDir = resolvePath(dir);
+
+  await ensureThreadReadyForUserMessage(resolvedDir, threadId);
+  await clearThreadRoutingStatePreservingContinuity(resolvedDir, threadId);
+  await addMessage(resolvedDir, threadId, content, 'user', 'waiting');
+  await sendToBuiltinManager(resolvedDir, threadId, content, {
+    dispatchMode: 'manager-evaluate',
+    requestedRunMode: inferRequestedRunModeFromContent(content),
+  });
+
+  const thread = await getThread(resolvedDir, threadId);
+  return {
+    items: [
+      {
+        threadId,
+        title: thread?.title ?? threadId,
+        outcome: 'attached-existing',
+        reason: '開いている作業項目へそのまま追加しました。',
+      },
+    ],
+    routedCount: 1,
+    ambiguousCount: 0,
+    detail: 'この会話に追加しました',
+  };
+}
+
 // ── Eager reconciliation (called at server startup) ────────────────────────
 
 /**
