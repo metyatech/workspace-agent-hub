@@ -67,3 +67,65 @@ function Test-NpmDependencySurfaceReady {
 
     return $true
 }
+
+function Invoke-NpmDependencySurfaceRepair {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        [string]$NpmExecutable = 'npm',
+        [string]$LogPrefix = '[npm-bootstrap]'
+    )
+
+    if (Test-NpmDependencySurfaceReady -RepoRoot $RepoRoot) {
+        return
+    }
+
+    $repairSteps = @(
+        @{
+            Label = 'npm ci'
+            Arguments = @('ci')
+        },
+        @{
+            Label = 'npm install'
+            Arguments = @('install')
+        }
+    )
+
+    Push-Location $RepoRoot
+    try {
+        foreach ($repairStep in $repairSteps) {
+            & $NpmExecutable @($repairStep.Arguments) 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                    [Console]::Error.WriteLine($_.ToString())
+                } else {
+                    [Console]::Error.WriteLine([string]$_)
+                }
+            }
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "$($repairStep.Label) failed."
+            }
+
+            if (Test-NpmDependencySurfaceReady -RepoRoot $RepoRoot) {
+                return
+            }
+
+            if ($repairStep.Label -eq 'npm ci') {
+                [Console]::Error.WriteLine("$LogPrefix npm ci left a partial dependency surface; retrying with npm install.")
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+
+    $missingProbePaths = @(
+        Get-NpmDependencyProbePaths -RepoRoot $RepoRoot |
+            Where-Object { -not (Test-Path -Path $_) }
+    )
+    $missingPreview = ($missingProbePaths | Select-Object -First 8) -join ', '
+    if (-not $missingPreview) {
+        $missingPreview = 'unknown probe paths'
+    }
+
+    throw "$LogPrefix npm dependency repair left a partial dependency surface. Missing: $missingPreview"
+}

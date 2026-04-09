@@ -155,10 +155,7 @@ try {
     Push-Location $repoRoot
     try {
         if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
-            npm ci
-            if ($LASTEXITCODE -ne 0) {
-                throw 'npm ci failed.'
-            }
+            Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[verify]'
         }
     } finally {
         Pop-Location

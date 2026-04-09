@@ -202,10 +202,7 @@ function Stop-TestTmuxSocketServers {
 Push-Location $repoRoot
 try {
     if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
-        npm ci
-        if ($LASTEXITCODE -ne 0) {
-            throw 'npm ci failed.'
-        }
+        Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[test]'
     }
 } finally {
     Pop-Location
@@ -360,6 +357,7 @@ if (($npmBootstrapOutput | Out-String).Trim() -notmatch 'PASS') {
             (Start-TestLaneProcess -Name 'shortcut-install' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1'))),
             (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1'))),
             (Start-TestLaneProcess -Name 'ensure-build-detection' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-ensure-web-ui-build-detection.ps1'))),
+            (Start-TestLaneProcess -Name 'startup-npm-bootstrap-wiring' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-startup-npm-bootstrap-wiring.ps1'))),
             (Start-TestLaneProcess -Name 'session-catalog-retry' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-session-catalog-retry.ps1')))
         )
         Wait-TestLaneProcesses -ProcessInfos $postProcesses

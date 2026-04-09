@@ -16,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
+. (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
 $sourcePaths = @(
     (Join-Path $repoRoot 'src\cli.ts'),
     (Join-Path $repoRoot 'src\web-ui.ts'),
@@ -79,20 +80,10 @@ if (-not (Test-Path -Path $packageJsonPath)) {
 
 Push-Location $repoRoot
 try {
-    $nodeModulesOk = $false
-    if (Test-Path -Path (Join-Path $repoRoot 'node_modules')) {
-        # Verify node_modules integrity by importing a critical dependency
-        & node -e "require('commander')" 2>$null
-        $nodeModulesOk = ($LASTEXITCODE -eq 0)
-        if (-not $nodeModulesOk) {
-            [Console]::Error.WriteLine('[start-web-ui] node_modules integrity check failed; auto-repairing via npm ci.')
-        }
-    }
+    $nodeModulesOk = Test-NpmDependencySurfaceReady -RepoRoot $repoRoot
     if (-not $nodeModulesOk) {
-        $npmExitCode = Invoke-NpmCommand -Arguments @('ci')
-        if ($npmExitCode -ne 0) {
-            throw 'npm ci failed.'
-        }
+        [Console]::Error.WriteLine('[start-web-ui] node_modules integrity check failed; auto-repairing npm dependencies.')
+        Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[start-web-ui]'
     }
 
     $buildNeeded = $false
