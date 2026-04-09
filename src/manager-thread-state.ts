@@ -58,6 +58,8 @@ export interface ManagerThreadMeta {
   requestedRunMode?: ManagerRunMode | null;
   workerSessionId?: string | null;
   workerSessionRuntime?: ManagerWorkerRuntime | null;
+  workerSessionModel?: string | null;
+  workerSessionEffort?: string | null;
   workerLastStartedAt?: string | null;
   assigneeKind?: 'manager' | 'worker' | null;
   assigneeLabel?: string | null;

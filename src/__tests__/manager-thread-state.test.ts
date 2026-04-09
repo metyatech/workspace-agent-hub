@@ -103,6 +103,8 @@ describe('manager thread state derivation', () => {
             newRepoName: null,
             workingDirectory: null,
             workerRuntime: 'codex',
+            workerModel: null,
+            workerEffort: null,
             assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
             writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
             pid: 1234,

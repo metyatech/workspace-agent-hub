@@ -14,7 +14,7 @@ export interface ManagedRepoConfig {
   defaultBranch: string;
   verifyCommand: string;
   supportedWorkerRuntimes: ManagerWorkerRuntime[];
-  preferredWorkerRuntime: ManagerWorkerRuntime;
+  preferredWorkerRuntime: ManagerWorkerRuntime | null;
   mergeLaneEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -185,8 +185,8 @@ async function buildManagedRepoConfig(
     repoRoot: normalizedRoot,
     defaultBranch: await detectDefaultBranch(normalizedRoot),
     verifyCommand: await detectVerifyCommand(normalizedRoot),
-    supportedWorkerRuntimes: ['codex'],
-    preferredWorkerRuntime: 'codex',
+    supportedWorkerRuntimes: ['codex', 'claude'],
+    preferredWorkerRuntime: null,
     mergeLaneEnabled: true,
     createdAt: now,
     updatedAt: now,

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   spawnMock,
   execFileMock,
+  fetchMock,
   addMessageMock,
   createThreadMock,
   getThreadMock,
@@ -17,6 +18,7 @@ const {
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileMock: vi.fn(),
+  fetchMock: vi.fn(),
   addMessageMock: vi.fn(),
   createThreadMock: vi.fn(),
   getThreadMock: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock('child_process', () => ({
   spawn: spawnMock,
   execFile: execFileMock,
 }));
+
+vi.stubGlobal('fetch', fetchMock);
 
 vi.mock('@metyatech/thread-inbox', () => ({
   addMessage: addMessageMock,
@@ -251,12 +255,66 @@ function spawnedCommandLine(callIndex: number): string {
   return args[3] ?? args.join(' ');
 }
 
+function queueSpawnResults(...procs: unknown[]): void {
+  for (const proc of procs) {
+    spawnMock.mockReturnValueOnce(proc);
+  }
+}
+
+function isAiQuotaCommand(command: string): boolean {
+  return /ai-quota(?:\.cmd)?$/i.test(command.trim());
+}
+
+function isAiQuotaInvocation(command: string, args: string[]): boolean {
+  return (
+    isAiQuotaCommand(command) ||
+    args.some((arg) => /ai-quota(?:\.cmd)?/i.test(arg))
+  );
+}
+
+function mockScaleLeaderboardPage(
+  entries: Array<{ model: string; score: number }>
+): string {
+  const payload = JSON.stringify(
+    entries.map((entry, index) => ({
+      model: entry.model,
+      version: '',
+      rank: index + 1,
+      score: entry.score,
+      createdAt: '2026-04-09T00:00:00.000Z',
+    }))
+  ).replace(/"/g, '\\"');
+  return `<script>self.__next_f.push([1,"1b:[\\"$\\",\\"div\\",null,{\\"children\\":[\\"$\\",\\"$L1d\\",null,{\\"entries\\":${payload},\\"benchmarkName\\":\\"mock\\"}]}"])</script>`;
+}
+
+const defaultScalePages = {
+  'https://labs.scale.com/leaderboard/sweatlas-qna': mockScaleLeaderboardPage([
+    { model: 'Gpt 5.4 xHigh (Codex)', score: 40.8 },
+    { model: 'Opus 4.6 (Claude Code)', score: 33.3 },
+  ]),
+  'https://labs.scale.com/leaderboard/sweatlas-tw': mockScaleLeaderboardPage([
+    { model: 'Gpt-5.4-xHigh (Codex CLI)', score: 44.36 },
+    { model: 'Opus-4.6 (Claude Code)', score: 36.67 },
+  ]),
+  'https://labs.scale.com/leaderboard/swe_bench_pro_public':
+    mockScaleLeaderboardPage([
+      { model: 'gpt-5.4-pro (xHigh)*', score: 59.1 },
+      { model: 'claude-opus-4-6 (thinking)*', score: 51.9 },
+    ]),
+  'https://labs.scale.com/leaderboard/swe_bench_pro_private':
+    mockScaleLeaderboardPage([
+      { model: 'claude-opus-4-6 (thinking)', score: 47.1 },
+      { model: 'gpt-5.4-pro (xHigh)', score: 43.4 },
+    ]),
+};
+
 let tempDir = '';
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
   spawnMock.mockReset();
   execFileMock.mockReset();
+  fetchMock.mockReset();
   addMessageMock.mockReset();
   createThreadMock.mockReset();
   getThreadMock.mockReset();
@@ -284,18 +342,55 @@ beforeEach(async () => {
   resolveThreadMock.mockResolvedValue(undefined);
   execFileMock.mockImplementation(
     (
-      _command: string,
-      _args: string[],
+      command: string,
+      args: string[],
       _options: object,
-      callback?: (error: Error | null) => void
+      callback?: (error: Error | null, stdout?: string, stderr?: string) => void
     ) => {
       const proc = new EventEmitter();
       process.nextTick(() => {
-        callback?.(null);
+        if (isAiQuotaInvocation(command, args)) {
+          callback?.(
+            null,
+            JSON.stringify({
+              claude: {
+                status: 'ok',
+                display: '5h: 1% used, 7d: 10% used',
+                data: {
+                  five_hour: { utilization: 1 },
+                  seven_day: { utilization: 10 },
+                },
+              },
+              codex: {
+                status: 'ok',
+                display: '5h: 11% used, 7d: 26% used',
+                data: {
+                  primary: { used_percent: 11 },
+                  secondary: { used_percent: 26 },
+                },
+              },
+            }),
+            ''
+          );
+          return;
+        }
+        callback?.(null, '', '');
       });
       return proc;
     }
   );
+  fetchMock.mockImplementation(async (input: string | URL | Request) => {
+    const url = String(input);
+    const body = defaultScalePages[url as keyof typeof defaultScalePages];
+    if (!body) {
+      throw new Error(`Unexpected fetch URL in test: ${url}`);
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => body,
+    };
+  });
   vi.mocked(createWorkerWorktree).mockReset();
   vi.mocked(createWorkerWorktree).mockResolvedValue({
     worktreePath: '',
@@ -588,6 +683,65 @@ describe('manager backend codex integration', () => {
     );
     expect(reviewPrompt).toContain('src/manager-backend.ts');
     expect(reviewPrompt).toContain('npm run verify PASS');
+  });
+
+  it('adds unit-test verification guidance when src/__tests__ files are in scope', () => {
+    const thread = {
+      id: 'thread-tests',
+      title: 'Unit test follow-up',
+      status: 'active' as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [
+        {
+          sender: 'user' as const,
+          content: 'この Vitest を直して',
+          at: '2026-04-09T05:20:00.000Z',
+        },
+      ],
+    };
+    const writeScope = 'src/__tests__/manager-worker-model-selection.test.ts';
+    const workerPrompt = buildWorkerExecutionPrompt({
+      content: 'この Vitest を直して',
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      workingDirectory: 'D:\\ghws\\workspace-agent-hub',
+      worktreePath: null,
+      targetRepoRoot: null,
+      managedVerifyCommand: 'npm run verify',
+      writeScopes: [writeScope],
+      isFirstTurn: true,
+      thread,
+    });
+    const reviewPrompt = buildManagerReviewPrompt({
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      workingDirectory: 'D:\\ghws\\workspace-agent-hub',
+      worktreePath: null,
+      writeScopes: [writeScope],
+      currentUserRequest: 'この Vitest を直して',
+      managedVerifyCommand: 'npm run verify',
+      thread,
+      workerResult: {
+        status: 'review',
+        reply: '修正しました。',
+        changedFiles: [writeScope],
+        verificationSummary:
+          'npm run test:unit -- src/__tests__/manager-worker-model-selection.test.ts PASS',
+      },
+    });
+
+    expect(workerPrompt).toContain('Verification guidance:');
+    expect(workerPrompt).toContain(
+      'Prefer the repo-standard verification command first: npm run verify.'
+    );
+    expect(workerPrompt).toContain('npm run test:unit -- <file ...>');
+    expect(workerPrompt).toContain('do not send those files to Playwright');
+
+    expect(reviewPrompt).toContain('Verification guidance:');
+    expect(reviewPrompt).toContain(
+      'Prefer the repo-standard verification command first: npm run verify.'
+    );
+    expect(reviewPrompt).toContain('npm run test:unit -- <file ...>');
+    expect(reviewPrompt).toContain('do not send those files to Playwright');
   });
 
   it('parses manager reply and routing JSON payloads', () => {
@@ -1297,6 +1451,162 @@ describe('manager backend codex integration', () => {
       'claude-session-existing'
     );
     expect(meta['thread-claude-runtime']?.workerSessionRuntime).toBe('claude');
+  });
+
+  it('falls back to the next live-ranked runtime when the top runtime does not have enough quota', async () => {
+    const claudeWorkerProc = makeProc(9111);
+    const managerReviewProc = makeProc(9112);
+    queueSpawnResults(claudeWorkerProc, managerReviewProc);
+    execFileMock.mockImplementation(
+      (
+        command: string,
+        args: string[],
+        _options: object,
+        callback?: (
+          error: Error | null,
+          stdout?: string,
+          stderr?: string
+        ) => void
+      ) => {
+        const proc = new EventEmitter();
+        process.nextTick(() => {
+          if (isAiQuotaInvocation(command, args)) {
+            callback?.(
+              null,
+              JSON.stringify({
+                claude: {
+                  status: 'ok',
+                  display: '5h: 1% used, 7d: 10% used',
+                  data: {
+                    five_hour: { utilization: 1 },
+                    seven_day: { utilization: 10 },
+                  },
+                },
+                codex: {
+                  status: 'ok',
+                  display: '5h: 97% used, 7d: 95% used',
+                  data: {
+                    primary: { used_percent: 97 },
+                    secondary: { used_percent: 95 },
+                  },
+                },
+              }),
+              ''
+            );
+            return;
+          }
+          callback?.(null, '', '');
+        });
+        return proc;
+      }
+    );
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-live-quota-fallback',
+      'README を見て要点だけ教えてください'
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    const workerCommand = String(spawnMock.mock.calls[0]?.[0] ?? '');
+    const workerArgs = spawnMock.mock.calls[0]?.[1] as string[];
+    expect(workerCommand.toLowerCase()).toContain('claude');
+    expect(workerArgs).toEqual(
+      expect.arrayContaining(['--model', 'claude-opus-4-6'])
+    );
+
+    completeGenericRuntimeTurn(claudeWorkerProc, {
+      sessionId: 'claude-ranked-session',
+      text: '{"status":"review","reply":"README の要点です"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(managerReviewProc, {
+      sessionId: 'manager-review-ranked-runtime',
+      text: '{"status":"review","reply":"README の要点です"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-live-quota-fallback']?.workerSessionRuntime).toBe(
+      'claude'
+    );
+    expect(meta['thread-live-quota-fallback']?.workerSessionModel).toBe(
+      'claude-opus-4-6'
+    );
+  });
+
+  it('falls back to runtime defaults when live ranking cannot be resolved', async () => {
+    const workerProc = makeProc(9113);
+    const reviewProc = makeProc(9114);
+    queueSpawnResults(workerProc, reviewProc);
+    execFileMock.mockImplementationOnce(
+      (
+        command: string,
+        args: string[],
+        _options: object,
+        callback?: (
+          error: Error | null,
+          stdout?: string,
+          stderr?: string
+        ) => void
+      ) => {
+        const proc = new EventEmitter();
+        process.nextTick(() => {
+          if (isAiQuotaInvocation(command, args)) {
+            callback?.(new Error('ai-quota unavailable'));
+            return;
+          }
+          callback?.(null, '', '');
+        });
+        return proc;
+      }
+    );
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-live-selection-fallback',
+      'README を見て要点だけ教えてください'
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(spawnedCommandLine(0)).toContain('"--model" "gpt-5.4"');
+    expect(spawnedCommandLine(0)).toContain(
+      '"model_reasoning_effort=""xhigh"""'
+    );
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-ranked-fallback',
+      text: '{"status":"review","reply":"README の要点です"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-ranked-fallback',
+      text: '{"status":"review","reply":"README の要点です"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-live-selection-fallback']?.workerSessionRuntime).toBe(
+      'codex'
+    );
+    expect(meta['thread-live-selection-fallback']?.workerSessionModel).toBe(
+      'gpt-5.4'
+    );
+    expect(meta['thread-live-selection-fallback']?.assigneeLabel).toBe(
+      'Worker Codex gpt-5.4 (xhigh)'
+    );
   });
 
   it('treats an explicit no-change follow-up as read-only even when the existing topic was previously write-oriented', async () => {
@@ -2114,6 +2424,8 @@ describe('manager backend codex integration', () => {
           newRepoName: null,
           workingDirectory: null,
           workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: process.pid,
@@ -2150,6 +2462,8 @@ describe('manager backend codex integration', () => {
           newRepoName: null,
           workingDirectory: null,
           workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/a.ts'],
           pid: 7001,
@@ -2168,6 +2482,8 @@ describe('manager backend codex integration', () => {
           newRepoName: null,
           workingDirectory: null,
           workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/b.ts'],
           pid: 7002,
@@ -2265,6 +2581,8 @@ describe('manager backend codex integration', () => {
           newRepoName: null,
           workingDirectory: null,
           workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: null,
@@ -2789,6 +3107,8 @@ describe('manager backend codex integration', () => {
           newRepoName: null,
           workingDirectory: null,
           workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
           pid: null,
@@ -3109,6 +3429,116 @@ describe('manager backend codex integration', () => {
 
     expect(addMessageMock).toHaveBeenCalledTimes(2);
     expect(addMessageMock.mock.calls[1]?.[2]).toContain('recovered reply');
+  });
+
+  it('resumes the current worker during recovery and keeps Vitest files on the unit-test lane', async () => {
+    const firstWorkerProc = makeProc(8121);
+    const firstReviewProc = makeProc(8122);
+    const recoveryDecisionProc = makeProc(8123);
+    const retryWorkerProc = makeProc(8124);
+    const finalReviewProc = makeProc(8125);
+    queueSpawnResults(
+      firstWorkerProc,
+      firstReviewProc,
+      recoveryDecisionProc,
+      retryWorkerProc,
+      finalReviewProc
+    );
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-wt-recovery-retry',
+      branchName: 'wah-worker-recovery-retry',
+      targetRepoRoot: tempDir,
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-recovery-retry',
+      'Vitest の確認だけ直してください',
+      {
+        dispatchMode: 'direct-worker',
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        writeScopes: ['src/__tests__/manager-worker-model-selection.test.ts'],
+      }
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(firstWorkerProc, {
+      sessionId: 'worker-session-initial',
+      text: JSON.stringify({
+        status: 'review',
+        reply: '最初の修正です',
+        changedFiles: ['src/__tests__/manager-worker-model-selection.test.ts'],
+        verificationSummary:
+          'npm run test:e2e -- src/__tests__/manager-worker-model-selection.test.ts FAIL',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-initial',
+      text: JSON.stringify({
+        status: 'needs-reply',
+        reply:
+          'Vitest のテストファイルを Playwright に流していました。repo 標準 verify か test:unit を使ってください。',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(recoveryDecisionProc, {
+      sessionId: 'manager-recovery-decision',
+      text: JSON.stringify({
+        decision: 'retry-worker',
+        reason: '既存の変更は活かせるので続きだけ直せば十分です。',
+        instructions:
+          'Vitest のテストファイルは Playwright ではなく test:unit で確認してください。',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    expect(spawnedCommandLine(3)).toContain(
+      '"exec" "resume" "worker-session-initial"'
+    );
+    expect(retryWorkerProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'declaredWriteScopes: src/__tests__/manager-worker-model-selection.test.ts'
+      )
+    );
+    expect(retryWorkerProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('npm run test:unit -- <file ...>')
+    );
+    expect(retryWorkerProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('do not send those files to Playwright')
+    );
+
+    completeCodexTurn(retryWorkerProc, {
+      sessionId: 'worker-session-retry',
+      text: JSON.stringify({
+        status: 'review',
+        reply: '修正し直しました',
+        changedFiles: ['src/__tests__/manager-worker-model-selection.test.ts'],
+        verificationSummary:
+          'npm run test:unit -- src/__tests__/manager-worker-model-selection.test.ts PASS',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    completeCodexTurn(finalReviewProc, {
+      sessionId: 'manager-review-final',
+      text: '{"status":"review","reply":"修正し直しました"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        meta['thread-recovery-retry']?.workerSessionId ===
+          'worker-session-retry'
+      );
+    });
   });
 
   it('reports a parse error instead of silently dropping a successful turn with no usable reply', async () => {

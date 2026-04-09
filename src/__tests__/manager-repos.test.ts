@@ -44,7 +44,14 @@ describe('manager-repos', () => {
     const repos = await readManagedRepos(workspaceRoot);
 
     expect(repos.map((repo) => repo.label)).toEqual(['repo-a', 'repo-b']);
-    expect(repos.every((repo) => repo.preferredWorkerRuntime === 'codex')).toBe(
+    expect(
+      repos.every(
+        (repo) =>
+          repo.supportedWorkerRuntimes.includes('codex') &&
+          repo.supportedWorkerRuntimes.includes('claude')
+      )
+    ).toBe(true);
+    expect(repos.every((repo) => repo.preferredWorkerRuntime === null)).toBe(
       true
     );
     expect(repos.every((repo) => repo.verifyCommand.length > 0)).toBe(true);
