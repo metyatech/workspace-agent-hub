@@ -3161,9 +3161,82 @@ async function runWorkerRuntimeTurn(input: {
 const inFlight = new Set<string>();
 const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
+const recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
+const recoveryRetryAttempts = new Map<string, number>();
 const MAX_RERUN_DEPTH = 5;
+const MAX_INTERNAL_ERROR_RETRY_MS = 30_000;
 const routingLocks = new Map<string, Promise<void>>();
 const MAX_ROUTING_TOPIC_CANDIDATES = 40;
+
+function managerInternalErrorRetryMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS',
+    2_000
+  );
+}
+
+function cancelRecoveryRetryTimer(resolvedDir: string): void {
+  const timer = recoveryRetryTimers.get(resolvedDir);
+  if (timer) {
+    clearTimeout(timer);
+    recoveryRetryTimers.delete(resolvedDir);
+  }
+}
+
+function resetRecoveryRetryState(resolvedDir: string): void {
+  cancelRecoveryRetryTimer(resolvedDir);
+  recoveryRetryAttempts.delete(resolvedDir);
+}
+
+async function runScheduledRecoveryRetry(
+  dir: string,
+  resolvedDir: string
+): Promise<void> {
+  try {
+    const [session, queue] = await Promise.all([
+      readSession(dir),
+      readQueue(dir),
+    ]);
+    const hasPendingQueue = queue.some((entry) => !entry.processed);
+    if (
+      session.status === 'not-started' ||
+      (!hasPendingQueue && session.activeAssignments.length === 0)
+    ) {
+      resetRecoveryRetryState(resolvedDir);
+      return;
+    }
+    await processNextQueued(dir, resolvedDir);
+  } catch (error) {
+    console.error('[manager-backend] scheduled recovery retry failed:', error);
+    scheduleRecoveryRetry(dir, resolvedDir);
+  }
+}
+
+function scheduleRecoveryRetry(dir: string, resolvedDir: string): void {
+  if (recoveryRetryTimers.has(resolvedDir)) {
+    return;
+  }
+
+  const attempt = (recoveryRetryAttempts.get(resolvedDir) ?? 0) + 1;
+  recoveryRetryAttempts.set(resolvedDir, attempt);
+  const delayMs = Math.min(
+    managerInternalErrorRetryMs() * Math.max(1, 2 ** (attempt - 1)),
+    MAX_INTERNAL_ERROR_RETRY_MS
+  );
+
+  console.error(
+    `[manager-backend] scheduling recovery retry ${attempt} for ${resolvedDir} in ${delayMs}ms`
+  );
+
+  const timer = setTimeout(() => {
+    if (recoveryRetryTimers.get(resolvedDir) === timer) {
+      recoveryRetryTimers.delete(resolvedDir);
+    }
+    void runScheduledRecoveryRetry(dir, resolvedDir);
+  }, delayMs);
+  timer.unref?.();
+  recoveryRetryTimers.set(resolvedDir, timer);
+}
 
 function makeFallbackThreadTitle(content: string): string {
   const normalized = extractManagerMessagePlainText(content);
@@ -5101,6 +5174,8 @@ export async function processNextQueued(
     return;
   }
   inFlight.add(resolvedDir);
+  cancelRecoveryRetryTimer(resolvedDir);
+  let hadInternalError = false;
 
   try {
     let session = await reconcileActiveAssignments(dir);
@@ -5684,6 +5759,7 @@ export async function processNextQueued(
       });
     }
   } catch (err) {
+    hadInternalError = true;
     console.error('[manager-backend] processNextQueued error:', err);
     try {
       await setManagerRuntimeError(
@@ -5695,8 +5771,12 @@ export async function processNextQueued(
     } catch {
       /* workspace may have been torn down during tests/process shutdown */
     }
+    scheduleRecoveryRetry(dir, resolvedDir);
   } finally {
     inFlight.delete(resolvedDir);
+    if (!hadInternalError) {
+      recoveryRetryAttempts.delete(resolvedDir);
+    }
     if (rerunRequested.has(resolvedDir)) {
       rerunRequested.delete(resolvedDir);
       const depth = (rerunDepth.get(resolvedDir) ?? 0) + 1;

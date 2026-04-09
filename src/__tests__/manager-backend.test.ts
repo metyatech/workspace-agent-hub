@@ -346,6 +346,7 @@ afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
+  delete process.env.WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS;
   await rm(tempDir, {
     recursive: true,
     force: true,
@@ -2399,6 +2400,59 @@ describe('manager backend codex integration', () => {
     expect(status.pendingCount).toBe(1);
     expect(spawnMock).not.toHaveBeenCalled();
   });
+
+  it('auto-retries a transient internal queue failure instead of stalling pending work', async () => {
+    process.env.WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS = '100';
+
+    const workerProc = makeProc(7101);
+    const reviewProc = makeProc(7102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    listThreadsMock.mockRejectedValueOnce(
+      new Error('transient thread listing failure')
+    );
+
+    await sendToBuiltinManager(tempDir, 'thread-auto-retry', 'recover me');
+
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      return (
+        session.lastErrorMessage?.includes(
+          'transient thread listing failure'
+        ) ?? false
+      );
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-auto-retry',
+      text: '{"status":"review","reply":"worker recovered"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-auto-retry',
+      text: '{"status":"review","reply":"worker recovered"}',
+    });
+
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      const queue = await readQueue(tempDir);
+      return queue.length === 0 && session.activeAssignments.length === 0;
+    });
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('ok');
+    expect(status.pendingCount).toBe(0);
+    expect(status.errorMessage).toBeNull();
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-auto-retry' &&
+          call[2] === 'worker recovered' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
+  }, 15000);
 
   it('keeps one in-flight codex turn and serializes queued messages without leaking worker continuity across different topics', async () => {
     const firstWorkerProc = makeProc(7001);
