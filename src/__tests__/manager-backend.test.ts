@@ -143,6 +143,7 @@ import {
   mergeWorktreeToMain,
   prepareNewRepoWorkspace,
   pushWithRetry,
+  removeWorktree,
   resolveTargetRepoRoot,
   runPostMergeDeliveryChain,
   validateWorktreeReadyForMerge,
@@ -414,6 +415,7 @@ describe('manager backend codex integration', () => {
     const workerFirst = buildWorkerExecutionPrompt({
       content: 'Implement the task',
       resolvedDir: 'D:\\ghws',
+      workingDirectory: 'D:\\ghws\\workspace-agent-hub\\packages\\manager',
       worktreePath: null,
       targetRepoRoot: null,
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -436,6 +438,7 @@ describe('manager backend codex integration', () => {
     const workerFollowUp = buildWorkerExecutionPrompt({
       content: 'Please answer the follow-up question directly.',
       resolvedDir: 'D:\\ghws',
+      workingDirectory: 'D:\\ghws\\workspace-agent-hub\\packages\\manager',
       worktreePath: null,
       targetRepoRoot: null,
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -462,6 +465,7 @@ describe('manager backend codex integration', () => {
     });
     const reviewPrompt = buildManagerReviewPrompt({
       resolvedDir: 'D:\\ghws',
+      workingDirectory: 'C:\\temp\\wah-wt-review\\packages\\manager',
       worktreePath: 'C:\\temp\\wah-wt-review',
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
       currentUserRequest: 'Please answer the follow-up question directly.',
@@ -496,9 +500,18 @@ describe('manager backend codex integration', () => {
     expect(workerFirst).toContain('built-in execution worker');
     expect(workerFirst).toContain('plain, natural Japanese');
     expect(workerFirst).toContain('Avoid internal AI/platform/process jargon');
+    expect(workerFirst).toContain(
+      'Workspace: D:\\ghws\\workspace-agent-hub\\packages\\manager'
+    );
+    expect(workerFirst).toContain(
+      'Worker working directory: D:\\ghws\\workspace-agent-hub\\packages\\manager'
+    );
     expect(workerFirst).toContain('[Topic: Implement task]');
     expect(workerFirst).toContain('Please implement the task.');
     expect(workerFollowUp).toContain('You are continuing an existing topic.');
+    expect(workerFollowUp).toContain(
+      'workingDirectory: D:\\ghws\\workspace-agent-hub\\packages\\manager'
+    );
     expect(workerFollowUp).toContain('Latest user request:');
     expect(workerFollowUp).toContain(
       'Please answer the follow-up question directly.'
@@ -506,6 +519,12 @@ describe('manager backend codex integration', () => {
     expect(reviewPrompt).toContain('built-in manager reviewer');
     expect(reviewPrompt).toContain(
       'Treat the worker report as internal input only'
+    );
+    expect(reviewPrompt).toContain(
+      'Workspace: C:\\temp\\wah-wt-review\\packages\\manager'
+    );
+    expect(reviewPrompt).toContain(
+      'workingDirectory: C:\\temp\\wah-wt-review\\packages\\manager'
     );
     expect(reviewPrompt).toContain('commit, push');
     expect(reviewPrompt).toContain('release or publish path as well');
@@ -1682,6 +1701,141 @@ describe('manager backend codex integration', () => {
     expect(vi.mocked(mergeWorktreeToMain)).not.toHaveBeenCalled();
   });
 
+  it('spawns the worker from a manager-selected workingDirectory inside the isolated worktree', async () => {
+    const dispatchProc = makeProc(6119);
+    const workerProc = makeProc(6120);
+    const reviewProc = makeProc(6123);
+    const repoRoot = join(tempDir, 'workspace-agent-hub');
+    const worktreePath = join(tempDir, 'worktrees', 'repo-working-dir');
+    const workerSubdir = join(worktreePath, 'packages', 'manager');
+    await mkdir(workerSubdir, { recursive: true });
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath,
+      branchName: 'agent/repo-working-dir',
+      targetRepoRoot: repoRoot,
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-working-dir',
+      'packages/manager から進めて',
+      {
+        dispatchMode: 'manager-evaluate',
+        targetRepoRoot: repoRoot,
+        requestedRunMode: 'write',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-working-dir',
+      text: JSON.stringify({
+        assignee: 'worker',
+        workingDirectory: 'packages/manager',
+        writeScopes: ['workspace-agent-hub/src'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(spawnMock.mock.calls[1]?.[2]).toMatchObject({
+      cwd: workerSubdir,
+    });
+    expect(workerProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining(`Worker working directory: ${workerSubdir}`)
+    );
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-working-dir',
+      text: '{"status":"review","reply":"working dir done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-working-dir',
+      text: '{"status":"review","reply":"working dir done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return queue.length === 0;
+    });
+  });
+
+  it('returns the missing workingDirectory error to manager for reconsideration before starting the worker', async () => {
+    const dispatchProc = makeProc(6124);
+    const recoveryProc = makeProc(6125);
+    const repoRoot = join(tempDir, 'workspace-agent-hub');
+    const worktreePath = join(tempDir, 'worktrees', 'repo-missing-working-dir');
+    await mkdir(worktreePath, { recursive: true });
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(recoveryProc);
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath,
+      branchName: 'agent/repo-missing-working-dir',
+      targetRepoRoot: repoRoot,
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-missing-working-dir',
+      'サブディレクトリから進めて',
+      {
+        dispatchMode: 'manager-evaluate',
+        targetRepoRoot: repoRoot,
+        requestedRunMode: 'write',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-missing-working-dir',
+      text: JSON.stringify({
+        assignee: 'worker',
+        workingDirectory: 'missing/dir',
+        writeScopes: ['workspace-agent-hub/src'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(spawnMock.mock.calls[1]?.[2]).toMatchObject({
+      cwd: worktreePath,
+    });
+    expect(recoveryProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('missing/dir')
+    );
+    expect(recoveryProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('does not exist')
+    );
+
+    completeCodexTurn(recoveryProc, {
+      sessionId: 'recover-missing-working-dir',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'needs-reply',
+        reply: '対象の作業フォルダを確認してください。',
+      }),
+    });
+
+    await waitFor(() => addMessageMock.mock.calls.length === 1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-missing-working-dir'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      '対象の作業フォルダを確認してください。'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith({
+      targetRepoRoot: repoRoot,
+      worktreePath,
+      branchName: 'agent/repo-missing-working-dir',
+    });
+  });
+
   it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {
     const workerProc = makeProc(6121);
     const reviewProc = makeProc(6122);
@@ -1905,6 +2059,7 @@ describe('manager backend codex integration', () => {
           assigneeKind: 'worker',
           targetKind: 'existing-repo',
           newRepoName: null,
+          workingDirectory: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -1940,6 +2095,7 @@ describe('manager backend codex integration', () => {
           assigneeKind: 'worker',
           targetKind: 'existing-repo',
           newRepoName: null,
+          workingDirectory: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/a.ts'],
@@ -1957,6 +2113,7 @@ describe('manager backend codex integration', () => {
           assigneeKind: 'worker',
           targetKind: 'existing-repo',
           newRepoName: null,
+          workingDirectory: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/b.ts'],
@@ -2053,6 +2210,7 @@ describe('manager backend codex integration', () => {
           assigneeKind: 'worker',
           targetKind: 'existing-repo',
           newRepoName: null,
+          workingDirectory: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
@@ -2576,6 +2734,7 @@ describe('manager backend codex integration', () => {
           assigneeKind: 'worker',
           targetKind: 'existing-repo',
           newRepoName: null,
+          workingDirectory: null,
           workerRuntime: 'codex',
           assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
           writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
