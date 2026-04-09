@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync, mkdirSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -198,6 +198,9 @@ describe('mergeWorktreeToMain', () => {
 
 describe('createIntegrationWorktree', () => {
   it('bases the integration worktree on the latest upstream branch', async () => {
+    const targetRepoRoot = await mkdtemp(
+      join(tmpdir(), 'wah-integration-base-')
+    );
     const gitArgs: string[][] = [];
     const calls = [
       gitResult(0, 'origin/main'),
@@ -215,36 +218,105 @@ describe('createIntegrationWorktree', () => {
       return factory();
     });
 
-    const result = await createIntegrationWorktree({
-      targetRepoRoot: '/repo-int',
-      assignmentId: 'assign-upstream',
+    try {
+      const result = await createIntegrationWorktree({
+        targetRepoRoot,
+        assignmentId: 'assign-upstream',
+      });
+
+      expect(result.worktreePath).toContain('wah-merge-assign-upstream');
+      expect(result.branchName).toBe('wah-merge-assign-upstream');
+      expect(result.remoteName).toBe('origin');
+      expect(result.remoteBranch).toBe('main');
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+          ['fetch', 'origin', 'main'],
+          ['rev-parse', '--verify', 'refs/remotes/origin/main'],
+          [
+            'worktree',
+            'add',
+            result.worktreePath,
+            '-b',
+            'wah-merge-assign-upstream',
+            'refs/remotes/origin/main',
+          ],
+        ])
+      );
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('bootstraps submodules and root local env overlays in integration worktrees', async () => {
+    const assignmentId = `assign-integration-bootstrap-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(
+      join(tmpdir(), 'wah-integration-repo-')
+    );
+    const gitArgs: string[][] = [];
+    let createdPath: string | null = null;
+
+    await writeFile(
+      join(targetRepoRoot, '.env.local'),
+      'BASE_URL=https://example.test\n'
+    );
+    await writeFile(
+      join(targetRepoRoot, '.env.course.local'),
+      'COURSE_CONTENT_SOURCE=../course-content\n'
+    );
+    await writeFile(join(targetRepoRoot, '.env'), 'SHOULD_NOT_COPY=1\n');
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (
+        args[0] === 'rev-parse' &&
+        args[1] === '--abbrev-ref' &&
+        args[2] === '--symbolic-full-name'
+      ) {
+        return gitResult(0, 'origin/main')();
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        return gitResult(0, 'refs/remotes/origin/main')();
+      }
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+      }
+      return gitResult(0, '')();
     });
 
-    expect(result.worktreePath).toContain('wah-merge-assign-upstream');
-    expect(result.branchName).toBe('wah-merge-assign-upstream');
-    expect(result.remoteName).toBe('origin');
-    expect(result.remoteBranch).toBe('main');
-    expect(gitArgs).toEqual(
-      expect.arrayContaining([
-        ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
-        ['fetch', 'origin', 'main'],
-        ['rev-parse', '--verify', 'refs/remotes/origin/main'],
-        [
-          'worktree',
-          'add',
-          result.worktreePath,
-          '-b',
-          'wah-merge-assign-upstream',
-          'refs/remotes/origin/main',
-        ],
-      ])
-    );
+    try {
+      const result = await createIntegrationWorktree({
+        targetRepoRoot,
+        assignmentId,
+      });
+      createdPath = result.worktreePath;
+
+      expect(
+        await readFile(join(result.worktreePath, '.env.local'), 'utf8')
+      ).toBe('BASE_URL=https://example.test\n');
+      expect(
+        await readFile(join(result.worktreePath, '.env.course.local'), 'utf8')
+      ).toBe('COURSE_CONTENT_SOURCE=../course-content\n');
+      expect(existsSync(join(result.worktreePath, '.env'))).toBe(false);
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['submodule', 'sync', '--recursive'],
+          ['submodule', 'update', '--init', '--recursive'],
+        ])
+      );
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+      if (createdPath) {
+        await rm(createdPath, { recursive: true, force: true });
+      }
+    }
   });
 });
 
 describe('createWorkerWorktree', () => {
   it('allocates a fresh temp path when the legacy assignment path is already occupied', async () => {
     const assignmentId = `assign-stale-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-base-'));
     const stalePath = join(tmpdir(), `wah-wt-${assignmentId}`);
     let createdPath: string | null = null;
     const gitArgs: string[][] = [];
@@ -260,7 +332,7 @@ describe('createWorkerWorktree', () => {
 
     try {
       const result = await createWorkerWorktree({
-        targetRepoRoot: '/repo-worker',
+        targetRepoRoot,
         assignmentId,
       });
       createdPath = result.worktreePath;
@@ -275,6 +347,7 @@ describe('createWorkerWorktree', () => {
       expect(createdPath).toContain(`wah-wt-${assignmentId}-`);
       expect(result.branchName).toBe(`wah-worker-${assignmentId}`);
     } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
       await rm(stalePath, { recursive: true, force: true });
       if (createdPath) {
         await rm(createdPath, { recursive: true, force: true });
@@ -284,6 +357,7 @@ describe('createWorkerWorktree', () => {
 
   it('removes a stale registered worktree for the same temp branch before recreating it', async () => {
     const assignmentId = `assign-registered-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-base-'));
     const branchName = `wah-worker-${assignmentId}`;
     const stalePath = join(tmpdir(), `wah-wt-${assignmentId}-stale`);
     const gitArgs: string[][] = [];
@@ -313,7 +387,7 @@ describe('createWorkerWorktree', () => {
 
     try {
       const result = await createWorkerWorktree({
-        targetRepoRoot: '/repo-worker',
+        targetRepoRoot,
         assignmentId,
       });
 
@@ -331,7 +405,63 @@ describe('createWorkerWorktree', () => {
         ])
       );
     } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
       await rm(stalePath, { recursive: true, force: true });
+    }
+  });
+
+  it('bootstraps submodules and root local env overlays in worker worktrees', async () => {
+    const assignmentId = `assign-worker-bootstrap-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-repo-'));
+    const gitArgs: string[][] = [];
+    let createdPath: string | null = null;
+
+    await writeFile(
+      join(targetRepoRoot, '.env.local'),
+      'API_BASE_URL=https://example.test\n'
+    );
+    await writeFile(
+      join(targetRepoRoot, '.env.course.local'),
+      'COURSE_CONTENT_SOURCE=../course-content\n'
+    );
+    await writeFile(
+      join(targetRepoRoot, '.env.example'),
+      'SHOULD_NOT_COPY=1\n'
+    );
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      const result = await createWorkerWorktree({
+        targetRepoRoot,
+        assignmentId,
+      });
+      createdPath = result.worktreePath;
+
+      expect(
+        await readFile(join(result.worktreePath, '.env.local'), 'utf8')
+      ).toBe('API_BASE_URL=https://example.test\n');
+      expect(
+        await readFile(join(result.worktreePath, '.env.course.local'), 'utf8')
+      ).toBe('COURSE_CONTENT_SOURCE=../course-content\n');
+      expect(existsSync(join(result.worktreePath, '.env.example'))).toBe(false);
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['submodule', 'sync', '--recursive'],
+          ['submodule', 'update', '--init', '--recursive'],
+        ])
+      );
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+      if (createdPath) {
+        await rm(createdPath, { recursive: true, force: true });
+      }
     }
   });
 });

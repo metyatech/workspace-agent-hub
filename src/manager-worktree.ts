@@ -16,7 +16,7 @@ import {
   unlinkSync,
   type Dirent,
 } from 'fs';
-import { mkdir, readFile, readdir, rm as rmAsync } from 'fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm as rmAsync } from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
 
@@ -557,6 +557,62 @@ function linkNodeModules(targetRepoRoot: string, worktreePath: string): void {
   }
 }
 
+const ROOT_LOCAL_ENV_OVERLAY_PATTERN = /^\.env(?:\..+)?\.local$/;
+
+async function copyRootLocalEnvOverlays(
+  targetRepoRoot: string,
+  worktreePath: string
+): Promise<void> {
+  const repoRootEntries = await readdir(targetRepoRoot, {
+    withFileTypes: true,
+  });
+  for (const entry of repoRootEntries) {
+    if (!ROOT_LOCAL_ENV_OVERLAY_PATTERN.test(entry.name)) {
+      continue;
+    }
+    if (!entry.isFile() && !entry.isSymbolicLink()) {
+      continue;
+    }
+    await copyFile(
+      join(targetRepoRoot, entry.name),
+      join(worktreePath, entry.name)
+    );
+  }
+}
+
+async function bootstrapIsolatedWorktree(
+  targetRepoRoot: string,
+  worktreePath: string
+): Promise<void> {
+  const syncResult = await execGit(worktreePath, [
+    'submodule',
+    'sync',
+    '--recursive',
+  ]);
+  if (syncResult.code !== 0) {
+    throw new Error(
+      summarizeCommandFailure('git submodule sync --recursive', syncResult)
+    );
+  }
+
+  const updateResult = await execGit(worktreePath, [
+    'submodule',
+    'update',
+    '--init',
+    '--recursive',
+  ]);
+  if (updateResult.code !== 0) {
+    throw new Error(
+      summarizeCommandFailure(
+        'git submodule update --init --recursive',
+        updateResult
+      )
+    );
+  }
+
+  await copyRootLocalEnvOverlays(targetRepoRoot, worktreePath);
+}
+
 function allocateWorktreePath(baseName: string): string {
   const basePath = join(tmpdir(), baseName);
   if (!existsSync(basePath)) {
@@ -679,6 +735,7 @@ async function createIsolatedWorktree(input: {
     }
 
     linkNodeModules(targetRepoRoot, worktreePath);
+    await bootstrapIsolatedWorktree(targetRepoRoot, worktreePath);
   };
 
   try {
