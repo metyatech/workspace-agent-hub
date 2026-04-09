@@ -2027,7 +2027,15 @@ function makeRelatedWorkItemButton(
   return button;
 }
 
-function composerActionLabel(thread: ThreadView): string {
+function composerActionLabel(
+  thread: ThreadView,
+  openThread: ThreadView | null
+): string {
+  if (openThread && thread.id === openThread.id) {
+    return thread.uiState === 'ai-working'
+      ? 'この会話へ追加指示を送る'
+      : 'この会話へ送る';
+  }
   return thread.uiState === 'ai-working'
     ? 'この会話をメンションして追加指示を送る'
     : 'この会話をメンションして送る';
@@ -4262,14 +4270,29 @@ class ManagerApp {
     this.#syncComposerDraftUi();
     input.focus();
 
-    const response = await this.apiFetch('/api/manager/global-send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content,
-        contextThreadId: this.#composerTargetThreadId,
-      }),
-    });
+    const openThread = this.#findThread(this.openThreadId);
+    const sendsToOpenThread =
+      !!openThread &&
+      openThread.uiState !== 'done' &&
+      openThread.id === this.#composerTargetThreadId;
+    const response = await this.apiFetch(
+      sendsToOpenThread ? '/api/manager/send' : '/api/manager/global-send',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          sendsToOpenThread
+            ? {
+                threadId: openThread.id,
+                content,
+              }
+            : {
+                content,
+                contextThreadId: this.#composerTargetThreadId,
+              }
+        ),
+      }
+    );
 
     if (!response) {
       this.#updateComposerFeedbackEntry(feedbackEntryId, {
@@ -4894,12 +4917,12 @@ class ManagerApp {
       return;
     }
     if (label) {
-      label.textContent = composerActionLabel(thread);
+      label.textContent = composerActionLabel(thread, openThread);
     }
     setHint(
       openThread && thread.id === openThread.id
         ? thread.uiState === 'ai-working'
-          ? 'この会話の続きはここから追加指示として送れます。別件は右のボタンで切り替えます。'
+          ? 'この会話の続きはここへ追加指示として直接送れます。別件は右のボタンで切り替えます。'
           : ''
         : thread.uiState === 'ai-working'
           ? 'いま AI がこの作業項目を進めています。この作業項目をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別の作業項目に振り分けます。'

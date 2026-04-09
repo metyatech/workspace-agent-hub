@@ -18,6 +18,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Fixed the native Manager reply bar so sending from an open work-item
+  conversation now queues that reply back into the same work item directly
+  instead of re-routing it through another task by mistake
 - Updated the Manager composer so smartphone users can choose one or more
   images from a mobile-friendly picker and insert them back at the remembered
   cursor position while desktop drag-and-drop and Ctrl/Cmd+V insertion

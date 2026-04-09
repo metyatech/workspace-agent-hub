@@ -454,9 +454,10 @@ Important behavior:
   the latest recent-topic list, then executes each actionable task with its
   own persisted Codex worker continuation so routed requests do real repository
   work instead of stopping at inbox acknowledgements.
-- The global send dock now shows an explicit send target: either the whole
-  inbox or a selected work item mention hint, so follow-up messages can keep
-  that work item attached without bypassing the normal routing pass.
+- The global send dock now shows an explicit send target. From the inbox it
+  can hint a selected work item while still using normal routing, and from an
+  open work-item conversation it sends straight back into that same work item
+  unless the user explicitly switches to `別件`.
 - Manager work-item messages now preserve multiline user text, support inline image
   insertion inside the message body via a mobile-friendly image picker plus
   desktop drag-and-drop or Ctrl/Cmd+V clipboard paste at the current cursor
