@@ -1,6 +1,7 @@
 {
   "name": "@metyatech/workspace-agent-hub",
   "version": "0.2.1",
+  "private": true,
   "description": "Windows + WSL tmux session fabric with a mobile-friendly web UI for AI agent CLI handoff",
   "type": "module",
   "bin": {
@@ -11,9 +12,6 @@
     "LICENSE",
     "README.md"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/metyatech/workspace-agent-hub.git"

@@ -5,6 +5,10 @@ resuming multiple AI agent CLI sessions across PC and smartphone. It now
 includes a mobile-friendly browser UI/PWA for starting sessions, reopening
 them, and sending follow-up prompts without dropping into raw terminal flows.
 
+This repository is intentionally source-distributed only. Public npm publishing
+is disabled for the project, and any older npm package versions should be
+treated as historical and unsupported.
+
 It provides:
 
 - A Windows launcher for starting, reopening, renaming, archiving, closing, and
@@ -640,27 +644,15 @@ This repository claims the following primary handoff paths.
 - `AI_AGENT_MOBILE_BYPASS=1`
   Prevents the login bootstrap from opening the mobile menu automatically.
 
-## Release / deploy
+## Distribution status
 
-Release the package and create the matching GitHub release:
+Workspace Agent Hub is maintained from source in this repository. Public npm
+publishing is intentionally disabled, so do not run `npm publish` for this
+project.
 
-```powershell
-$version = '0.2.1'
-npm version $version --no-git-tag-version
-npm run verify
-git push origin main
-git tag v$version
-git push origin v$version
-gh release create v$version --repo metyatech/workspace-agent-hub --title v$version --notes "See CHANGELOG.md"
-npm publish
-```
-
-Verify the published package resolves and runs:
-
-```powershell
-npm view @metyatech/workspace-agent-hub version
-npm exec --yes --package @metyatech/workspace-agent-hub@latest workspace-agent-hub -- --version
-```
+If an older `@metyatech/workspace-agent-hub` package version is still visible
+in the npm registry, treat it as a historical artifact rather than a supported
+distribution channel.
 
 ## Links
 
