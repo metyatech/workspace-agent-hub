@@ -1947,10 +1947,7 @@ describe('manager backend codex integration', () => {
 
   it('asks for a concrete repo instead of dispatching a worker when an existing-repo write task is ambiguous', async () => {
     const dispatchProc = makeProc(6114);
-    const managerProc = makeProc(6115);
-    spawnMock
-      .mockReturnValueOnce(dispatchProc)
-      .mockReturnValueOnce(managerProc);
+    spawnMock.mockReturnValueOnce(dispatchProc);
 
     await sendToBuiltinManager(
       tempDir,
@@ -1965,32 +1962,110 @@ describe('manager backend codex integration', () => {
     completeCodexTurn(dispatchProc, {
       sessionId: 'dispatch-ambiguous-repo',
       text: JSON.stringify({
-        assignee: 'worker',
-        writeScopes: ['*'],
-      }),
-    });
-
-    await waitFor(() => spawnMock.mock.calls.length === 2);
-    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
-    completeCodexTurn(managerProc, {
-      sessionId: 'manager-clarification-repo',
-      text: JSON.stringify({
-        status: 'needs-reply',
+        assignee: 'manager',
         reply:
           '既存 repo に振るべきか新規 repo を切るべきか判断できるよう、対象や成果物をもう少し具体的に書いてください。',
+        status: 'needs-reply',
       }),
     });
 
     await waitFor(() => addMessageMock.mock.calls.length === 1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-ambiguous-repo');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('判断できるよう');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
   });
 
-  it('lets Manager choose a brand-new repo target for a new task without a visible repo picker', async () => {
+  it('posts a completed manager-evaluate reply without spawning a second manager turn', async () => {
     const dispatchProc = makeProc(6116);
-    const workerProc = makeProc(6117);
-    const reviewProc = makeProc(6118);
+    spawnMock.mockReturnValueOnce(dispatchProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-manager-direct-review',
+      '完了済みならそのまま教えて',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-manager-direct-review',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'review',
+        reply: 'その場で確定しました。',
+      }),
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-manager-direct-review'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('その場で確定しました。');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('keeps manager-evaluate active replies on the manager lane and runs a follow-up turn', async () => {
+    const dispatchProc = makeProc(6117);
+    const managerProc = makeProc(6118);
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(managerProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-manager-active',
+      'もう少し考えてから返して',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-manager-active',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'active',
+        reply: 'このまま Manager が続けます。',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(addMessageMock).not.toHaveBeenCalled();
+
+    completeCodexTurn(managerProc, {
+      sessionId: 'manager-follow-up',
+      text: '{"status":"review","reply":"最終回答です"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-manager-active');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('最終回答です');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('lets Manager choose a brand-new repo target for a new task without a visible repo picker', async () => {
+    const dispatchProc = makeProc(6119);
+    const workerProc = makeProc(6120);
+    const reviewProc = makeProc(6121);
     const newRepoRoot = join(tempDir, 'workspace-agent-broker');
     spawnMock
       .mockReturnValueOnce(dispatchProc)
@@ -2057,9 +2132,9 @@ describe('manager backend codex integration', () => {
   });
 
   it('spawns the worker from a manager-selected workingDirectory inside the isolated worktree', async () => {
-    const dispatchProc = makeProc(6119);
-    const workerProc = makeProc(6120);
-    const reviewProc = makeProc(6123);
+    const dispatchProc = makeProc(6122);
+    const workerProc = makeProc(6123);
+    const reviewProc = makeProc(6124);
     const repoRoot = join(tempDir, 'workspace-agent-hub');
     const worktreePath = join(tempDir, 'worktrees', 'repo-working-dir');
     const workerSubdir = join(worktreePath, 'packages', 'manager');
@@ -2121,8 +2196,8 @@ describe('manager backend codex integration', () => {
   });
 
   it('returns the missing workingDirectory error to manager for reconsideration before starting the worker', async () => {
-    const dispatchProc = makeProc(6124);
-    const recoveryProc = makeProc(6125);
+    const dispatchProc = makeProc(6125);
+    const recoveryProc = makeProc(6126);
     const repoRoot = join(tempDir, 'workspace-agent-hub');
     const worktreePath = join(tempDir, 'worktrees', 'repo-missing-working-dir');
     await mkdir(worktreePath, { recursive: true });
