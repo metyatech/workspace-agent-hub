@@ -6,6 +6,7 @@ $distCliPath = Join-Path $repoRoot 'dist\cli.js'
 $tsConfigPath = Join-Path $repoRoot 'tsconfig.json'
 
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. (Join-Path $PSScriptRoot 'build-command.ps1')
 
 function Get-BuildCandidateSourcePaths {
     $paths = [System.Collections.Generic.List[string]]::new()
@@ -59,20 +60,19 @@ function Test-DistImportable {
 
 Push-Location $repoRoot
 try {
-    if ((Test-Path -Path $packageJsonPath) -and (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot))) {
-        Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[build]'
-    }
-
     if (Test-Path -Path $packageJsonPath) {
-        $buildRequired = Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths (Get-BuildCandidateSourcePaths)
-        if (-not $buildRequired) {
-            $buildRequired = -not (Test-DistImportable -DistPath $distCliPath)
-        }
+        Invoke-WithRepoMutationLock -RepoRoot $repoRoot -ActionDescription 'build script bootstrap' -ScriptBlock {
+            if (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot)) {
+                Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[build]'
+            }
 
-        if ($buildRequired) {
-            npm run build
-            if ($LASTEXITCODE -ne 0) {
-                throw 'npm run build failed.'
+            $buildRequired = Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths (Get-BuildCandidateSourcePaths)
+            if (-not $buildRequired) {
+                $buildRequired = -not (Test-DistImportable -DistPath $distCliPath)
+            }
+
+            if ($buildRequired) {
+                Invoke-WorkspaceAgentHubBuildCommand -RepoRoot $repoRoot
             }
         }
     }

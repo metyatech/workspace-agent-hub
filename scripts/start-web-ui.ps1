@@ -17,6 +17,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. (Join-Path $PSScriptRoot 'build-command.ps1')
 $sourcePaths = @(
     (Join-Path $repoRoot 'src\cli.ts'),
     (Join-Path $repoRoot 'src\web-ui.ts'),
@@ -80,36 +81,35 @@ if (-not (Test-Path -Path $packageJsonPath)) {
 
 Push-Location $repoRoot
 try {
-    $nodeModulesOk = Test-NpmDependencySurfaceReady -RepoRoot $repoRoot
-    if (-not $nodeModulesOk) {
-        [Console]::Error.WriteLine('[start-web-ui] node_modules integrity check failed; auto-repairing npm dependencies.')
-        Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[start-web-ui]'
-    }
-
-    $buildNeeded = $false
-    if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths)) {
-        $buildNeeded = $true
-    } elseif (-not (Test-Path -Path $effectiveCliPath)) {
-        if ($effectiveCliPath -ne $distCliPath) {
-            throw "Missing CLI entrypoint: $effectiveCliPath"
+    Invoke-WithRepoMutationLock -RepoRoot $repoRoot -ActionDescription 'web UI startup bootstrap' -ScriptBlock {
+        $nodeModulesOk = Test-NpmDependencySurfaceReady -RepoRoot $repoRoot
+        if (-not $nodeModulesOk) {
+            [Console]::Error.WriteLine('[start-web-ui] node_modules integrity check failed; auto-repairing npm dependencies.')
+            Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[start-web-ui]'
         }
-        $buildNeeded = $true
-    }
 
-    # Even if timestamps look fresh, verify the dist can actually be imported
-    if (-not $buildNeeded -and (Test-Path -Path $effectiveCliPath)) {
-        $distFileUrl = ([Uri]::new($effectiveCliPath)).AbsoluteUri
-        & node -e "import('$distFileUrl').catch(()=>process.exit(1))" 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            [Console]::Error.WriteLine('[start-web-ui] dist integrity check failed; auto-repairing via rebuild.')
+        $buildNeeded = $false
+        if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths)) {
+            $buildNeeded = $true
+        } elseif (-not (Test-Path -Path $effectiveCliPath)) {
+            if ($effectiveCliPath -ne $distCliPath) {
+                throw "Missing CLI entrypoint: $effectiveCliPath"
+            }
             $buildNeeded = $true
         }
-    }
 
-    if ($buildNeeded) {
-        $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
-        if ($npmExitCode -ne 0) {
-            throw 'npm run build failed.'
+        # Even if timestamps look fresh, verify the dist can actually be imported
+        if (-not $buildNeeded -and (Test-Path -Path $effectiveCliPath)) {
+            $distFileUrl = ([Uri]::new($effectiveCliPath)).AbsoluteUri
+            & node -e "import('$distFileUrl').catch(()=>process.exit(1))" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                [Console]::Error.WriteLine('[start-web-ui] dist integrity check failed; auto-repairing via rebuild.')
+                $buildNeeded = $true
+            }
+        }
+
+        if ($buildNeeded) {
+            Invoke-WorkspaceAgentHubBuildCommand -RepoRoot $repoRoot
         }
     }
 

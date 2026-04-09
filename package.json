@@ -25,7 +25,7 @@
   },
   "scripts": {
     "prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-hooks.ps1",
-    "build": "npm exec tsup",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-package.ps1",
     "typecheck": "npm exec tsc -- --noEmit",
     "pretest:e2e": "npm run build && npm exec playwright install chromium",
     "test:unit": "npm exec vitest run src/__tests__",

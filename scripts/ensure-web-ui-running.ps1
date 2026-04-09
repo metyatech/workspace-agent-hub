@@ -14,6 +14,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. (Join-Path $PSScriptRoot 'build-command.ps1')
 if (-not (Test-Path -Path $packageJsonPath)) {
     throw "Missing package.json: $packageJsonPath"
 }
@@ -110,22 +111,18 @@ function Ensure-WorkspaceCliReady {
 
     Push-Location $repoRoot
     try {
-        if (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot)) {
-            Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[ensure-web-ui-running]'
-        }
+        Invoke-WithRepoMutationLock -RepoRoot $repoRoot -ActionDescription 'ensure web UI CLI readiness' -ScriptBlock {
+            if (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot)) {
+                Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[ensure-web-ui-running]'
+            }
 
-        if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $buildSourcePaths)) {
-            $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
-            if ($npmExitCode -ne 0) {
-                throw 'npm run build failed.'
-            }
-        } elseif (-not (Test-Path -Path $effectiveCliPath)) {
-            if ($effectiveCliPath -ne $distCliPath) {
-                throw "Missing CLI entrypoint: $effectiveCliPath"
-            }
-            $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
-            if ($npmExitCode -ne 0) {
-                throw 'npm run build failed.'
+            if ($effectiveCliPath -eq $distCliPath -and (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $buildSourcePaths)) {
+                Invoke-WorkspaceAgentHubBuildCommand -RepoRoot $repoRoot
+            } elseif (-not (Test-Path -Path $effectiveCliPath)) {
+                if ($effectiveCliPath -ne $distCliPath) {
+                    throw "Missing CLI entrypoint: $effectiveCliPath"
+                }
+                Invoke-WorkspaceAgentHubBuildCommand -RepoRoot $repoRoot
             }
         }
     } finally {

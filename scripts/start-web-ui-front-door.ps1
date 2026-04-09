@@ -12,6 +12,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. (Join-Path $PSScriptRoot 'build-command.ps1')
 $sourcePaths = @(
     (Join-Path $repoRoot 'src\cli.ts'),
     (Join-Path $repoRoot 'src\web-ui-front-door.ts')
@@ -65,14 +66,13 @@ if (-not (Test-Path -Path $packageJsonPath)) {
 
 Push-Location $repoRoot
 try {
-    if (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot)) {
-        Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[start-web-ui-front-door]'
-    }
+    Invoke-WithRepoMutationLock -RepoRoot $repoRoot -ActionDescription 'front-door build bootstrap' -ScriptBlock {
+        if (-not (Test-NpmDependencySurfaceReady -RepoRoot $repoRoot)) {
+            Invoke-NpmDependencySurfaceRepair -RepoRoot $repoRoot -LogPrefix '[start-web-ui-front-door]'
+        }
 
-    if (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths) {
-        $npmExitCode = Invoke-NpmCommand -Arguments @('run', 'build')
-        if ($npmExitCode -ne 0) {
-            throw 'npm run build failed.'
+        if (Test-BuildRequired -DistPath $distCliPath -CandidateSourcePaths $sourcePaths) {
+            Invoke-WorkspaceAgentHubBuildCommand -RepoRoot $repoRoot
         }
     }
 

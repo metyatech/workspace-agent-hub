@@ -13,10 +13,12 @@ const packageJson = JSON.parse(
 ) as PackageJson;
 
 describe('package scripts', () => {
-  it('uses npm exec for local binaries that run inside hooks', () => {
+  it('uses the expected local command wrappers for hook-facing scripts', () => {
     const scripts = packageJson.scripts ?? {};
 
-    expect(scripts.build).toBe('npm exec tsup');
+    expect(scripts.build).toBe(
+      'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-package.ps1'
+    );
     expect(scripts.typecheck).toBe('npm exec tsc -- --noEmit');
     expect(scripts['pretest:e2e']).toBe(
       'npm run build && npm exec playwright install chromium'

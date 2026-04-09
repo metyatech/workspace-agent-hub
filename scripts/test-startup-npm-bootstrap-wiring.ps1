@@ -6,6 +6,7 @@ $scriptAssertions = @(
         Path = Join-Path $PSScriptRoot 'ensure-web-ui-running.ps1'
         RequiredPatterns = @(
             [regex]::Escape(". (Join-Path `$PSScriptRoot 'npm-bootstrap.ps1')"),
+            'Invoke-WithRepoMutationLock -RepoRoot \$repoRoot',
             'Invoke-NpmDependencySurfaceRepair -RepoRoot \$repoRoot'
         )
     },
@@ -13,6 +14,7 @@ $scriptAssertions = @(
         Path = Join-Path $PSScriptRoot 'start-web-ui.ps1'
         RequiredPatterns = @(
             [regex]::Escape(". (Join-Path `$PSScriptRoot 'npm-bootstrap.ps1')"),
+            'Invoke-WithRepoMutationLock -RepoRoot \$repoRoot',
             'Invoke-NpmDependencySurfaceRepair -RepoRoot \$repoRoot'
         )
     },
@@ -20,7 +22,16 @@ $scriptAssertions = @(
         Path = Join-Path $PSScriptRoot 'start-web-ui-front-door.ps1'
         RequiredPatterns = @(
             [regex]::Escape(". (Join-Path `$PSScriptRoot 'npm-bootstrap.ps1')"),
+            'Invoke-WithRepoMutationLock -RepoRoot \$repoRoot',
             'Invoke-NpmDependencySurfaceRepair -RepoRoot \$repoRoot'
+        )
+    },
+    @{
+        Path = Join-Path $PSScriptRoot 'build-package.ps1'
+        RequiredPatterns = @(
+            [regex]::Escape(". (Join-Path `$PSScriptRoot 'npm-bootstrap.ps1')"),
+            [regex]::Escape(". (Join-Path `$PSScriptRoot 'build-command.ps1')"),
+            'Invoke-WithRepoMutationLock -RepoRoot \$repoRoot'
         )
     }
 )
