@@ -10,7 +10,8 @@
  *
  * Key design rules:
  *  - One persistent Codex routing session per workspace inbox
- *  - One Codex worker-agent session per Manager work item, persisted in thread meta
+ *  - One persisted worker-agent session per Manager work item, with the
+ *    runtime/model chosen from live ranked worker candidates
  *  - Manager-assigned replies and worker-agent tasks share one persistent queue
  *  - Worker-agent assignments can run in parallel when their repo-relative
  *    write scopes do not overlap
@@ -101,8 +102,10 @@ import {
   buildWorkerRuntimeLaunchSpec,
   parseGenericRuntimeOutput,
   parseGenericRuntimeProgressLine,
+  workerRuntimeDefaults,
   workerRuntimeAssigneeLabel,
 } from './manager-worker-runtime.js';
+import { selectRankedWorkerModel } from './manager-worker-model-selection.js';
 import {
   isWindowsBatchCommand,
   wrapWindowsBatchCommandForSpawn,
@@ -296,6 +299,8 @@ export interface ManagerActiveAssignment {
   targetKind: ManagerTargetKind;
   newRepoName: string | null;
   workerRuntime: ManagerWorkerRuntime;
+  workerModel: string | null;
+  workerEffort: string | null;
   assigneeLabel: string;
   writeScopes: string[];
   pid: number | null;
@@ -628,13 +633,30 @@ function normalizeActiveAssignment(
     record['workerRuntime'] === 'codex'
       ? record['workerRuntime']
       : 'codex';
+  const workerModel =
+    typeof record['workerModel'] === 'string' && record['workerModel'].trim()
+      ? record['workerModel'].trim()
+      : null;
+  const workerEffort =
+    typeof record['workerEffort'] === 'string' && record['workerEffort'].trim()
+      ? record['workerEffort'].trim()
+      : null;
   const assigneeLabel =
     typeof record['assigneeLabel'] === 'string' &&
     record['assigneeLabel'].trim()
       ? record['assigneeLabel'].trim()
       : assigneeKind === 'manager'
         ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
-        : workerRuntimeAssigneeLabel(workerRuntime);
+        : workerRuntimeAssigneeLabel(
+            workerRuntime,
+            process.env,
+            workerModel || workerEffort
+              ? {
+                  model: workerModel,
+                  effort: workerEffort,
+                }
+              : null
+          );
   const queueEntryIds = normalizeStringArray(record['queueEntryIds']);
   if (!id || !threadId || queueEntryIds.length === 0) {
     return null;
@@ -649,6 +671,8 @@ function normalizeActiveAssignment(
     newRepoName: normalizeOptionalText(record['newRepoName']),
     workingDirectory: normalizeOptionalText(record['workingDirectory']),
     workerRuntime,
+    workerModel,
+    workerEffort,
     assigneeLabel,
     writeScopes: normalizeWriteScopes(record['writeScopes']),
     pid:
@@ -708,6 +732,8 @@ function normalizeManagerSession(
             newRepoName: null,
             workingDirectory: null,
             workerRuntime: 'codex' as const,
+            workerModel: null,
+            workerEffort: null,
             assigneeLabel: workerRuntimeAssigneeLabel('codex'),
             writeScopes: [],
             pid:
@@ -1530,6 +1556,45 @@ function findLatestAiMessage(
   return null;
 }
 
+function normalizeVerificationPath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .trim()
+    .toLowerCase();
+}
+
+function isVitestUnitTestPath(path: string): boolean {
+  const normalized = normalizeVerificationPath(path);
+  if (!normalized || normalized.startsWith('e2e/')) {
+    return false;
+  }
+  return (
+    normalized.startsWith('src/__tests__/') ||
+    (normalized.startsWith('src/') &&
+      /\.(test|spec)\.[cm]?[jt]sx?$/.test(normalized))
+  );
+}
+
+function buildVerificationGuidance(input: {
+  paths: readonly string[];
+  managedVerifyCommand?: string | null;
+}): string[] {
+  const guidance: string[] = [];
+  const managedVerifyCommand = input.managedVerifyCommand?.trim();
+  if (managedVerifyCommand) {
+    guidance.push(
+      `Prefer the repo-standard verification command first: ${managedVerifyCommand}.`
+    );
+  }
+  if (input.paths.some((path) => isVitestUnitTestPath(path))) {
+    guidance.push(
+      'Files under src/__tests__ are Vitest unit tests. For focused reruns use `npm run test:unit -- <file ...>`, and do not send those files to Playwright.'
+    );
+  }
+  return guidance;
+}
+
 export function buildWorkerExecutionPrompt(input: {
   content: string;
   thread: Thread;
@@ -1554,6 +1619,10 @@ export function buildWorkerExecutionPrompt(input: {
     input.worktreePath ??
     input.targetRepoRoot ??
     input.resolvedDir;
+  const verificationGuidance = buildVerificationGuidance({
+    paths: input.writeScopes,
+    managedVerifyCommand: input.managedVerifyCommand,
+  });
   if (!input.isFirstTurn) {
     return [
       `[Topic: ${input.thread.title}]`,
@@ -1565,6 +1634,9 @@ export function buildWorkerExecutionPrompt(input: {
         ? `workingDirectory: ${input.workingDirectory}`
         : '',
       `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
+      ...(verificationGuidance.length > 0
+        ? ['Verification guidance:', ...verificationGuidance]
+        : []),
       'Latest user request:',
       promptContent,
     ].join('\n\n');
@@ -1605,6 +1677,9 @@ export function buildWorkerExecutionPrompt(input: {
     `Workspace: ${workspace}`,
     ...(worktreeNotice ? [worktreeNotice] : []),
     ...repoContext,
+    ...(verificationGuidance.length > 0
+      ? ['Verification guidance:', ...verificationGuidance]
+      : []),
     `[Topic: ${input.thread.title}]`,
     'Topic history:',
     formatThreadHistory(input.thread),
@@ -1622,6 +1697,7 @@ export function buildManagerReviewPrompt(input: {
   worktreePath: string | null;
   writeScopes: string[];
   requestedRunMode?: ManagerRunMode | null;
+  managedVerifyCommand?: string | null;
   structuralWarnings?: string[];
 }): string {
   const workspace =
@@ -1635,6 +1711,10 @@ export function buildManagerReviewPrompt(input: {
     'Worker did not report a verification summary.';
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+  const verificationGuidance = buildVerificationGuidance({
+    paths: [...input.writeScopes, ...input.workerResult.changedFiles],
+    managedVerifyCommand: input.managedVerifyCommand,
+  });
   const currentUserRequest = buildManagerMessagePromptContent(
     input.currentUserRequest
   ).text;
@@ -1675,6 +1755,9 @@ export function buildManagerReviewPrompt(input: {
     `verificationSummary:\n${verificationSummary}`,
     input.workingDirectory ? `workingDirectory: ${input.workingDirectory}` : '',
     `declaredWriteScopes: ${declaredWriteScopes}`,
+    ...(verificationGuidance.length > 0
+      ? ['Verification guidance:', ...verificationGuidance]
+      : []),
     ...(structuralSection ? [structuralSection] : []),
   ].join('\n\n');
 }
@@ -1812,21 +1895,44 @@ export function buildManagerRecoveryPrompt(input: {
 function buildManagerRecoveryFixPrompt(input: {
   instructions: string;
   thread: Thread;
+  currentUserRequest: string;
   resolvedDir: string;
   workingDirectory: string | null;
   worktreePath: string | null;
   writeScopes: string[];
+  managedVerifyCommand?: string | null;
 }): string {
   const workspace =
     input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
+  const worktreeNotice = input.worktreePath
+    ? 'This recovery fix is running inside an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager backend handles delivery after review.'
+    : '';
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+  const verificationGuidance = buildVerificationGuidance({
+    paths: input.writeScopes,
+    managedVerifyCommand: input.managedVerifyCommand,
+  });
+  const currentUserRequest = buildManagerMessagePromptContent(
+    input.currentUserRequest
+  ).text;
   return [
     MANAGER_RECOVERY_FIX_SYSTEM_PROMPT,
     MANAGER_WORKER_JSON_RULES,
     `Workspace: ${workspace}`,
+    ...(worktreeNotice ? [worktreeNotice] : []),
     `[Work item: ${input.thread.title}]`,
     `declaredWriteScopes: ${declaredWriteScopes}`,
+    ...(verificationGuidance.length > 0
+      ? ['Verification guidance:', ...verificationGuidance]
+      : []),
+    'Recent same-topic history (timestamps included):',
+    formatThreadHistoryForPrompt(input.thread, {
+      maxMessages: 8,
+      includeTimestamps: true,
+    }),
+    'Latest user request:',
+    currentUserRequest,
     'Fix instructions:',
     input.instructions,
   ].join('\n\n');
@@ -1838,18 +1944,30 @@ function buildWorkerRetryPrompt(input: {
   resolvedDir: string;
   workingDirectory: string | null;
   worktreePath: string | null;
+  writeScopes: string[];
+  managedVerifyCommand?: string | null;
 }): string {
   const workspace =
     input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const worktreeNotice = input.worktreePath
     ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
     : '';
+  const declaredWriteScopes =
+    input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+  const verificationGuidance = buildVerificationGuidance({
+    paths: input.writeScopes,
+    managedVerifyCommand: input.managedVerifyCommand,
+  });
   return [
     MANAGER_WORKER_SYSTEM_PROMPT,
     MANAGER_WORKER_JSON_RULES,
     `Workspace: ${workspace}`,
     ...(worktreeNotice ? [worktreeNotice] : []),
     `[Topic: ${input.thread.title}]`,
+    `declaredWriteScopes: ${declaredWriteScopes}`,
+    ...(verificationGuidance.length > 0
+      ? ['Verification guidance:', ...verificationGuidance]
+      : []),
     'Topic history:',
     formatThreadHistory(input.thread),
     'Previous attempt had issues found during review. Please address the following:',
@@ -1944,7 +2062,8 @@ function buildDispatchPrompt(input: {
     repoRoot: string;
     defaultBranch: string;
     verifyCommand: string;
-    preferredWorkerRuntime: ManagerWorkerRuntime;
+    supportedWorkerRuntimes: ManagerWorkerRuntime[];
+    preferredWorkerRuntime: ManagerWorkerRuntime | null;
   }>;
 }): string {
   const promptContent = buildManagerMessagePromptContent(input.content).text;
@@ -1970,7 +2089,10 @@ function buildDispatchPrompt(input: {
               `  repoRoot: ${repo.repoRoot}`,
               `  defaultBranch: ${repo.defaultBranch}`,
               `  verifyCommand: ${repo.verifyCommand}`,
-              `  preferredRuntime: ${repo.preferredWorkerRuntime}`,
+              `  supportedRuntimes: ${repo.supportedWorkerRuntimes.join(', ') || '(none)'}`,
+              repo.preferredWorkerRuntime
+                ? `  runtimeConstraint: ${repo.preferredWorkerRuntime}`
+                : '  runtimeConstraint: none (live selection may choose any supported runtime)',
             ].join('\n')
           )
           .join('\n')
@@ -3091,6 +3213,8 @@ async function runCodexTurn(input: {
 
 async function runWorkerRuntimeTurn(input: {
   runtime: ManagerWorkerRuntime;
+  model: string | null;
+  effort: string | null;
   dir: string;
   resolvedDir: string;
   prompt: string;
@@ -3108,6 +3232,8 @@ async function runWorkerRuntimeTurn(input: {
 }> {
   const launchSpec = buildWorkerRuntimeLaunchSpec({
     runtime: input.runtime,
+    model: input.model,
+    effort: input.effort,
     prompt: input.prompt,
     sessionId: input.sessionId,
     resolvedDir: input.resolvedDir,
@@ -3267,7 +3393,9 @@ async function ensureThreadReadyForUserMessage(
 async function readWorkerSessionId(
   dir: string,
   threadId: string,
-  runtime: ManagerWorkerRuntime
+  runtime: ManagerWorkerRuntime,
+  model: string | null,
+  effort: string | null
 ): Promise<string | null> {
   const meta = await readManagerThreadMeta(dir);
   const workerSessionId = meta[threadId]?.workerSessionId?.trim() || null;
@@ -3276,21 +3404,47 @@ async function readWorkerSessionId(
   }
   const storedRuntime = meta[threadId]?.workerSessionRuntime ?? null;
   if (!storedRuntime) {
-    return runtime === 'codex' ? workerSessionId : null;
+    const defaults = workerRuntimeDefaults(runtime);
+    const matchesLegacyDefault =
+      runtime === 'codex' &&
+      (model ?? defaults.model) === defaults.model &&
+      (effort ?? defaults.effort ?? null) === (defaults.effort ?? null);
+    return matchesLegacyDefault ? workerSessionId : null;
   }
-  return storedRuntime === runtime ? workerSessionId : null;
+  if (storedRuntime !== runtime) {
+    return null;
+  }
+  const defaults = workerRuntimeDefaults(runtime);
+  const storedModel =
+    meta[threadId]?.workerSessionModel?.trim() || defaults.model;
+  const storedEffort =
+    meta[threadId]?.workerSessionEffort?.trim() || defaults.effort || null;
+  const expectedModel = model?.trim() || defaults.model;
+  const expectedEffort = effort?.trim() || defaults.effort || null;
+  return storedModel === expectedModel && storedEffort === expectedEffort
+    ? workerSessionId
+    : null;
 }
 
 async function writeWorkerSessionId(
   dir: string,
   threadId: string,
   runtime: ManagerWorkerRuntime,
+  model: string | null,
+  effort: string | null,
   workerSessionId: string | null
 ): Promise<void> {
+  const defaults = workerRuntimeDefaults(runtime);
   await updateManagerThreadMeta(dir, threadId, (current) => ({
     ...(current ?? {}),
     workerSessionId,
     workerSessionRuntime: workerSessionId ? runtime : null,
+    workerSessionModel: workerSessionId
+      ? model?.trim() || defaults.model
+      : null,
+    workerSessionEffort: workerSessionId
+      ? effort?.trim() || defaults.effort || null
+      : null,
     workerLastStartedAt: new Date().toISOString(),
   }));
 }
@@ -3350,6 +3504,26 @@ function latestWorkerLiveState(entries: ManagerWorkerLiveEntry[]): {
   };
 }
 
+function resolveStoredWorkerAssigneeLabel(
+  meta: ManagerThreadMeta | null | undefined
+): string {
+  if (typeof meta?.assigneeLabel === 'string' && meta.assigneeLabel.trim()) {
+    return meta.assigneeLabel.trim();
+  }
+  if (
+    meta?.workerSessionRuntime === 'codex' ||
+    meta?.workerSessionRuntime === 'claude' ||
+    meta?.workerSessionRuntime === 'gemini' ||
+    meta?.workerSessionRuntime === 'copilot'
+  ) {
+    return workerRuntimeAssigneeLabel(meta.workerSessionRuntime, process.env, {
+      model: meta.workerSessionModel ?? null,
+      effort: meta.workerSessionEffort ?? null,
+    });
+  }
+  return 'Worker';
+}
+
 async function setWorkerRuntimeState(input: {
   dir: string;
   threadId: string;
@@ -3386,8 +3560,7 @@ async function setWorkerRuntimeState(input: {
       assigneeLabel: clearRuntimeFootprint
         ? null
         : input.assigneeLabel === undefined
-          ? (current?.assigneeLabel ??
-            `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
+          ? resolveStoredWorkerAssigneeLabel(current)
           : input.assigneeLabel,
       workerAgentId: clearRuntimeFootprint
         ? null
@@ -3473,8 +3646,7 @@ async function appendWorkerLiveOutput(input: {
           : input.assigneeKind,
       assigneeLabel:
         input.assigneeLabel === undefined
-          ? (current?.assigneeLabel ??
-            `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
+          ? resolveStoredWorkerAssigneeLabel(current)
           : input.assigneeLabel,
       workerAgentId:
         input.workerAgentId === undefined
@@ -3900,11 +4072,44 @@ async function decideDispatchForBatch(input: {
 
 function defaultAssigneeLabel(
   kind: 'manager' | 'worker',
-  runtime: ManagerWorkerRuntime = 'codex'
+  runtime: ManagerWorkerRuntime = 'codex',
+  selection?: { model?: string | null; effort?: string | null } | null
 ): string {
   return kind === 'manager'
     ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
-    : workerRuntimeAssigneeLabel(runtime);
+    : workerRuntimeAssigneeLabel(runtime, process.env, selection);
+}
+
+function normalizeSupportedWorkerRuntimes(
+  runtimes: readonly ManagerWorkerRuntime[] | null | undefined
+): Array<Extract<ManagerWorkerRuntime, 'codex' | 'claude'>> {
+  const supported = new Set<
+    Extract<ManagerWorkerRuntime, 'codex' | 'claude'>
+  >();
+  for (const runtime of runtimes ?? []) {
+    if (runtime === 'codex' || runtime === 'claude') {
+      supported.add(runtime);
+    }
+  }
+  if (supported.size === 0) {
+    supported.add('codex');
+    supported.add('claude');
+  }
+  return [...supported];
+}
+
+function runtimeConstraintCandidates(input: {
+  supportedRuntimes: readonly ManagerWorkerRuntime[] | null | undefined;
+  preferredWorkerRuntime: ManagerWorkerRuntime | null | undefined;
+}): Array<Extract<ManagerWorkerRuntime, 'codex' | 'claude'>> {
+  const supported = normalizeSupportedWorkerRuntimes(input.supportedRuntimes);
+  if (
+    input.preferredWorkerRuntime === 'codex' ||
+    input.preferredWorkerRuntime === 'claude'
+  ) {
+    return [input.preferredWorkerRuntime];
+  }
+  return supported;
 }
 
 function blockingScopeDetail(input: {
@@ -3994,6 +4199,8 @@ async function runQueuedAssignment(input: {
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
   const workerRuntime = assignment.workerRuntime;
+  const workerModel = assignment.workerModel;
+  const workerEffort = assignment.workerEffort;
   const sessionRuntime: ManagerWorkerRuntime =
     assignment.assigneeKind === 'worker' ? workerRuntime : 'codex';
   const threadMeta =
@@ -4009,7 +4216,9 @@ async function runQueuedAssignment(input: {
   let workerSessionId = await readWorkerSessionId(
     resolvedDir,
     thread.id,
-    sessionRuntime
+    sessionRuntime,
+    workerModel,
+    workerEffort
   );
   const imagePaths = queueEntriesImagePaths(entries);
 
@@ -4118,6 +4327,8 @@ async function runQueuedAssignment(input: {
       : runWorkerRuntimeTurn({
           ...commonInput,
           runtime: workerRuntime,
+          model: workerModel,
+          effort: workerEffort,
           runMode: requestedRunMode,
         });
   };
@@ -4184,7 +4395,14 @@ async function runQueuedAssignment(input: {
       workerSessionId &&
       isSessionInvalidError(firstCombinedOutput)
     ) {
-      await writeWorkerSessionId(resolvedDir, thread.id, workerRuntime, null);
+      await writeWorkerSessionId(
+        resolvedDir,
+        thread.id,
+        workerRuntime,
+        workerModel,
+        workerEffort,
+        null
+      );
       workerSessionId = null;
       primaryResult = await runPrimaryTurn(null, true);
     }
@@ -4229,6 +4447,8 @@ async function runQueuedAssignment(input: {
         resolvedDir,
         thread.id,
         workerRuntime,
+        workerModel,
+        workerEffort,
         nextWorkerSessionId
       );
       reviewStepAttempted = true;
@@ -4246,6 +4466,7 @@ async function runQueuedAssignment(input: {
           worktreePath: assignment.worktreePath,
           writeScopes: assignment.writeScopes,
           requestedRunMode,
+          managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
           structuralWarnings,
         }),
         sessionId: null,
@@ -4392,6 +4613,8 @@ async function runQueuedAssignment(input: {
               resolvedDir,
               thread.id,
               sessionRuntime,
+              workerModel,
+              workerEffort,
               null
             );
           }
@@ -4459,6 +4682,8 @@ async function runQueuedAssignment(input: {
             resolvedDir,
             thread.id,
             sessionRuntime,
+            workerModel,
+            workerEffort,
             null
           );
           void processNextQueued(dir, resolvedDir);
@@ -4472,10 +4697,12 @@ async function runQueuedAssignment(input: {
             prompt: buildManagerRecoveryFixPrompt({
               instructions: decision.instructions ?? recoveryErrorContext,
               thread: promptThread,
+              currentUserRequest: promptContent,
               resolvedDir,
               workingDirectory: assignment.workingDirectory,
               worktreePath: assignment.worktreePath,
               writeScopes: assignment.writeScopes,
+              managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
             }),
             sessionId: null,
             assigneeKind: 'manager',
@@ -4488,23 +4715,44 @@ async function runQueuedAssignment(input: {
           });
         } else {
           // retry-worker
-          fixResult = await runTurn({
-            prompt: buildWorkerRetryPrompt({
-              instructions: decision.instructions ?? recoveryErrorContext,
-              thread: promptThread,
+          const runRetryWorkerTurn = (sessionId: string | null) =>
+            runTurn({
+              prompt: buildWorkerRetryPrompt({
+                instructions: decision.instructions ?? recoveryErrorContext,
+                thread: promptThread,
+                resolvedDir,
+                workingDirectory: assignment.workingDirectory,
+                worktreePath: assignment.worktreePath,
+                writeScopes: assignment.writeScopes,
+                managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
+              }),
+              sessionId,
+              assigneeKind: 'worker',
+              assigneeLabel: assignment.assigneeLabel,
+              runtimeState: 'worker-running',
+              runtimeDetail: 'Worker がレビュー指摘の修正を実行中…',
+              initialLiveOutput: 'Worker がレビュー指摘を修正しています…',
+              clearLiveLog: false,
+              preserveWorkerSessionId: false,
+            });
+          fixResult = await runRetryWorkerTurn(workerSessionId);
+          const fixCombinedOutput = `${fixResult.stdout}\n${fixResult.stderr}`;
+          if (
+            fixResult.code !== 0 &&
+            workerSessionId &&
+            isSessionInvalidError(fixCombinedOutput)
+          ) {
+            await writeWorkerSessionId(
               resolvedDir,
-              workingDirectory: assignment.workingDirectory,
-              worktreePath: assignment.worktreePath,
-            }),
-            sessionId: null,
-            assigneeKind: 'worker',
-            assigneeLabel: assignment.assigneeLabel,
-            runtimeState: 'worker-running',
-            runtimeDetail: 'Worker がレビュー指摘の修正を実行中…',
-            initialLiveOutput: 'Worker がレビュー指摘を修正しています…',
-            clearLiveLog: false,
-            preserveWorkerSessionId: false,
-          });
+              thread.id,
+              workerRuntime,
+              workerModel,
+              workerEffort,
+              null
+            );
+            workerSessionId = null;
+            fixResult = await runRetryWorkerTurn(null);
+          }
         }
 
         const stillTrackedAfterFix = (
@@ -4534,6 +4782,17 @@ async function runQueuedAssignment(input: {
           changedFiles: [],
           verificationSummary: null,
         };
+        if (decision.decision === 'retry-worker') {
+          workerSessionId = fixResult.parsed.sessionId ?? workerSessionId;
+          await writeWorkerSessionId(
+            resolvedDir,
+            thread.id,
+            workerRuntime,
+            workerModel,
+            workerEffort,
+            workerSessionId
+          );
+        }
         latestReportedChangedFiles = fixWorkerResult.changedFiles;
         const reStructuralWarnings = await runStructuralChecks(
           workerRepoRoot,
@@ -4549,6 +4808,7 @@ async function runQueuedAssignment(input: {
             worktreePath: assignment.worktreePath,
             writeScopes: assignment.writeScopes,
             requestedRunMode,
+            managedVerifyCommand: threadMeta?.managedVerifyCommand ?? null,
             structuralWarnings: reStructuralWarnings,
           }),
           sessionId: null,
@@ -4979,6 +5239,8 @@ async function runQueuedAssignment(input: {
           resolvedDir,
           thread.id,
           'codex',
+          null,
+          null,
           nextWorkerSessionId
         );
       }
@@ -5020,7 +5282,14 @@ async function runQueuedAssignment(input: {
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
     if (isSessionInvalidError(finalCombinedOutput)) {
-      await writeWorkerSessionId(resolvedDir, thread.id, sessionRuntime, null);
+      await writeWorkerSessionId(
+        resolvedDir,
+        thread.id,
+        sessionRuntime,
+        workerModel,
+        workerEffort,
+        null
+      );
     }
     await clearWorkerLiveOutput(
       resolvedDir,
@@ -5357,17 +5626,14 @@ export async function processNextQueued(
           : null) ??
         inferredRepoContext?.repoRoot ??
         null;
-      const requestedWorkerRuntime: ManagerWorkerRuntime =
+      const explicitRequestedWorkerRuntime: ManagerWorkerRuntime | null =
         nextEntries.find(
           (entry) =>
             entry.requestedWorkerRuntime === 'codex' ||
             entry.requestedWorkerRuntime === 'claude' ||
             entry.requestedWorkerRuntime === 'gemini' ||
             entry.requestedWorkerRuntime === 'copilot'
-        )?.requestedWorkerRuntime ??
-        resolvedManagedRepo?.preferredWorkerRuntime ??
-        threadMeta?.requestedWorkerRuntime ??
-        'codex';
+        )?.requestedWorkerRuntime ?? null;
       const requestedRunMode: ManagerRunMode | null =
         nextEntries.find(
           (entry) =>
@@ -5406,7 +5672,12 @@ export async function processNextQueued(
           dir: resolvedDir,
           threadId: next.threadId,
           assigneeKind: 'worker',
-          assigneeLabel: defaultAssigneeLabel('worker', requestedWorkerRuntime),
+          assigneeLabel: defaultAssigneeLabel(
+            'worker',
+            explicitRequestedWorkerRuntime ??
+              resolvedManagedRepo?.preferredWorkerRuntime ??
+              'codex'
+          ),
           workerAgentId: null,
           runtimeState: 'blocked-by-scope',
           runtimeDetail: blockingScopeDetail({
@@ -5421,6 +5692,86 @@ export async function processNextQueued(
           clearWorkerLiveLog: true,
         });
         continue;
+      }
+
+      const automaticWorkerRuntimes = runtimeConstraintCandidates({
+        supportedRuntimes: resolvedManagedRepo?.supportedWorkerRuntimes,
+        preferredWorkerRuntime: resolvedManagedRepo?.preferredWorkerRuntime,
+      });
+      let selectedWorkerRuntime: ManagerWorkerRuntime =
+        explicitRequestedWorkerRuntime ?? automaticWorkerRuntimes[0] ?? 'codex';
+      let selectedWorkerModel: string | null = null;
+      let selectedWorkerEffort: string | null = null;
+
+      if (dispatch.assignee === 'worker') {
+        if (explicitRequestedWorkerRuntime) {
+          const defaults = workerRuntimeDefaults(
+            explicitRequestedWorkerRuntime
+          );
+          selectedWorkerRuntime = explicitRequestedWorkerRuntime;
+          selectedWorkerModel = defaults.model;
+          selectedWorkerEffort = defaults.effort;
+        } else {
+          try {
+            const liveSelection = await selectRankedWorkerModel({
+              content: mergeQueuedEntryContent(nextEntries),
+              writeScopes: assignmentWriteScopes,
+              runMode: requestedRunMode,
+              supportedRuntimes: automaticWorkerRuntimes,
+            });
+            selectedWorkerRuntime = liveSelection.selected.runtime;
+            selectedWorkerModel = liveSelection.selected.model;
+            selectedWorkerEffort = liveSelection.selected.effort;
+          } catch (selectionErr) {
+            const detail =
+              selectionErr instanceof Error
+                ? selectionErr.message
+                : String(selectionErr);
+            const quotaBlocked = /sufficient quota/i.test(detail);
+            const assigneeLabel = defaultAssigneeLabel(
+              'worker',
+              automaticWorkerRuntimes[0] ?? 'codex'
+            );
+            const errMsg = quotaBlocked
+              ? `[Manager error] Live worker model selection could not find any currently eligible worker with sufficient quota. ${detail}\nFree quota or retry later, then resend the request.`
+              : `[Manager error] Live worker model selection failed before a worker could start. ${detail}\nFix the live benchmark or ai-quota path, then resend the request.`;
+            console.warn(
+              `[manager-backend] live worker selection failed for ${next.threadId}: ${detail}`
+            );
+            await clearWorkerLiveOutput(
+              resolvedDir,
+              next.threadId,
+              'worker',
+              assigneeLabel,
+              {
+                workerAgentId: null,
+                runtimeState: null,
+                runtimeDetail: null,
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+              }
+            );
+            try {
+              await addMessage(
+                resolvedDir,
+                next.threadId,
+                errMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            if (!quotaBlocked) {
+              await setManagerRuntimeError(dir, errMsg);
+            }
+            await updateQueueLocked(dir, (currentQueue) =>
+              currentQueue.filter((entry) => !batchIds.includes(entry.id))
+            );
+            continue;
+          }
+        }
       }
 
       const remainingQueue = queue.filter(
@@ -5444,10 +5795,16 @@ export async function processNextQueued(
         targetKind: assignmentTargetKind,
         newRepoName: assignmentNewRepoName,
         workingDirectory: null,
-        workerRuntime: requestedWorkerRuntime,
+        workerRuntime: selectedWorkerRuntime,
+        workerModel: selectedWorkerModel,
+        workerEffort: selectedWorkerEffort,
         assigneeLabel: defaultAssigneeLabel(
           dispatch.assignee,
-          requestedWorkerRuntime
+          selectedWorkerRuntime,
+          {
+            model: selectedWorkerModel,
+            effort: selectedWorkerEffort,
+          }
         ),
         writeScopes: assignmentWriteScopes,
         pid: null,
@@ -5657,7 +6014,7 @@ export async function processNextQueued(
               current?.managedVerifyCommand ??
               null)
             : null,
-        requestedWorkerRuntime: requestedWorkerRuntime,
+        requestedWorkerRuntime: explicitRequestedWorkerRuntime,
         requestedRunMode,
       }));
 

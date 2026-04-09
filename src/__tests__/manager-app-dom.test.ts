@@ -191,7 +191,7 @@ function createManagerFetchWithData(input: {
     defaultBranch: string;
     verifyCommand: string;
     supportedWorkerRuntimes: string[];
-    preferredWorkerRuntime: string;
+    preferredWorkerRuntime: string | null;
     mergeLaneEnabled: boolean;
   }>;
   status?: {

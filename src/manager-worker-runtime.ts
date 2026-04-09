@@ -153,15 +153,46 @@ function runtimeDisplayName(runtime: ManagerWorkerRuntime): string {
         : 'Codex';
 }
 
-export function workerRuntimeAssigneeLabel(
+export interface WorkerRuntimeModelSelection {
+  model: string;
+  effort: string | null;
+}
+
+export function workerRuntimeDefaults(
   runtime: ManagerWorkerRuntime,
   env: NodeJS.ProcessEnv = process.env
+): WorkerRuntimeModelSelection {
+  return {
+    model: runtimeModel(runtime, env),
+    effort: runtimeEffort(runtime, env),
+  };
+}
+
+export function workerRuntimeAssigneeLabel(
+  runtime: ManagerWorkerRuntime,
+  env: NodeJS.ProcessEnv = process.env,
+  selection?: {
+    model?: string | null;
+    effort?: string | null;
+  } | null
 ): string {
-  const model = runtimeModel(runtime, env);
-  const effort = runtimeEffort(runtime, env);
+  const runtimeLabel = `Worker ${runtimeDisplayName(runtime)}`;
+  if (
+    !selection ||
+    (!selection.model?.trim() &&
+      !Object.prototype.hasOwnProperty.call(selection, 'effort'))
+  ) {
+    return runtimeLabel;
+  }
+  const defaults = workerRuntimeDefaults(runtime, env);
+  const model = selection?.model?.trim() || defaults.model;
+  const effort =
+    selection && Object.prototype.hasOwnProperty.call(selection, 'effort')
+      ? selection.effort?.trim() || null
+      : defaults.effort;
   return effort
-    ? `Worker ${runtimeDisplayName(runtime)} ${model} (${effort})`
-    : `Worker ${runtimeDisplayName(runtime)} ${model}`;
+    ? `${runtimeLabel} ${model} (${effort})`
+    : `${runtimeLabel} ${model}`;
 }
 
 function buildLaunchSpec(
@@ -196,13 +227,16 @@ function buildCodexCommandSpec(input: {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
   imagePaths: string[];
+  model?: string | null;
+  effort?: string | null;
 }): WorkerRuntimeLaunchSpec {
   const command = runtimeCommand('codex', {
     platform: input.platform,
     env: input.env,
   });
-  const effort = runtimeEffort('codex', input.env) ?? 'xhigh';
-  const model = runtimeModel('codex', input.env);
+  const effort =
+    input.effort?.trim() || runtimeEffort('codex', input.env) || 'xhigh';
+  const model = input.model?.trim() || runtimeModel('codex', input.env);
   const args = input.sessionId ? ['exec', 'resume', input.sessionId] : ['exec'];
   for (const imagePath of input.imagePaths) {
     args.push('--image', imagePath);
@@ -229,7 +263,10 @@ function buildCodexCommandSpec(input: {
     args: launchSpec.args,
     prompt: input.prompt,
     sessionId: input.sessionId,
-    displayLabel: workerRuntimeAssigneeLabel('codex', input.env),
+    displayLabel: workerRuntimeAssigneeLabel('codex', input.env, {
+      model,
+      effort,
+    }),
     spawnOptions: launchSpec.spawnOptions,
   };
 }
@@ -243,6 +280,8 @@ export function buildWorkerRuntimeLaunchSpec(input: {
   imagePaths?: string[];
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  model?: string | null;
+  effort?: string | null;
 }): WorkerRuntimeLaunchSpec {
   const platform = input.platform ?? process.platform;
   const env = sanitizeAgentEnv(input.env);
@@ -259,11 +298,14 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       env,
       platform,
       imagePaths: input.imagePaths ?? [],
+      model: input.model,
+      effort: input.effort,
     });
   }
 
   if (input.runtime === 'claude') {
     const command = runtimeCommand('claude', { platform, env });
+    const model = input.model?.trim() || runtimeModel('claude', env);
     const args = [
       '--print',
       '--output-format',
@@ -271,7 +313,7 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       '--permission-mode',
       input.runMode === 'read-only' ? 'plan' : 'acceptEdits',
       '--model',
-      runtimeModel('claude', env),
+      model,
       '--add-dir',
       input.resolvedDir,
     ];
@@ -296,13 +338,19 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       args: launchSpec.args,
       prompt: null,
       sessionId,
-      displayLabel: workerRuntimeAssigneeLabel('claude', env),
+      displayLabel: workerRuntimeAssigneeLabel('claude', env, {
+        model,
+        effort: input.effort ?? null,
+      }),
       spawnOptions: launchSpec.spawnOptions,
     };
   }
 
   if (input.runtime === 'copilot') {
     const command = runtimeCommand('copilot', { platform, env });
+    const model = input.model?.trim() || runtimeModel('copilot', env);
+    const effort =
+      input.effort?.trim() || runtimeEffort('copilot', env) || 'high';
     const args = [
       '--output-format',
       'json',
@@ -310,9 +358,9 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       '--allow-all-paths',
       '--no-ask-user',
       '--model',
-      runtimeModel('copilot', env),
+      model,
       '--reasoning-effort',
-      runtimeEffort('copilot', env) ?? 'high',
+      effort,
       '--add-dir',
       input.resolvedDir,
       `--resume=${sessionId ?? randomUUID()}`,
@@ -332,17 +380,21 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       args: launchSpec.args,
       prompt: null,
       sessionId: sessionId ?? null,
-      displayLabel: workerRuntimeAssigneeLabel('copilot', env),
+      displayLabel: workerRuntimeAssigneeLabel('copilot', env, {
+        model,
+        effort,
+      }),
       spawnOptions: launchSpec.spawnOptions,
     };
   }
 
   const command = runtimeCommand('gemini', { platform, env });
+  const model = input.model?.trim() || runtimeModel('gemini', env);
   const args = [
     '--output-format',
     'stream-json',
     '--model',
-    runtimeModel('gemini', env),
+    model,
     '--include-directories',
     input.resolvedDir,
   ];
@@ -368,7 +420,10 @@ export function buildWorkerRuntimeLaunchSpec(input: {
     args: launchSpec.args,
     prompt: null,
     sessionId,
-    displayLabel: workerRuntimeAssigneeLabel('gemini', env),
+    displayLabel: workerRuntimeAssigneeLabel('gemini', env, {
+      model,
+      effort: input.effort ?? null,
+    }),
     spawnOptions: launchSpec.spawnOptions,
   };
 }

@@ -110,6 +110,8 @@ describe('manager thread state derivation', () => {
             newRepoName: null,
             workingDirectory: null,
             workerRuntime: 'codex',
+            workerModel: null,
+            workerEffort: null,
             assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
             writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
             pid: 1234,
@@ -196,6 +198,8 @@ describe('manager thread state derivation', () => {
             workingDirectory:
               'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-retrying',
             workerRuntime: 'codex',
+            workerModel: null,
+            workerEffort: null,
             assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
             writeScopes: ['src'],
             pid: 46588,
@@ -285,6 +289,8 @@ describe('manager thread state derivation', () => {
             workingDirectory:
               'C:\\Users\\Origin\\AppData\\Local\\Temp\\wah-wt-assign-working',
             workerRuntime: 'codex',
+            workerModel: null,
+            workerEffort: null,
             assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
             writeScopes: ['src'],
             pid: 46588,

@@ -70,7 +70,7 @@ describe('manager-worker-runtime', () => {
         'Apply the requested fix',
       ])
     );
-    expect(workerRuntimeAssigneeLabel('copilot')).toContain('Copilot');
+    expect(workerRuntimeAssigneeLabel('copilot')).toBe('Worker Copilot');
   });
 
   it('builds a Codex launch spec that wraps the Windows cmd shim through cmd.exe', () => {
@@ -104,7 +104,26 @@ describe('manager-worker-runtime', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    expect(workerRuntimeAssigneeLabel('codex')).toContain('Codex');
+    expect(workerRuntimeAssigneeLabel('codex')).toBe('Worker Codex');
+  });
+
+  it('allows a worker assignment to override the default model and effort', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'codex',
+      model: 'gpt-5.4-pro',
+      effort: 'xhigh',
+      prompt: 'Apply the requested fix',
+      sessionId: null,
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        CODEX_PATH: 'C:\\tools\\codex.cmd',
+      },
+    });
+
+    expect(spec.args.join(' ')).toContain('"gpt-5.4-pro"');
+    expect(spec.displayLabel).toContain('gpt-5.4-pro');
   });
 
   it('parses generic runtime JSON progress and final output', () => {
