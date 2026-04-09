@@ -158,7 +158,7 @@ describe('manager-worker-model-selection', () => {
     );
   });
 
-  it('selects the top live-ranked candidate when its runtime still has quota', async () => {
+  it('normalizes the top live-ranked Codex implementation candidate to a runnable launch model when quota is available', async () => {
     const selection = await selectRankedWorkerModel({
       content: '既存の不具合を実装で修正してください',
       writeScopes: ['src/manager-backend.ts'],
@@ -168,8 +168,11 @@ describe('manager-worker-model-selection', () => {
 
     expect(selection.taskClass).toBe('implementation');
     expect(selection.selected.runtime).toBe('codex');
-    expect(selection.selected.model).toBe('gpt-5.4-pro');
+    expect(selection.selected.model).toBe('gpt-5.4');
     expect(selection.selected.effort).toBe('xhigh');
+    expect(selection.selected.sourceModels).toEqual(
+      expect.arrayContaining(['gpt-5.4-pro (xHigh)*', 'gpt-5.4-pro (xHigh)'])
+    );
     expect(
       [
         String(execFileMock.mock.calls[0]?.[0]),

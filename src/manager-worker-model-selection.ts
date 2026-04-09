@@ -71,7 +71,10 @@ const MAX_QUOTA_USED_PERCENT = 90;
 const CANDIDATE_MATCHERS: CandidateMatcher[] = [
   {
     runtime: 'codex',
-    model: 'gpt-5.4-pro',
+    // Scale labels the strongest ChatGPT-backed Codex implementation entry as
+    // gpt-5.4-pro, but the runnable Codex CLI launch model on ChatGPT accounts
+    // is still gpt-5.4.
+    model: 'gpt-5.4',
     effort: 'xhigh',
     patterns: [/^gpt-5\.4-pro \(xhigh\)\*?$/i],
   },

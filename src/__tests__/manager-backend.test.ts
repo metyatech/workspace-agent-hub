@@ -4040,6 +4040,65 @@ describe('manager backend codex integration', () => {
     );
   });
 
+  it('surfaces a stdout-only Codex structured error instead of hiding it behind a generic exit code', async () => {
+    const workerProc = makeProc(8622);
+    spawnMock.mockReturnValueOnce(workerProc);
+    const unsupportedModelError = JSON.stringify({
+      type: 'error',
+      status: 400,
+      error: {
+        type: 'invalid_request_error',
+        message:
+          "The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account.",
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-structured-worker-error',
+      'message'
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    workerProc.stdout.emit(
+      'data',
+      Buffer.from(
+        [
+          JSON.stringify({
+            type: 'thread.started',
+            thread_id: 'codex-thread-structured-worker-error',
+          }),
+          JSON.stringify({
+            type: 'error',
+            message: unsupportedModelError,
+          }),
+          JSON.stringify({
+            type: 'turn.failed',
+            error: {
+              message: unsupportedModelError,
+            },
+          }),
+        ].join('\n')
+      )
+    );
+    workerProc.emit('close', 1);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-structured-worker-error'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('exited with code 1');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      "The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account."
+    );
+  });
+
   it('logs worktree cleanup failures instead of swallowing them silently', async () => {
     const cleanupError = new Error('cleanup blocked by lingering lock');
     const consoleErrorSpy = vi

@@ -2708,6 +2708,63 @@ export function parseManagerWorkerResultPayload(
   }
 }
 
+function extractStructuredRuntimeErrorMessage(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      message?: unknown;
+      error?: { message?: unknown } | null;
+    };
+    const nested =
+      typeof parsed.error?.message === 'string'
+        ? parsed.error.message
+        : typeof parsed.message === 'string'
+          ? parsed.message
+          : null;
+    if (!nested?.trim()) {
+      return null;
+    }
+    return extractStructuredRuntimeErrorMessage(nested) ?? nested.trim();
+  } catch {
+    return trimmed;
+  }
+}
+
+function extractRuntimeFailureDetail(
+  output: string,
+  maxLength = 300
+): string | null {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line) {
+      continue;
+    }
+    const structured = extractStructuredRuntimeErrorMessage(line);
+    if (structured) {
+      return structured.slice(0, maxLength);
+    }
+  }
+  return null;
+}
+
+function formatRuntimeFailureSuffix(input: {
+  stdout: string;
+  stderr: string;
+  maxLength?: number;
+}): string {
+  const detail =
+    extractRuntimeFailureDetail(input.stderr, input.maxLength) ??
+    extractRuntimeFailureDetail(input.stdout, input.maxLength);
+  return detail ? `\n${detail}` : '';
+}
+
 export function parseManagerRoutingPlan(
   text: string
 ): ManagerRoutingPlan | null {
@@ -4029,8 +4086,8 @@ async function decideDispatchForBatch(input: {
   });
   if (runResult.code !== 0) {
     throw new Error(
-      runResult.stderr.trim() ||
-        runResult.stdout.trim() ||
+      extractRuntimeFailureDetail(runResult.stderr, 500) ||
+        extractRuntimeFailureDetail(runResult.stdout, 500) ||
         `codex CLI exited with code ${runResult.code ?? '?'}`
     );
   }
@@ -4676,7 +4733,13 @@ async function runQueuedAssignment(input: {
       if (deliveryReadinessDetail) {
         recoveryErrorContext = `Delivery readiness check failed:\n${deliveryReadinessDetail}`;
       } else if (finalResult.code !== 0) {
-        recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 500)}` : ''}`;
+        recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${formatRuntimeFailureSuffix(
+          {
+            stdout: finalResult.stdout,
+            stderr: finalResult.stderr,
+            maxLength: 500,
+          }
+        )}`;
       } else if (currentParsedReply?.status === 'needs-reply') {
         recoveryErrorContext = `Review returned needs-reply:\n${currentParsedReply.reply}`;
       } else {
@@ -4902,7 +4965,12 @@ async function runQueuedAssignment(input: {
           recoveryErrorContext =
             `Recovery attempt ${recoveryAttempt + 1} (${decision.decision}) failed: ` +
             (fixResult.code !== 0
-              ? `exited with code ${fixResult.code}.${fixResult.stderr ? `\n${fixResult.stderr.slice(0, 300)}` : ''}`
+              ? `exited with code ${fixResult.code}.${formatRuntimeFailureSuffix(
+                  {
+                    stdout: fixResult.stdout,
+                    stderr: fixResult.stderr,
+                  }
+                )}`
               : 'No parseable reply from fix attempt.');
           continue;
         }
@@ -5005,7 +5073,12 @@ async function runQueuedAssignment(input: {
         if (reReviewParsed?.status === 'needs-reply') {
           recoveryErrorContext = `Re-review returned needs-reply:\n${reReviewParsed.reply}`;
         } else if (reReviewResult.code !== 0) {
-          recoveryErrorContext = `Re-review exited with code ${reReviewResult.code}.${reReviewResult.stderr ? `\n${reReviewResult.stderr.slice(0, 300)}` : ''}`;
+          recoveryErrorContext = `Re-review exited with code ${reReviewResult.code}.${formatRuntimeFailureSuffix(
+            {
+              stdout: reReviewResult.stdout,
+              stderr: reReviewResult.stderr,
+            }
+          )}`;
         } else {
           recoveryErrorContext =
             'Re-review reply could not be parsed as valid Manager JSON.';
@@ -5405,7 +5478,12 @@ async function runQueuedAssignment(input: {
     const errMsg =
       finalResult.code === 0
         ? `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} finished successfully but no usable assistant reply could be parsed from the runtime output.`
-        : `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} exited with code ${finalResult.code ?? '?'}.${finalResult.stderr ? `\n${finalResult.stderr.slice(0, 300)}` : ''}`;
+        : `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} exited with code ${finalResult.code ?? '?'}.${formatRuntimeFailureSuffix(
+            {
+              stdout: finalResult.stdout,
+              stderr: finalResult.stderr,
+            }
+          )}`;
     try {
       await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
     } catch {
