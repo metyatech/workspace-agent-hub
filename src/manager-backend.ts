@@ -47,6 +47,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  stripManagerRuntimeStatePreservingContinuity,
   type ManagerThreadMeta,
   type ManagerWorkerLiveEntry,
   type ManagerWorkerRuntimeState,
@@ -3184,15 +3185,6 @@ function pickRoutingCandidateThreads(
   ).slice(0, MAX_ROUTING_TOPIC_CANDIDATES);
 }
 
-function managerThreadMetaHasContent(meta: ManagerThreadMeta): boolean {
-  return Object.values(meta).some((value) => {
-    if (Array.isArray(value)) {
-      return value.length > 0;
-    }
-    return value !== null && value !== undefined && value !== '';
-  });
-}
-
 async function clearThreadRoutingStatePreservingContinuity(
   dir: string,
   threadId: string
@@ -3206,22 +3198,17 @@ async function clearThreadRoutingStatePreservingContinuity(
     delete next.routingConfirmationNeeded;
     delete next.routingHint;
     delete next.lastRoutingAt;
-    delete next.assigneeKind;
-    delete next.assigneeLabel;
-    delete next.workerAgentId;
-    delete next.workerRuntimeState;
-    delete next.workerRuntimeDetail;
-    delete next.workerWriteScopes;
-    delete next.workerBlockedByThreadIds;
-    delete next.supersededByThreadId;
-    delete next.workerLiveLog;
-    delete next.workerLiveOutput;
-    delete next.workerLiveAt;
-    delete next.consecutiveFailures;
-    delete next.nextRetryAfter;
-
-    return managerThreadMetaHasContent(next) ? next : null;
+    return stripManagerRuntimeStatePreservingContinuity(next);
   });
+}
+
+async function clearThreadRuntimeStatePreservingContinuity(
+  dir: string,
+  threadId: string
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) =>
+    stripManagerRuntimeStatePreservingContinuity(current)
+  );
 }
 
 async function withRoutingLock<T>(
@@ -3360,23 +3347,30 @@ async function setWorkerRuntimeState(input: {
     const currentLog = input.clearWorkerLiveLog
       ? []
       : normalizeWorkerLiveLogValue(current?.workerLiveLog);
+    const clearRuntimeFootprint =
+      input.clearWorkerLiveLog === true &&
+      input.runtimeState === null &&
+      input.runtimeDetail === null;
     return {
       ...(current ?? {}),
       workerSessionId:
         input.workerSessionId ?? current?.workerSessionId ?? null,
       workerLastStartedAt:
         current?.workerLastStartedAt ?? new Date().toISOString(),
-      assigneeKind:
-        input.assigneeKind === undefined
+      assigneeKind: clearRuntimeFootprint
+        ? null
+        : input.assigneeKind === undefined
           ? (current?.assigneeKind ?? 'worker')
           : input.assigneeKind,
-      assigneeLabel:
-        input.assigneeLabel === undefined
+      assigneeLabel: clearRuntimeFootprint
+        ? null
+        : input.assigneeLabel === undefined
           ? (current?.assigneeLabel ??
             `Worker agent ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`)
           : input.assigneeLabel,
-      workerAgentId:
-        input.workerAgentId === undefined
+      workerAgentId: clearRuntimeFootprint
+        ? null
+        : input.workerAgentId === undefined
           ? (current?.workerAgentId ?? null)
           : input.workerAgentId,
       workerRuntimeState:
@@ -3387,16 +3381,19 @@ async function setWorkerRuntimeState(input: {
         input.runtimeDetail === undefined
           ? (current?.workerRuntimeDetail ?? null)
           : input.runtimeDetail,
-      workerWriteScopes:
-        input.workerWriteScopes === undefined
+      workerWriteScopes: clearRuntimeFootprint
+        ? []
+        : input.workerWriteScopes === undefined
           ? (current?.workerWriteScopes ?? [])
           : (input.workerWriteScopes ?? []),
-      workerBlockedByThreadIds:
-        input.workerBlockedByThreadIds === undefined
+      workerBlockedByThreadIds: clearRuntimeFootprint
+        ? []
+        : input.workerBlockedByThreadIds === undefined
           ? (current?.workerBlockedByThreadIds ?? [])
           : (input.workerBlockedByThreadIds ?? []),
-      supersededByThreadId:
-        input.supersededByThreadId === undefined
+      supersededByThreadId: clearRuntimeFootprint
+        ? null
+        : input.supersededByThreadId === undefined
           ? (current?.supersededByThreadId ?? null)
           : input.supersededByThreadId,
       workerLiveLog: currentLog.length > 0 ? currentLog : null,
@@ -4979,6 +4976,7 @@ async function runQueuedAssignment(input: {
         }
       );
       await removeAssignment(dir, assignment.id);
+      await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
       void processNextQueued(dir, resolvedDir);
       return;
     }
@@ -5018,6 +5016,7 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
+    await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
     await cleanupWorktreeBestEffort({
       targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
       worktreePath: assignment.worktreePath,
@@ -5061,6 +5060,7 @@ async function runQueuedAssignment(input: {
       }
     );
     await removeAssignment(dir, assignment.id);
+    await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
     await cleanupWorktreeBestEffort({
       targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
       worktreePath: assignment.worktreePath,

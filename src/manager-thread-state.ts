@@ -183,6 +183,48 @@ export async function writeManagerThreadMeta(
   notifyManagerUpdate(dir);
 }
 
+export async function reconcileManagerThreadMeta(input: {
+  dir: string;
+  session: ManagerSession;
+  queue: QueueEntry[];
+  meta?: ManagerThreadMetaMap;
+}): Promise<ManagerThreadMetaMap> {
+  const current = input.meta ?? (await readManagerThreadMeta(input.dir));
+  const activeThreadIds = new Set(
+    (input.session.activeAssignments ?? []).map(
+      (assignment) => assignment.threadId
+    )
+  );
+  const pendingThreadIds = new Set(
+    input.queue
+      .filter((entry) => !entry.processed)
+      .map((entry) => entry.threadId)
+  );
+
+  let changed = false;
+  const nextEntries = Object.entries(current).flatMap(([threadId, meta]) => {
+    if (
+      activeThreadIds.has(threadId) ||
+      pendingThreadIds.has(threadId) ||
+      !hasManagerRuntimeFootprint(meta)
+    ) {
+      return [[threadId, meta] as const];
+    }
+
+    changed = true;
+    const cleaned = stripManagerRuntimeStatePreservingContinuity(meta);
+    return cleaned ? [[threadId, cleaned] as const] : [];
+  });
+
+  if (!changed) {
+    return current;
+  }
+
+  const next = Object.fromEntries(nextEntries);
+  await writeManagerThreadMeta(input.dir, next);
+  return next;
+}
+
 export async function updateManagerThreadMeta(
   dir: string,
   threadId: string,
@@ -303,27 +345,74 @@ function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
   });
 }
 
-function hasManagerThreadFootprint(meta: ManagerThreadMeta | null): boolean {
+function managerMetaValueHasContent(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) =>
+      typeof entry === 'string' ? entry.trim().length > 0 : Boolean(entry)
+    );
+  }
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  if (typeof value === 'number') {
+    return value > 0;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return value != null;
+}
+
+function managerThreadMetaHasContent(meta: ManagerThreadMeta | null): boolean {
   if (!meta) {
     return false;
   }
-  return Object.values(meta).some((value) => {
-    if (Array.isArray(value)) {
-      return value.some((entry) =>
-        typeof entry === 'string' ? entry.trim().length > 0 : Boolean(entry)
-      );
-    }
-    if (typeof value === 'string') {
-      return value.trim().length > 0;
-    }
-    if (typeof value === 'number') {
-      return value > 0;
-    }
-    if (typeof value === 'boolean') {
-      return value;
-    }
-    return value != null;
-  });
+  return Object.values(meta).some((value) => managerMetaValueHasContent(value));
+}
+
+function hasManagerRuntimeFootprint(meta: ManagerThreadMeta | null): boolean {
+  if (!meta) {
+    return false;
+  }
+
+  return [
+    meta.assigneeKind,
+    meta.assigneeLabel,
+    meta.workerAgentId,
+    meta.workerRuntimeState,
+    meta.workerRuntimeDetail,
+    meta.workerWriteScopes,
+    meta.workerBlockedByThreadIds,
+    meta.supersededByThreadId,
+    meta.workerLiveLog,
+    meta.workerLiveOutput,
+    meta.workerLiveAt,
+  ].some((value) => managerMetaValueHasContent(value));
+}
+
+export function stripManagerRuntimeStatePreservingContinuity(
+  meta: ManagerThreadMeta | null
+): ManagerThreadMeta | null {
+  if (!meta) {
+    return null;
+  }
+
+  const next: ManagerThreadMeta = { ...meta };
+  delete next.assigneeKind;
+  delete next.assigneeLabel;
+  delete next.workerAgentId;
+  delete next.workerRuntimeState;
+  delete next.workerRuntimeDetail;
+  delete next.workerWriteScopes;
+  delete next.workerBlockedByThreadIds;
+  delete next.supersededByThreadId;
+  delete next.workerLiveLog;
+  delete next.workerLiveOutput;
+  delete next.workerLiveAt;
+  delete next.consecutiveFailures;
+  delete next.nextRetryAfter;
+
+  return managerThreadMetaHasContent(next) ? next : null;
 }
 
 function shouldIncludeInManagerThreadViews(input: {
@@ -338,7 +427,10 @@ function shouldIncludeInManagerThreadViews(input: {
   if (input.queueDepth > 0 || input.isWorking) {
     return true;
   }
-  if (hasManagerThreadFootprint(input.meta)) {
+  if (
+    Boolean(input.meta?.routingConfirmationNeeded) ||
+    hasManagerRuntimeFootprint(input.meta)
+  ) {
     return true;
   }
   return lastSender(input.thread) === 'ai';
@@ -378,7 +470,7 @@ function deriveUiState(input: {
     if (
       input.queueDepth > 0 ||
       input.isWorking ||
-      hasManagerThreadFootprint(input.meta)
+      hasManagerRuntimeFootprint(input.meta)
     ) {
       return 'queued';
     }

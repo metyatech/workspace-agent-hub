@@ -24,6 +24,7 @@ import {
 import { readActiveTasks } from './manager-tasks.js';
 import {
   deriveManagerThreadViews,
+  reconcileManagerThreadMeta,
   readManagerThreadMeta,
   updateManagerThreadMeta,
 } from './manager-thread-state.js';
@@ -175,7 +176,7 @@ function normalizeManagerPath(pathname: string): string {
 async function buildManagerLiveSnapshot(
   workspaceRoot: string
 ): Promise<ManagerLiveSnapshot> {
-  const [threads, session, queue, meta, tasks, status] = await Promise.all([
+  const [threads, session, queue, rawMeta, tasks, status] = await Promise.all([
     listThreads(workspaceRoot),
     readSession(workspaceRoot),
     readQueue(workspaceRoot),
@@ -183,6 +184,12 @@ async function buildManagerLiveSnapshot(
     readActiveTasks(workspaceRoot),
     getBuiltinManagerStatus(workspaceRoot),
   ]);
+  const meta = await reconcileManagerThreadMeta({
+    dir: workspaceRoot,
+    session,
+    queue,
+    meta: rawMeta,
+  });
 
   return {
     kind: 'snapshot',
@@ -310,12 +317,18 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/threads' && input.method === 'GET') {
-    const [threads, session, queue, meta] = await Promise.all([
+    const [threads, session, queue, rawMeta] = await Promise.all([
       listThreads(input.workspaceRoot),
       readSession(input.workspaceRoot),
       readQueue(input.workspaceRoot),
       readManagerThreadMeta(input.workspaceRoot),
     ]);
+    const meta = await reconcileManagerThreadMeta({
+      dir: input.workspaceRoot,
+      session,
+      queue,
+      meta: rawMeta,
+    });
     sendJson(
       input.res,
       deriveManagerThreadViews({

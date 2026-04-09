@@ -1226,7 +1226,7 @@ describe('manager backend codex integration', () => {
     const meta = await readManagerThreadMeta(tempDir);
     expect(meta['_bX_UpQR']?.workerSessionId).toBe('codex-thread-existing');
     expect(meta['_bX_UpQR']?.routingConfirmationNeeded).toBeUndefined();
-    expect(meta['_bX_UpQR']?.workerLiveOutput).toBeNull();
+    expect(meta['_bX_UpQR']?.workerLiveOutput).toBeUndefined();
   });
 
   it('launches the requested Claude worker runtime and only reuses the matching stored session', async () => {
@@ -1943,6 +1943,16 @@ describe('manager backend codex integration', () => {
       'manager reviewed and delivered'
     );
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-review']).toMatchObject({
+      workerSessionId: 'worker-session-review',
+      workerSessionRuntime: 'codex',
+      requestedWorkerRuntime: 'codex',
+    });
+    expect(meta['thread-review']?.workerLastStartedAt).toEqual(
+      expect.any(String)
+    );
   });
 
   it('coalesces consecutive queued user messages on the same topic into one worker turn', async () => {
@@ -2520,10 +2530,9 @@ describe('manager backend codex integration', () => {
       return (
         queue.length === 0 &&
         session.status === 'idle' &&
-        meta['thread-live']?.workerRuntimeState === null &&
-        meta['thread-live']?.workerLiveOutput === null &&
-        meta['thread-live']?.assigneeLabel?.includes('Worker Codex gpt-5.4') ===
-          true
+        meta['thread-live']?.workerRuntimeState === undefined &&
+        meta['thread-live']?.workerLiveOutput === undefined &&
+        meta['thread-live']?.assigneeLabel === undefined
       );
     });
   });
@@ -2594,8 +2603,9 @@ describe('manager backend codex integration', () => {
       return (
         queue.length === 0 &&
         session.status === 'idle' &&
-        meta['thread-live-stderr']?.workerRuntimeState === null &&
-        meta['thread-live-stderr']?.workerLiveOutput === null
+        meta['thread-live-stderr']?.workerRuntimeState === undefined &&
+        meta['thread-live-stderr']?.workerLiveOutput === undefined &&
+        meta['thread-live-stderr']?.assigneeLabel === undefined
       );
     });
   });

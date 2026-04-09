@@ -1,5 +1,12 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { deriveManagerThreadViews } from '../manager-thread-state.js';
+import {
+  deriveManagerThreadViews,
+  reconcileManagerThreadMeta,
+  writeManagerThreadMeta,
+} from '../manager-thread-state.js';
 
 describe('manager thread state derivation', () => {
   it('treats active AI-replied threads with no in-flight work as awaiting user confirmation', () => {
@@ -337,7 +344,16 @@ describe('manager thread state derivation', () => {
         lastErrorAt: null,
         activeAssignments: [],
       },
-      queue: [],
+      queue: [
+        {
+          id: 'queue-child',
+          threadId: 'thread-child',
+          content: '追加依頼です',
+          createdAt: '2026-03-21T00:12:00.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+      ],
       meta: {
         'thread-child': {
           derivedFromThreadIds: ['thread-parent'],
@@ -416,5 +432,103 @@ describe('manager thread state derivation', () => {
 
     expect(views.map((view) => view.id)).toEqual(['thread-real']);
     expect(views[0]?.uiState).toBe('queued');
+  });
+
+  it('does not treat continuity-only metadata as a queued AI footprint', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-continuity-only',
+          title: 'Markdown 表示改善',
+          status: 'waiting',
+          updatedAt: '2026-04-09T08:02:37.661Z',
+          createdAt: '2026-04-09T08:02:37.655Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '返信を見やすくしてほしい',
+              at: '2026-04-09T08:02:37.661Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T08:02:37.655Z',
+        lastMessageAt: '2026-04-09T08:02:37.661Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-continuity-only': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoLabel: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          managedBaseBranch: 'main',
+          managedVerifyCommand: 'npm run verify',
+          requestedWorkerRuntime: 'codex',
+          workerSessionId: 'session-123',
+          workerLastStartedAt: '2026-04-09T10:07:48.298Z',
+        },
+      },
+    });
+
+    expect(views).toEqual([]);
+  });
+
+  it('reconciles stale runtime metadata when no queue or active assignment remains', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'wah-thread-state-'));
+    try {
+      await writeManagerThreadMeta(tempDir, {
+        ghost: {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          requestedWorkerRuntime: 'codex',
+          assigneeKind: 'worker',
+          assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+          workerAgentId: 'assign_q_ghost',
+          workerWriteScopes: ['src'],
+          workerLiveOutput: 'still running...',
+          workerLiveAt: '2026-04-09T10:30:00.000Z',
+        },
+      });
+
+      const reconciled = await reconcileManagerThreadMeta({
+        dir: tempDir,
+        session: {
+          workspaceKey: 'workspace',
+          status: 'idle',
+          sessionId: 'codex-thread',
+          routingSessionId: null,
+          pid: null,
+          currentQueueId: null,
+          startedAt: '2026-04-09T10:00:00.000Z',
+          lastMessageAt: '2026-04-09T10:30:00.000Z',
+          priorityStreak: 0,
+          lastProgressAt: null,
+          lastErrorMessage: null,
+          lastErrorAt: null,
+          activeAssignments: [],
+        },
+        queue: [],
+      });
+
+      expect(reconciled['ghost']).toEqual({
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+        requestedWorkerRuntime: 'codex',
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
