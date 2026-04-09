@@ -419,6 +419,8 @@ describe('manager backend codex integration', () => {
   });
 
   it('builds router and worker prompts that preserve system context only on first turn', () => {
+    const firstUserAt = '2026-04-09T05:20:00.000Z';
+    const firstAiAt = '2026-04-09T05:25:00.000Z';
     const first = buildManagerReplyPrompt(
       'Fix this',
       'thread-a',
@@ -449,7 +451,7 @@ describe('manager backend codex integration', () => {
           {
             sender: 'user',
             content: 'Please implement the task.',
-            at: new Date().toISOString(),
+            at: firstUserAt,
           },
         ],
       },
@@ -472,12 +474,12 @@ describe('manager backend codex integration', () => {
           {
             sender: 'user',
             content: 'Please implement the task.',
-            at: new Date().toISOString(),
+            at: firstUserAt,
           },
           {
             sender: 'ai',
             content: 'Initial answer.',
-            at: new Date().toISOString(),
+            at: firstAiAt,
           },
         ],
       },
@@ -498,7 +500,12 @@ describe('manager backend codex integration', () => {
           {
             sender: 'user',
             content: 'Please implement the task.',
-            at: new Date().toISOString(),
+            at: firstUserAt,
+          },
+          {
+            sender: 'ai',
+            content: 'I checked the branch state.',
+            at: firstAiAt,
           },
         ],
       },
@@ -519,6 +526,9 @@ describe('manager backend codex integration', () => {
     expect(workerFirst).toContain('built-in execution worker');
     expect(workerFirst).toContain('plain, natural Japanese');
     expect(workerFirst).toContain('Avoid internal AI/platform/process jargon');
+    expect(workerFirst).toContain(
+      'Do not mention other work items, unrelated CI/build failures'
+    );
     expect(workerFirst).toContain(
       'Workspace: D:\\ghws\\workspace-agent-hub\\packages\\manager'
     );
@@ -555,6 +565,18 @@ describe('manager backend codex integration', () => {
       'The Manager backend will merge to the integration worktree'
     );
     expect(reviewPrompt).toContain('Do not return status "review"');
+    expect(reviewPrompt).toContain(
+      'Do not mention other work items, unrelated CI/build failures'
+    );
+    expect(reviewPrompt).toContain(
+      'Most recent AI reply before the latest user request:'
+    );
+    expect(reviewPrompt).toContain(`[${firstAiAt}] AI:`);
+    expect(reviewPrompt).toContain('I checked the branch state.');
+    expect(reviewPrompt).toContain(
+      'Recent same-topic history (timestamps included):'
+    );
+    expect(reviewPrompt).toContain(`[${firstUserAt}] User:`);
     expect(reviewPrompt).toContain(
       'Latest user request that the final reply must answer:'
     );
