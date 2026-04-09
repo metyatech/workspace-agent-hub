@@ -123,6 +123,7 @@ printf '%s\n' "$pane_output" | grep -q 'Session ready:'
 printf '%s\n' "$pane_output" | grep -q "$session_title"
 
 tmux display-message -p -t "$created_session" '#{pane_current_path}' | grep -qx "$AGENT_SESSION_HUB_REPO_ROOT"
+tmux show-options -qv -t "$created_session" @workspace_agent_session_title | grep -qx "$session_title"
 
 SESSION_CATALOG_PATH="$(resolve_session_catalog_path)" \
 SESSION_TITLE="$session_title" \
