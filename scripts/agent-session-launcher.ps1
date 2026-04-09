@@ -45,6 +45,8 @@ $sessionLiveRootPath = if (
     Join-Path $env:USERPROFILE 'agent-handoff\session-live'
 }
 $workspaceRootPath = Split-Path -Parent $repoRootPath
+$sessionCatalogReadRetryCount = 60
+$sessionCatalogReadRetryDelayMilliseconds = 50
 
 $profiles = @{
     codex = @{
@@ -97,22 +99,78 @@ function Write-SessionCatalogText {
         [string]$Text
     )
 
-    Set-Content -Path $sessionCatalogPath -Value $Text -Encoding utf8
+    $catalogDirectory = Split-Path -Parent $sessionCatalogPath
+    if (-not (Test-Path -Path $catalogDirectory)) {
+        [void](New-Item -ItemType Directory -Path $catalogDirectory -Force)
+    }
+
+    $tempPath = Join-Path $catalogDirectory ([IO.Path]::GetFileName($sessionCatalogPath) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $backupPath = Join-Path $catalogDirectory ([IO.Path]::GetFileName($sessionCatalogPath) + '.' + [guid]::NewGuid().ToString('N') + '.bak')
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $Text, $encoding)
+        if (Test-Path -Path $sessionCatalogPath) {
+            [System.IO.File]::Replace($tempPath, $sessionCatalogPath, $backupPath, $true)
+        } else {
+            [System.IO.File]::Move($tempPath, $sessionCatalogPath)
+        }
+    } finally {
+        if (Test-Path -Path $tempPath) {
+            [System.IO.File]::Delete($tempPath)
+        }
+        if (Test-Path -Path $backupPath) {
+            [System.IO.File]::Delete($backupPath)
+        }
+    }
+}
+
+function ConvertFrom-SessionCatalogJson {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$JsonText
+    )
+
+    $parsed = $JsonText | ConvertFrom-Json
+    if ($parsed -is [System.Array]) {
+        return @($parsed)
+    }
+
+    return @($parsed)
 }
 
 function Get-SessionCatalogEntries {
     Ensure-SessionCatalogFile
 
-    $raw = (Read-SessionCatalogText).Trim()
-    if (-not $raw) {
-        return @()
+    $lastError = $null
+    # WSL and Windows writers can briefly expose partial JSON during cross-process updates.
+    for ($attempt = 0; $attempt -lt $sessionCatalogReadRetryCount; $attempt += 1) {
+        $raw = (Read-SessionCatalogText).Trim()
+        if (-not $raw) {
+            if ($attempt -lt ($sessionCatalogReadRetryCount - 1)) {
+                Start-Sleep -Milliseconds $sessionCatalogReadRetryDelayMilliseconds
+                continue
+            }
+
+            return @()
+        }
+
+        try {
+            return @(ConvertFrom-SessionCatalogJson -JsonText $raw)
+        } catch {
+            $lastError = $_
+            if ($attempt -lt ($sessionCatalogReadRetryCount - 1)) {
+                Start-Sleep -Milliseconds $sessionCatalogReadRetryDelayMilliseconds
+                continue
+            }
+        }
     }
 
-    $parsed = $raw | ConvertFrom-Json
-    if ($parsed -is [System.Array]) {
-        return @($parsed)
+    if ($lastError) {
+        throw "Invalid session catalog JSON at '$sessionCatalogPath'. $($lastError.Exception.Message)"
     }
-    return @($parsed)
+
+    return @()
 }
 
 function Save-SessionCatalogEntries {
