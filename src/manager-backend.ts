@@ -170,6 +170,8 @@ const MANAGER_REVIEW_SYSTEM_PROMPT =
   'You are the built-in manager reviewer for Workspace Agent Hub. ' +
   'A worker has already executed one work item in this repository. ' +
   'Review that work yourself against the original request and the current repository state. ' +
+  'Treat the worker report as internal input only; your final reply must directly answer the latest user request in this work item. ' +
+  'Do not frame the final reply as commentary on the worker unless the user explicitly asked for a review of the worker. ' +
   'Run the repo-standard verification needed for this task when necessary. ' +
   'If the work is acceptable, own the in-scope delivery chain yourself: commit, push, and if this repository or package normally requires release or publish for completion and it applies to this task, continue through that release or publish path as well. ' +
   'Keep the scope limited to this work item. Prefer the worker-reported changed files and declared write scopes when reviewing or staging changes, and do not include unrelated repository changes. ' +
@@ -1377,8 +1379,11 @@ export function buildWorkerExecutionPrompt(input: {
     return [
       `[Topic: ${input.thread.title}]`,
       MANAGER_WORKER_JSON_RULES,
+      'You are continuing an existing topic. Treat the newest user request below as the main thing to answer in this turn.',
+      'Do not merely restate your previous conclusion unless it directly answers the new request.',
       `targetKind: ${input.repoTargetKind ?? 'existing-repo'}`,
       `declaredWriteScopes: ${input.writeScopes.join(', ') || '(read-only)'}`,
+      'Latest user request:',
       promptContent,
     ].join('\n\n');
   }
@@ -1425,6 +1430,7 @@ export function buildWorkerExecutionPrompt(input: {
 
 export function buildManagerReviewPrompt(input: {
   thread: Thread;
+  currentUserRequest: string;
   workerResult: ManagerWorkerResultPayload;
   resolvedDir: string;
   worktreePath: string | null;
@@ -1442,6 +1448,9 @@ export function buildManagerReviewPrompt(input: {
     'Worker did not report a verification summary.';
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
+  const currentUserRequest = buildManagerMessagePromptContent(
+    input.currentUserRequest
+  ).text;
 
   const deliveryInstruction =
     input.worktreePath && input.requestedRunMode !== 'read-only'
@@ -1461,6 +1470,8 @@ export function buildManagerReviewPrompt(input: {
     `[Work item: ${input.thread.title}]`,
     'Recent work-item history:',
     formatThreadHistory(input.thread),
+    'Latest user request that the final reply must answer:',
+    currentUserRequest,
     'Worker completion report:',
     `status: ${input.workerResult.status}`,
     `reply:\n${input.workerResult.reply}`,
@@ -3909,6 +3920,7 @@ async function runQueuedAssignment(input: {
       finalResult = await runTurn({
         prompt: buildManagerReviewPrompt({
           thread: promptThread,
+          currentUserRequest: promptContent,
           workerResult,
           resolvedDir,
           worktreePath: assignment.worktreePath,
@@ -4209,6 +4221,7 @@ async function runQueuedAssignment(input: {
         const reReviewResult = await runTurn({
           prompt: buildManagerReviewPrompt({
             thread: promptThread,
+            currentUserRequest: promptContent,
             workerResult: fixWorkerResult,
             resolvedDir,
             worktreePath: assignment.worktreePath,

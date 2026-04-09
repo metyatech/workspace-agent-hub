@@ -433,10 +433,38 @@ describe('manager backend codex integration', () => {
         ],
       },
     });
+    const workerFollowUp = buildWorkerExecutionPrompt({
+      content: 'Please answer the follow-up question directly.',
+      resolvedDir: 'D:\\ghws',
+      worktreePath: null,
+      targetRepoRoot: null,
+      writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      isFirstTurn: false,
+      thread: {
+        id: 'thread-a',
+        title: 'Implement task',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [
+          {
+            sender: 'user',
+            content: 'Please implement the task.',
+            at: new Date().toISOString(),
+          },
+          {
+            sender: 'ai',
+            content: 'Initial answer.',
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    });
     const reviewPrompt = buildManagerReviewPrompt({
       resolvedDir: 'D:\\ghws',
       worktreePath: 'C:\\temp\\wah-wt-review',
       writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+      currentUserRequest: 'Please answer the follow-up question directly.',
       thread: {
         id: 'thread-a',
         title: 'Implement task',
@@ -470,10 +498,24 @@ describe('manager backend codex integration', () => {
     expect(workerFirst).toContain('Avoid internal AI/platform/process jargon');
     expect(workerFirst).toContain('[Topic: Implement task]');
     expect(workerFirst).toContain('Please implement the task.');
+    expect(workerFollowUp).toContain('You are continuing an existing topic.');
+    expect(workerFollowUp).toContain('Latest user request:');
+    expect(workerFollowUp).toContain(
+      'Please answer the follow-up question directly.'
+    );
     expect(reviewPrompt).toContain('built-in manager reviewer');
+    expect(reviewPrompt).toContain(
+      'Treat the worker report as internal input only'
+    );
     expect(reviewPrompt).toContain('commit, push');
     expect(reviewPrompt).toContain('release or publish path as well');
     expect(reviewPrompt).toContain('Do not return status "review"');
+    expect(reviewPrompt).toContain(
+      'Latest user request that the final reply must answer:'
+    );
+    expect(reviewPrompt).toContain(
+      'Please answer the follow-up question directly.'
+    );
     expect(reviewPrompt).toContain('src/manager-backend.ts');
     expect(reviewPrompt).toContain('npm run verify PASS');
   });
@@ -2753,6 +2795,14 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"reply two"}',
     });
     await waitFor(() => spawnMock.mock.calls.length === 4);
+    expect(secondReviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Latest user request that the final reply must answer:'
+      )
+    );
+    expect(secondReviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('second message')
+    );
     completeCodexTurn(secondReviewProc, {
       sessionId: 'manager-review-follow-up-2',
       text: '{"status":"review","reply":"reply two"}',
