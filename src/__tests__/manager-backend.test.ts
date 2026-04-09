@@ -124,7 +124,7 @@ import {
   resolveCodexCommand,
   sendGlobalToBuiltinManager,
   sendToBuiltinManager,
-  shouldUseShellForCodexCommand,
+  shouldUseWindowsBatchWrapperForCodexCommand,
   updateSession,
   writeSession,
   writeQueue,
@@ -240,6 +240,11 @@ async function waitFor(
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error('Timed out waiting for condition.');
+}
+
+function spawnedCommandLine(callIndex: number): string {
+  const args = (spawnMock.mock.calls[callIndex]?.[1] ?? []) as string[];
+  return args[3] ?? args.join(' ');
 }
 
 let tempDir = '';
@@ -383,14 +388,14 @@ describe('manager backend codex integration', () => {
     ]);
 
     expect(
-      shouldUseShellForCodexCommand(
+      shouldUseWindowsBatchWrapperForCodexCommand(
         'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
         'win32'
       )
     ).toBe(true);
-    expect(shouldUseShellForCodexCommand('/usr/bin/codex', 'linux')).toBe(
-      false
-    );
+    expect(
+      shouldUseWindowsBatchWrapperForCodexCommand('/usr/bin/codex', 'linux')
+    ).toBe(false);
   });
 
   it('builds router and worker prompts that preserve system context only on first turn', () => {
@@ -712,8 +717,8 @@ describe('manager backend codex integration', () => {
 
     const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
     await waitFor(() => spawnMock.mock.calls.length === 5);
-    expect(spawnMock.mock.calls[4]?.[1]).toEqual(
-      expect.arrayContaining(['exec', 'resume', 'routing-thread-1'])
+    expect(spawnedCommandLine(4)).toContain(
+      '"exec" "resume" "routing-thread-1"'
     );
 
     completeCodexTurn(routingProcTwo, {
@@ -785,8 +790,8 @@ describe('manager backend codex integration', () => {
 
     const sendPromise = sendGlobalToBuiltinManager(tempDir, 'recover routing');
     await waitFor(() => spawnMock.mock.calls.length === 1);
-    expect(spawnMock.mock.calls[0]?.[1]).toEqual(
-      expect.arrayContaining(['exec', 'resume', 'routing-thread-stale'])
+    expect(spawnedCommandLine(0)).toContain(
+      '"exec" "resume" "routing-thread-stale"'
     );
 
     failingRoutingProc.stderr.emit(
@@ -796,7 +801,7 @@ describe('manager backend codex integration', () => {
     failingRoutingProc.emit('close', 1);
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
-    expect(spawnMock.mock.calls[1]?.[1]).not.toContain('resume');
+    expect(spawnedCommandLine(1)).not.toContain('"resume"');
 
     completeCodexTurn(recoveredRoutingProc, {
       sessionId: 'routing-thread-recovered',
@@ -1074,9 +1079,8 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 3);
-    const workerArgs = spawnMock.mock.calls[2]?.[1] as string[];
-    expect(workerArgs).toEqual(
-      expect.arrayContaining(['exec', 'resume', 'codex-thread-existing'])
+    expect(spawnedCommandLine(2)).toContain(
+      '"exec" "resume" "codex-thread-existing"'
     );
     completeCodexTurn(workerProc, {
       sessionId: 'codex-thread-existing',
@@ -2026,9 +2030,8 @@ describe('manager backend codex integration', () => {
     await processNextQueued(tempDir, tempDir);
 
     await waitFor(() => spawnMock.mock.calls.length === 1);
-    const recoveredArgs = spawnMock.mock.calls[0]?.[1] as string[];
-    expect(recoveredArgs).toContain('exec');
-    expect(recoveredArgs).not.toContain('resume');
+    expect(spawnedCommandLine(0)).toContain('"exec"');
+    expect(spawnedCommandLine(0)).not.toContain('"resume"');
 
     completeCodexTurn(recoveredWorkerProc, {
       sessionId: 'worker-thread-orphaned',
@@ -2072,7 +2075,7 @@ describe('manager backend codex integration', () => {
     expect(status.errorAt).toBeNull();
   });
 
-  it('rewrites the Windows codex.cmd shim to a direct node + codex.js spawn', () => {
+  it('wraps the Windows codex.cmd shim with cmd.exe without enabling shell mode', () => {
     expect(
       buildCodexSpawnSpec(
         'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
@@ -2080,39 +2083,33 @@ describe('manager backend codex integration', () => {
         'D:\\ghws',
         {
           platform: 'win32',
-          exists: (candidatePath) =>
-            candidatePath.endsWith('node.exe') ||
-            candidatePath.endsWith(
-              'node_modules\\@openai\\codex\\bin\\codex.js'
-            ),
+          env: {} as NodeJS.ProcessEnv,
         }
       )
     ).toEqual({
-      command: 'C:\\Users\\Origin\\AppData\\Roaming\\npm\\node.exe',
+      command: 'cmd.exe',
       args: [
-        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js',
-        'exec',
-        '--json',
-        '-',
+        '/d',
+        '/s',
+        '/c',
+        '""C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd" "exec" "--json" "-""',
       ],
       spawnOptions: {
         cwd: 'D:\\ghws',
         shell: false,
         windowsHide: true,
+        windowsVerbatimArguments: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     });
 
     expect(
-      buildCodexSpawnOptions(
-        'C:\\Users\\Origin\\AppData\\Roaming\\npm\\codex.cmd',
-        'D:\\ghws',
-        'win32'
-      )
+      buildCodexSpawnOptions('cmd.exe', 'D:\\ghws', 'win32', true)
     ).toEqual({
       cwd: 'D:\\ghws',
-      shell: true,
+      shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   });
@@ -2155,9 +2152,8 @@ describe('manager backend codex integration', () => {
     await sendToBuiltinManager(tempDir, 'thread-two', 'second message');
 
     await waitFor(() => spawnMock.mock.calls.length === 1);
-    const firstArgs = spawnMock.mock.calls[0]?.[1] as string[];
-    expect(firstArgs).toContain('exec');
-    expect(firstArgs).not.toContain('resume');
+    expect(spawnedCommandLine(0)).toContain('"exec"');
+    expect(spawnedCommandLine(0)).not.toContain('"resume"');
 
     firstWorkerProc.stdout.emit(
       'data',
@@ -2177,9 +2173,8 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 3);
-    const secondArgs = spawnMock.mock.calls[2]?.[1] as string[];
-    expect(secondArgs).toContain('exec');
-    expect(secondArgs).not.toContain('resume');
+    expect(spawnedCommandLine(2)).toContain('"exec"');
+    expect(spawnedCommandLine(2)).not.toContain('"resume"');
 
     secondWorkerProc.stdout.emit(
       'data',
@@ -2749,9 +2744,8 @@ describe('manager backend codex integration', () => {
     await sendToBuiltinManager(tempDir, 'thread-follow-up', 'second message');
     await waitFor(() => spawnMock.mock.calls.length === 3);
 
-    const secondArgs = spawnMock.mock.calls[2]?.[1] as string[];
-    expect(secondArgs).toEqual(
-      expect.arrayContaining(['exec', 'resume', 'codex-thread-follow-up'])
+    expect(spawnedCommandLine(2)).toContain(
+      '"exec" "resume" "codex-thread-follow-up"'
     );
 
     completeCodexTurn(secondWorkerProc, {
@@ -2822,9 +2816,8 @@ describe('manager backend codex integration', () => {
     failingProc.emit('close', 1);
 
     await waitFor(() => spawnMock.mock.calls.length === 4);
-    const retryArgs = spawnMock.mock.calls[3]?.[1] as string[];
-    expect(retryArgs).toContain('exec');
-    expect(retryArgs).not.toContain('resume');
+    expect(spawnedCommandLine(3)).toContain('"exec"');
+    expect(spawnedCommandLine(3)).not.toContain('"resume"');
 
     recoveryProc.stdout.emit(
       'data',

@@ -101,6 +101,10 @@ import {
   parseGenericRuntimeProgressLine,
   workerRuntimeAssigneeLabel,
 } from './manager-worker-runtime.js';
+import {
+  isWindowsBatchCommand,
+  wrapWindowsBatchCommandForSpawn,
+} from './windows-batch-spawn.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -1226,27 +1230,30 @@ export function buildCodexArgs(
   return args;
 }
 
-export function shouldUseShellForCodexCommand(
+export function shouldUseWindowsBatchWrapperForCodexCommand(
   command: string,
   platform: NodeJS.Platform = process.platform
 ): boolean {
-  return platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim());
+  return isWindowsBatchCommand(command, platform);
 }
 
 export function buildCodexSpawnOptions(
   command: string,
   resolvedDir: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  windowsVerbatimArguments = false
 ): {
   cwd: string;
   shell: boolean;
   windowsHide: boolean;
+  windowsVerbatimArguments: boolean;
   stdio: ['pipe', 'pipe', 'pipe'];
 } {
   return {
     cwd: resolvedDir,
-    shell: shouldUseShellForCodexCommand(command, platform),
+    shell: false,
     windowsHide: platform === 'win32',
+    windowsVerbatimArguments,
     stdio: ['pipe', 'pipe', 'pipe'],
   };
 }
@@ -1258,7 +1265,6 @@ export function buildCodexSpawnSpec(
   options?: {
     platform?: NodeJS.Platform;
     env?: NodeJS.ProcessEnv;
-    exists?: (path: string) => boolean;
   }
 ): {
   command: string;
@@ -1267,39 +1273,53 @@ export function buildCodexSpawnSpec(
     cwd: string;
     shell: boolean;
     windowsHide: boolean;
+    windowsVerbatimArguments: boolean;
     stdio: ['pipe', 'pipe', 'pipe'];
   };
 } {
   const platform = options?.platform ?? process.platform;
-  const env = options?.env ?? process.env;
-  const exists = options?.exists ?? existsSync;
-
-  if (platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim())) {
-    const commandDir = dirname(command);
-    const nodeShimPath = join(commandDir, 'node.exe');
-    const nodeBinary = exists(nodeShimPath) ? nodeShimPath : 'node';
-    const scriptPath = join(
-      commandDir,
-      'node_modules',
-      '@openai',
-      'codex',
-      'bin',
-      'codex.js'
-    );
-    if (exists(scriptPath)) {
-      return {
-        command: nodeBinary,
-        args: [scriptPath, ...args],
-        spawnOptions: buildCodexSpawnOptions(nodeBinary, resolvedDir, platform),
-      };
-    }
-  }
+  const wrappedCommand = wrapWindowsBatchCommandForSpawn(command, args, {
+    platform,
+    env: options?.env,
+  });
 
   return {
-    command,
-    args,
-    spawnOptions: buildCodexSpawnOptions(command, resolvedDir, platform),
+    command: wrappedCommand.command,
+    args: wrappedCommand.args,
+    spawnOptions: buildCodexSpawnOptions(
+      wrappedCommand.command,
+      resolvedDir,
+      platform,
+      wrappedCommand.windowsVerbatimArguments
+    ),
   };
+}
+
+function logCliLaunch(input: {
+  label: string;
+  spawnSpec: {
+    command: string;
+    args: string[];
+    spawnOptions: {
+      cwd: string;
+      shell: boolean;
+      windowsHide: boolean;
+      windowsVerbatimArguments: boolean;
+      stdio: ['pipe', 'pipe', 'pipe'];
+    };
+  };
+}): void {
+  console.error(
+    `[manager-backend] launching ${input.label}: ${JSON.stringify({
+      command: input.spawnSpec.command,
+      args: input.spawnSpec.args,
+      cwd: input.spawnSpec.spawnOptions.cwd,
+      shell: input.spawnSpec.spawnOptions.shell,
+      windowsHide: input.spawnSpec.spawnOptions.windowsHide,
+      windowsVerbatimArguments:
+        input.spawnSpec.spawnOptions.windowsVerbatimArguments,
+    })}`
+  );
 }
 
 /**
@@ -2478,6 +2498,7 @@ async function runCliTurn(input: {
       cwd: string;
       env?: NodeJS.ProcessEnv;
       shell: boolean;
+      windowsVerbatimArguments: boolean;
       stdio: ['pipe', 'pipe', 'pipe'];
       windowsHide: boolean;
     };
@@ -2742,12 +2763,10 @@ async function runCodexTurn(input: {
     input.sessionId,
     input.imagePaths ?? []
   );
-  const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir);
-  if (spawnSpec.command !== codexCommand) {
-    console.error(
-      `[manager-backend] codex shim rewritten: ${codexCommand} → ${spawnSpec.command} (shell: ${spawnSpec.spawnOptions.shell})`
-    );
-  }
+  const spawnSpec = buildCodexSpawnSpec(codexCommand, args, input.resolvedDir, {
+    env: process.env,
+  });
+  logCliLaunch({ label: 'manager Codex', spawnSpec });
   return runCliTurn({
     spawnSpec,
     prompt: input.prompt,
@@ -2800,6 +2819,14 @@ async function runWorkerRuntimeTurn(input: {
         : null,
     };
   };
+  logCliLaunch({
+    label: launchSpec.displayLabel,
+    spawnSpec: {
+      command: launchSpec.command,
+      args: launchSpec.args,
+      spawnOptions: launchSpec.spawnOptions,
+    },
+  });
 
   return runCliTurn({
     spawnSpec: {

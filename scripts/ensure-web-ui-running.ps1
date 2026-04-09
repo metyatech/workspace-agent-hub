@@ -13,16 +13,37 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $distCliPath = Join-Path $repoRoot 'dist\cli.js'
-$buildSourcePaths = @(
-    (Join-Path $repoRoot 'src\cli.ts'),
-    (Join-Path $repoRoot 'src\web-ui.ts'),
-    (Join-Path $repoRoot 'src\web-ui-front-door.ts'),
-    (Join-Path $repoRoot 'src\manager-app.ts'),
-    (Join-Path $repoRoot 'src\web-app.ts')
-)
 if (-not (Test-Path -Path $packageJsonPath)) {
     throw "Missing package.json: $packageJsonPath"
 }
+
+function Get-BuildSourcePaths {
+    $paths = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($fixedPath in @(
+        $packageJsonPath,
+        (Join-Path $repoRoot 'tsconfig.json'),
+        (Join-Path $repoRoot 'tsup.config.ts')
+    )) {
+        if (Test-Path -LiteralPath $fixedPath) {
+            $paths.Add((Resolve-Path $fixedPath).Path)
+        }
+    }
+
+    foreach ($relativeDir in @('src', 'public')) {
+        $sourceRoot = Join-Path $repoRoot $relativeDir
+        if (-not (Test-Path -LiteralPath $sourceRoot)) {
+            continue
+        }
+        foreach ($candidate in (Get-ChildItem -LiteralPath $sourceRoot -Recurse -File)) {
+            $paths.Add($candidate.FullName)
+        }
+    }
+
+    return $paths.ToArray()
+}
+
+$buildSourcePaths = Get-BuildSourcePaths
 
 function Get-DefaultStatePath {
     $stateDirectory = Join-Path $env:USERPROFILE 'agent-handoff'

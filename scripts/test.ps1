@@ -325,7 +325,8 @@ if (($npmBootstrapOutput | Out-String).Trim() -notmatch 'PASS') {
             (Start-TestLaneProcess -Name 'cli-json-output' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-cli-json-output.ps1'))),
             (Start-TestLaneProcess -Name 'wrapper-failure' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1'))),
             (Start-TestLaneProcess -Name 'shortcut-install' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1'))),
-            (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1')))
+            (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1'))),
+            (Start-TestLaneProcess -Name 'ensure-build-detection' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-ensure-web-ui-build-detection.ps1')))
         )
         Wait-TestLaneProcesses -ProcessInfos $postProcesses
     } finally {

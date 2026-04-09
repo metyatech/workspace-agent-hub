@@ -73,6 +73,40 @@ describe('manager-worker-runtime', () => {
     expect(workerRuntimeAssigneeLabel('copilot')).toContain('Copilot');
   });
 
+  it('builds a Codex launch spec that wraps the Windows cmd shim through cmd.exe', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'codex',
+      prompt: 'Apply the requested fix',
+      sessionId: null,
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        CODEX_PATH: 'C:\\tools\\codex.cmd',
+      },
+    });
+
+    expect(spec.command).toBe('cmd.exe');
+    expect(spec.prompt).toBe('Apply the requested fix');
+    expect(spec.args).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      '""C:\\tools\\codex.cmd" "exec" "--json" "--model" "gpt-5.4" "-c" "model_reasoning_effort=""xhigh""" "-""',
+    ]);
+    expect(spec.spawnOptions).toEqual({
+      cwd: 'D:\\ghws\\workspace-agent-hub',
+      env: expect.objectContaining({
+        CODEX_PATH: 'C:\\tools\\codex.cmd',
+      }),
+      shell: false,
+      windowsVerbatimArguments: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    expect(workerRuntimeAssigneeLabel('codex')).toContain('Codex');
+  });
+
   it('parses generic runtime JSON progress and final output', () => {
     const progress = parseGenericRuntimeProgressLine(
       JSON.stringify({

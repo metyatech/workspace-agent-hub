@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { ManagerWorkerLiveEntry } from './manager-thread-state.js';
 import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
+import { wrapWindowsBatchCommandForSpawn } from './windows-batch-spawn.js';
 
 export interface WorkerRuntimeProgressState {
   sessionId: string | null;
@@ -26,6 +27,7 @@ export interface WorkerRuntimeLaunchSpec {
     cwd: string;
     env: NodeJS.ProcessEnv;
     shell: boolean;
+    windowsVerbatimArguments: boolean;
     stdio: ['pipe', 'pipe', 'pipe'];
     windowsHide: boolean;
   };
@@ -162,25 +164,28 @@ export function workerRuntimeAssigneeLabel(
     : `Worker ${runtimeDisplayName(runtime)} ${model}`;
 }
 
-function useShellForCommand(
+function buildLaunchSpec(
   command: string,
-  platform: NodeJS.Platform = process.platform
-): boolean {
-  return platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim());
-}
-
-function buildSpawnOptions(
-  command: string,
+  args: string[],
   resolvedDir: string,
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform
-): WorkerRuntimeLaunchSpec['spawnOptions'] {
-  return {
-    cwd: resolvedDir,
+): Pick<WorkerRuntimeLaunchSpec, 'command' | 'args' | 'spawnOptions'> {
+  const wrappedCommand = wrapWindowsBatchCommandForSpawn(command, args, {
+    platform,
     env,
-    shell: useShellForCommand(command, platform),
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: platform === 'win32',
+  });
+  return {
+    command: wrappedCommand.command,
+    args: wrappedCommand.args,
+    spawnOptions: {
+      cwd: resolvedDir,
+      env,
+      shell: wrappedCommand.shell,
+      windowsVerbatimArguments: wrappedCommand.windowsVerbatimArguments,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: platform === 'win32',
+    },
   };
 }
 
@@ -210,50 +215,22 @@ function buildCodexCommandSpec(input: {
     `model_reasoning_effort="${effort}"`,
     '-'
   );
-
-  if (input.platform === 'win32' && /\.(cmd|bat)$/i.test(command.trim())) {
-    const commandDir = dirname(command);
-    const nodeShimPath = join(commandDir, 'node.exe');
-    const nodeBinary = existsSync(nodeShimPath) ? nodeShimPath : 'node';
-    const scriptPath = join(
-      commandDir,
-      'node_modules',
-      '@openai',
-      'codex',
-      'bin',
-      'codex.js'
-    );
-    if (existsSync(scriptPath)) {
-      return {
-        runtime: 'codex',
-        command: nodeBinary,
-        args: [scriptPath, ...args],
-        prompt: input.prompt,
-        sessionId: input.sessionId,
-        displayLabel: workerRuntimeAssigneeLabel('codex', input.env),
-        spawnOptions: buildSpawnOptions(
-          nodeBinary,
-          input.resolvedDir,
-          input.env,
-          input.platform
-        ),
-      };
-    }
-  }
+  const launchSpec = buildLaunchSpec(
+    command,
+    args,
+    input.resolvedDir,
+    input.env,
+    input.platform
+  );
 
   return {
     runtime: 'codex',
-    command,
-    args,
+    command: launchSpec.command,
+    args: launchSpec.args,
     prompt: input.prompt,
     sessionId: input.sessionId,
     displayLabel: workerRuntimeAssigneeLabel('codex', input.env),
-    spawnOptions: buildSpawnOptions(
-      command,
-      input.resolvedDir,
-      input.env,
-      input.platform
-    ),
+    spawnOptions: launchSpec.spawnOptions,
   };
 }
 
@@ -306,19 +283,21 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       }
     }
     args.push(input.prompt);
-    return {
-      runtime: 'claude',
+    const launchSpec = buildLaunchSpec(
       command,
       args,
+      input.resolvedDir,
+      env,
+      platform
+    );
+    return {
+      runtime: 'claude',
+      command: launchSpec.command,
+      args: launchSpec.args,
       prompt: null,
       sessionId,
       displayLabel: workerRuntimeAssigneeLabel('claude', env),
-      spawnOptions: buildSpawnOptions(
-        command,
-        input.resolvedDir,
-        env,
-        platform
-      ),
+      spawnOptions: launchSpec.spawnOptions,
     };
   }
 
@@ -340,19 +319,21 @@ export function buildWorkerRuntimeLaunchSpec(input: {
       '--prompt',
       input.prompt,
     ];
-    return {
-      runtime: 'copilot',
+    const launchSpec = buildLaunchSpec(
       command,
       args,
+      input.resolvedDir,
+      env,
+      platform
+    );
+    return {
+      runtime: 'copilot',
+      command: launchSpec.command,
+      args: launchSpec.args,
       prompt: null,
       sessionId: sessionId ?? null,
       displayLabel: workerRuntimeAssigneeLabel('copilot', env),
-      spawnOptions: buildSpawnOptions(
-        command,
-        input.resolvedDir,
-        env,
-        platform
-      ),
+      spawnOptions: launchSpec.spawnOptions,
     };
   }
 
@@ -374,14 +355,21 @@ export function buildWorkerRuntimeLaunchSpec(input: {
     args.push('--resume', sessionId);
   }
   args.push('--prompt', input.prompt);
-  return {
-    runtime: 'gemini',
+  const launchSpec = buildLaunchSpec(
     command,
     args,
+    input.resolvedDir,
+    env,
+    platform
+  );
+  return {
+    runtime: 'gemini',
+    command: launchSpec.command,
+    args: launchSpec.args,
     prompt: null,
     sessionId,
     displayLabel: workerRuntimeAssigneeLabel('gemini', env),
-    spawnOptions: buildSpawnOptions(command, input.resolvedDir, env, platform),
+    spawnOptions: launchSpec.spawnOptions,
   };
 }
 
