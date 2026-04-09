@@ -3285,12 +3285,14 @@ async function runWorkerRuntimeTurn(input: {
 
 // Per-workspace in-flight guard (module-level singleton, safe for single server process).
 const inFlight = new Set<string>();
+const inFlightStartedAt = new Map<string, number>();
 const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
 const recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
 const recoveryRetryAttempts = new Map<string, number>();
 const MAX_RERUN_DEPTH = 5;
 const MAX_INTERNAL_ERROR_RETRY_MS = 30_000;
+const STALE_QUEUE_RUNNER_MS = 2 * 60 * 1000;
 const routingLocks = new Map<string, Promise<void>>();
 const MAX_ROUTING_TOPIC_CANDIDATES = 40;
 
@@ -3312,6 +3314,65 @@ function cancelRecoveryRetryTimer(resolvedDir: string): void {
 function resetRecoveryRetryState(resolvedDir: string): void {
   cancelRecoveryRetryTimer(resolvedDir);
   recoveryRetryAttempts.delete(resolvedDir);
+}
+
+function clearProcessNextQueuedReservation(resolvedDir: string): void {
+  inFlight.delete(resolvedDir);
+  inFlightStartedAt.delete(resolvedDir);
+  rerunRequested.delete(resolvedDir);
+}
+
+async function recoverStaleProcessNextQueuedReservation(
+  dir: string,
+  resolvedDir: string
+): Promise<boolean> {
+  const startedAt = inFlightStartedAt.get(resolvedDir) ?? null;
+  const session = await readSession(dir);
+  if (
+    session.activeAssignments.length > 0 ||
+    session.pid !== null ||
+    session.currentQueueId !== null
+  ) {
+    return false;
+  }
+
+  if (startedAt !== null && Date.now() - startedAt < STALE_QUEUE_RUNNER_MS) {
+    return false;
+  }
+
+  console.warn(
+    `[manager-backend] clearing stale queue-runner reservation for ${resolvedDir}; no persisted assignment or worker pid remains`
+  );
+  clearProcessNextQueuedReservation(resolvedDir);
+  rerunDepth.delete(resolvedDir);
+  resetRecoveryRetryState(resolvedDir);
+  return true;
+}
+
+/**
+ * Test-only helper: mark the queue runner as already in flight without having
+ * to stall a real async turn.
+ */
+export function markProcessNextQueuedInFlightForTests(
+  dir: string,
+  startedAt = Date.now()
+): void {
+  const resolvedDir = resolvePath(dir);
+  inFlight.add(resolvedDir);
+  inFlightStartedAt.set(resolvedDir, startedAt);
+}
+
+/** Test-only helper: reset queue-runner in-memory state between tests. */
+export function resetProcessNextQueuedStateForTests(): void {
+  for (const timer of recoveryRetryTimers.values()) {
+    clearTimeout(timer);
+  }
+  inFlight.clear();
+  inFlightStartedAt.clear();
+  rerunRequested.clear();
+  rerunDepth.clear();
+  recoveryRetryTimers.clear();
+  recoveryRetryAttempts.clear();
 }
 
 async function runScheduledRecoveryRetry(
@@ -5439,12 +5500,21 @@ export async function processNextQueued(
   resolvedDir: string
 ): Promise<void> {
   if (inFlight.has(resolvedDir)) {
-    rerunRequested.add(resolvedDir);
-    return;
+    const recovered = await recoverStaleProcessNextQueuedReservation(
+      dir,
+      resolvedDir
+    );
+    if (recovered) {
+      // Continue below with a fresh reservation.
+    } else {
+      rerunRequested.add(resolvedDir);
+      return;
+    }
   }
   inFlight.add(resolvedDir);
   cancelRecoveryRetryTimer(resolvedDir);
   let hadInternalError = false;
+  inFlightStartedAt.set(resolvedDir, Date.now());
 
   try {
     let session = await reconcileActiveAssignments(dir);
@@ -6130,12 +6200,12 @@ export async function processNextQueued(
     }
     scheduleRecoveryRetry(dir, resolvedDir);
   } finally {
-    inFlight.delete(resolvedDir);
+    const shouldRerun = rerunRequested.has(resolvedDir);
+    clearProcessNextQueuedReservation(resolvedDir);
     if (!hadInternalError) {
       recoveryRetryAttempts.delete(resolvedDir);
     }
-    if (rerunRequested.has(resolvedDir)) {
-      rerunRequested.delete(resolvedDir);
+    if (shouldRerun) {
       const depth = (rerunDepth.get(resolvedDir) ?? 0) + 1;
       if (depth > MAX_RERUN_DEPTH) {
         rerunDepth.delete(resolvedDir);

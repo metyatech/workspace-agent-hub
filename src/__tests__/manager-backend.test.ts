@@ -119,6 +119,7 @@ import {
   isSessionInvalidError,
   MANAGER_MODEL,
   MANAGER_REASONING_EFFORT,
+  markProcessNextQueuedInFlightForTests,
   parseManagerReplyPayload,
   parseManagerWorkerResultPayload,
   parseManagerRoutingPlan,
@@ -128,8 +129,10 @@ import {
   processNextQueued,
   readQueue,
   readSession,
+  resetProcessNextQueuedStateForTests,
   resolveCodexCommand,
   sendGlobalToBuiltinManager,
+  startBuiltinManager,
   sendToBuiltinManager,
   shouldUseWindowsBatchWrapperForCodexCommand,
   updateSession,
@@ -312,6 +315,7 @@ let tempDir = '';
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
+  resetProcessNextQueuedStateForTests();
   spawnMock.mockReset();
   execFileMock.mockReset();
   fetchMock.mockReset();
@@ -438,6 +442,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  resetProcessNextQueuedStateForTests();
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
@@ -2759,6 +2764,55 @@ describe('manager backend codex integration', () => {
       )
     ).toBe(true);
   }, 15000);
+
+  it('recovers a stale in-memory queue-runner reservation when manager start is explicitly requested', async () => {
+    const workerProc = makeProc(7101);
+    const reviewProc = makeProc(7102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_stale_runner',
+        threadId: 'thread-stale-runner',
+        content: 'resume this queued task',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    markProcessNextQueuedInFlightForTests(tempDir, Date.now() - 10 * 60 * 1000);
+
+    const result = await startBuiltinManager(tempDir);
+    expect(result.started).toBe(true);
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-stale-runner',
+      text: '{"status":"review","reply":"runner recovered"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-stale-runner',
+      text: '{"status":"review","reply":"runner recovered"}',
+    });
+
+    await waitFor(async () => {
+      const latestSession = await readSession(tempDir);
+      const queue = await readQueue(tempDir);
+      return queue.length === 0 && latestSession.status === 'idle';
+    });
+
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-stale-runner' &&
+          call[2] === 'runner recovered' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
+  });
 
   it('keeps one in-flight codex turn and serializes queued messages without leaking worker continuity across different topics', async () => {
     const firstWorkerProc = makeProc(7001);
