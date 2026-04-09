@@ -411,7 +411,7 @@ function Ensure-TmuxSessionLiveUpdates {
 
 if ($Action -eq 'list') {
     $tmuxShellCommand = Get-TmuxShellCommand
-    $listCommand = "if $tmuxShellCommand list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}' 2>/dev/null; then true; else true; fi"
+    $listCommand = "if $tmuxShellCommand list-sessions -F '#{session_name}`t#{session_created}`t#{session_attached}`t#{session_windows}`t#{session_activity}`t#{@workspace_agent_session_title}' 2>/dev/null; then true; else true; fi"
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = 'wsl.exe'
     $startInfo.UseShellExecute = $false
@@ -446,7 +446,7 @@ if ($Action -eq 'list') {
             continue
         }
 
-        $parts = $text -split "`t", 5
+        $parts = $text -split "`t", 6
         if ($parts.Count -lt 5) {
             continue
         }
@@ -469,6 +469,7 @@ if ($Action -eq 'list') {
             WindowCount = [int]$parts[3]
             LastActivityUnix = $activityUnix
             LastActivityLocal = $activity.ToString('yyyy-MM-dd HH:mm:ss')
+            LiveTitle = if ($parts.Count -ge 6) { [string]$parts[5] } else { '' }
         }
     }
 

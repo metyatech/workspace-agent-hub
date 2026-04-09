@@ -74,6 +74,18 @@ tmux() {
   command tmux "$@"
 }
 
+set_tmux_session_display_title() {
+  local session_name="$1"
+  local session_title="${2:-}"
+
+  if [[ -n "${session_title// }" ]]; then
+    tmux set-option -q -t "$session_name" @workspace_agent_session_title "$session_title" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  tmux set-option -qu -t "$session_name" @workspace_agent_session_title >/dev/null 2>&1 || true
+}
+
 no_attach_requested() {
   [[ -n "${AI_AGENT_SESSION_NO_ATTACH:-}" ]] && return 0
   [[ -n "$(get_windows_env 'AI_AGENT_SESSION_NO_ATTACH')" ]] && return 0
@@ -806,6 +818,7 @@ ensure_session_and_attach() {
     startup="${STARTUP_COMMANDS[$session_type]}"
     healthcheck="${HEALTHCHECK_COMMANDS[$session_type]}"
     upsert_session_catalog_entry "$session_name" "$session_type" "$session_title" "$working_directory_windows"
+    set_tmux_session_display_title "$session_name" "$session_title"
     if [[ -n "$startup" ]] && command_is_healthy "$healthcheck"; then
       if ! no_attach_requested; then
         schedule_startup_on_attach "$session_name" "$startup"
@@ -815,6 +828,7 @@ ensure_session_and_attach() {
     fi
   elif [[ -n "${session_title// }" ]]; then
     upsert_session_catalog_entry "$session_name" "$session_type" "$session_title" "$working_directory_windows"
+    set_tmux_session_display_title "$session_name" "$session_title"
   fi
 
   if no_attach_requested; then
@@ -960,6 +974,7 @@ rename_session() {
   }
   IFS="$SESSION_FIELD_DELIM" read -r _ type label title folder_text preview_text attached windows activity_unix activity_local archived is_live closed_utc state <<<"$row"
   set_session_catalog_title "$session_name" "$type" "$new_title" "$folder_text"
+  set_tmux_session_display_title "$session_name" "$new_title"
 }
 
 set_session_archived_state() {

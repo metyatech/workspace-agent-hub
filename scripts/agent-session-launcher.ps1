@@ -956,6 +956,9 @@ function Get-ExistingSessions {
         $metadata = $catalogMap[$sessionNameValue]
         $previewText = Get-SessionPreviewText -TargetSessionName $sessionNameValue -TargetDistro $TargetDistro
         $titleValue = if ($metadata) { [string]$metadata.title } else { '' }
+        if ((-not $titleValue) -and $session.PSObject.Properties.Name -contains 'LiveTitle') {
+            $titleValue = [string]$session.LiveTitle
+        }
         $workingDirectoryValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'working_directory_windows') { [string]$metadata.working_directory_windows } else { '' }
         $archivedValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'archived') { Get-CatalogBooleanValue -Value $metadata.archived } else { $false }
         $closedUtcValue = if ($metadata -and $metadata.PSObject.Properties.Name -contains 'closed_utc') { [string]$metadata.closed_utc } else { '' }
