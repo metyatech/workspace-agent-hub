@@ -2724,6 +2724,101 @@ describe('manager backend codex integration', () => {
     });
   });
 
+  it('does not block a worker in another repository when only the repo-relative scope names match', async () => {
+    const secondWorkerProc = makeProc(7064);
+    const secondReviewProc = makeProc(7065);
+    spawnMock
+      .mockReturnValueOnce(secondWorkerProc)
+      .mockReturnValueOnce(secondReviewProc);
+
+    const runningRepoRoot = join(tempDir, 'workspace-agent-hub');
+    const queuedRepoRoot = join(tempDir, 'course-docs-site');
+    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+      worktreePath: join(queuedRepoRoot, '.wah-worker'),
+      branchName: 'wah-worker-q_other_repo',
+      targetRepoRoot: queuedRepoRoot,
+    });
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      currentQueueId: 'q_running',
+      activeAssignments: [
+        {
+          id: 'assign-running',
+          threadId: 'thread-running',
+          queueEntryIds: ['q_running'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: null,
+          workerRuntime: 'codex',
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['src'],
+          pid: null,
+          startedAt: new Date().toISOString(),
+          lastProgressAt: new Date().toISOString(),
+          worktreePath: join(runningRepoRoot, '.wah-running'),
+          worktreeBranch: 'wah-worker-running',
+          targetRepoRoot: runningRepoRoot,
+        },
+      ],
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_other_repo',
+        threadId: 'thread-other-repo',
+        content: 'other repo work',
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        targetRepoRoot: queuedRepoRoot,
+        writeScopes: ['src'],
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    await processNextQueued(tempDir, tempDir);
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return meta['thread-other-repo']?.workerRuntimeState === 'worker-running';
+    });
+
+    let meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-other-repo']?.workerBlockedByThreadIds ?? []).toEqual(
+      []
+    );
+    expect(meta['thread-other-repo']?.workerWriteScopes).toEqual(['src']);
+
+    completeCodexTurn(secondWorkerProc, {
+      sessionId: 'codex-thread-other-repo',
+      text: '{"status":"review","reply":"other repo done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-thread-other-repo',
+      text: '{"status":"review","reply":"other repo done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return (
+        queue.length === 0 &&
+        addMessageMock.mock.calls.some(
+          (call) =>
+            call[1] === 'thread-other-repo' &&
+            call[2] === 'other repo done' &&
+            call[4] === 'review'
+        )
+      );
+    });
+  });
+
   it('records a cancelled-as-superseded runtime state when Manager preempts an older descendant worker', async () => {
     const dispatchProc = makeProc(7070);
     const newWorkerProc = makeProc(7071);

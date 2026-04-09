@@ -1023,8 +1023,29 @@ function queueEntryIdSet(assignments: ManagerActiveAssignment[]): Set<string> {
   return ids;
 }
 
-function scopeLocksOverlap(left: string[], right: string[]): boolean {
+function scopeLocksOverlap(
+  left: string[],
+  right: string[],
+  leftRepoRoot: string | null = null,
+  rightRepoRoot: string | null = null
+): boolean {
   if (left.length === 0 || right.length === 0) {
+    return false;
+  }
+
+  const normalizedLeftRepoRoot =
+    typeof leftRepoRoot === 'string' && leftRepoRoot.trim()
+      ? resolvePath(leftRepoRoot).toLowerCase()
+      : null;
+  const normalizedRightRepoRoot =
+    typeof rightRepoRoot === 'string' && rightRepoRoot.trim()
+      ? resolvePath(rightRepoRoot).toLowerCase()
+      : null;
+  if (
+    normalizedLeftRepoRoot &&
+    normalizedRightRepoRoot &&
+    normalizedLeftRepoRoot !== normalizedRightRepoRoot
+  ) {
     return false;
   }
 
@@ -5112,12 +5133,6 @@ export async function processNextQueued(
       (assignment: ManagerActiveAssignment) =>
         assignment.assigneeKind === 'manager'
     ).length;
-    let reservedWorkerScopes = session.activeAssignments
-      .filter(
-        (assignment: ManagerActiveAssignment) =>
-          assignment.assigneeKind === 'worker'
-      )
-      .flatMap((assignment: ManagerActiveAssignment) => assignment.writeScopes);
     let priorityStreak = session.priorityStreak;
     const startedEntryIds = new Set<string>();
 
@@ -5295,14 +5310,6 @@ export async function processNextQueued(
           (assignment: ManagerActiveAssignment) =>
             assignment.assigneeKind === 'manager'
         ).length;
-        reservedWorkerScopes = session.activeAssignments
-          .filter(
-            (assignment: ManagerActiveAssignment) =>
-              assignment.assigneeKind === 'worker'
-          )
-          .flatMap(
-            (assignment: ManagerActiveAssignment) => assignment.writeScopes
-          );
       }
 
       const assignmentWriteScopes =
@@ -5381,15 +5388,20 @@ export async function processNextQueued(
       ) {
         continue;
       }
-      if (
-        dispatch.assignee === 'worker' &&
-        scopeLocksOverlap(assignmentWriteScopes, reservedWorkerScopes)
-      ) {
-        const blockingAssignments = session.activeAssignments.filter(
-          (assignment: ManagerActiveAssignment) =>
-            assignment.assigneeKind === 'worker' &&
-            scopeLocksOverlap(assignmentWriteScopes, assignment.writeScopes)
-        );
+      const blockingAssignments =
+        dispatch.assignee === 'worker'
+          ? session.activeAssignments.filter(
+              (assignment: ManagerActiveAssignment) =>
+                assignment.assigneeKind === 'worker' &&
+                scopeLocksOverlap(
+                  assignmentWriteScopes,
+                  assignment.writeScopes,
+                  assignmentTargetRepoRoot,
+                  assignment.targetRepoRoot
+                )
+            )
+          : [];
+      if (dispatch.assignee === 'worker' && blockingAssignments.length > 0) {
         await setWorkerRuntimeState({
           dir: resolvedDir,
           threadId: next.threadId,
@@ -5658,10 +5670,6 @@ export async function processNextQueued(
         startedEntryIds.add(entryId);
       }
       if (dispatch.assignee === 'worker') {
-        reservedWorkerScopes = [
-          ...reservedWorkerScopes,
-          ...assignmentWriteScopes,
-        ];
         activeWorkerAssignments += 1;
       } else {
         activeManagerAssignments += 1;
