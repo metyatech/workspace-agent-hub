@@ -142,6 +142,21 @@ def launcher_get_session(session_name: str, *, include_archived: bool = False) -
     return None
 
 
+def launcher_wait_for_display_title(display_title: str, timeout_seconds: float) -> dict[str, object]:
+    deadline = time.time() + timeout_seconds
+    last_titles: list[str] = []
+    while time.time() < deadline:
+        sessions = launcher_list_sessions()
+        for item in sessions:
+            if str(item.get("DisplayTitle", "")) == display_title:
+                return item
+        last_titles = [str(item.get("DisplayTitle", "")) for item in sessions]
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"Expected PC launcher inventory to include the mobile-started session title. Last titles: {last_titles!r}"
+    )
+
+
 def launcher_assert_resume_available(session_name: str) -> None:
     result = powershell_file(
         LAUNCHER_SCRIPT,
@@ -470,13 +485,7 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
         if ssh.process.poll() is None:
             disconnect_ssh(ssh)
 
-    launcher_session = None
-    for item in launcher_list_sessions():
-        if str(item.get("DisplayTitle", "")) == session_title:
-            launcher_session = item
-            break
-    if not launcher_session:
-        raise RuntimeError("Expected PC launcher inventory to include the mobile-started session title.")
+    launcher_session = launcher_wait_for_display_title(session_title, 5)
 
     session_name = str(launcher_session.get("Name", ""))
     if not session_name:
