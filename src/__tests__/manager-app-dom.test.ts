@@ -569,6 +569,35 @@ describe('manager-app DOM auth state matrix', () => {
     expect(hint.classList.contains('hidden')).toBe(true);
   });
 
+  it('adds a top-of-screen shortcut for opening the composer on first use', async () => {
+    expect(managerHtml).toMatch(
+      /id="activity-summary"[\s\S]*data-action="toggle-composer"[\s\S]*いま依頼を送る/
+    );
+
+    const validToken = 'activity-shortcut-token';
+    const document = await loadManagerApp(createManagerFetch(validToken), {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const panel = document.querySelector<HTMLElement>('#composerPanel')!;
+    expect(panel.classList.contains('hidden')).toBe(true);
+
+    const activityShortcut = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[data-action="toggle-composer"]'
+      )
+    ).find((button) => button.textContent?.includes('いま依頼を送る'));
+
+    expect(activityShortcut).toBeDefined();
+    activityShortcut!.click();
+    await flushAsync(1);
+
+    expect(panel.classList.contains('hidden')).toBe(false);
+  });
+
   it('does not render a managed repo registration form or call its API', async () => {
     const validToken = 'managed-repo-runtime-token';
     const fetchMock = vi.fn(
