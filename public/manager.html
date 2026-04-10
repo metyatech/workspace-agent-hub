@@ -254,6 +254,92 @@
         color: var(--text-muted);
       }
 
+      .manager-live-status {
+        margin-left: auto;
+        min-width: min(320px, 100%);
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .manager-live-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(122, 158, 125, 0.18);
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--text-soft);
+        font-size: 0.74rem;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .manager-live-pill-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.8;
+        flex-shrink: 0;
+      }
+
+      .manager-live-detail {
+        font-size: 0.74rem;
+        color: var(--text-muted);
+        text-align: right;
+      }
+
+      .manager-live-status[data-live-tone='neutral'] .manager-live-pill {
+        background: rgba(255, 255, 255, 0.9);
+        border-color: rgba(122, 158, 125, 0.18);
+        color: var(--text-soft);
+      }
+
+      .manager-live-status[data-live-tone='ok'] .manager-live-pill {
+        background: rgba(220, 252, 231, 0.92);
+        border-color: rgba(34, 197, 94, 0.24);
+        color: #166534;
+      }
+
+      .manager-live-status[data-live-tone='warn'] {
+        padding: 6px 10px;
+        border-radius: 16px;
+        background: rgba(255, 247, 237, 0.94);
+        border: 1px solid rgba(245, 158, 11, 0.22);
+      }
+
+      .manager-live-status[data-live-tone='warn'] .manager-live-pill {
+        background: rgba(254, 243, 199, 0.94);
+        border-color: rgba(245, 158, 11, 0.3);
+        color: #92400e;
+      }
+
+      .manager-live-status[data-live-tone='warn'] .manager-live-detail {
+        color: #92400e;
+      }
+
+      .manager-live-status[data-live-tone='danger'] {
+        padding: 6px 10px;
+        border-radius: 16px;
+        background: rgba(254, 242, 242, 0.96);
+        border: 1px solid rgba(239, 68, 68, 0.22);
+        box-shadow: 0 10px 24px rgba(185, 28, 28, 0.08);
+      }
+
+      .manager-live-status[data-live-tone='danger'] .manager-live-pill {
+        background: rgba(254, 226, 226, 0.96);
+        border-color: rgba(239, 68, 68, 0.3);
+        color: #b91c1c;
+      }
+
+      .manager-live-status[data-live-tone='danger'] .manager-live-detail {
+        color: #991b1b;
+      }
+
       .activity-card {
         display: grid;
         gap: 12px;
@@ -1826,6 +1912,25 @@
         >
           ▶ 起動する
         </button>
+        <div
+          id="manager-live-status"
+          class="manager-live-status"
+          data-live-tone="neutral"
+          role="status"
+          aria-live="polite"
+        >
+          <span id="manager-live-pill" class="manager-live-pill">
+            <span
+              id="manager-live-pill-dot"
+              class="manager-live-pill-dot"
+              aria-hidden="true"
+            ></span>
+            <span id="manager-live-pill-label">リアルタイム更新を確認中</span>
+          </span>
+          <span id="manager-live-detail" class="manager-live-detail"
+            >最初の状態を読んでいます。</span
+          >
+        </div>
       </div>
     </section>
 

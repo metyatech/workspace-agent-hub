@@ -4317,6 +4317,10 @@ describe('manager-app live updates', () => {
     expect(
       document.querySelector<HTMLElement>('#manager-status-text')!.textContent
     ).toContain('AI が「無認証ライブ確認」を処理中です');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-pill-label')!
+        .textContent
+    ).toContain('リアルタイム更新 接続中');
     const diagnostics = (
       window as Window & {
         __workspaceAgentHubManagerDiagnostics?: () => Record<string, unknown>;
@@ -4325,6 +4329,239 @@ describe('manager-app live updates', () => {
     expect(diagnostics?.['liveStreamConnected']).toBe(true);
     expect(diagnostics?.['authTokenPresent']).toBe(false);
     liveStreamControl.close?.();
+  });
+
+  it('shows a visible warning when the live snapshot stream stops unexpectedly', async () => {
+    const waitingThread = makeThreadView('thread-stream-stop', '接続停止確認', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      previewText: '[user] 状態を確認してください',
+      queueDepth: 1,
+    });
+    const waitingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中 (キュー: 1件)',
+      pendingCount: 1,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+    const encoder = new TextEncoder();
+    let liveRequestCount = 0;
+    const liveStreamControl: {
+      close?: () => void;
+    } = {};
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        if (headers.get('X-Workspace-Agent-Hub-Token')) {
+          return new Response(
+            JSON.stringify({
+              error: 'unexpected token for no-auth mode',
+            }),
+            { status: 400 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          liveRequestCount += 1;
+          if (liveRequestCount === 1) {
+            return makeNdjsonResponse([
+              {
+                kind: 'snapshot',
+                emittedAt: '2026-03-30T02:00:00.000Z',
+                threads: [waitingThread],
+                tasks: [],
+                status: waitingStatus,
+              },
+            ]);
+          }
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(JSON.stringify({ kind: 'ping' }) + '\n')
+                );
+                liveStreamControl.close = () => {
+                  controller.close();
+                };
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'application/x-ndjson; charset=utf-8',
+              },
+            }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([waitingThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(JSON.stringify(waitingStatus), { status: 200 });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: false,
+    });
+
+    await flushAsync(6);
+    liveStreamControl.close?.();
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-pill-label')!
+        .textContent
+    ).toContain('リアルタイム更新が止まっています');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-detail')!.textContent
+    ).toContain('自動で再接続中です');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-status')?.dataset
+        .liveTone
+    ).toBe('warn');
+  });
+
+  it('shows offline stoppage and clears it after the browser reconnects', async () => {
+    const waitingThread = makeThreadView(
+      'thread-offline',
+      'オフライン復帰確認',
+      {
+        status: 'waiting',
+        uiState: 'queued',
+        lastSender: 'user',
+        previewText: '[user] 状態を確認してください',
+        queueDepth: 1,
+      }
+    );
+    const waitingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中 (キュー: 1件)',
+      pendingCount: 1,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+    let liveRequestCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        if (headers.get('X-Workspace-Agent-Hub-Token')) {
+          return new Response(
+            JSON.stringify({
+              error: 'unexpected token for no-auth mode',
+            }),
+            { status: 400 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          liveRequestCount += 1;
+          if (liveRequestCount === 2 || liveRequestCount === 4) {
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(
+                    new TextEncoder().encode(
+                      JSON.stringify({ kind: 'ping' }) + '\n'
+                    )
+                  );
+                },
+              }),
+              {
+                status: 200,
+                headers: {
+                  'Content-Type': 'application/x-ndjson; charset=utf-8',
+                },
+              }
+            );
+          }
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-30T02:00:00.000Z',
+              threads: [waitingThread],
+              tasks: [],
+              status: waitingStatus,
+            },
+          ]);
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([waitingThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(JSON.stringify(waitingStatus), { status: 200 });
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: false,
+    });
+
+    await flushAsync(6);
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      value: false,
+    });
+    window.dispatchEvent(new window.Event('offline'));
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-pill-label')!
+        .textContent
+    ).toContain('リアルタイム更新が止まっています');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-detail')!.textContent
+    ).toContain('ブラウザがオフラインです');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-status')?.dataset
+        .liveTone
+    ).toBe('danger');
+
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      value: true,
+    });
+    window.dispatchEvent(new window.Event('online'));
+    await flushAsync(8);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-pill-label')!
+        .textContent
+    ).toContain('リアルタイム更新 接続中');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-status')?.dataset
+        .liveTone
+    ).toBe('ok');
   });
 
   it('does not let an older refresh snapshot overwrite a newer live snapshot', async () => {
