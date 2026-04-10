@@ -265,6 +265,11 @@ describe('createIntegrationWorktree', () => {
       'COURSE_CONTENT_SOURCE=../course-content\n'
     );
     await writeFile(join(targetRepoRoot, '.env'), 'SHOULD_NOT_COPY=1\n');
+    await mkdir(join(targetRepoRoot, 'node_modules'), { recursive: true });
+    await writeFile(
+      join(targetRepoRoot, 'node_modules', '.keep'),
+      'shared dependency cache'
+    );
 
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       gitArgs.push(args);
@@ -300,6 +305,7 @@ describe('createIntegrationWorktree', () => {
         `COURSE_CONTENT_SOURCE=${resolvePath(targetRepoRoot, '../course-content')}\n`
       );
       expect(existsSync(join(result.worktreePath, '.env'))).toBe(false);
+      expect(existsSync(join(result.worktreePath, 'node_modules'))).toBe(false);
       expect(gitArgs).toEqual(
         expect.arrayContaining([
           ['submodule', 'sync', '--recursive'],
@@ -430,6 +436,11 @@ describe('createWorkerWorktree', () => {
       join(targetRepoRoot, '.env.example'),
       'SHOULD_NOT_COPY=1\n'
     );
+    await mkdir(join(targetRepoRoot, 'node_modules'), { recursive: true });
+    await writeFile(
+      join(targetRepoRoot, 'node_modules', '.keep'),
+      'shared dependency cache'
+    );
 
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       gitArgs.push(args);
@@ -455,6 +466,7 @@ describe('createWorkerWorktree', () => {
         `COURSE_CONTENT_SOURCE=${resolvePath(targetRepoRoot, '../course-content')}\n`
       );
       expect(existsSync(join(result.worktreePath, '.env.example'))).toBe(false);
+      expect(existsSync(join(result.worktreePath, 'node_modules'))).toBe(false);
       expect(gitArgs).toEqual(
         expect.arrayContaining([
           ['submodule', 'sync', '--recursive'],

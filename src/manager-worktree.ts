@@ -12,8 +12,6 @@ import { spawn } from 'child_process';
 import {
   existsSync,
   readdirSync,
-  symlinkSync,
-  unlinkSync,
   type Dirent,
 } from 'fs';
 import {
@@ -557,14 +555,6 @@ export async function prepareNewRepoWorkspace(input: {
 // Shared isolated-worktree helpers
 // ---------------------------------------------------------------------------
 
-function linkNodeModules(targetRepoRoot: string, worktreePath: string): void {
-  const nmSource = join(targetRepoRoot, 'node_modules');
-  const nmTarget = join(worktreePath, 'node_modules');
-  if (existsSync(nmSource) && !existsSync(nmTarget)) {
-    symlinkSync(nmSource, nmTarget, 'junction');
-  }
-}
-
 const ROOT_LOCAL_ENV_OVERLAY_PATTERN = /^\.env(?:\..+)?\.local$/;
 const DOTENV_ASSIGNMENT_PATTERN =
   /^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$/;
@@ -737,15 +727,6 @@ async function removeWorktreeDirectory(
     attempt < WORKTREE_DIRECTORY_CLEANUP_ATTEMPTS;
     attempt++
   ) {
-    const nmJunction = join(worktreePath, 'node_modules');
-    try {
-      if (existsSync(nmJunction)) {
-        unlinkSync(nmJunction);
-      }
-    } catch {
-      /* best-effort */
-    }
-
     try {
       await rmAsync(worktreePath, {
         recursive: true,
@@ -805,7 +786,6 @@ async function createIsolatedWorktree(input: {
       );
     }
 
-    linkNodeModules(targetRepoRoot, worktreePath);
     await bootstrapIsolatedWorktree(targetRepoRoot, worktreePath);
   };
 
