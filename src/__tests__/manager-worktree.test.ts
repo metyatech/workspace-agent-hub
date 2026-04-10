@@ -1,6 +1,13 @@
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -52,6 +59,14 @@ function gitResult(
     });
     return proc;
   };
+}
+
+function createDirectoryLink(targetPath: string, linkPath: string): void {
+  symlinkSync(
+    targetPath,
+    linkPath,
+    process.platform === 'win32' ? 'junction' : 'dir'
+  );
 }
 
 beforeEach(() => {
@@ -213,6 +228,9 @@ describe('createIntegrationWorktree', () => {
     let callIndex = 0;
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+      }
       const factory = calls[callIndex] ?? gitResult(0, '');
       callIndex++;
       return factory();
@@ -335,6 +353,9 @@ describe('createWorkerWorktree', () => {
 
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+      }
       return gitResult(0, '')();
     });
 
@@ -389,6 +410,9 @@ describe('createWorkerWorktree', () => {
             `branch refs/heads/${branchName}`,
           ].join('\n')
         )();
+      }
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
       }
       return gitResult(0, '')();
     });
@@ -478,6 +502,112 @@ describe('createWorkerWorktree', () => {
       if (createdPath) {
         await rm(createdPath, { recursive: true, force: true });
       }
+    }
+  });
+
+  it('materializes untracked external symlinked directories inside worker worktrees', async () => {
+    const assignmentId = `assign-worker-external-link-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-repo-'));
+    const externalContentRoot = await mkdtemp(
+      join(tmpdir(), 'wah-worker-external-content-')
+    );
+    const gitArgs: string[][] = [];
+    let createdPath: string | null = null;
+
+    await mkdir(join(externalContentRoot, 'nested'), { recursive: true });
+    await writeFile(
+      join(externalContentRoot, 'nested', 'lesson.txt'),
+      'copied from external'
+    );
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+        createDirectoryLink(externalContentRoot, join(args[2]!, 'content'));
+      }
+      if (
+        args[0] === 'ls-files' &&
+        args[1] === '--error-unmatch' &&
+        args[3] === 'content'
+      ) {
+        return gitResult(1, '', '')();
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      const result = await createWorkerWorktree({
+        targetRepoRoot,
+        assignmentId,
+      });
+      createdPath = result.worktreePath;
+
+      expect(
+        (await lstat(join(result.worktreePath, 'content'))).isSymbolicLink()
+      ).toBe(false);
+      expect(
+        await readFile(
+          join(result.worktreePath, 'content', 'nested', 'lesson.txt'),
+          'utf8'
+        )
+      ).toBe('copied from external');
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['ls-files', '--error-unmatch', '--', 'content'],
+        ])
+      );
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+      await rm(externalContentRoot, { recursive: true, force: true });
+      if (createdPath) {
+        await rm(createdPath, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('fails fast when a tracked symlinked directory points outside the worker worktree', async () => {
+    const assignmentId = `assign-worker-tracked-external-link-${Date.now()}`;
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-repo-'));
+    const externalContentRoot = await mkdtemp(
+      join(tmpdir(), 'wah-worker-external-content-')
+    );
+    const expectedWorktreePath = join(tmpdir(), `wah-wt-${assignmentId}`);
+
+    await writeFile(
+      join(externalContentRoot, 'lesson.txt'),
+      'tracked link target'
+    );
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+        createDirectoryLink(externalContentRoot, join(args[2]!, 'content'));
+      }
+      if (
+        args[0] === 'ls-files' &&
+        args[1] === '--error-unmatch' &&
+        args[3] === 'content'
+      ) {
+        return gitResult(0, 'content')();
+      }
+      return gitResult(0, '')();
+    });
+
+    try {
+      await expect(
+        createWorkerWorktree({
+          targetRepoRoot,
+          assignmentId,
+        })
+      ).rejects.toThrow(
+        'Tracked symlink/junction points outside the worktree: content'
+      );
+      expect(existsSync(expectedWorktreePath)).toBe(false);
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+      await rm(externalContentRoot, { recursive: true, force: true });
+      await rm(expectedWorktreePath, { recursive: true, force: true });
     }
   });
 });

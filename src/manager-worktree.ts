@@ -9,21 +9,20 @@
  */
 
 import { spawn } from 'child_process';
-import {
-  existsSync,
-  readdirSync,
-  type Dirent,
-} from 'fs';
+import { existsSync, readdirSync, type Dirent } from 'fs';
 import {
   copyFile,
+  lstat,
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm as rmAsync,
+  unlink,
   writeFile,
 } from 'fs/promises';
 import { tmpdir } from 'os';
-import { dirname, join, resolve as resolvePath } from 'path';
+import { dirname, join, relative, resolve as resolvePath, sep } from 'path';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -556,6 +555,7 @@ export async function prepareNewRepoWorkspace(input: {
 // ---------------------------------------------------------------------------
 
 const ROOT_LOCAL_ENV_OVERLAY_PATTERN = /^\.env(?:\..+)?\.local$/;
+const GIT_WORKTREE_CONTROL_NAMES = new Set(['.git']);
 const DOTENV_ASSIGNMENT_PATTERN =
   /^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$/;
 const RELATIVE_LOCAL_ENV_PATH_PATTERN = /^\.\.?([\\/]|$)/;
@@ -641,6 +641,186 @@ async function copyRootLocalEnvOverlays(
   }
 }
 
+function normalizePathForComparison(pathValue: string): string {
+  const resolvedPath = resolvePath(pathValue).replace(/^\\\\\?\\/, '');
+  return process.platform === 'win32'
+    ? resolvedPath.toLowerCase()
+    : resolvedPath;
+}
+
+function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
+  const normalizedRootPath = normalizePathForComparison(rootPath);
+  const normalizedCandidatePath = normalizePathForComparison(candidatePath);
+  if (normalizedCandidatePath === normalizedRootPath) {
+    return true;
+  }
+  const rootPathWithSep = normalizedRootPath.endsWith(sep)
+    ? normalizedRootPath
+    : `${normalizedRootPath}${sep}`;
+  return normalizedCandidatePath.startsWith(rootPathWithSep);
+}
+
+async function isTrackedWorktreePath(
+  worktreePath: string,
+  targetPath: string
+): Promise<boolean> {
+  const relativeTargetPath = relative(worktreePath, targetPath).replace(
+    /\\/g,
+    '/'
+  );
+  if (!relativeTargetPath || relativeTargetPath.startsWith('../')) {
+    return false;
+  }
+  const result = await execGit(worktreePath, [
+    'ls-files',
+    '--error-unmatch',
+    '--',
+    relativeTargetPath,
+  ]).catch(() => null);
+  return result?.code === 0;
+}
+
+async function removeSymbolicLinkPath(targetPath: string): Promise<void> {
+  try {
+    await unlink(targetPath);
+    return;
+  } catch {
+    // Fall back to rm for directory junctions if unlink is not accepted.
+  }
+
+  await rmAsync(targetPath, {
+    recursive: true,
+    force: true,
+    maxRetries: 0,
+  });
+}
+
+async function materializePathFromSource(
+  sourcePath: string,
+  targetPath: string,
+  activeRealPaths = new Set<string>()
+): Promise<void> {
+  const sourceStats = await lstat(sourcePath);
+  if (sourceStats.isSymbolicLink()) {
+    const resolvedSourcePath = await realpath(sourcePath);
+    await materializePathFromSource(
+      resolvedSourcePath,
+      targetPath,
+      activeRealPaths
+    );
+    return;
+  }
+
+  if (sourceStats.isDirectory()) {
+    const normalizedSourcePath = normalizePathForComparison(sourcePath);
+    if (activeRealPaths.has(normalizedSourcePath)) {
+      throw new Error(
+        `External worktree link materialization hit a cycle at ${sourcePath}`
+      );
+    }
+    activeRealPaths.add(normalizedSourcePath);
+    try {
+      await mkdir(targetPath, { recursive: true });
+      const entries = await readdir(sourcePath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (GIT_WORKTREE_CONTROL_NAMES.has(entry.name)) {
+          continue;
+        }
+        await materializePathFromSource(
+          join(sourcePath, entry.name),
+          join(targetPath, entry.name),
+          activeRealPaths
+        );
+      }
+    } finally {
+      activeRealPaths.delete(normalizedSourcePath);
+    }
+    return;
+  }
+
+  if (sourceStats.isFile()) {
+    await mkdir(dirname(targetPath), { recursive: true });
+    await copyFile(sourcePath, targetPath);
+    return;
+  }
+
+  throw new Error(
+    `Unsupported external worktree link target type at ${sourcePath}`
+  );
+}
+
+async function normalizeExternalLinkPath(input: {
+  worktreePath: string;
+  worktreeRealPath: string;
+  linkPath: string;
+}): Promise<void> {
+  const { worktreePath, worktreeRealPath, linkPath } = input;
+  const resolvedTargetPath = await realpath(linkPath).catch((error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to resolve worktree symlink/junction target for ${linkPath}: ${detail}`
+    );
+  });
+  if (isPathInsideRoot(worktreeRealPath, resolvedTargetPath)) {
+    return;
+  }
+
+  const relativeLinkPath = relative(worktreePath, linkPath).replace(/\\/g, '/');
+  if (await isTrackedWorktreePath(worktreePath, linkPath)) {
+    throw new Error(
+      `Tracked symlink/junction points outside the worktree: ${relativeLinkPath} -> ${resolvedTargetPath}`
+    );
+  }
+
+  await removeSymbolicLinkPath(linkPath);
+  await materializePathFromSource(resolvedTargetPath, linkPath);
+}
+
+async function normalizeExternalWorktreeLinks(input: {
+  worktreePath: string;
+  directoryPath?: string;
+  worktreeRealPath?: string;
+}): Promise<void> {
+  const { worktreePath } = input;
+  const directoryPath = input.directoryPath ?? worktreePath;
+  const worktreeRealPath =
+    input.worktreeRealPath ??
+    (await realpath(worktreePath).catch(() => resolvePath(worktreePath)));
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (GIT_WORKTREE_CONTROL_NAMES.has(entry.name)) {
+      continue;
+    }
+
+    const entryPath = join(directoryPath, entry.name);
+    const entryStats = await lstat(entryPath);
+    if (entryStats.isSymbolicLink()) {
+      await normalizeExternalLinkPath({
+        worktreePath,
+        worktreeRealPath,
+        linkPath: entryPath,
+      });
+      const materializedEntryStats = await lstat(entryPath).catch(() => null);
+      if (materializedEntryStats?.isDirectory()) {
+        await normalizeExternalWorktreeLinks({
+          worktreePath,
+          directoryPath: entryPath,
+          worktreeRealPath,
+        });
+      }
+      continue;
+    }
+
+    if (entryStats.isDirectory()) {
+      await normalizeExternalWorktreeLinks({
+        worktreePath,
+        directoryPath: entryPath,
+        worktreeRealPath,
+      });
+    }
+  }
+}
+
 async function bootstrapIsolatedWorktree(
   targetRepoRoot: string,
   worktreePath: string
@@ -672,6 +852,7 @@ async function bootstrapIsolatedWorktree(
   }
 
   await copyRootLocalEnvOverlays(targetRepoRoot, worktreePath);
+  await normalizeExternalWorktreeLinks({ worktreePath });
 }
 
 function allocateWorktreePath(baseName: string): string {

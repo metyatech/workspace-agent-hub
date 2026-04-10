@@ -465,7 +465,9 @@ Important behavior:
   parent-directory topology, so local overlays such as `.env*.local` keep the
   same relative-path semantics without content rewriting heuristics. The
   Manager does not graft `node_modules` or other repository directories into
-  those worktrees.
+  those worktrees, and after bootstrap it quarantines non-Git
+  symlinks/junctions that resolve outside the worktree: tracked links fail
+  fast, while untracked links are materialized into ordinary files/directories.
 - Static worker env settings such as `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
   `WORKSPACE_AGENT_HUB_CODEX_EFFORT`,
   `WORKSPACE_AGENT_HUB_CLAUDE_MODEL`, and
