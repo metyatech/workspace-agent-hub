@@ -181,6 +181,27 @@ interface ManagerClientDiagnostics {
   recentEvents: ManagerLifecycleDebugEntry[];
 }
 
+type ManagerLiveIndicatorTone = 'neutral' | 'ok' | 'warn' | 'danger';
+
+type ManagerLiveIssueKind =
+  | 'offline'
+  | 'stale-timeout'
+  | 'stream-ended'
+  | 'stream-error'
+  | 'invalid-live-response';
+
+interface ManagerLiveIssue {
+  kind: ManagerLiveIssueKind;
+  detail: string | null;
+  at: number;
+}
+
+interface ManagerLiveIndicatorState {
+  tone: ManagerLiveIndicatorTone;
+  label: string;
+  detail: string;
+}
+
 function snapshotEmittedAtValue(emittedAt: string | null | undefined): number {
   if (typeof emittedAt !== 'string' || !emittedAt.trim()) {
     return 0;
@@ -3135,6 +3156,7 @@ class ManagerApp {
   #lastAppliedSnapshotAt = 0;
   #lastLiveEventAt = 0;
   #lastLiveEventKind: string | null = null;
+  #liveIssue: ManagerLiveIssue | null = null;
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
   #sortOrders = buildManagerSortOrders();
@@ -3178,6 +3200,7 @@ class ManagerApp {
     this.#renderSortControls();
     this.#renderComposerExpansionState();
     this.#syncComposerDraftUi();
+    this.#renderLiveConnectionState();
 
     if (MANAGER_AUTH_REQUIRED && !this.#authToken) {
       this.#showAuthPanel();
@@ -3609,6 +3632,7 @@ class ManagerApp {
       !response.body ||
       !contentType.includes('application/x-ndjson')
     ) {
+      this.#setLiveIssue('invalid-live-response');
       return false;
     }
 
@@ -3649,6 +3673,7 @@ class ManagerApp {
           return true;
         }
       }
+      this.#setLiveIssue('invalid-live-response');
       return false;
     } finally {
       void reader.cancel().catch(() => {
@@ -3760,6 +3785,7 @@ class ManagerApp {
       }
       startButton?.classList.add('hidden');
       this.#renderActivitySummary();
+      this.#renderLiveConnectionState();
       return;
     }
 
@@ -3774,6 +3800,7 @@ class ManagerApp {
       }
       startButton?.classList.remove('hidden');
       this.#renderActivitySummary();
+      this.#renderLiveConnectionState();
       return;
     }
 
@@ -3786,6 +3813,7 @@ class ManagerApp {
     }
     startButton?.classList.add('hidden');
     this.#renderActivitySummary();
+    this.#renderLiveConnectionState();
   }
 
   #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): boolean {
@@ -3805,6 +3833,7 @@ class ManagerApp {
       this.#lastAppliedSnapshotAt = nextSnapshotAt;
     }
     this.#resumeRefreshPending = false;
+    this.#clearLiveIssue();
     this.#applySnapshot({
       threads: snapshot.threads,
       tasks: snapshot.tasks,
@@ -3820,11 +3849,13 @@ class ManagerApp {
   #startLiveStream(reason = 'start'): void {
     this.#stopLiveStream('restart');
     if (!this.#canAccessManagerApi()) {
+      this.#renderLiveConnectionState();
       return;
     }
     this.#recordDiagnosticEvent('live:start', reason);
     const controller = new AbortController();
     this.#liveStreamAbort = controller;
+    this.#renderLiveConnectionState();
 
     void this.#consumeLiveStream(controller.signal);
   }
@@ -3848,6 +3879,7 @@ class ManagerApp {
     if (hadReconnectTimer || hadLiveStaleTimer || hadLiveStream) {
       this.#recordDiagnosticEvent('live:stop', reason);
     }
+    this.#renderLiveConnectionState();
   }
 
   #scheduleLiveReconnect(delayMs = 1000, reason = 'reconnect'): void {
@@ -3862,8 +3894,10 @@ class ManagerApp {
     this.#recordDiagnosticEvent('live:reconnect-scheduled', reason);
     this.#liveReconnectTimer = window.setTimeout(() => {
       this.#liveReconnectTimer = null;
+      this.#renderLiveConnectionState();
       this.#startLiveStream(`reconnect:${reason}`);
     }, delayMs);
+    this.#renderLiveConnectionState();
   }
 
   #wireLifecycleRefresh(): void {
@@ -3871,6 +3905,7 @@ class ManagerApp {
       if (document.visibilityState === 'hidden') {
         this.#resumeRefreshPending = true;
         this.#recordDiagnosticEvent('visibility:hidden');
+        this.#clearLiveIssue();
         this.#stopLiveStream('visibility-hidden');
         return;
       }
@@ -3884,10 +3919,17 @@ class ManagerApp {
     });
     window.addEventListener('online', () => {
       this.#recordDiagnosticEvent('network:online');
+      this.#clearLiveIssue();
       this.#requestLifecycleRefresh({
         force: true,
         reason: 'network-online',
       });
+    });
+    window.addEventListener('offline', () => {
+      this.#resumeRefreshPending = true;
+      this.#recordDiagnosticEvent('network:offline');
+      this.#setLiveIssue('offline');
+      this.#stopLiveStream('network-offline');
     });
     window.addEventListener('focus', () => {
       this.#recordDiagnosticEvent('window:focus');
@@ -3945,6 +3987,7 @@ class ManagerApp {
 
     this.#resumeRefreshInFlight = true;
     this.#recordDiagnosticEvent('lifecycle:refresh-start', reason);
+    this.#renderLiveConnectionState();
     this.#stopLiveStream(`refresh:${reason}`);
     try {
       const dataOk = await this.loadAll();
@@ -3964,6 +4007,7 @@ class ManagerApp {
       throw error;
     } finally {
       this.#resumeRefreshInFlight = false;
+      this.#renderLiveConnectionState();
       if (this.#canAccessManagerApi()) {
         this.#startLiveStream(`resume:${reason}`);
       }
@@ -3981,6 +4025,7 @@ class ManagerApp {
         !response.body ||
         !contentType.includes('application/x-ndjson')
       ) {
+        this.#setLiveIssue('invalid-live-response');
         this.#scheduleLiveReconnect(1000, 'invalid-live-response');
         return;
       }
@@ -4021,6 +4066,7 @@ class ManagerApp {
       }
       if (!signal.aborted) {
         this.#recordDiagnosticEvent('live:stream-ended');
+        this.#setLiveIssue('stream-ended');
         this.#scheduleLiveReconnect(1000, 'stream-ended');
       }
     } catch (error) {
@@ -4036,10 +4082,15 @@ class ManagerApp {
         'live:error',
         error instanceof Error ? error.message : String(error)
       );
+      this.#setLiveIssue(
+        'stream-error',
+        error instanceof Error ? error.message : String(error)
+      );
       this.#scheduleLiveReconnect(1000, 'stream-error');
     } finally {
       if (this.#liveStreamAbort?.signal === signal) {
         this.#liveStreamAbort = null;
+        this.#renderLiveConnectionState();
       }
     }
   }
@@ -4047,10 +4098,12 @@ class ManagerApp {
   #noteLiveEvent(kind: string): void {
     this.#lastLiveEventAt = Date.now();
     this.#lastLiveEventKind = kind;
+    this.#clearLiveIssue();
     if (kind !== 'ping') {
       this.#recordDiagnosticEvent(`live:${kind}`);
     }
     this.#armLiveStaleTimer();
+    this.#renderLiveConnectionState();
   }
 
   #armLiveStaleTimer(): void {
@@ -4076,6 +4129,7 @@ class ManagerApp {
       }
       this.#resumeRefreshPending = true;
       this.#recordDiagnosticEvent('live:stale-timeout');
+      this.#setLiveIssue('stale-timeout');
       this.#requestLifecycleRefresh({
         force: true,
         reason: 'live-stale-timeout',
@@ -4968,6 +5022,7 @@ class ManagerApp {
     this.#lastAppliedSnapshotAt = 0;
     this.#lastLiveEventAt = 0;
     this.#lastLiveEventKind = null;
+    this.#clearLiveIssue();
     this.#recordDiagnosticEvent('auth:cleared');
     this.#stopLiveStream('auth-cleared');
     clearStoredAuthToken();
@@ -4990,6 +5045,7 @@ class ManagerApp {
     this.#lastAppliedSnapshotAt = 0;
     this.#lastLiveEventAt = 0;
     this.#lastLiveEventKind = null;
+    this.#clearLiveIssue();
     clearStoredAuthToken();
     this.#recordDiagnosticEvent('auth:failed', message);
     this.#stopLiveStream('auth-failed');
@@ -5006,6 +5062,7 @@ class ManagerApp {
     this.#syncComposerDockReserve();
     this.#toggleClearAuthButton(Boolean(readStoredAuthToken()));
     this.#setAuthError(message);
+    this.#renderLiveConnectionState();
     (
       document.getElementById('auth-token-input') as HTMLInputElement | null
     )?.focus();
@@ -5020,6 +5077,7 @@ class ManagerApp {
       });
     this.#syncComposerDockReserve();
     this.#setAuthError('');
+    this.#renderLiveConnectionState();
   }
 
   #setAuthError(message: string): void {
@@ -5027,6 +5085,160 @@ class ManagerApp {
     if (errorEl) {
       errorEl.textContent = message;
     }
+  }
+
+  #setLiveIssue(
+    kind: ManagerLiveIssueKind,
+    detail: string | null = null
+  ): void {
+    this.#liveIssue = {
+      kind,
+      detail,
+      at: Date.now(),
+    };
+    this.#renderLiveConnectionState();
+  }
+
+  #clearLiveIssue(): void {
+    if (this.#liveIssue === null) {
+      return;
+    }
+    this.#liveIssue = null;
+    this.#renderLiveConnectionState();
+  }
+
+  #lastLiveReceiptLabel(): string | null {
+    if (this.#lastLiveEventAt <= 0) {
+      return null;
+    }
+    return `最後の受信 ${formatAge(new Date(this.#lastLiveEventAt).toISOString())}`;
+  }
+
+  #buildLiveConnectionState(): ManagerLiveIndicatorState {
+    const lastReceipt = this.#lastLiveReceiptLabel();
+    if (!this.#canAccessManagerApi()) {
+      return {
+        tone: 'neutral',
+        label: 'リアルタイム更新は未接続です',
+        detail: 'アクセスコードを入力すると、ここに接続状態が出ます。',
+      };
+    }
+
+    if (document.visibilityState === 'hidden') {
+      return {
+        tone: 'neutral',
+        label: 'リアルタイム更新は一時停止中です',
+        detail: 'このタブに戻ると最新状態を取り直します。',
+      };
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return {
+        tone: 'danger',
+        label: 'リアルタイム更新が止まっています',
+        detail: [
+          'ブラウザがオフラインです。ネットワークが戻ると自動でつなぎ直します。',
+          lastReceipt,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      };
+    }
+
+    if (this.#resumeRefreshInFlight) {
+      return {
+        tone: this.#liveIssue ? 'warn' : 'neutral',
+        label: this.#liveIssue
+          ? 'リアルタイム更新が止まっています'
+          : 'リアルタイム更新を確認中です',
+        detail: [
+          this.#liveIssue
+            ? 'いま最新状態を取り直しています。'
+            : 'いま最新状態を確認しています。',
+          lastReceipt,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      };
+    }
+
+    if (this.#liveReconnectTimer !== null) {
+      return {
+        tone: 'warn',
+        label: 'リアルタイム更新が止まっています',
+        detail: ['接続を戻すため自動で再接続中です。', lastReceipt]
+          .filter(Boolean)
+          .join(' '),
+      };
+    }
+
+    if (this.#liveIssue) {
+      const issueDetail =
+        this.#liveIssue.kind === 'stale-timeout'
+          ? 'しばらく更新が届いていません。'
+          : this.#liveIssue.kind === 'stream-ended'
+            ? '接続が途中で切れました。'
+            : this.#liveIssue.kind === 'stream-error'
+              ? '通信エラーが起きました。'
+              : this.#liveIssue.kind === 'invalid-live-response'
+                ? '更新用の応答を正しく受け取れませんでした。'
+                : '接続に問題があります。';
+      return {
+        tone: 'danger',
+        label: 'リアルタイム更新が止まっています',
+        detail: [issueDetail, '自動で復旧を試みます。', lastReceipt]
+          .filter(Boolean)
+          .join(' '),
+      };
+    }
+
+    if (this.#liveStreamAbort !== null && this.#lastLiveEventAt > 0) {
+      return {
+        tone: 'ok',
+        label: 'リアルタイム更新 接続中',
+        detail: lastReceipt ?? '最新状態を継続して受信しています。',
+      };
+    }
+
+    if (this.#liveStreamAbort !== null) {
+      return {
+        tone: 'neutral',
+        label: 'リアルタイム更新を確認中です',
+        detail: 'いま接続を確立しています。',
+      };
+    }
+
+    if (this.#lastAppliedSnapshotAt > 0) {
+      return {
+        tone: 'warn',
+        label: 'リアルタイム更新を確認中です',
+        detail: [
+          '表示中の一覧は直前の受信結果です。接続を戻しています。',
+          lastReceipt,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      };
+    }
+
+    return {
+      tone: 'neutral',
+      label: 'リアルタイム更新を確認中です',
+      detail: '最初の状態を読んでいます。',
+    };
+  }
+
+  #renderLiveConnectionState(): void {
+    const root = document.getElementById('manager-live-status');
+    const label = document.getElementById('manager-live-pill-label');
+    const detail = document.getElementById('manager-live-detail');
+    if (!root || !label || !detail) {
+      return;
+    }
+    const state = this.#buildLiveConnectionState();
+    root.dataset.liveTone = state.tone;
+    label.textContent = state.label;
+    detail.textContent = state.detail;
   }
 
   #toggleClearAuthButton(visible: boolean): void {
@@ -5078,6 +5290,7 @@ class ManagerApp {
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
+    this.#renderLiveConnectionState();
     this.#syncComposerDockReserve();
 
     const openThread =
