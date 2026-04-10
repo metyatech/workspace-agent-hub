@@ -198,7 +198,7 @@ function createManagerFetchWithData(input: {
     running: boolean;
     configured: boolean;
     builtinBackend: boolean;
-    health?: 'ok' | 'error';
+    health?: 'ok' | 'error' | 'paused';
     detail: string;
     pendingCount?: number;
     currentQueueId?: string | null;
@@ -486,7 +486,8 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).not.toContain('id="newTaskOpenButton"');
     expect(managerHtml).not.toContain('id="newTaskSheetBackdrop"');
     expect(managerHtml).not.toContain('id="managedRepoForm"');
-    expect(managerHtml).toContain('下の送信欄に依頼や質問を送るだけで');
+    expect(managerHtml).toContain('id="focusComposerButton"');
+    expect(managerHtml).toContain('上の「いま依頼を送る」から送るだけで');
     expect(managerHtml).toMatch(/Manager\s+が既存の作業項目への追記/);
   });
 
@@ -533,6 +534,25 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLDetailsElement>('#getting-started-details')!
         .open
     ).toBe(false);
+  });
+
+  it('opens and focuses the composer from the top send action', async () => {
+    const validToken = 'focus-composer-token';
+    const document = await loadManagerApp(createManagerFetch(validToken), {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLButtonElement>('#focusComposerButton')!.click();
+
+    expect(
+      document
+        .querySelector<HTMLElement>('#composerPanel')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(document.activeElement?.id).toBe('globalComposerInput');
   });
 
   it('hides default composer help when the screen already makes the action obvious', async () => {
@@ -713,6 +733,108 @@ describe('manager-app DOM auth state matrix', () => {
         .querySelector<HTMLButtonElement>('#manager-start-btn')!
         .classList.contains('hidden')
     ).toBe(false);
+  });
+
+  it('shows a resume button when manager Codex is paused and resumes from the GUI', async () => {
+    const responseState: Parameters<typeof createManagerFetchWithData>[0] = {
+      validToken: 'paused-resume-token',
+      threads: [],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'paused',
+        detail: 'Manager Codex の利用上限で停止中です',
+        pendingCount: 2,
+        errorMessage:
+          '[Manager paused] Manager Codex が usage limit に達したため停止しました。課金が終わったら「再開」を押すか、メッセージ送信で再開してください。',
+        errorAt: '2026-04-10T04:30:00.000Z',
+      },
+    };
+    const baseFetch = createManagerFetchWithData(responseState);
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        if (
+          headers.get('X-Workspace-Agent-Hub-Token') !==
+          responseState.validToken
+        ) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+        if (isRoute(url, '/manager/start')) {
+          responseState.status = {
+            running: true,
+            configured: true,
+            builtinBackend: true,
+            health: 'ok',
+            detail: '待機中 (キュー: 2件)',
+            pendingCount: 2,
+            currentQueueId: null,
+            currentThreadId: null,
+            currentThreadTitle: null,
+            errorMessage: null,
+            errorAt: null,
+          };
+          return new Response(
+            JSON.stringify({
+              started: true,
+              detail: 'ビルトインマネージャーを起動しました',
+            }),
+            { status: 200 }
+          );
+        }
+        return baseFetch(input, init);
+      }
+    );
+
+    const document = await loadManagerApp(
+      fetchMock as unknown as typeof fetch,
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, 'paused-resume-token');
+        },
+      }
+    );
+
+    const startButton =
+      document.querySelector<HTMLButtonElement>('#manager-start-btn')!;
+    expect(startButton.classList.contains('hidden')).toBe(false);
+    expect(startButton.textContent).toContain('再開する');
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('Manager Codex の利用上限で停止中です');
+    expect(
+      document.querySelector<HTMLElement>('#activity-detail')!.textContent
+    ).toContain('上の「再開する」で再開できます。');
+
+    startButton.click();
+    await flushAsync(4);
+
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        return (
+          isRoute(String(input), '/manager/start') &&
+          new Headers(init?.headers ?? {}).get(
+            'X-Workspace-Agent-Hub-Token'
+          ) === responseState.validToken
+        );
+      })
+    ).toBe(true);
+    expect(startButton.classList.contains('hidden')).toBe(true);
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('待機中');
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('いまは待機中です');
   });
 
   it('clears a stale stored access code and reopens auth when the server rejects it', async () => {

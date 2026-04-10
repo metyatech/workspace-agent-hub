@@ -139,7 +139,7 @@ interface ManagerStatusPayload {
   running: boolean;
   configured: boolean;
   builtinBackend: boolean;
-  health?: 'ok' | 'error';
+  health?: 'ok' | 'error' | 'paused';
   detail?: string;
   pendingCount?: number;
   currentQueueId?: string | null;
@@ -1775,9 +1775,9 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
 
 function managerStatusProblem(
   status: ManagerStatusPayload | null
-): 'error' | null {
+): 'error' | 'paused' | null {
   const health = status?.health ?? 'ok';
-  if (health === 'error') {
+  if (health === 'error' || health === 'paused') {
     return health;
   }
   return null;
@@ -3761,19 +3761,33 @@ class ManagerApp {
       const problem = managerStatusProblem(payload);
       if (dot) {
         dot.style.background =
-          problem === 'error' ? '#ef4444' : busy ? '#f59e0b' : '#22c55e';
+          problem === 'error'
+            ? '#ef4444'
+            : problem === 'paused'
+              ? '#f97316'
+              : busy
+                ? '#f59e0b'
+                : '#22c55e';
       }
       if (text) {
         text.style.color =
-          problem === 'error' ? '#b91c1c' : busy ? '#92400e' : '#166534';
+          problem === 'error'
+            ? '#b91c1c'
+            : problem === 'paused'
+              ? '#9a3412'
+              : busy
+                ? '#92400e'
+                : '#166534';
         const label =
           problem === 'error'
             ? 'AI backend で問題が起きています'
-            : busy
-              ? payload.currentThreadTitle
-                ? `AI が「${payload.currentThreadTitle}」を処理中です`
-                : 'AI が作業中です'
-              : '待機中です';
+            : problem === 'paused'
+              ? 'Manager Codex の利用上限で停止中です'
+              : busy
+                ? payload.currentThreadTitle
+                  ? `AI が「${payload.currentThreadTitle}」を処理中です`
+                  : 'AI が作業中です'
+                : '待機中です';
         const queueTail = busySummary
           ? ` — ${busySummary}`
           : payload.detail
@@ -3783,7 +3797,11 @@ class ManagerApp {
               : '';
         text.textContent = `${label}${queueTail}`;
       }
-      startButton?.classList.add('hidden');
+      if (startButton) {
+        startButton.textContent =
+          problem === 'paused' ? '▶ 再開する' : '▶ 起動する';
+        startButton.classList.toggle('hidden', problem !== 'paused');
+      }
       this.#renderActivitySummary();
       this.#renderLiveConnectionState();
       return;
@@ -3798,7 +3816,10 @@ class ManagerApp {
         text.textContent =
           payload.detail || 'まだ始まっていません。送ると自動で動きます。';
       }
-      startButton?.classList.remove('hidden');
+      if (startButton) {
+        startButton.textContent = '▶ 起動する';
+        startButton.classList.remove('hidden');
+      }
       this.#renderActivitySummary();
       this.#renderLiveConnectionState();
       return;
@@ -3811,7 +3832,10 @@ class ManagerApp {
       text.style.color = '#b91c1c';
       text.textContent = payload.detail || 'Manager を使えません。';
     }
-    startButton?.classList.add('hidden');
+    if (startButton) {
+      startButton.textContent = '▶ 起動する';
+      startButton.classList.add('hidden');
+    }
     this.#renderActivitySummary();
     this.#renderLiveConnectionState();
   }
@@ -4704,6 +4728,9 @@ class ManagerApp {
             this.focusComposer();
           }
           break;
+        case 'focus-composer':
+          this.focusComposer();
+          break;
         case 'close-composer':
           this.#setComposerExpanded(false);
           break;
@@ -5419,11 +5446,11 @@ class ManagerApp {
     );
     if (copy) {
       copy.textContent =
-        '下の送信欄に依頼や質問をそのまま送ると、Manager が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。';
+        '上の「いま依頼を送る」か、下の固定送信欄から依頼や質問をそのまま送ると、Manager が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。';
     }
     if (steps.length >= 3) {
       steps[0].textContent =
-        '1. 下の送信欄から、やりたいことや確認したいことをそのまま送る';
+        '1. 上の「いま依頼を送る」か、下の送信欄からやりたいことを送る';
       steps[1].textContent =
         '2. Manager が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する';
       steps[2].textContent =
@@ -5463,6 +5490,8 @@ class ManagerApp {
 
     if (problem === 'error') {
       primary.textContent = 'AI backend で問題が起きています';
+    } else if (problem === 'paused') {
+      primary.textContent = 'Manager Codex の利用上限で停止中です';
     } else if (busy) {
       primary.textContent = currentThreadTitle
         ? `AI が「${currentThreadTitle}」を進めています`
@@ -5489,6 +5518,10 @@ class ManagerApp {
       detail.textContent = statusErrorMessage
         ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''}`
         : 'AI backend のエラーで処理できていません。';
+    } else if (problem === 'paused') {
+      detail.textContent = statusErrorMessage
+        ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''} 上の「再開する」で再開できます。`
+        : `Manager Codex の利用上限で停止しています。${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''} 上の「再開する」で再開できます。`;
     } else if (busy) {
       detail.textContent = busyActivity?.headline
         ? [
@@ -5507,10 +5540,10 @@ class ManagerApp {
       detail.textContent =
         pendingCount > 0
           ? `いまは待機中ですが、キューに ${pendingCount} 件あります。少し待つと動きます。`
-          : 'いまは待機中です。下の送信欄から依頼や質問を送ると、Manager が内容を整理して進めます。';
+          : 'いまは待機中です。上の「いま依頼を送る」か、下の送信欄から依頼や質問を送ると、Manager が内容を整理して進めます。';
     } else if (configured) {
       detail.textContent =
-        'まだ始まっていません。下の送信欄から依頼や質問を送ると自動で動きます。';
+        'まだ始まっていません。上の「いま依頼を送る」から送ると自動で動きます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';

@@ -459,8 +459,13 @@ Important behavior:
   own persisted worker continuation. Worker runtime/model choice is resolved
   per task from live third-party Scale leaderboards plus `ai-quota`, so the
   backend prefers the highest-ranked currently-available Codex/Claude worker
-  instead of pinning every task to one static worker model, and manager turns
-  automatically fall back to Claude when Codex is quota-blocked.
+  instead of pinning every task to one static worker model.
+- Manager-owned git worktrees are created next to the target repository instead
+  of under the OS temp directory. That preserves the repository's original
+  parent-directory topology, so local overlays such as `.env*.local` keep the
+  same relative-path semantics without content rewriting heuristics. The
+  Manager does not graft `node_modules` or other repository directories into
+  those worktrees.
 - Static worker env settings such as `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
   `WORKSPACE_AGENT_HUB_CODEX_EFFORT`,
   `WORKSPACE_AGENT_HUB_CLAUDE_MODEL`, and
@@ -526,8 +531,10 @@ Important behavior:
 - Tasks are only marked done explicitly; the AI may move them into
   confirmation/reply-needed states but does not auto-close them silently.
 - The built-in manager backend uses Codex CLI (`gpt-5.4` with
-  `model_reasoning_effort="xhigh"`) as the primary manager runtime and falls
-  back to Claude CLI automatically when Codex is usage-limited.
+  `model_reasoning_effort="xhigh"`) as the primary manager runtime. When
+  Manager Codex hits a usage limit, Hub surfaces a paused state, leaves queued
+  work pending, and resumes when the user clicks `再開する` in the Manager GUI
+  or starts Manager again after topping up quota.
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
