@@ -191,31 +191,52 @@
         line-height: 1.65;
       }
 
-      .hero-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        align-items: center;
-        margin-top: 18px;
-      }
-
-      .hero-actions .button,
-      .hero-actions button {
-        min-width: 168px;
-      }
-
-      .hero-action-note {
-        flex: 1 1 260px;
-        color: var(--muted-soft);
-        font-size: 12px;
-        line-height: 1.6;
-      }
-
-      .support-grid {
+      .primary-strip {
         display: grid;
         gap: 12px;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        margin: 18px 12px 0;
+        margin-top: 20px;
+      }
+
+      .primary-card {
+        padding: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 24px;
+        background: linear-gradient(
+          145deg,
+          rgba(12, 22, 38, 0.9),
+          rgba(8, 17, 33, 0.8)
+        );
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+
+      .primary-card-primary {
+        border-color: rgba(56, 189, 248, 0.2);
+        background: linear-gradient(
+          145deg,
+          rgba(12, 28, 35, 0.94),
+          rgba(8, 20, 32, 0.84)
+        );
+      }
+
+      .primary-card strong {
+        display: block;
+        font-size: 16px;
+        letter-spacing: -0.01em;
+      }
+
+      .primary-card p {
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .status-strip {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        margin-top: 20px;
       }
 
       .status-card {
@@ -768,10 +789,6 @@
           grid-template-columns: 1fr;
         }
 
-        .support-grid {
-          grid-template-columns: 1fr;
-        }
-
         .hero {
           position: static;
         }
@@ -779,17 +796,6 @@
         .shell {
           width: min(100vw, calc(100vw - 12px));
           padding-top: 12px;
-        }
-
-        .hero-actions .button,
-        .hero-actions button {
-          flex: 1 1 100%;
-          min-width: 0;
-        }
-
-        .hint {
-          padding: 12px 14px;
-          font-size: 12px;
         }
       }
 
@@ -810,18 +816,6 @@
           を選びます。選んだ session の出力は下に見え続け、
           追加の指示や停止もその場でできます。
         </p>
-        <div class="hero-actions">
-          <a href="#workbench" class="button">新しい session を始める</a>
-          <a href="#sessionsList" class="button secondary">続きから選ぶ</a>
-          <button id="openManagerButton" class="secondary" type="button">
-            Manager を開く
-          </button>
-          <span id="managerStatus" class="hero-action-note"
-            >Hub は目の前の 1 本の session
-            を続ける画面です。複数の依頼やスレッドを整理したいときは、ここからそのまま
-            Manager へ移動できます。</span
-          >
-        </div>
         <div class="hint-grid">
           <div class="hint">1. 上で session を始めるか一覧から選ぶ</div>
           <div class="hint">2. 出力を見ながら一言ずつ追加指示する</div>
@@ -829,10 +823,208 @@
             3. PC でもスマホでも同じ session を続きから開ける
           </div>
         </div>
+        <div class="primary-strip">
+          <div class="primary-card primary-card-primary">
+            <strong>新しい session を始める</strong>
+            <p>
+              まず 1 本立ち上げたいときはここからです。タイトルは空でもよく、
+              そのまま開始フォームへ移動できます。
+            </p>
+            <div class="install-row">
+              <button
+                id="jumpStartSessionButton"
+                class="secondary"
+                type="button"
+              >
+                新しく始める
+              </button>
+              <span class="install-note"
+                >開始フォームへ移動して、そのまま入力できます。</span
+              >
+            </div>
+          </div>
+          <div class="primary-card">
+            <strong>続きから選ぶ</strong>
+            <p>
+              前に使っていた session の続きを送りたいときは、一覧から選びます。
+              検索欄まで移動して、すぐ絞り込めます。
+            </p>
+            <div class="install-row">
+              <button
+                id="jumpResumeSessionButton"
+                class="secondary"
+                type="button"
+              >
+                一覧から選ぶ
+              </button>
+              <span class="install-note"
+                >session 検索欄へ移動して、続きに戻ります。</span
+              >
+            </div>
+          </div>
+          <div id="managerCard" class="primary-card primary-card-primary">
+            <strong>Manager を開く</strong>
+            <p>
+              Hub は目の前の 1 本の session を続ける画面です。Manager
+              は複数の依頼やスレッドを整理するときの画面です。PC
+              でもスマホでも同じ Manager を開けます。
+            </p>
+            <div class="install-row">
+              <button id="openManagerButton" class="secondary" type="button">
+                Manager を開く
+              </button>
+              <span id="managerStatus" class="install-note"
+                >クリックするとそのまま Manager へ移動します。</span
+              >
+            </div>
+          </div>
+        </div>
+        <div class="status-strip">
+          <div id="connectivityBanner" class="status-card warn">
+            <strong>接続状態を確認中</strong>
+            <p>
+              最初の同期が終わると、ここにオンライン状態と再接続の目安が出ます。
+            </p>
+          </div>
+          <div id="installCard" class="status-card">
+            <strong>スマホに追加</strong>
+            <p id="installHint">
+              HTTPS で開いているときは、ホーム画面アプリとして追加できます。PC
+              ではデスクトップかスタートメニューの Workspace Agent Hub
+              を使うと、毎回コマンドを打たずに開けます。
+            </p>
+            <div class="install-row">
+              <button
+                id="installAppButton"
+                class="secondary"
+                type="button"
+                hidden
+              >
+                ホーム画面に追加
+              </button>
+              <span id="installStatus" class="install-note"
+                >まだインストール待ちです。</span
+              >
+            </div>
+          </div>
+          <div id="deviceCard" class="status-card">
+            <strong>この端末の扱い</strong>
+            <p id="notificationHint">
+              通知を許可すると、画面を閉じていても選択中 session
+              の更新に気づけます。
+            </p>
+            <div class="install-row">
+              <button
+                id="enableNotificationsButton"
+                class="secondary"
+                type="button"
+              >
+                通知を有効にする
+              </button>
+              <span id="notificationStatus" class="install-note"
+                >通知は未設定です。</span
+              >
+            </div>
+            <div class="install-row">
+              <button id="lockDeviceButton" class="subtle" type="button">
+                この端末をロック
+              </button>
+            </div>
+            <div id="deviceLockHint" class="install-note">
+              ロックすると、このブラウザに保存した接続情報とキャッシュを消します。
+            </div>
+          </div>
+          <div id="pairingCard" class="status-card pairing-card">
+            <strong>スマホから開く</strong>
+            <p id="pairingHint">
+              同じ Tailscale 内のスマホでは、この URL をそのまま開けます。QR
+              は最初の共有が必要なときだけ使います。
+            </p>
+            <div class="qr-shell">
+              <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
+              <span id="pairingQrStatus" class="install-note"
+                >必要なときだけ QR を表示します。</span
+              >
+            </div>
+            <p class="install-note">
+              URL をホーム画面に追加しておくと、次からはそのまま開けます。
+            </p>
+            <div class="field">
+              <label for="pairingUrlInput">スマホで開く URL</label>
+              <input
+                id="pairingUrlInput"
+                class="pairing-url"
+                type="text"
+                readonly
+              />
+            </div>
+            <div class="button-row">
+              <button id="sharePairingButton" class="secondary" type="button">
+                共有文をコピー
+              </button>
+              <button
+                id="copyPairingLinkButton"
+                class="secondary"
+                type="button"
+              >
+                リンクをコピー
+              </button>
+              <button id="copyManualUrlButton" class="subtle" type="button">
+                URL だけコピー
+              </button>
+            </div>
+            <div class="field">
+              <label for="pairingCodeInput"
+                >必要なときだけ使うアクセスコード</label
+              >
+              <input
+                id="pairingCodeInput"
+                class="pairing-url"
+                type="text"
+                readonly
+              />
+            </div>
+            <div class="button-row">
+              <button id="copyPairingCodeButton" class="subtle" type="button">
+                コードをコピー
+              </button>
+            </div>
+            <div id="secureLaunchShell" class="field" hidden>
+              <label for="secureLaunchCommandInput">HTTPS 化コマンド</label>
+              <input
+                id="secureLaunchCommandInput"
+                class="pairing-url"
+                type="text"
+                readonly
+              />
+              <div class="button-row">
+                <button
+                  id="openSecureLaunchSetupButton"
+                  class="secondary"
+                  type="button"
+                  hidden
+                >
+                  有効化ページを開く
+                </button>
+                <button
+                  id="copySecureLaunchCommandButton"
+                  class="secondary"
+                  type="button"
+                >
+                  コマンドをコピー
+                </button>
+              </div>
+              <span id="secureLaunchStatus" class="install-note"
+                >必要なときだけ、このコマンドで Tailscale Serve
+                を有効にできます。</span
+              >
+            </div>
+          </div>
+        </div>
       </header>
 
       <main class="layout">
-        <section class="panel" id="workbench">
+        <section class="panel">
           <div class="panel-head">
             <div>
               <h2 class="panel-title">最初にやること</h2>
@@ -1019,145 +1211,6 @@
           </div>
         </section>
       </main>
-
-      <section class="support-grid" aria-label="接続と共有">
-        <div id="connectivityBanner" class="status-card warn">
-          <strong>接続状態を確認中</strong>
-          <p>
-            最初の同期が終わると、ここにオンライン状態と再接続の目安が出ます。
-          </p>
-        </div>
-        <div id="installCard" class="status-card">
-          <strong>スマホに追加</strong>
-          <p id="installHint">
-            HTTPS で開いているときは、ホーム画面アプリとして追加できます。PC
-            ではデスクトップかスタートメニューの Workspace Agent Hub
-            を使うと、毎回コマンドを打たずに開けます。
-          </p>
-          <div class="install-row">
-            <button
-              id="installAppButton"
-              class="secondary"
-              type="button"
-              hidden
-            >
-              ホーム画面に追加
-            </button>
-            <span id="installStatus" class="install-note"
-              >まだインストール待ちです。</span
-            >
-          </div>
-        </div>
-        <div id="deviceCard" class="status-card">
-          <strong>この端末の扱い</strong>
-          <p id="notificationHint">
-            通知を許可すると、画面を閉じていても選択中 session
-            の更新に気づけます。
-          </p>
-          <div class="install-row">
-            <button
-              id="enableNotificationsButton"
-              class="secondary"
-              type="button"
-            >
-              通知を有効にする
-            </button>
-            <span id="notificationStatus" class="install-note"
-              >通知は未設定です。</span
-            >
-          </div>
-          <div class="install-row">
-            <button id="lockDeviceButton" class="subtle" type="button">
-              この端末をロック
-            </button>
-          </div>
-          <div id="deviceLockHint" class="install-note">
-            ロックすると、このブラウザに保存した接続情報とキャッシュを消します。
-          </div>
-        </div>
-        <div id="pairingCard" class="status-card pairing-card">
-          <strong>スマホから開く</strong>
-          <p id="pairingHint">
-            同じ Tailscale 内のスマホでは、この URL をそのまま開けます。QR
-            は最初の共有が必要なときだけ使います。
-          </p>
-          <div class="qr-shell">
-            <img id="pairingQrImage" alt="スマホ再接続用 QR" hidden />
-            <span id="pairingQrStatus" class="install-note"
-              >必要なときだけ QR を表示します。</span
-            >
-          </div>
-          <p class="install-note">
-            URL をホーム画面に追加しておくと、次からはそのまま開けます。
-          </p>
-          <div class="field">
-            <label for="pairingUrlInput">スマホで開く URL</label>
-            <input
-              id="pairingUrlInput"
-              class="pairing-url"
-              type="text"
-              readonly
-            />
-          </div>
-          <div class="button-row">
-            <button id="sharePairingButton" class="secondary" type="button">
-              共有文をコピー
-            </button>
-            <button id="copyPairingLinkButton" class="secondary" type="button">
-              リンクをコピー
-            </button>
-            <button id="copyManualUrlButton" class="subtle" type="button">
-              URL だけコピー
-            </button>
-          </div>
-          <div class="field">
-            <label for="pairingCodeInput"
-              >必要なときだけ使うアクセスコード</label
-            >
-            <input
-              id="pairingCodeInput"
-              class="pairing-url"
-              type="text"
-              readonly
-            />
-          </div>
-          <div class="button-row">
-            <button id="copyPairingCodeButton" class="subtle" type="button">
-              コードをコピー
-            </button>
-          </div>
-          <div id="secureLaunchShell" class="field" hidden>
-            <label for="secureLaunchCommandInput">HTTPS 化コマンド</label>
-            <input
-              id="secureLaunchCommandInput"
-              class="pairing-url"
-              type="text"
-              readonly
-            />
-            <div class="button-row">
-              <button
-                id="openSecureLaunchSetupButton"
-                class="secondary"
-                type="button"
-                hidden
-              >
-                有効化ページを開く
-              </button>
-              <button
-                id="copySecureLaunchCommandButton"
-                class="secondary"
-                type="button"
-              >
-                コマンドをコピー
-              </button>
-            </div>
-            <span id="secureLaunchStatus" class="install-note"
-              >必要なときだけ、このコマンドで Tailscale Serve
-              を有効にできます。</span
-            >
-          </div>
-        </div>
-      </section>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

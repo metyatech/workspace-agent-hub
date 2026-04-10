@@ -212,6 +212,16 @@ test('authenticates and manages a shell session from the browser UI', async ({
   await expect(
     page.getByRole('heading', { name: '最初にやること' })
   ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '新しく始める', exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: '一覧から選ぶ', exact: true })
+  ).toBeVisible();
+  await page.getByRole('button', { name: '一覧から選ぶ', exact: true }).click();
+  await expect(page.locator('#sessionSearchInput')).toBeFocused();
+  await page.getByRole('button', { name: '新しく始める', exact: true }).click();
+  await expect(page.locator('#sessionTitleInput')).toBeFocused();
   await expect(page.locator('#workingDirectoryInput')).toHaveValue(
     workspaceRoot
   );
@@ -366,15 +376,12 @@ test('opens Manager from Hub on mobile width without horizontal overflow', async
   await expect(
     page.getByRole('button', { name: '↻ 更新', exact: true })
   ).toHaveCount(0);
-  const openComposerButton = page.getByRole('button', {
-    name: '送信欄を開く',
+  const sendNowButton = page.getByRole('button', {
+    name: 'いま依頼を送る',
     exact: true,
   });
-  await expect(openComposerButton).toBeVisible();
-  await openComposerButton.dispatchEvent('click');
-  if (!(await page.getByLabel('Manager への送信内容').isVisible())) {
-    await openComposerButton.dispatchEvent('click');
-  }
+  await expect(sendNowButton).toBeVisible();
+  await sendNowButton.click();
   await expect(page.getByLabel('Manager への送信内容')).toBeVisible();
   await expect(page.locator('#composerMediaHint')).toContainText(
     'Ctrl / Cmd + V'

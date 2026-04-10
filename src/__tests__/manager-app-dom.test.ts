@@ -571,7 +571,7 @@ describe('manager-app DOM auth state matrix', () => {
 
   it('adds a top-of-screen shortcut for opening the composer on first use', async () => {
     expect(managerHtml).toMatch(
-      /id="activity-summary"[\s\S]*data-action="toggle-composer"[\s\S]*いま依頼を送る/
+      /id="send-now-card"[\s\S]*data-action="focus-composer"[\s\S]*いま依頼を送る/
     );
 
     const validToken = 'activity-shortcut-token';
@@ -587,7 +587,7 @@ describe('manager-app DOM auth state matrix', () => {
 
     const activityShortcut = Array.from(
       document.querySelectorAll<HTMLButtonElement>(
-        '[data-action="toggle-composer"]'
+        '[data-action="focus-composer"]'
       )
     ).find((button) => button.textContent?.includes('いま依頼を送る'));
 

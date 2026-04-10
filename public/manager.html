@@ -351,19 +351,49 @@
         border: 1px solid rgba(6, 199, 85, 0.12);
       }
 
-      .activity-top {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 12px;
-        flex-wrap: wrap;
+      .primary-send-card {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: minmax(0, 1.2fr) auto;
+        align-items: start;
+        background: linear-gradient(
+          135deg,
+          rgba(232, 250, 236, 0.98),
+          rgba(244, 252, 246, 0.98)
+        );
+        border: 1px solid rgba(34, 197, 94, 0.16);
       }
 
-      .activity-copy {
+      .primary-send-copy {
         display: grid;
-        gap: 8px;
-        flex: 1 1 320px;
-        min-width: 0;
+        gap: 10px;
+      }
+
+      .primary-send-card h2 {
+        margin: 0;
+        font-size: 1.06rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--text);
+      }
+
+      .primary-send-card p {
+        margin: 0;
+        color: var(--text-soft);
+        font-size: 0.8rem;
+        line-height: 1.65;
+      }
+
+      .primary-send-actions {
+        display: grid;
+        gap: 10px;
+        justify-items: start;
+      }
+
+      .primary-send-note {
+        font-size: 0.74rem;
+        line-height: 1.6;
+        color: var(--text-muted);
       }
 
       .activity-eyebrow {
@@ -390,28 +420,6 @@
       .activity-detail {
         font-size: 0.82rem;
         color: var(--text-muted);
-      }
-
-      .activity-actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: flex-end;
-      }
-
-      .activity-actions .btn {
-        width: auto;
-      }
-
-      .activity-support {
-        padding: 12px 14px;
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.88);
-        border: 1px solid rgba(122, 158, 125, 0.14);
-        color: var(--text-soft);
-        font-size: 0.76rem;
-        line-height: 1.65;
       }
 
       .activity-counts {
@@ -641,12 +649,6 @@
         color: var(--text-soft);
         font-size: 0.82rem;
         line-height: 1.7;
-      }
-
-      .intro-actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
       }
 
       .intro-details {
@@ -1813,17 +1815,20 @@
       }
 
       @media (max-width: 920px) {
+        .primary-send-card {
+          grid-template-columns: 1fr;
+        }
+
+        .primary-send-actions {
+          justify-items: stretch;
+        }
+
         .intro-steps {
           grid-template-columns: 1fr;
         }
 
         .detail-card {
           min-height: 0;
-        }
-
-        .activity-actions {
-          width: 100%;
-          justify-content: stretch;
         }
       }
 
@@ -1857,12 +1862,6 @@
         .composer-shell {
           grid-template-columns: 1fr;
           gap: 10px;
-        }
-
-        .activity-actions .btn,
-        .intro-actions .btn {
-          flex: 1 1 100%;
-          width: 100%;
         }
 
         .composer-actions,
@@ -2032,39 +2031,40 @@
 
       <section id="manager-inbox-screen">
         <div class="stack">
-          <section id="activity-summary" class="card activity-card">
-            <div class="activity-top">
-              <div class="activity-copy">
-                <div class="activity-eyebrow">いまの状況</div>
-                <div id="activity-primary" class="activity-primary">
-                  状態を確認しています…
-                </div>
-                <div id="activity-detail" class="activity-detail">
-                  少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
-                  があるかをここに表示します。
-                </div>
-              </div>
-              <div class="activity-actions">
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  data-action="toggle-composer"
-                >
-                  いま依頼を送る
-                </button>
-                <button
-                  class="btn btn-ghost"
-                  type="button"
-                  data-action="refresh"
-                  style="width: auto"
-                >
-                  いま読み直す
-                </button>
+          <section id="send-now-card" class="card primary-send-card">
+            <div class="primary-send-copy">
+              <div class="activity-eyebrow">最初の一手</div>
+              <h2>いま依頼を送る</h2>
+              <p>
+                新しい依頼でも、さっきの続きでも、ここから送れば大丈夫です。
+                Manager が内部で作業項目に整理し、そのまま進めます。
+              </p>
+            </div>
+            <div class="primary-send-actions">
+              <button
+                id="focusComposerButton"
+                data-action="focus-composer"
+                class="btn btn-primary"
+                type="button"
+                style="width: auto"
+                aria-controls="composerPanel"
+              >
+                いま依頼を送る
+              </button>
+              <div class="primary-send-note">
+                送信欄をその場で開いて、入力へ移動します。
               </div>
             </div>
-            <div class="activity-support">
-              まずは 1
-              件そのまま送れば大丈夫です。返すべきものは一覧で上に出て、続きを送りたい作業項目だけ開いて返せます。
+          </section>
+
+          <section id="activity-summary" class="card activity-card">
+            <div class="activity-eyebrow">いまの状況</div>
+            <div id="activity-primary" class="activity-primary">
+              状態を確認しています…
+            </div>
+            <div id="activity-detail" class="activity-detail">
+              少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
+              があるかをここに表示します。
             </div>
             <div id="activity-counts" class="activity-counts"></div>
           </section>
@@ -2072,30 +2072,13 @@
           <section id="getting-started" class="card intro-card hidden">
             <div class="intro-pill">最初の使い方</div>
             <h2>
-              下の送信欄に依頼や質問を送るだけで、Manager
+              上の「いま依頼を送る」から送るだけで、Manager
               が内部で整理して進めます
             </h2>
             <p id="getting-started-copy">
-              下の送信欄に依頼や質問をそのまま送ると、Manager
+              上の「いま依頼を送る」か、下の固定送信欄から依頼や質問をそのまま送ると、Manager
               が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。
             </p>
-            <div class="intro-actions">
-              <button
-                class="btn btn-primary"
-                type="button"
-                data-action="toggle-composer"
-              >
-                ここから送る
-              </button>
-              <button
-                class="btn btn-ghost"
-                type="button"
-                data-action="refresh"
-                style="width: auto"
-              >
-                状態を読み直す
-              </button>
-            </div>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
               <p>
@@ -2106,7 +2089,7 @@
             </details>
             <div class="intro-steps">
               <div class="intro-step" data-getting-started-step>
-                1. 下の送信欄から、やりたいことや確認したいことをそのまま送る
+                1. 上の「いま依頼を送る」か、下の送信欄からやりたいことを送る
               </div>
               <div class="intro-step" data-getting-started-step>
                 2. Manager

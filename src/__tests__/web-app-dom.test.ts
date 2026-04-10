@@ -13,6 +13,8 @@ const baseHtml = `
     <input id="sessionTitleInput" />
     <input id="workingDirectoryInput" />
     <datalist id="workingDirectorySuggestions"></datalist>
+    <button id="jumpStartSessionButton">jump start</button>
+    <button id="jumpResumeSessionButton">jump resume</button>
     <button id="startSessionButton">start</button>
     <div id="lastSessionCard" hidden>
       <span id="lastSessionTitle"></span>
@@ -435,6 +437,48 @@ describe('web-app DOM', () => {
         .querySelector<HTMLDivElement>('#promptComposerShell')!
         .classList.contains('attention')
     ).toBe(true);
+  });
+
+  it('moves focus to the new-session form from the hero action', async () => {
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+    document
+      .querySelector<HTMLButtonElement>('#jumpStartSessionButton')!
+      .click();
+
+    expect(document.activeElement?.id).toBe('sessionTitleInput');
+  });
+
+  it('moves focus to the resume search from the hero action', async () => {
+    const fetchMockImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/directories')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes('/api/sessions?includeArchived=true')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const fetchMock = fetchMockImpl as unknown as typeof fetch;
+
+    const document = await loadApp(fetchMock);
+    document
+      .querySelector<HTMLButtonElement>('#jumpResumeSessionButton')!
+      .click();
+
+    expect(document.activeElement?.id).toBe('sessionSearchInput');
   });
 
   it('navigates to the native manager page directly without a preflight ensure request', async () => {

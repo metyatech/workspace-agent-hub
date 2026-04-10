@@ -11,20 +11,18 @@ const indexHtml = readFileSync(
 );
 
 describe('web-ui HTML', () => {
-  it('keeps primary Hub actions above the workbench and secondary support cards', () => {
-    const heroActionsIndex = indexHtml.indexOf('class="hero-actions"');
-    const workbenchIndex = indexHtml.indexOf('id="workbench"');
-    const supportGridIndex = indexHtml.indexOf('class="support-grid"');
+  it('keeps primary Hub actions and support cards above the workbench', () => {
+    const primaryStripIndex = indexHtml.indexOf('class="primary-strip"');
+    const statusStripIndex = indexHtml.indexOf('class="status-strip"');
+    const workbenchIndex = indexHtml.indexOf(
+      '<h2 class="panel-title">最初にやること</h2>'
+    );
 
-    expect(heroActionsIndex).toBeGreaterThan(-1);
-    expect(indexHtml).toContain(
-      'href="#workbench" class="button">新しい session を始める</a>'
-    );
-    expect(indexHtml).toContain(
-      'href="#sessionsList" class="button secondary">続きから選ぶ</a>'
-    );
+    expect(primaryStripIndex).toBeGreaterThan(-1);
+    expect(indexHtml).toContain('id="jumpStartSessionButton"');
+    expect(indexHtml).toContain('id="jumpResumeSessionButton"');
     expect(indexHtml).toContain('id="openManagerButton"');
-    expect(workbenchIndex).toBeGreaterThan(heroActionsIndex);
-    expect(supportGridIndex).toBeGreaterThan(workbenchIndex);
+    expect(statusStripIndex).toBeGreaterThan(primaryStripIndex);
+    expect(workbenchIndex).toBeGreaterThan(statusStripIndex);
   });
 });

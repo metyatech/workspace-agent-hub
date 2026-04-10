@@ -49,6 +49,12 @@ const workingDirectorySuggestions = document.querySelector<HTMLDataListElement>(
 const startSessionButton = document.querySelector<HTMLButtonElement>(
   '#startSessionButton'
 )!;
+const jumpStartSessionButton = document.querySelector<HTMLButtonElement>(
+  '#jumpStartSessionButton'
+)!;
+const jumpResumeSessionButton = document.querySelector<HTMLButtonElement>(
+  '#jumpResumeSessionButton'
+)!;
 const lastSessionCard =
   document.querySelector<HTMLDivElement>('#lastSessionCard')!;
 const lastSessionTitle =
@@ -359,6 +365,25 @@ function isCompactLayout(): boolean {
   return (
     window.matchMedia('(max-width: 920px)').matches || window.innerWidth <= 920
   );
+}
+
+function focusPrimaryControl(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+): void {
+  if (typeof control.scrollIntoView === 'function') {
+    control.scrollIntoView({
+      behavior: 'smooth',
+      block: isCompactLayout() ? 'start' : 'center',
+    });
+  }
+  control.focus();
+  if (
+    control instanceof HTMLInputElement ||
+    control instanceof HTMLTextAreaElement
+  ) {
+    const end = control.value.length;
+    control.setSelectionRange(end, end);
+  }
 }
 
 function spotlightPromptComposer(options?: {
@@ -2059,6 +2084,12 @@ workingDirectoryInput.value = config.workspaceRoot;
 
 refreshSessionsButton.addEventListener('click', () => void refreshSessions());
 startSessionButton.addEventListener('click', () => void startSession());
+jumpStartSessionButton.addEventListener('click', () => {
+  focusPrimaryControl(sessionTitleInput);
+});
+jumpResumeSessionButton.addEventListener('click', () => {
+  focusPrimaryControl(sessionSearchInput);
+});
 openLastSessionButton.addEventListener('click', () => {
   openRememberedSession();
 });
