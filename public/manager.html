@@ -351,6 +351,21 @@
         border: 1px solid rgba(6, 199, 85, 0.12);
       }
 
+      .activity-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .activity-copy {
+        display: grid;
+        gap: 8px;
+        flex: 1 1 320px;
+        min-width: 0;
+      }
+
       .activity-eyebrow {
         display: inline-flex;
         align-items: center;
@@ -375,6 +390,28 @@
       .activity-detail {
         font-size: 0.82rem;
         color: var(--text-muted);
+      }
+
+      .activity-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+      }
+
+      .activity-actions .btn {
+        width: auto;
+      }
+
+      .activity-support {
+        padding: 12px 14px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        color: var(--text-soft);
+        font-size: 0.76rem;
+        line-height: 1.65;
       }
 
       .activity-counts {
@@ -604,6 +641,12 @@
         color: var(--text-soft);
         font-size: 0.82rem;
         line-height: 1.7;
+      }
+
+      .intro-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
       }
 
       .intro-details {
@@ -1777,6 +1820,11 @@
         .detail-card {
           min-height: 0;
         }
+
+        .activity-actions {
+          width: 100%;
+          justify-content: stretch;
+        }
       }
 
       @media (max-width: 600px) {
@@ -1809,6 +1857,12 @@
         .composer-shell {
           grid-template-columns: 1fr;
           gap: 10px;
+        }
+
+        .activity-actions .btn,
+        .intro-actions .btn {
+          flex: 1 1 100%;
+          width: 100%;
         }
 
         .composer-actions,
@@ -1979,13 +2033,38 @@
       <section id="manager-inbox-screen">
         <div class="stack">
           <section id="activity-summary" class="card activity-card">
-            <div class="activity-eyebrow">いまの状況</div>
-            <div id="activity-primary" class="activity-primary">
-              状態を確認しています…
+            <div class="activity-top">
+              <div class="activity-copy">
+                <div class="activity-eyebrow">いまの状況</div>
+                <div id="activity-primary" class="activity-primary">
+                  状態を確認しています…
+                </div>
+                <div id="activity-detail" class="activity-detail">
+                  少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
+                  があるかをここに表示します。
+                </div>
+              </div>
+              <div class="activity-actions">
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  data-action="toggle-composer"
+                >
+                  いま依頼を送る
+                </button>
+                <button
+                  class="btn btn-ghost"
+                  type="button"
+                  data-action="refresh"
+                  style="width: auto"
+                >
+                  いま読み直す
+                </button>
+              </div>
             </div>
-            <div id="activity-detail" class="activity-detail">
-              少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
-              があるかをここに表示します。
+            <div class="activity-support">
+              まずは 1
+              件そのまま送れば大丈夫です。返すべきものは一覧で上に出て、続きを送りたい作業項目だけ開いて返せます。
             </div>
             <div id="activity-counts" class="activity-counts"></div>
           </section>
@@ -2000,6 +2079,23 @@
               下の送信欄に依頼や質問をそのまま送ると、Manager
               が既存の作業項目への追記、新しい作業項目への分割、確認待ちの切り分けを内部で判断して進めます。
             </p>
+            <div class="intro-actions">
+              <button
+                class="btn btn-primary"
+                type="button"
+                data-action="toggle-composer"
+              >
+                ここから送る
+              </button>
+              <button
+                class="btn btn-ghost"
+                type="button"
+                data-action="refresh"
+                style="width: auto"
+              >
+                状態を読み直す
+              </button>
+            </div>
             <details id="getting-started-details" class="intro-details">
               <summary>どう整理されるかを見る</summary>
               <p>
