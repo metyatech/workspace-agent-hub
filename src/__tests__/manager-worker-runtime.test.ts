@@ -28,6 +28,7 @@ describe('manager-worker-runtime', () => {
     expect(spec.args).toEqual(
       expect.arrayContaining([
         '--print',
+        '--verbose',
         '--output-format',
         'stream-json',
         '--permission-mode',
@@ -36,6 +37,7 @@ describe('manager-worker-runtime', () => {
         'claude-session-1',
         '--add-dir',
         'D:\\ghws\\workspace-agent-hub',
+        '--',
         'Investigate the failure',
       ])
     );
@@ -92,7 +94,7 @@ describe('manager-worker-runtime', () => {
       '/d',
       '/s',
       '/c',
-      '""C:\\tools\\codex.cmd" "exec" "--json" "--model" "gpt-5.4" "-c" "model_reasoning_effort=""xhigh""" "-""',
+      '""C:\\tools\\codex.cmd" "exec" "--skip-git-repo-check" "--json" "--model" "gpt-5.4" "-c" "model_reasoning_effort=""xhigh""" "-""',
     ]);
     expect(spec.spawnOptions).toEqual({
       cwd: 'D:\\ghws\\workspace-agent-hub',

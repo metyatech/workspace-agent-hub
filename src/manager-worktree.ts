@@ -16,7 +16,14 @@ import {
   unlinkSync,
   type Dirent,
 } from 'fs';
-import { copyFile, mkdir, readFile, readdir, rm as rmAsync } from 'fs/promises';
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  rm as rmAsync,
+  writeFile,
+} from 'fs/promises';
 import { tmpdir } from 'os';
 import { dirname, join, resolve as resolvePath } from 'path';
 
@@ -46,6 +53,7 @@ export interface WorktreeDeliveryReadiness {
   ready: boolean;
   detail: string;
   aheadCommitCount: number;
+  mergeSourceRef: string | null;
 }
 
 export interface PostMergeDeliveryResult {
@@ -558,6 +566,65 @@ function linkNodeModules(targetRepoRoot: string, worktreePath: string): void {
 }
 
 const ROOT_LOCAL_ENV_OVERLAY_PATTERN = /^\.env(?:\..+)?\.local$/;
+const DOTENV_ASSIGNMENT_PATTERN =
+  /^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$/;
+const RELATIVE_LOCAL_ENV_PATH_PATTERN = /^\.\.?([\\/]|$)/;
+
+function rewriteRelativeLocalEnvValue(
+  rawValue: string,
+  targetRepoRoot: string
+): string {
+  const leadingWhitespaceMatch = rawValue.match(/^\s*/);
+  const trailingWhitespaceMatch = rawValue.match(/\s*$/);
+  const leadingWhitespace = leadingWhitespaceMatch?.[0] ?? '';
+  const trailingWhitespace = trailingWhitespaceMatch?.[0] ?? '';
+  const trimmedValue = rawValue.trim();
+  if (!trimmedValue) {
+    return rawValue;
+  }
+
+  let quote: '"' | "'" | null = null;
+  let innerValue = trimmedValue;
+  if (
+    (trimmedValue.startsWith('"') && trimmedValue.endsWith('"')) ||
+    (trimmedValue.startsWith("'") && trimmedValue.endsWith("'"))
+  ) {
+    quote = trimmedValue[0] as '"' | "'";
+    innerValue = trimmedValue.slice(1, -1);
+  }
+
+  if (!RELATIVE_LOCAL_ENV_PATH_PATTERN.test(innerValue)) {
+    return rawValue;
+  }
+
+  const normalizedValue = resolvePath(targetRepoRoot, innerValue);
+  const rewritten = quote
+    ? `${quote}${normalizedValue}${quote}`
+    : normalizedValue;
+  return `${leadingWhitespace}${rewritten}${trailingWhitespace}`;
+}
+
+function normalizeRootLocalEnvOverlayContent(
+  content: string,
+  targetRepoRoot: string
+): string {
+  const newline = content.includes('\r\n') ? '\r\n' : '\n';
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        return line;
+      }
+      const match = line.match(DOTENV_ASSIGNMENT_PATTERN);
+      if (!match) {
+        return line;
+      }
+      const [, prefix, value] = match;
+      return `${prefix}${rewriteRelativeLocalEnvValue(value, targetRepoRoot)}`;
+    })
+    .join(newline);
+}
 
 async function copyRootLocalEnvOverlays(
   targetRepoRoot: string,
@@ -573,9 +640,13 @@ async function copyRootLocalEnvOverlays(
     if (!entry.isFile() && !entry.isSymbolicLink()) {
       continue;
     }
-    await copyFile(
-      join(targetRepoRoot, entry.name),
-      join(worktreePath, entry.name)
+    const sourcePath = join(targetRepoRoot, entry.name);
+    const targetPath = join(worktreePath, entry.name);
+    const content = await readFile(sourcePath, 'utf8');
+    await writeFile(
+      targetPath,
+      normalizeRootLocalEnvOverlayContent(content, targetRepoRoot),
+      'utf8'
     );
   }
 }
@@ -910,10 +981,10 @@ export async function abortStaleMerge(
  */
 export async function mergeWorktreeToMain(input: {
   targetRepoRoot: string;
-  branchName: string;
+  sourceRef: string;
   lockRepoRoot?: string;
 }): Promise<MergeResult> {
-  const { targetRepoRoot, branchName, lockRepoRoot } = input;
+  const { targetRepoRoot, sourceRef, lockRepoRoot } = input;
 
   return withMergeLock(lockRepoRoot ?? targetRepoRoot, async () => {
     // Recover from a previous crash that may have left a stale merge state.
@@ -922,7 +993,7 @@ export async function mergeWorktreeToMain(input: {
     const result = await execGit(targetRepoRoot, [
       'merge',
       '--no-ff',
-      branchName,
+      sourceRef,
       '--no-edit',
     ]);
 
@@ -1118,6 +1189,7 @@ export async function validateWorktreeReadyForMerge(input: {
       ready: false,
       detail: summarizeCommandFailure('git status --porcelain', statusResult),
       aheadCommitCount: 0,
+      mergeSourceRef: null,
     };
   }
 
@@ -1126,6 +1198,7 @@ export async function validateWorktreeReadyForMerge(input: {
       ready: false,
       detail: `The review step approved the worktree before all changes were committed.\n${statusResult.stdout}`,
       aheadCommitCount: 0,
+      mergeSourceRef: null,
     };
   }
 
@@ -1135,6 +1208,17 @@ export async function validateWorktreeReadyForMerge(input: {
       ready: false,
       detail: summarizeCommandFailure('git rev-parse HEAD', baseHead),
       aheadCommitCount: 0,
+      mergeSourceRef: null,
+    };
+  }
+
+  const worktreeHead = await execGit(input.worktreePath, ['rev-parse', 'HEAD']);
+  if (worktreeHead.code !== 0 || !worktreeHead.stdout.trim()) {
+    return {
+      ready: false,
+      detail: summarizeCommandFailure('git rev-parse HEAD', worktreeHead),
+      aheadCommitCount: 0,
+      mergeSourceRef: null,
     };
   }
 
@@ -1152,6 +1236,7 @@ export async function validateWorktreeReadyForMerge(input: {
         aheadResult
       ),
       aheadCommitCount: 0,
+      mergeSourceRef: null,
     };
   }
 
@@ -1161,6 +1246,7 @@ export async function validateWorktreeReadyForMerge(input: {
       ready: false,
       detail: `Could not parse ahead commit count: ${aheadResult.stdout}`,
       aheadCommitCount: 0,
+      mergeSourceRef: null,
     };
   }
 
@@ -1173,6 +1259,7 @@ export async function validateWorktreeReadyForMerge(input: {
       detail:
         'The worker reported changed files, but the review step did not create a commit for them before approval.',
       aheadCommitCount,
+      mergeSourceRef: null,
     };
   }
 
@@ -1183,6 +1270,7 @@ export async function validateWorktreeReadyForMerge(input: {
         ? `Ready to merge with ${aheadCommitCount} commit(s) ahead of the target repository.`
         : 'Ready to merge; no repository changes need to be delivered.',
     aheadCommitCount,
+    mergeSourceRef: aheadCommitCount > 0 ? worktreeHead.stdout.trim() : null,
   };
 }
 

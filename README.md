@@ -452,14 +452,15 @@ Important behavior:
   browser back button return to the Manager list before leaving Hub. That
   conversation screen keeps the input area as a compact bottom bar instead of
   reusing the larger inbox composer chrome.
-- The current built-in Manager keeps one continuing Codex routing session
+- The current built-in Manager keeps one continuing primary routing session
   across global sends so references like earlier XX / yesterday YY can be
   interpreted with conversation continuity while still grounding every send in
   the latest recent-topic list, then executes each actionable task with its
   own persisted worker continuation. Worker runtime/model choice is resolved
   per task from live third-party Scale leaderboards plus `ai-quota`, so the
   backend prefers the highest-ranked currently-available Codex/Claude worker
-  instead of pinning every task to one static worker model.
+  instead of pinning every task to one static worker model, and manager turns
+  automatically fall back to Claude when Codex is quota-blocked.
 - Static worker env settings such as `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
   `WORKSPACE_AGENT_HUB_CODEX_EFFORT`,
   `WORKSPACE_AGENT_HUB_CLAUDE_MODEL`, and
@@ -524,8 +525,9 @@ Important behavior:
   user's confirmation bucket.
 - Tasks are only marked done explicitly; the AI may move them into
   confirmation/reply-needed states but does not auto-close them silently.
-- The built-in manager backend runs on Codex CLI (`gpt-5.4` with
-  `model_reasoning_effort="xhigh"`).
+- The built-in manager backend uses Codex CLI (`gpt-5.4` with
+  `model_reasoning_effort="xhigh"`) as the primary manager runtime and falls
+  back to Claude CLI automatically when Codex is usage-limited.
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
@@ -562,7 +564,7 @@ Important behavior:
   running descendant, the older work item is stopped and shown as
   `cancelled-as-superseded` instead of silently disappearing.
 - Manager continuity is persisted in two layers:
-  - one workspace-level routing Codex session for global inbox triage across sends
+  - one workspace-level primary routing session for global inbox triage across sends
   - one worker Codex session per work item for actual task execution across
     turns and server restarts
 - Thread storage remains compatible with `thread-inbox` data files, but the

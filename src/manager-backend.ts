@@ -1388,6 +1388,7 @@ export function buildCodexArgs(
   }
 
   args.push(
+    '--skip-git-repo-check',
     '--json',
     '--model',
     MANAGER_MODEL,
@@ -3283,6 +3284,64 @@ async function runCodexTurn(input: {
   });
 }
 
+function isCodexUsageLimitError(output: string): boolean {
+  const normalized = output.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /usage limit|purchase more credits|upgrade to (?:plus|pro)|try again at/i.test(
+    normalized
+  );
+}
+
+async function runManagerRuntimeTurn(input: {
+  dir: string;
+  resolvedDir: string;
+  prompt: string;
+  sessionId: string | null;
+  runMode: ManagerRunMode | null;
+  threadStartedText?: string;
+  imagePaths?: string[];
+  onSpawn?: (pid: number | null) => void | Promise<void>;
+  onProgress?: (state: CodexProgressState) => void | Promise<void>;
+}): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  parsed: { text: string; sessionId: string | null };
+  runtime: 'codex' | 'claude';
+}> {
+  const codexResult = await runCodexTurn(input);
+  const combinedOutput = `${codexResult.stdout}\n${codexResult.stderr}`;
+  if (codexResult.code === 0 || !isCodexUsageLimitError(combinedOutput)) {
+    return { ...codexResult, runtime: 'codex' };
+  }
+
+  const claudeDefaults = workerRuntimeDefaults('claude');
+  const claudeResult = await runWorkerRuntimeTurn({
+    runtime: 'claude',
+    model: claudeDefaults.model,
+    effort: claudeDefaults.effort,
+    dir: input.dir,
+    resolvedDir: input.resolvedDir,
+    prompt: input.prompt,
+    sessionId: null,
+    runMode: input.runMode,
+    threadStartedText: input.threadStartedText,
+    imagePaths: input.imagePaths,
+    onSpawn: input.onSpawn,
+    onProgress: input.onProgress,
+  });
+  return {
+    ...claudeResult,
+    parsed: {
+      ...claudeResult.parsed,
+      sessionId: null,
+    },
+    runtime: 'claude',
+  };
+}
+
 async function runWorkerRuntimeTurn(input: {
   runtime: ManagerWorkerRuntime;
   model: string | null;
@@ -4092,11 +4151,12 @@ async function decideDispatchForBatch(input: {
     inferredRepoScope: inferredRepo?.scope ?? null,
     managedRepos,
   });
-  const runResult = await runCodexTurn({
+  const runResult = await runManagerRuntimeTurn({
     dir: input.dir,
     resolvedDir: input.resolvedDir,
     prompt,
     sessionId: null,
+    runMode: effectiveRequestedRunMode ?? 'read-only',
     imagePaths: queueEntriesImagePaths(input.entries),
   });
   if (runResult.code !== 0) {
@@ -4529,7 +4589,10 @@ async function runQueuedAssignment(input: {
     };
 
     return turn.assigneeKind === 'manager'
-      ? runCodexTurn(commonInput)
+      ? runManagerRuntimeTurn({
+          ...commonInput,
+          runMode: requestedRunMode,
+        })
       : runWorkerRuntimeTurn({
           ...commonInput,
           runtime: workerRuntime,
@@ -4707,6 +4770,7 @@ async function runQueuedAssignment(input: {
 
     let currentParsedReply = finalParsedReply;
     let currentFallbackReply = finalFallbackReply;
+    let deliveryMergeSourceRef: string | null = null;
     const isResultApproved = (
       code: number | null,
       parsed: ManagerReplyPayload | null,
@@ -4736,6 +4800,7 @@ async function runQueuedAssignment(input: {
       });
       deliveryReadinessDetail = readiness.detail;
       deliveryAheadCommitCount = readiness.aheadCommitCount;
+      deliveryMergeSourceRef = readiness.mergeSourceRef ?? null;
       approved = readiness.ready;
     }
 
@@ -5250,9 +5315,14 @@ async function runQueuedAssignment(input: {
         }
 
         try {
+          const mergeSourceRef =
+            deliveryMergeSourceRef?.trim() || assignment.worktreeBranch;
+          if (!mergeSourceRef) {
+            throw new Error('No merge source ref was available for delivery.');
+          }
           let mergeResult = await mergeWorktreeToMain({
             targetRepoRoot: integrationWorktree.worktreePath,
-            branchName: assignment.worktreeBranch,
+            sourceRef: mergeSourceRef,
             lockRepoRoot: targetRepoRoot,
           });
 
@@ -5274,11 +5344,12 @@ async function runQueuedAssignment(input: {
               targetRepoRoot: integrationWorktree.worktreePath,
               conflictFiles: mergeResult.conflictFiles,
               runCodexTurnFn: async (prompt, cwd) => {
-                const result = await runCodexTurn({
+                const result = await runManagerRuntimeTurn({
                   dir,
                   resolvedDir: cwd,
                   prompt,
                   sessionId: null,
+                  runMode: 'write',
                 });
                 return { code: result.code, stderr: result.stderr };
               },
@@ -6118,7 +6189,7 @@ export async function processNextQueued(
             assignment.workingDirectory =
               workingDirectoryResolution.resolvedWorkingDirectory;
           } else {
-            const recoveryResult = await runCodexTurn({
+            const recoveryResult = await runManagerRuntimeTurn({
               dir,
               resolvedDir: workerRoot,
               prompt: buildWorkingDirectoryRecoveryPrompt({
@@ -6132,6 +6203,7 @@ export async function processNextQueued(
                 error: workingDirectoryResolution.error,
               }),
               sessionId: null,
+              runMode: requestedRunMode,
               imagePaths: queueEntriesImagePaths(nextEntries),
             });
             const recoveryPayload =
@@ -6369,11 +6441,12 @@ async function routeFreeformMessage(input: {
       isFirstTurn: sessionId === null,
     });
     threadIdByTopicRef = promptData.threadIdByTopicRef;
-    return runCodexTurn({
+    return runManagerRuntimeTurn({
       dir: input.dir,
       resolvedDir: input.resolvedDir,
       prompt: promptData.prompt,
       sessionId,
+      runMode: 'read-only',
       imagePaths: promptImages.map((image) => image.path),
     });
   };

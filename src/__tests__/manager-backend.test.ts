@@ -89,6 +89,7 @@ vi.mock('../manager-worktree.js', () => ({
     ready: true,
     detail: 'mock delivery ready',
     aheadCommitCount: 1,
+    mergeSourceRef: 'mock-worker-head',
   }),
   runPostMergeDeliveryChain: vi.fn().mockResolvedValue({
     success: true,
@@ -432,6 +433,7 @@ beforeEach(async () => {
     ready: true,
     detail: 'mock delivery ready',
     aheadCommitCount: 1,
+    mergeSourceRef: 'mock-worker-head',
   });
   vi.mocked(runPostMergeDeliveryChain).mockReset();
   vi.mocked(runPostMergeDeliveryChain).mockResolvedValue({
@@ -476,6 +478,7 @@ describe('manager backend codex integration', () => {
 
     expect(buildCodexArgs('hello', null)).toEqual([
       'exec',
+      '--skip-git-repo-check',
       '--json',
       '--model',
       MANAGER_MODEL,
@@ -488,6 +491,7 @@ describe('manager backend codex integration', () => {
       'exec',
       '--image',
       'C:\\temp\\capture.png',
+      '--skip-git-repo-check',
       '--json',
       '--model',
       MANAGER_MODEL,
@@ -500,6 +504,7 @@ describe('manager backend codex integration', () => {
       'exec',
       'resume',
       'thread-123',
+      '--skip-git-repo-check',
       '--json',
       '--model',
       MANAGER_MODEL,
@@ -2059,6 +2064,74 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-manager-active');
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('最終回答です');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('falls back to Claude when manager Codex hits a usage limit during dispatch and manager-direct turns', async () => {
+    const dispatchCodexProc = makeProc(6119);
+    const dispatchClaudeProc = makeProc(6120);
+    const managerCodexProc = makeProc(6121);
+    const managerClaudeProc = makeProc(6122);
+    spawnMock
+      .mockReturnValueOnce(dispatchCodexProc)
+      .mockReturnValueOnce(dispatchClaudeProc)
+      .mockReturnValueOnce(managerCodexProc)
+      .mockReturnValueOnce(managerClaudeProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-manager-codex-limit',
+      'もう少し考えてから返して',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    dispatchCodexProc.stderr.emit(
+      'data',
+      Buffer.from("You've hit your usage limit. Upgrade to Pro to continue.")
+    );
+    dispatchCodexProc.emit('close', 1);
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeGenericRuntimeTurn(dispatchClaudeProc, {
+      sessionId: 'claude-routing-session',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'active',
+        reply: 'Claude manager will handle it.',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    managerCodexProc.stderr.emit(
+      'data',
+      Buffer.from("You've hit your usage limit. Upgrade to Pro to continue.")
+    );
+    managerCodexProc.emit('close', 1);
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeGenericRuntimeTurn(managerClaudeProc, {
+      sessionId: 'claude-manager-session',
+      text: '{"status":"review","reply":"Claude fallback answer"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock.mock.calls[0]?.[0]).toMatch(/cmd\.exe$/i);
+    expect(spawnMock.mock.calls[1]?.[0]).toBe('claude.exe');
+    expect(spawnMock.mock.calls[2]?.[0]).toMatch(/cmd\.exe$/i);
+    expect(spawnMock.mock.calls[3]?.[0]).toBe('claude.exe');
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-manager-codex-limit'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('Claude fallback answer');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 
@@ -3861,6 +3934,12 @@ describe('manager backend codex integration', () => {
       remoteName: 'origin',
       remoteBranch: 'main',
     });
+    vi.mocked(validateWorktreeReadyForMerge).mockResolvedValueOnce({
+      ready: true,
+      detail: 'mock delivery ready',
+      aheadCommitCount: 1,
+      mergeSourceRef: 'worker-commit-sha',
+    });
     vi.mocked(pushWithRetry).mockResolvedValueOnce({
       success: false,
       detail: 'remote rejected',
@@ -3889,6 +3968,11 @@ describe('manager backend codex integration', () => {
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(createIntegrationWorktree)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledWith({
+      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-push-fail',
+      sourceRef: 'worker-commit-sha',
+      lockRepoRoot: tempDir,
+    });
     expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pushWithRetry)).toHaveBeenCalledWith({
       targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-push-fail',
@@ -3916,6 +4000,7 @@ describe('manager backend codex integration', () => {
       ready: true,
       detail: 'Ready to merge; no repository changes need to be delivered.',
       aheadCommitCount: 0,
+      mergeSourceRef: null,
     });
 
     await sendToBuiltinManager(tempDir, 'thread-noop-delivery', 'message');

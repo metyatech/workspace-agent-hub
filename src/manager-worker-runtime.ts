@@ -242,6 +242,7 @@ function buildCodexCommandSpec(input: {
     args.push('--image', imagePath);
   }
   args.push(
+    '--skip-git-repo-check',
     '--json',
     '--model',
     model,
@@ -308,6 +309,7 @@ export function buildWorkerRuntimeLaunchSpec(input: {
     const model = input.model?.trim() || runtimeModel('claude', env);
     const args = [
       '--print',
+      '--verbose',
       '--output-format',
       'stream-json',
       '--permission-mode',
@@ -324,7 +326,7 @@ export function buildWorkerRuntimeLaunchSpec(input: {
         args.push('--session-id', sessionId);
       }
     }
-    args.push(input.prompt);
+    args.push('--', input.prompt);
     const launchSpec = buildLaunchSpec(
       command,
       args,
