@@ -207,7 +207,23 @@ interface ManagerRoutingSummary {
   detail: string;
 }
 
-type ComposerFeedbackStatus = 'sending' | 'sent' | 'failed';
+interface ThreadComposerSendRequest {
+  route: 'thread';
+  threadId: string;
+  content: string;
+}
+
+interface GlobalComposerSendRequest {
+  route: 'global';
+  contextThreadId: string | null;
+  content: string;
+}
+
+type ComposerSendRequest =
+  | ThreadComposerSendRequest
+  | GlobalComposerSendRequest;
+
+type ComposerFeedbackStatus = 'sending' | 'retrying' | 'sent' | 'failed';
 
 interface ComposerFeedbackEntry {
   id: string;
@@ -216,6 +232,9 @@ interface ComposerFeedbackEntry {
   status: ComposerFeedbackStatus;
   detail: string;
   items: ManagerRoutingSummaryItem[];
+  request: ComposerSendRequest | null;
+  attemptCount: number;
+  nextRetryAt: string | null;
 }
 
 interface StoredComposerFeedbackPayload {
@@ -295,6 +314,7 @@ const MANAGER_SORT_STORAGE_KEY = `workspace-agent-hub.manager-sort:${GUI_DIR}`;
 const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
 const MANAGER_HISTORY_KIND = 'workspace-agent-hub-manager';
 const COMPOSER_FEEDBACK_MAX_ENTRIES = 4;
+const COMPOSER_SEND_RETRY_DELAYS_MS = [0, 2000, 5000, 10000, 30000] as const;
 const LIVE_STREAM_STALE_TIMEOUT_MS = 45000;
 const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 
@@ -668,8 +688,51 @@ function managerAuthStorageKey(): string {
 function normalizeComposerFeedbackStatus(
   value: unknown
 ): ComposerFeedbackStatus | null {
-  if (value === 'sending' || value === 'sent' || value === 'failed') {
+  if (
+    value === 'sending' ||
+    value === 'retrying' ||
+    value === 'sent' ||
+    value === 'failed'
+  ) {
     return value;
+  }
+  return null;
+}
+
+function normalizeComposerSendRequest(
+  value: unknown
+): ComposerSendRequest | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const request = value as Partial<ComposerSendRequest>;
+  if (request.route === 'thread') {
+    if (
+      typeof request.threadId !== 'string' ||
+      typeof request.content !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      route: 'thread',
+      threadId: request.threadId,
+      content: request.content,
+    };
+  }
+  if (request.route === 'global') {
+    if (
+      typeof request.content !== 'string' ||
+      (request.contextThreadId !== null &&
+        typeof request.contextThreadId !== 'string' &&
+        typeof request.contextThreadId !== 'undefined')
+    ) {
+      return null;
+    }
+    return {
+      route: 'global',
+      contextThreadId: request.contextThreadId ?? null,
+      content: request.content,
+    };
   }
   return null;
 }
@@ -712,6 +775,7 @@ function normalizeComposerFeedbackEntry(
   }
   const entry = value as Partial<ComposerFeedbackEntry>;
   const status = normalizeComposerFeedbackStatus(entry.status);
+  const request = normalizeComposerSendRequest(entry.request);
   if (
     !status ||
     typeof entry.id !== 'string' ||
@@ -726,13 +790,26 @@ function normalizeComposerFeedbackEntry(
         .map((item) => normalizeRoutingSummaryItem(item))
         .filter((item): item is ManagerRoutingSummaryItem => item !== null)
     : [];
+  const attemptCount =
+    typeof entry.attemptCount === 'number' &&
+    Number.isFinite(entry.attemptCount) &&
+    entry.attemptCount >= 0
+      ? Math.trunc(entry.attemptCount)
+      : 0;
+  const nextRetryAt =
+    typeof entry.nextRetryAt === 'string' && entry.nextRetryAt.trim()
+      ? entry.nextRetryAt
+      : null;
   return {
     id: entry.id,
     content: entry.content,
     targetLabel: entry.targetLabel,
-    status,
+    status: status === 'retrying' && !request ? 'failed' : status,
     detail: entry.detail,
     items,
+    request,
+    attemptCount,
+    nextRetryAt,
   };
 }
 
@@ -1594,6 +1671,11 @@ function makeFeedbackStateBadge(
       badge.style.background = 'rgba(43, 141, 228, 0.12)';
       badge.style.color = '#1660b8';
       break;
+    case 'retrying':
+      badge.textContent = '自動再送';
+      badge.style.background = 'rgba(217, 119, 6, 0.12)';
+      badge.style.color = '#b45309';
+      break;
     case 'sent':
       badge.textContent = '送信済み';
       badge.style.background = 'rgba(6, 199, 85, 0.12)';
@@ -2084,9 +2166,37 @@ function composerTargetClearLabel(
     : '全体へ戻す';
 }
 
+function composerRetryDelayMs(attemptCount: number): number {
+  const index = Math.max(
+    0,
+    Math.min(COMPOSER_SEND_RETRY_DELAYS_MS.length - 1, attemptCount - 1)
+  );
+  return COMPOSER_SEND_RETRY_DELAYS_MS[index] ?? 30000;
+}
+
+function formatRetryDelay(delayMs: number): string {
+  if (delayMs <= 0) {
+    return 'すぐに';
+  }
+  const seconds = Math.max(1, Math.round(delayMs / 1000));
+  return `${seconds}秒後に`;
+}
+
+function composerRetryDetailText(
+  attemptCount: number,
+  delayMs: number
+): string {
+  const attemptLabel = `${attemptCount}回目`;
+  if (delayMs <= 0) {
+    return `送信エラーのため自動再送しています… (${attemptLabel})`;
+  }
+  return `送信エラーのため${formatRetryDelay(delayMs)}自動再送します。 (${attemptLabel})`;
+}
+
 function feedbackLaneSummaryText(entries: ComposerFeedbackEntry[]): string {
   const counts = {
     sending: 0,
+    retrying: 0,
     sent: 0,
     failed: 0,
   };
@@ -2095,6 +2205,7 @@ function feedbackLaneSummaryText(entries: ComposerFeedbackEntry[]): string {
   }
   return [
     counts.sending > 0 ? `送信中 ${counts.sending}件` : null,
+    counts.retrying > 0 ? `自動再送 ${counts.retrying}件` : null,
     counts.sent > 0 ? `送信済み ${counts.sent}件` : null,
     counts.failed > 0 ? `送信失敗 ${counts.failed}件` : null,
   ]
@@ -3014,6 +3125,8 @@ class ManagerApp {
     readStoredComposerFeedbackEntries();
   #composerFeedbackSerial = 0;
   #composerFeedbackExpanded = false;
+  #composerFeedbackRetryTimers = new Map<string, number>();
+  #composerFeedbackInFlight = new Set<string>();
   #pendingHistoryComposerTargetRestore = false;
   #lifecycleRefreshReady = false;
   #lastLifecycleRefreshAt = 0;
@@ -3081,6 +3194,8 @@ class ManagerApp {
       window.clearTimeout(this.#liveStaleTimer);
       this.#liveStaleTimer = null;
     }
+    this.#clearComposerFeedbackRetryTimers();
+    this.#composerFeedbackInFlight.clear();
     if (this.#composerResizeObserver) {
       this.#composerResizeObserver.disconnect();
       this.#composerResizeObserver = null;
@@ -4131,11 +4246,121 @@ class ManagerApp {
     );
   }
 
+  #buildComposerSendRequest(content: string): ComposerSendRequest {
+    const openThread = this.#findThread(this.openThreadId);
+    const sendsToOpenThread =
+      !!openThread &&
+      openThread.uiState !== 'done' &&
+      openThread.id === this.#composerTargetThreadId;
+    if (sendsToOpenThread) {
+      return {
+        route: 'thread',
+        threadId: openThread.id,
+        content,
+      };
+    }
+    return {
+      route: 'global',
+      content,
+      contextThreadId: this.#composerTargetThreadId,
+    };
+  }
+
+  #composerSendRequestSpec(request: ComposerSendRequest): {
+    endpoint: string;
+    init: RequestInit;
+  } {
+    return request.route === 'thread'
+      ? {
+          endpoint: '/api/manager/send',
+          init: {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              threadId: request.threadId,
+              content: request.content,
+            }),
+          },
+        }
+      : {
+          endpoint: '/api/manager/global-send',
+          init: {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: request.content,
+              contextThreadId: request.contextThreadId,
+            }),
+          },
+        };
+  }
+
   #persistComposerFeedbackEntries(): void {
     writeStoredComposerFeedbackEntries(this.#composerFeedbackEntries);
   }
 
-  #queueComposerFeedbackEntry(content: string): string {
+  #findComposerFeedbackEntry(entryId: string): ComposerFeedbackEntry | null {
+    return (
+      this.#composerFeedbackEntries.find((entry) => entry.id === entryId) ??
+      null
+    );
+  }
+
+  #clearComposerFeedbackRetryTimer(entryId: string): void {
+    const timer = this.#composerFeedbackRetryTimers.get(entryId);
+    if (typeof timer !== 'number') {
+      return;
+    }
+    window.clearTimeout(timer);
+    this.#composerFeedbackRetryTimers.delete(entryId);
+  }
+
+  #clearComposerFeedbackRetryTimers(): void {
+    for (const timer of this.#composerFeedbackRetryTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    this.#composerFeedbackRetryTimers.clear();
+  }
+
+  #scheduleComposerFeedbackRetry(entryId: string, delayMs: number): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    this.#clearComposerFeedbackRetryTimer(entryId);
+    const nextDelayMs = Math.max(0, delayMs);
+    const timer = window.setTimeout(() => {
+      this.#composerFeedbackRetryTimers.delete(entryId);
+      void this.#attemptComposerFeedbackDelivery(entryId);
+    }, nextDelayMs);
+    this.#composerFeedbackRetryTimers.set(entryId, timer);
+  }
+
+  #resumeComposerFeedbackRetries(): void {
+    if (!this.#canAccessManagerApi()) {
+      return;
+    }
+    for (const entry of this.#composerFeedbackEntries) {
+      if (
+        !entry.request ||
+        entry.status === 'sent' ||
+        this.#composerFeedbackRetryTimers.has(entry.id) ||
+        this.#composerFeedbackInFlight.has(entry.id)
+      ) {
+        continue;
+      }
+      const retryAt = entry.nextRetryAt ? Date.parse(entry.nextRetryAt) : 0;
+      const delayMs =
+        Number.isFinite(retryAt) && retryAt > 0
+          ? Math.max(0, retryAt - Date.now())
+          : 0;
+      this.#scheduleComposerFeedbackRetry(entry.id, delayMs);
+    }
+  }
+
+  #queueComposerFeedbackEntry(
+    content: string,
+    request: ComposerSendRequest
+  ): string {
     const entryId = `composer-feedback-${Date.now()}-${this.#composerFeedbackSerial}`;
     this.#composerFeedbackSerial += 1;
     const entry: ComposerFeedbackEntry = {
@@ -4145,6 +4370,9 @@ class ManagerApp {
       status: 'sending',
       detail: '振り分けています…',
       items: [],
+      request,
+      attemptCount: 0,
+      nextRetryAt: null,
     };
     this.#composerFeedbackEntries = [
       entry,
@@ -4157,7 +4385,17 @@ class ManagerApp {
 
   #updateComposerFeedbackEntry(
     entryId: string,
-    patch: Partial<Pick<ComposerFeedbackEntry, 'status' | 'detail' | 'items'>>
+    patch: Partial<
+      Pick<
+        ComposerFeedbackEntry,
+        | 'status'
+        | 'detail'
+        | 'items'
+        | 'request'
+        | 'attemptCount'
+        | 'nextRetryAt'
+      >
+    >
   ): void {
     this.#composerFeedbackEntries = this.#composerFeedbackEntries.map(
       (entry) => (entry.id === entryId ? { ...entry, ...patch } : entry)
@@ -4167,6 +4405,7 @@ class ManagerApp {
   }
 
   #removeComposerFeedbackEntry(entryId: string): void {
+    this.#clearComposerFeedbackRetryTimer(entryId);
     const nextEntries = this.#composerFeedbackEntries.filter(
       (entry) => entry.id !== entryId
     );
@@ -4185,6 +4424,7 @@ class ManagerApp {
     if (this.#composerFeedbackEntries.length === 0) {
       return;
     }
+    this.#clearComposerFeedbackRetryTimers();
     this.#composerFeedbackEntries = [];
     this.#composerFeedbackExpanded = false;
     this.#persistComposerFeedbackEntries();
@@ -4199,28 +4439,87 @@ class ManagerApp {
     this.#renderComposerFeedback();
   }
 
-  #restoreComposerFeedbackEntry(entryId: string): void {
-    const entry = this.#composerFeedbackEntries.find(
-      (item) => item.id === entryId
-    );
-    if (!entry) {
+  #handleComposerFeedbackDeliveryFailure(
+    entryId: string,
+    attemptCount: number
+  ): void {
+    const entry = this.#findComposerFeedbackEntry(entryId);
+    if (!entry?.request) {
+      this.#updateComposerFeedbackEntry(entryId, {
+        status: 'failed',
+        detail: '送信できませんでした。',
+        items: [],
+        attemptCount,
+        nextRetryAt: null,
+      });
+      return;
+    }
+    if (!this.#canAccessManagerApi()) {
+      this.#updateComposerFeedbackEntry(entryId, {
+        status: 'retrying',
+        detail: 'アクセスコードを入れ直すと自動再送を再開します。',
+        items: [],
+        attemptCount,
+        nextRetryAt: null,
+      });
       return;
     }
 
-    const parsed = parseManagerMessage(entry.content);
-    const input = this.#composerInput();
-    if (!input) {
+    const delayMs = composerRetryDelayMs(attemptCount);
+    this.#updateComposerFeedbackEntry(entryId, {
+      status: 'retrying',
+      detail: composerRetryDetailText(attemptCount, delayMs),
+      items: [],
+      attemptCount,
+      nextRetryAt: new Date(Date.now() + delayMs).toISOString(),
+    });
+    this.#scheduleComposerFeedbackRetry(entryId, delayMs);
+  }
+
+  async #attemptComposerFeedbackDelivery(entryId: string): Promise<void> {
+    const entry = this.#findComposerFeedbackEntry(entryId);
+    if (!entry?.request || this.#composerFeedbackInFlight.has(entryId)) {
       return;
     }
 
-    input.value = parsed.markdown;
-    this.#composerAttachments = new Map(
-      parsed.attachments.map((attachment) => [attachment.id, attachment])
-    );
-    this.#syncComposerDraftUi();
-    this.#setComposerExpanded(true);
-    input.focus();
-    this.#rememberComposerSelection();
+    this.#clearComposerFeedbackRetryTimer(entryId);
+    const request = entry.request;
+    const attemptCount = entry.attemptCount + 1;
+    this.#composerFeedbackInFlight.add(entryId);
+    this.#updateComposerFeedbackEntry(entryId, {
+      status: attemptCount <= 1 ? 'sending' : 'retrying',
+      detail:
+        attemptCount <= 1
+          ? '振り分けています…'
+          : '送信エラーのため自動再送しています…',
+      items: [],
+      attemptCount,
+      nextRetryAt: null,
+    });
+
+    try {
+      const { endpoint, init } = this.#composerSendRequestSpec(request);
+      const response = await this.apiFetch(endpoint, init);
+      if (!response || !response.ok) {
+        this.#handleComposerFeedbackDeliveryFailure(entryId, attemptCount);
+        return;
+      }
+
+      const summary = (await response.json()) as ManagerRoutingSummary;
+      await this.loadAll();
+      this.#updateComposerFeedbackEntry(entryId, {
+        status: 'sent',
+        detail: summary.detail,
+        items: summary.items,
+        request: null,
+        attemptCount,
+        nextRetryAt: null,
+      });
+    } catch {
+      this.#handleComposerFeedbackDeliveryFailure(entryId, attemptCount);
+    } finally {
+      this.#composerFeedbackInFlight.delete(entryId);
+    }
   }
 
   async #rollbackBuild(commitHash: string): Promise<void> {
@@ -4262,63 +4561,15 @@ class ManagerApp {
       return;
     }
 
-    const feedbackEntryId = this.#queueComposerFeedbackEntry(content);
+    const request = this.#buildComposerSendRequest(content);
+    const feedbackEntryId = this.#queueComposerFeedbackEntry(content, request);
     input.value = '';
     this.#composerAttachments.clear();
     this.#composerSelectionStart = 0;
     this.#composerSelectionEnd = 0;
     this.#syncComposerDraftUi();
     input.focus();
-
-    const openThread = this.#findThread(this.openThreadId);
-    const sendsToOpenThread =
-      !!openThread &&
-      openThread.uiState !== 'done' &&
-      openThread.id === this.#composerTargetThreadId;
-    const response = await this.apiFetch(
-      sendsToOpenThread ? '/api/manager/send' : '/api/manager/global-send',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          sendsToOpenThread
-            ? {
-                threadId: openThread.id,
-                content,
-              }
-            : {
-                content,
-                contextThreadId: this.#composerTargetThreadId,
-              }
-        ),
-      }
-    );
-
-    if (!response) {
-      this.#updateComposerFeedbackEntry(feedbackEntryId, {
-        status: 'failed',
-        detail: '送信できませんでした。ここから送信欄へ戻せます。',
-        items: [],
-      });
-      return;
-    }
-
-    if (!response.ok) {
-      this.#updateComposerFeedbackEntry(feedbackEntryId, {
-        status: 'failed',
-        detail: '送信できませんでした。ここから送信欄へ戻せます。',
-        items: [],
-      });
-      return;
-    }
-
-    const summary = (await response.json()) as ManagerRoutingSummary;
-    await this.loadAll();
-    this.#updateComposerFeedbackEntry(feedbackEntryId, {
-      status: 'sent',
-      detail: summary.detail,
-      items: summary.items,
-    });
+    void this.#attemptComposerFeedbackDelivery(feedbackEntryId);
   }
 
   #consumeHashToken(): void {
@@ -4345,6 +4596,7 @@ class ManagerApp {
   async #bootAfterAuth(): Promise<void> {
     const dataOk = await this.loadAll();
     this.#armLifecycleRefresh();
+    this.#resumeComposerFeedbackRetries();
     if (dataOk) {
       this.#startLiveStream();
     }
@@ -4701,6 +4953,7 @@ class ManagerApp {
     if (dataOk) {
       this.#hideAuthPanel();
       this.#startLiveStream();
+      this.#resumeComposerFeedbackRetries();
       return;
     }
 
@@ -5230,13 +5483,6 @@ class ManagerApp {
 
       const actions = document.createElement('div');
       actions.className = 'composer-feedback-entry-actions';
-      if (entry.status === 'failed') {
-        actions.appendChild(
-          makeFeedbackChip('送信欄に戻す', () => {
-            this.#restoreComposerFeedbackEntry(entry.id);
-          })
-        );
-      }
       actions.appendChild(
         makeFeedbackChip('削除', () => {
           this.#removeComposerFeedbackEntry(entry.id);

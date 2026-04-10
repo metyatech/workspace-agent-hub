@@ -2551,8 +2551,17 @@ describe('manager-app DOM auth state matrix', () => {
     expect(sendButton.disabled).toBe(true);
   });
 
-  it('lets the user restore a failed send from the separate feedback lane', async () => {
-    const validToken = 'restore-failed-send-token';
+  it('automatically retries a failed send with the original target and does not restore it to the composer', async () => {
+    const validToken = 'auto-retry-failed-send-token';
+    const targetThread = makeThreadView('thread-target', '続きの task', {
+      status: 'active',
+      uiState: 'ai-working',
+      isWorking: true,
+      lastSender: 'user',
+      previewText: '[user] 続きをお願いします',
+    });
+    const requestBodies: string[] = [];
+    let sendAttemptCount = 0;
 
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2571,7 +2580,7 @@ describe('manager-app DOM auth state matrix', () => {
         }
 
         if (isRoute(url, '/threads')) {
-          return new Response(JSON.stringify([]), { status: 200 });
+          return new Response(JSON.stringify([targetThread]), { status: 200 });
         }
 
         if (isRoute(url, '/tasks')) {
@@ -2591,9 +2600,46 @@ describe('manager-app DOM auth state matrix', () => {
         }
 
         if (isRoute(url, '/manager/global-send')) {
-          return new Response(JSON.stringify({ error: 'send failed' }), {
-            status: 500,
-          });
+          requestBodies.push(String(init?.body ?? ''));
+          sendAttemptCount += 1;
+          if (sendAttemptCount === 1) {
+            return new Response(JSON.stringify({ error: 'send failed' }), {
+              status: 500,
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-target',
+                  title: '続きの task',
+                  outcome: 'attached-existing',
+                  reason: '既存 task に追記しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '既存 task に追記しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [targetThread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
         }
 
         return new Response('{}', { status: 200 });
@@ -2606,8 +2652,13 @@ describe('manager-app DOM auth state matrix', () => {
         window.localStorage.setItem(authStorageKey, validToken);
       },
     });
-
-    document.querySelector<HTMLButtonElement>('#composerToggleButton')!.click();
+    (
+      window as Window & {
+        __workspaceAgentHubManagerApp__?: {
+          focusComposerForThread: (threadId: string | null) => void;
+        };
+      }
+    ).__workspaceAgentHubManagerApp__?.focusComposerForThread('thread-target');
     await flushAsync(2);
 
     const composer = document.querySelector<HTMLTextAreaElement>(
@@ -2618,27 +2669,165 @@ describe('manager-app DOM auth state matrix', () => {
     document
       .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
       .click();
-    await flushAsync(6);
+    await flushAsync(10);
 
     expect(composer.value).toBe('');
+    expect(sendAttemptCount).toBe(2);
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toBe(requestBodies[1]);
+    expect(JSON.parse(requestBodies[0] ?? '{}')).toMatchObject({
+      content: '失敗する送信です',
+      contextThreadId: 'thread-target',
+    });
     expect(
       document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
-    ).toContain('送信失敗 1件');
+    ).toContain('送信済み 1件');
 
     document
       .querySelector<HTMLButtonElement>('#routingFeedbackToggleButton')!
       .click();
     await flushAsync(2);
 
-    const restoreButton = Array.from(
+    const restoreButtons = Array.from(
       document.querySelectorAll<HTMLButtonElement>(
         '#routingFeedbackLane .composer-chip'
       )
-    ).find((button) => button.textContent === '送信欄に戻す');
-    restoreButton!.click();
-    await flushAsync(2);
+    ).filter((button) => button.textContent === '送信欄に戻す');
+    expect(restoreButtons).toHaveLength(0);
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('既存 task に追記しました');
+  });
 
-    expect(composer.value).toBe('失敗する送信です');
+  it('resumes stored auto-retries after a reload', async () => {
+    const validToken = 'retry-on-reload-token';
+    const targetThread = makeThreadView(
+      'thread-reload-target',
+      '再送待ち task'
+    );
+    const storedFeedback = JSON.stringify({
+      entries: [
+        {
+          id: 'composer-feedback-stored',
+          content: serializeManagerMessage({
+            content: '再読込後も送ってほしい内容です',
+          }),
+          targetLabel: '送信先: @再送待ち task',
+          status: 'retrying',
+          detail: '送信エラーのため自動再送します。',
+          items: [],
+          request: {
+            route: 'global',
+            content: '再読込後も送ってほしい内容です',
+            contextThreadId: 'thread-reload-target',
+          },
+          attemptCount: 1,
+          nextRetryAt: '2026-03-20T23:59:59.000Z',
+        },
+      ],
+    });
+    const requestBodies: string[] = [];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([targetThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/global-send')) {
+          requestBodies.push(String(init?.body ?? ''));
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-reload-target',
+                  title: '再送待ち task',
+                  outcome: 'attached-existing',
+                  reason: '再送に成功しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '再送に成功しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [targetThread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+        window.localStorage.setItem(feedbackStorageKey, storedFeedback);
+      },
+    });
+    await flushAsync(8);
+
+    expect(requestBodies).toHaveLength(1);
+    expect(JSON.parse(requestBodies[0] ?? '{}')).toMatchObject({
+      content: '再読込後も送ってほしい内容です',
+      contextThreadId: 'thread-reload-target',
+    });
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('送信済み 1件');
+    document
+      .querySelector<HTMLButtonElement>('#routingFeedbackToggleButton')!
+      .click();
+    await flushAsync(2);
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('再送に成功しました');
   });
 
   it('keeps the send status lane after a reload and only shows details when opened', async () => {
