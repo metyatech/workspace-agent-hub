@@ -429,6 +429,7 @@
       }
 
       .activity-chip {
+        appearance: none;
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -439,6 +440,129 @@
         color: var(--text-soft);
         font-size: 0.74rem;
         font-weight: 700;
+        font-family: inherit;
+        cursor: pointer;
+        transition:
+          transform 0.12s ease,
+          border-color 0.12s ease,
+          background 0.12s ease,
+          color 0.12s ease;
+      }
+
+      .activity-chip:hover {
+        transform: translateY(-1px);
+        border-color: rgba(43, 141, 228, 0.22);
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.98);
+      }
+
+      .activity-chip:focus-visible,
+      .activity-focus-card:focus-visible,
+      .section-toggle:focus-visible {
+        outline: 2px solid rgba(43, 141, 228, 0.34);
+        outline-offset: 2px;
+      }
+
+      .activity-guidance-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+        gap: 12px;
+      }
+
+      .activity-guidance-card {
+        border-radius: 18px;
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        background: rgba(255, 255, 255, 0.9);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .activity-guidance-label {
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        color: var(--accent-strong);
+        text-transform: uppercase;
+      }
+
+      .activity-guidance-title {
+        font-size: 0.92rem;
+        font-weight: 800;
+        color: var(--text);
+      }
+
+      .activity-guidance-copy {
+        font-size: 0.76rem;
+        line-height: 1.6;
+        color: var(--text-soft);
+      }
+
+      .activity-next-step-action {
+        margin-top: auto;
+      }
+
+      .activity-focus-lanes {
+        display: grid;
+        gap: 8px;
+      }
+
+      .activity-focus-card {
+        appearance: none;
+        width: 100%;
+        border-radius: 16px;
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        background: rgba(246, 252, 247, 0.98);
+        padding: 11px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        text-align: left;
+        cursor: pointer;
+        transition:
+          transform 0.12s ease,
+          border-color 0.12s ease,
+          background 0.12s ease;
+      }
+
+      .activity-focus-card:hover {
+        transform: translateY(-1px);
+        border-color: rgba(43, 141, 228, 0.22);
+        background: rgba(255, 255, 255, 0.98);
+      }
+
+      .activity-focus-card-top {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .activity-focus-card-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: var(--text);
+      }
+
+      .activity-focus-card-copy {
+        font-size: 0.74rem;
+        line-height: 1.55;
+        color: var(--text-soft);
+      }
+
+      .activity-focus-card-meta {
+        font-size: 0.68rem;
+        line-height: 1.5;
+        color: var(--text-muted);
+      }
+
+      .activity-support {
+        font-size: 0.72rem;
+        line-height: 1.55;
+        color: var(--text-muted);
       }
 
       .focus-move {
@@ -722,8 +846,24 @@
         gap: 10px;
         padding: 13px 16px;
         background: rgba(246, 252, 247, 0.98);
+      }
+
+      .section-toggle {
+        appearance: none;
+        border: none;
+        background: transparent;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        flex: 1 1 auto;
         cursor: pointer;
         user-select: none;
+        font: inherit;
+        color: inherit;
+        text-align: left;
       }
 
       .section-header-copy {
@@ -888,6 +1028,30 @@
         overflow: hidden;
       }
 
+      .thread-step {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #14532d;
+      }
+
+      .thread-meta-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .thread-meta-chip {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 8px;
+        font-size: 0.64rem;
+        font-weight: 700;
+        color: var(--text-soft);
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(122, 158, 125, 0.12);
+      }
+
       .thread-activity {
         display: flex;
         flex-wrap: wrap;
@@ -983,6 +1147,42 @@
         display: flex;
         flex-direction: column;
         gap: 10px;
+      }
+
+      .detail-overview {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .detail-summary-card {
+        border-radius: 18px;
+        border: 1px solid rgba(122, 158, 125, 0.14);
+        background: rgba(255, 255, 255, 0.92);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .detail-summary-label {
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        color: var(--accent-strong);
+        text-transform: uppercase;
+      }
+
+      .detail-summary-title {
+        font-size: 0.82rem;
+        font-weight: 800;
+        color: var(--text);
+      }
+
+      .detail-summary-copy {
+        font-size: 0.74rem;
+        line-height: 1.6;
+        color: var(--text-soft);
       }
 
       .thread-screen .detail-body {
@@ -1819,6 +2019,11 @@
           grid-template-columns: 1fr;
         }
 
+        .activity-guidance-grid,
+        .detail-overview {
+          grid-template-columns: 1fr;
+        }
+
         .primary-send-actions {
           justify-items: stretch;
         }
@@ -2067,6 +2272,39 @@
               があるかをここに表示します。
             </div>
             <div id="activity-counts" class="activity-counts"></div>
+            <div class="activity-guidance-grid">
+              <section id="activity-next-step" class="activity-guidance-card">
+                <div class="activity-guidance-label">次にすること</div>
+                <div
+                  id="activity-next-step-title"
+                  class="activity-guidance-title"
+                >
+                  まずは依頼や質問を送れます
+                </div>
+                <div
+                  id="activity-next-step-copy"
+                  class="activity-guidance-copy"
+                >
+                  新しい依頼でも続きでも、上の「いま依頼を送る」か下の送信欄から送れば大丈夫です。
+                </div>
+                <button
+                  id="activityNextStepButton"
+                  class="btn btn-secondary activity-next-step-action"
+                  type="button"
+                  style="width: auto"
+                >
+                  送信欄を開く
+                </button>
+              </section>
+              <section class="activity-guidance-card">
+                <div class="activity-guidance-label">優先して見るもの</div>
+                <div id="activity-focus-lanes" class="activity-focus-lanes">
+                  <div id="activity-support" class="activity-support">
+                    返すべきものが出ると、ここに優先順で並びます。
+                  </div>
+                </div>
+              </section>
+            </div>
           </section>
 
           <section id="getting-started" class="card intro-card hidden">
@@ -2096,7 +2334,7 @@
                 が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する
               </div>
               <div class="intro-step" data-getting-started-step>
-                3. 一覧で queued / working / review
+                3. 一覧で「AI の順番待ち」「AI作業中」「あなたの確認待ち」
                 を追い、必要な作業項目だけ開いて返す
               </div>
             </div>
@@ -2106,18 +2344,28 @@
             class="card section-card"
             id="sec-routing-confirmation-needed"
           >
-            <div
-              class="section-header"
-              data-section-key="routing-confirmation-needed"
-            >
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #fb7185"></span>
-                <span class="section-title">振り分けの確認が必要です</span>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="routing-confirmation-needed"
+                aria-expanded="false"
+                aria-controls="body-routing-confirmation-needed"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #fb7185"></span>
+                  <span class="section-title">振り分けの確認が必要です</span>
+                  <span
+                    id="count-routing-confirmation-needed"
+                    class="section-count"
+                  ></span>
+                </span>
                 <span
-                  id="count-routing-confirmation-needed"
-                  class="section-count"
-                ></span>
-              </div>
+                  id="chevron-routing-confirmation-needed"
+                  class="section-chevron"
+                  >▲</span
+                >
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-routing-confirmation-needed"
@@ -2126,11 +2374,6 @@
                   data-sort-control="routing-confirmation-needed"
                   style="width: auto"
                 ></button>
-                <span
-                  id="chevron-routing-confirmation-needed"
-                  class="section-chevron"
-                  >▲</span
-                >
               </div>
             </div>
             <div
@@ -2140,12 +2383,26 @@
           </section>
 
           <section class="card section-card" id="sec-user-reply-needed">
-            <div class="section-header" data-section-key="user-reply-needed">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #f59e0b"></span>
-                <span class="section-title">あなたの返信が必要です</span>
-                <span id="count-user-reply-needed" class="section-count"></span>
-              </div>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="user-reply-needed"
+                aria-expanded="false"
+                aria-controls="body-user-reply-needed"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #f59e0b"></span>
+                  <span class="section-title">あなたの返信が必要です</span>
+                  <span
+                    id="count-user-reply-needed"
+                    class="section-count"
+                  ></span>
+                </span>
+                <span id="chevron-user-reply-needed" class="section-chevron"
+                  >▲</span
+                >
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-user-reply-needed"
@@ -2154,9 +2411,6 @@
                   data-sort-control="user-reply-needed"
                   style="width: auto"
                 ></button>
-                <span id="chevron-user-reply-needed" class="section-chevron"
-                  >▲</span
-                >
               </div>
             </div>
             <div id="body-user-reply-needed" class="section-body"></div>
@@ -2166,18 +2420,28 @@
             class="card section-card"
             id="sec-ai-finished-awaiting-user-confirmation"
           >
-            <div
-              class="section-header"
-              data-section-key="ai-finished-awaiting-user-confirmation"
-            >
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #8b5cf6"></span>
-                <span class="section-title">あなたの確認待ちです</span>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="ai-finished-awaiting-user-confirmation"
+                aria-expanded="false"
+                aria-controls="body-ai-finished-awaiting-user-confirmation"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #8b5cf6"></span>
+                  <span class="section-title">あなたの確認待ちです</span>
+                  <span
+                    id="count-ai-finished-awaiting-user-confirmation"
+                    class="section-count"
+                  ></span>
+                </span>
                 <span
-                  id="count-ai-finished-awaiting-user-confirmation"
-                  class="section-count"
-                ></span>
-              </div>
+                  id="chevron-ai-finished-awaiting-user-confirmation"
+                  class="section-chevron"
+                  >▲</span
+                >
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-ai-finished-awaiting-user-confirmation"
@@ -2186,11 +2450,6 @@
                   data-sort-control="ai-finished-awaiting-user-confirmation"
                   style="width: auto"
                 ></button>
-                <span
-                  id="chevron-ai-finished-awaiting-user-confirmation"
-                  class="section-chevron"
-                  >▲</span
-                >
               </div>
             </div>
             <div
@@ -2200,12 +2459,21 @@
           </section>
 
           <section class="card section-card" id="sec-queued">
-            <div class="section-header" data-section-key="queued">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #38bdf8"></span>
-                <span class="section-title">AI の順番待ち</span>
-                <span id="count-queued" class="section-count"></span>
-              </div>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="queued"
+                aria-expanded="false"
+                aria-controls="body-queued"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #38bdf8"></span>
+                  <span class="section-title">AI の順番待ち</span>
+                  <span id="count-queued" class="section-count"></span>
+                </span>
+                <span id="chevron-queued" class="section-chevron">▲</span>
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-queued"
@@ -2214,19 +2482,27 @@
                   data-sort-control="queued"
                   style="width: auto"
                 ></button>
-                <span id="chevron-queued" class="section-chevron">▲</span>
               </div>
             </div>
             <div id="body-queued" class="section-body"></div>
           </section>
 
           <section class="card section-card" id="sec-ai-working">
-            <div class="section-header" data-section-key="ai-working">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #22c55e"></span>
-                <span class="section-title">AI が作業中です</span>
-                <span id="count-ai-working" class="section-count"></span>
-              </div>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="ai-working"
+                aria-expanded="false"
+                aria-controls="body-ai-working"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #22c55e"></span>
+                  <span class="section-title">AI が作業中です</span>
+                  <span id="count-ai-working" class="section-count"></span>
+                </span>
+                <span id="chevron-ai-working" class="section-chevron">▲</span>
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-ai-working"
@@ -2235,25 +2511,34 @@
                   data-sort-control="ai-working"
                   style="width: auto"
                 ></button>
-                <span id="chevron-ai-working" class="section-chevron">▲</span>
               </div>
             </div>
             <div id="body-ai-working" class="section-body"></div>
           </section>
 
           <section class="card section-card" id="sec-cancelled-as-superseded">
-            <div
-              class="section-header"
-              data-section-key="cancelled-as-superseded"
-            >
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #f59e0b"></span>
-                <span class="section-title">置き換えで停止</span>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="cancelled-as-superseded"
+                aria-expanded="false"
+                aria-controls="body-cancelled-as-superseded"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #f59e0b"></span>
+                  <span class="section-title">置き換えで停止</span>
+                  <span
+                    id="count-cancelled-as-superseded"
+                    class="section-count"
+                  ></span>
+                </span>
                 <span
-                  id="count-cancelled-as-superseded"
-                  class="section-count"
-                ></span>
-              </div>
+                  id="chevron-cancelled-as-superseded"
+                  class="section-chevron"
+                  >▲</span
+                >
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-cancelled-as-superseded"
@@ -2262,11 +2547,6 @@
                   data-sort-control="cancelled-as-superseded"
                   style="width: auto"
                 ></button>
-                <span
-                  id="chevron-cancelled-as-superseded"
-                  class="section-chevron"
-                  >▲</span
-                >
               </div>
             </div>
             <div id="body-cancelled-as-superseded" class="section-body"></div>
@@ -2295,12 +2575,21 @@
             id="sec-done"
             data-done-section
           >
-            <div class="section-header" data-section-key="done">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #6b7280"></span>
-                <span class="section-title">完了</span>
-                <span id="count-done" class="section-count"></span>
-              </div>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="done"
+                aria-expanded="false"
+                aria-controls="body-done"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #6b7280"></span>
+                  <span class="section-title">完了</span>
+                  <span id="count-done" class="section-count"></span>
+                </span>
+                <span id="chevron-done" class="section-chevron">▲</span>
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-done"
@@ -2309,19 +2598,27 @@
                   data-sort-control="done"
                   style="width: auto"
                 ></button>
-                <span id="chevron-done" class="section-chevron">▲</span>
               </div>
             </div>
             <div id="body-done" class="section-body"></div>
           </section>
 
           <section class="card section-card tasks-card" id="sec-tasks">
-            <div class="section-header" data-section-key="tasks">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #60a5fa"></span>
-                <span class="section-title">残っている作業メモ</span>
-                <span id="count-tasks" class="section-count"></span>
-              </div>
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="tasks"
+                aria-expanded="true"
+                aria-controls="body-tasks"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #60a5fa"></span>
+                  <span class="section-title">残っている作業メモ</span>
+                  <span id="count-tasks" class="section-count"></span>
+                </span>
+                <span id="chevron-tasks" class="section-chevron">▲</span>
+              </button>
               <div class="section-header-actions">
                 <button
                   id="sort-tasks"
@@ -2330,22 +2627,27 @@
                   data-sort-control="tasks"
                   style="width: auto"
                 ></button>
-                <span id="chevron-tasks" class="section-chevron">▲</span>
               </div>
             </div>
             <div id="body-tasks" class="section-body"></div>
           </section>
 
           <section class="card section-card" id="sec-builds">
-            <div class="section-header" data-section-key="builds">
-              <div class="section-header-copy">
-                <span class="section-dot" style="background: #818cf8"></span>
-                <span class="section-title">ビルド履歴</span>
-                <span id="count-builds" class="section-count"></span>
-              </div>
-              <div class="section-header-actions">
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="builds"
+                aria-expanded="false"
+                aria-controls="body-builds"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #818cf8"></span>
+                  <span class="section-title">ビルド履歴</span>
+                  <span id="count-builds" class="section-count"></span>
+                </span>
                 <span id="chevron-builds" class="section-chevron">▼</span>
-              </div>
+              </button>
             </div>
             <div id="body-builds" class="section-body collapsed"></div>
           </section>
@@ -2414,8 +2716,7 @@
           ></textarea>
           <div class="composer-tools">
             <span id="composerMediaHint" class="composer-hint"
-              >スマホは画像アイコン、PC はドラッグ&ドロップか Ctrl / Cmd + V
-              でカーソル位置へ差し込めます。</span
+              >画像はドラッグ&ドロップか Ctrl / Cmd + V で追加できます。</span
             >
           </div>
           <div

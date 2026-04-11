@@ -421,7 +421,7 @@ describe('manager-app DOM auth state matrix', () => {
     );
 
     expect(managerHtml).toContain(
-      'スマホは画像アイコン、PC はドラッグ&ドロップか Ctrl /'
+      '画像はドラッグ&ドロップか Ctrl / Cmd + V で追加できます。'
     );
     expect(pickerButton).not.toBeNull();
     expect(pickerButton?.getAttribute('aria-label')).toBe('画像を選ぶ');
@@ -596,6 +596,184 @@ describe('manager-app DOM auth state matrix', () => {
     await flushAsync(1);
 
     expect(panel.classList.contains('hidden')).toBe(false);
+  });
+
+  it('adds next-step guidance and keyboard-accessible section headers to the activity area', () => {
+    expect(managerHtml).toContain('id="activity-next-step-title"');
+    expect(managerHtml).toContain('id="activityNextStepButton"');
+    expect(managerHtml).toContain('id="activity-focus-lanes"');
+    expect(managerHtml).not.toContain('queued / working / review');
+    expect(managerHtml).toMatch(
+      /<button[\s\S]*class="section-toggle"[\s\S]*data-section-key="queued"/
+    );
+  });
+
+  it('surfaces the highest-priority thread in the activity next-step card and opens it', async () => {
+    const replyThread = makeThreadView('thread-reply', '返答する task', {
+      status: 'needs-reply',
+      uiState: 'user-reply-needed',
+      lastSender: 'ai',
+      previewText: '[ai] ここだけ確認してください',
+      messages: [
+        {
+          sender: 'ai',
+          content: 'ここだけ確認してください',
+          at: '2026-03-22T08:00:00.000Z',
+        },
+      ],
+    });
+    const queuedThread = makeThreadView('thread-queued', '待機中 task', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      queueDepth: 2,
+      previewText: '[user] 続きを進めてください',
+    });
+
+    const document = await loadManagerApp(
+      createManagerFetchWithData({
+        validToken: 'activity-priority-token',
+        threads: [queuedThread, replyThread],
+        status: {
+          running: true,
+          configured: true,
+          builtinBackend: true,
+          detail: '待機中',
+        },
+      }),
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(
+            authStorageKey,
+            'activity-priority-token'
+          );
+        },
+      }
+    );
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-next-step-title')!
+        .textContent
+    ).toContain('返答する task');
+    expect(
+      document.querySelector<HTMLElement>('#activity-focus-lanes')!.textContent
+    ).toContain('返答する task');
+
+    document
+      .querySelector<HTMLButtonElement>('#activityNextStepButton')!
+      .click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail .detail-title')!
+        .textContent
+    ).toContain('返答する task');
+  });
+
+  it('lets activity chips open the first matching thread', async () => {
+    const replyThread = makeThreadView('thread-chip', '返信待ちの task', {
+      status: 'needs-reply',
+      uiState: 'user-reply-needed',
+      lastSender: 'ai',
+      previewText: '[ai] 確認してください',
+    });
+
+    const document = await loadManagerApp(
+      createManagerFetchWithData({
+        validToken: 'activity-chip-token',
+        threads: [replyThread],
+        status: {
+          running: true,
+          configured: true,
+          builtinBackend: true,
+          detail: '待機中',
+        },
+      }),
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, 'activity-chip-token');
+        },
+      }
+    );
+
+    const chip = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '#activity-counts .activity-chip'
+      )
+    ).find((element) => element.textContent?.includes('返信待ち 1'));
+    expect(chip).toBeDefined();
+
+    chip!.click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail .detail-title')!
+        .textContent
+    ).toContain('返信待ちの task');
+  });
+
+  it('shows next-action rows, overview cards, and keyboard section toggles', async () => {
+    const thread = makeThreadView('thread-summary', '要約確認', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      queueDepth: 2,
+      managedRepoLabel: 'workspace-agent-hub',
+      requestedRunMode: 'write',
+      managedVerifyCommand: 'npm run verify',
+      previewText: '[user] 続きを進めてください',
+    });
+
+    const document = await loadManagerApp(
+      createManagerFetchWithData({
+        validToken: 'summary-token',
+        threads: [thread],
+        status: {
+          running: true,
+          configured: true,
+          builtinBackend: true,
+          detail: '待機中',
+        },
+      }),
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, 'summary-token');
+        },
+      }
+    );
+
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    expect(
+      row.querySelector<HTMLElement>('[data-row-step]')?.textContent
+    ).toContain('順番');
+    expect(row.textContent).toContain('repo: workspace-agent-hub');
+
+    const queuedHeader = document.querySelector<HTMLElement>(
+      '[data-section-key="queued"]'
+    )!;
+    expect(queuedHeader.getAttribute('aria-expanded')).toBe('true');
+    queuedHeader.dispatchEvent(
+      new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await flushAsync(1);
+    expect(queuedHeader.getAttribute('aria-expanded')).toBe('false');
+
+    row.click();
+    await flushAsync(3);
+
+    expect(
+      document.querySelectorAll<HTMLElement>('[data-detail-summary-card]')
+        .length
+    ).toBe(3);
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('次にすること');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('verify: npm run verify');
   });
 
   it('does not render a managed repo registration form or call its API', async () => {
@@ -2478,7 +2656,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toBe(true);
     expect(
       document.querySelector<HTMLElement>('#composerHint')!.textContent
-    ).toContain('この会話の続きはここへ追加指示として直接送れます');
+    ).toContain('この会話へ追加指示を送ります');
     expect(
       document.querySelector<HTMLElement>('#composerTargetPill')!.textContent
     ).toContain('送信先: この会話（追加指示）');

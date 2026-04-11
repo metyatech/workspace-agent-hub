@@ -1763,6 +1763,181 @@ function describeThreadState(thread: ThreadView): string | null {
   return null;
 }
 
+function threadNextActionText(thread: ThreadView): string {
+  if (thread.routingConfirmationNeeded) {
+    return 'この件の扱い方だけ先に確認して返します。';
+  }
+  if (thread.uiState === 'user-reply-needed') {
+    return '必要な確認に返すと、そのまま続きへ戻せます。';
+  }
+  if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
+    return '内容を見て、続きがあればそのまま送り、終わりなら完了にします。';
+  }
+  if (thread.uiState === 'ai-working') {
+    return 'いまは結果待ちです。急ぎならこの件を開いて追加指示を送れます。';
+  }
+  if (thread.uiState === 'queued') {
+    return 'このまま待てば順番に進みます。';
+  }
+  if (thread.uiState === 'cancelled-as-superseded') {
+    return '新しい派生先へ置き換わったので、必要なら関連先を確認します。';
+  }
+  if (thread.uiState === 'done') {
+    return '必要なら開き直して続けられます。';
+  }
+  return 'この件を開けば、必要な情報と次の操作をその場で確認できます。';
+}
+
+function threadMetaChipTexts(
+  thread: ThreadView,
+  threadsById: Map<string, ThreadView>
+): string[] {
+  const chips: string[] = [];
+  if (thread.managedRepoLabel) {
+    chips.push(
+      thread.repoTargetKind === 'new-repo'
+        ? `new repo: ${thread.managedRepoLabel}`
+        : `repo: ${thread.managedRepoLabel}`
+    );
+  }
+  if (thread.requestedRunMode) {
+    chips.push(`mode: ${humanizeRunMode(thread.requestedRunMode)}`);
+  }
+  if (thread.managedVerifyCommand) {
+    chips.push(`verify: ${thread.managedVerifyCommand}`);
+  }
+  if (thread.requestedWorkerRuntime) {
+    chips.push(
+      `runtime: ${humanizeWorkerRuntime(thread.requestedWorkerRuntime)}`
+    );
+  }
+  const relation = describeWorkItemRelations(thread, threadsById);
+  if (relation) {
+    chips.push(relation);
+  }
+  return chips;
+}
+
+function detailContextSummary(
+  thread: ThreadView,
+  threadsById: Map<string, ThreadView>
+): string | null {
+  const parts = [
+    thread.managedRepoLabel
+      ? [
+          thread.repoTargetKind === 'new-repo'
+            ? `new repo: ${thread.managedRepoLabel}`
+            : `repo: ${thread.managedRepoLabel}`,
+          thread.managedBaseBranch ? `base: ${thread.managedBaseBranch}` : '',
+          thread.requestedRunMode
+            ? `mode: ${humanizeRunMode(thread.requestedRunMode)}`
+            : '',
+          thread.requestedWorkerRuntime
+            ? `runtime: ${humanizeWorkerRuntime(thread.requestedWorkerRuntime)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' / ')
+      : null,
+    thread.managedVerifyCommand
+      ? `verify: ${thread.managedVerifyCommand}`
+      : null,
+    describeWorkItemRelations(thread, threadsById),
+  ].filter((value): value is string => Boolean(value?.trim()));
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function makeDetailSummaryCard(
+  label: string,
+  title: string,
+  copy: string
+): HTMLElement {
+  const card = document.createElement('section');
+  card.className = 'detail-summary-card';
+  card.dataset.detailSummaryCard = '';
+
+  const labelEl = document.createElement('div');
+  labelEl.className = 'detail-summary-label';
+  labelEl.textContent = label;
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'detail-summary-title';
+  titleEl.textContent = title;
+
+  const copyEl = document.createElement('div');
+  copyEl.className = 'detail-summary-copy';
+  copyEl.textContent = copy;
+
+  card.append(labelEl, titleEl, copyEl);
+  return card;
+}
+
+function activityPriorityThreads(threads: ThreadView[]): ThreadView[] {
+  return [...threads]
+    .filter((thread) => thread.uiState !== 'done')
+    .sort((left, right) => {
+      const rankDiff =
+        STATE_PRIORITY_RANK[left.uiState] - STATE_PRIORITY_RANK[right.uiState];
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+      return compareThreadsByUpdatedAt(left, right, 'newest-first');
+    });
+}
+
+function makeActivityFocusCard(
+  thread: ThreadView,
+  threadTitlesById: Map<string, string>,
+  threadsById: Map<string, ThreadView>,
+  onClick: () => void
+): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = 'activity-focus-card';
+  button.type = 'button';
+  button.addEventListener('click', onClick);
+
+  const top = document.createElement('div');
+  top.className = 'activity-focus-card-top';
+  top.append(
+    makeStateBadge(thread.uiState),
+    Object.assign(document.createElement('span'), {
+      className: 'activity-focus-card-title',
+      textContent: thread.title,
+    })
+  );
+
+  const copy = document.createElement('div');
+  copy.className = 'activity-focus-card-copy';
+  copy.textContent = threadNextActionText(thread);
+
+  const meta = document.createElement('div');
+  meta.className = 'activity-focus-card-meta';
+  meta.textContent = [
+    rowActivityText(thread, threadTitlesById),
+    detailContextSummary(thread, threadsById),
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => humanizeThreadReferenceText(value, threadTitlesById))
+    .join(' / ');
+
+  button.append(top, copy);
+  if (meta.textContent) {
+    button.appendChild(meta);
+  }
+  return button;
+}
+
+function isCoarsePointerDevice(): boolean {
+  try {
+    return (
+      window.matchMedia('(pointer: coarse)').matches ||
+      window.matchMedia('(hover: none)').matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
   if (!status?.running) {
     return false;
@@ -2237,6 +2412,7 @@ function feedbackLaneSummaryText(entries: ComposerFeedbackEntry[]): string {
 class ThreadSectionController {
   #key: ManagerUiState;
   #section: HTMLElement | null;
+  #header: HTMLElement | null;
   #body: HTMLElement | null;
   #count: HTMLElement | null;
   #chevron: HTMLElement | null;
@@ -2254,6 +2430,9 @@ class ThreadSectionController {
   constructor(key: ManagerUiState) {
     this.#key = key;
     this.#section = document.getElementById(`sec-${key}`);
+    this.#header = document.querySelector(
+      `[data-section-key="${key}"]`
+    ) as HTMLElement | null;
     this.#body = document.getElementById(`body-${key}`);
     this.#count = document.getElementById(`count-${key}`);
     this.#chevron = document.getElementById(`chevron-${key}`);
@@ -2276,6 +2455,7 @@ class ThreadSectionController {
     if (this.#chevron) {
       this.#chevron.textContent = collapsed ? '▼' : '▲';
     }
+    this.#header?.setAttribute('aria-expanded', String(!collapsed));
   }
 
   toggle(): void {
@@ -2432,6 +2612,26 @@ class ThreadSectionController {
     top.append(badge, title, age, target, detailToggle);
     row.append(top, preview);
 
+    const step = document.createElement('div');
+    step.className = 'thread-step';
+    step.dataset.rowStep = '';
+    step.textContent = threadNextActionText(thread);
+    row.appendChild(step);
+
+    const metaChipTexts = threadMetaChipTexts(thread, threadsById);
+    if (metaChipTexts.length > 0) {
+      const chips = document.createElement('div');
+      chips.className = 'thread-meta-chips';
+      chips.dataset.rowMetaChips = '';
+      for (const value of metaChipTexts) {
+        const chip = document.createElement('span');
+        chip.className = 'thread-meta-chip';
+        chip.textContent = value;
+        chips.appendChild(chip);
+      }
+      row.appendChild(chips);
+    }
+
     const activityText = rowActivityText(thread, threadTitlesById);
     if (activityText) {
       const activity = document.createElement('div');
@@ -2503,6 +2703,37 @@ class ThreadSectionController {
       preview.textContent = nextPreview;
     }
 
+    const step = row.querySelector<HTMLElement>('[data-row-step]');
+    const nextStepText = threadNextActionText(thread);
+    if (step && step.textContent !== nextStepText) {
+      step.textContent = nextStepText;
+    }
+
+    const nextMetaChipTexts = threadMetaChipTexts(thread, threadsById);
+    let chips = row.querySelector<HTMLElement>('[data-row-meta-chips]');
+    if (nextMetaChipTexts.length > 0) {
+      if (!chips) {
+        chips = document.createElement('div');
+        chips.className = 'thread-meta-chips';
+        chips.dataset.rowMetaChips = '';
+        const activity = row.querySelector<HTMLElement>('[data-row-activity]');
+        if (activity) {
+          row.insertBefore(chips, activity);
+        } else {
+          row.appendChild(chips);
+        }
+      }
+      chips.innerHTML = '';
+      for (const value of nextMetaChipTexts) {
+        const chip = document.createElement('span');
+        chip.className = 'thread-meta-chip';
+        chip.textContent = value;
+        chips.appendChild(chip);
+      }
+    } else {
+      chips?.remove();
+    }
+
     let activity = row.querySelector<HTMLElement>('[data-row-activity]');
     const nextActivityText = rowActivityText(thread, threadTitlesById);
     if (nextActivityText) {
@@ -2540,6 +2771,9 @@ class TaskSectionController {
   #body = document.getElementById('body-tasks');
   #count = document.getElementById('count-tasks');
   #chevron = document.getElementById('chevron-tasks');
+  #header = document.querySelector(
+    '[data-section-key="tasks"]'
+  ) as HTMLElement | null;
   #collapsed = false;
   #lastTasks: Task[] = [];
   #lastSortOrder: ManagerListSortOrder = DEFAULT_MANAGER_SORT_ORDERS.tasks;
@@ -2552,6 +2786,7 @@ class TaskSectionController {
     if (this.#chevron) {
       this.#chevron.textContent = this.#collapsed ? '▼' : '▲';
     }
+    this.#header?.setAttribute('aria-expanded', String(!this.#collapsed));
     if (!this.#collapsed) {
       this.render(this.#lastTasks, this.#lastSortOrder);
     }
@@ -2627,6 +2862,9 @@ class BuildSectionController {
   #body = document.getElementById('body-builds');
   #count = document.getElementById('count-builds');
   #chevron = document.getElementById('chevron-builds');
+  #header = document.querySelector(
+    '[data-section-key="builds"]'
+  ) as HTMLElement | null;
   #collapsed = true;
   #payload: BuildsPayload | null = null;
   #loaded = false;
@@ -2653,6 +2891,7 @@ class BuildSectionController {
     if (this.#chevron) {
       this.#chevron.textContent = this.#collapsed ? '▼' : '▲';
     }
+    this.#header?.setAttribute('aria-expanded', String(!this.#collapsed));
     if (!this.#collapsed && !this.#loaded && this.#fetcher) {
       this.#loaded = true;
       void this.load(this.#fetcher);
@@ -2964,6 +3203,32 @@ class DetailController {
     const body = document.createElement('div');
     body.className = 'detail-body';
 
+    const overview = document.createElement('div');
+    overview.className = 'detail-overview';
+    overview.append(
+      makeDetailSummaryCard(
+        'いまの状態',
+        workerRuntimeLabel(thread) ?? STATE_LABELS[thread.uiState],
+        describeThreadState(thread) ?? threadStateLocation(thread)
+      ),
+      makeDetailSummaryCard(
+        '次にすること',
+        threadNextActionText(thread),
+        thread.uiState === 'done'
+          ? '必要なら下の操作で開き直せます。'
+          : 'この会話を開いたまま、下の送信欄からそのまま続きや確認を送れます。'
+      ),
+      makeDetailSummaryCard(
+        '作業の前提',
+        detailContextSummary(thread, threadsById) ??
+          'この件だけ見れば進められます。',
+        thread.updatedAt
+          ? `最終更新: ${formatDate(thread.updatedAt)}`
+          : '更新時刻はまだありません。'
+      )
+    );
+    body.appendChild(overview);
+
     const contextNote = describeWorkItemContext(thread, threadsById);
     if (contextNote) {
       const note = document.createElement('div');
@@ -3200,6 +3465,7 @@ class ManagerApp {
     this.#renderSortControls();
     this.#renderComposerExpansionState();
     this.#syncComposerDraftUi();
+    this.#renderContextualComposerHints();
     this.#renderLiveConnectionState();
 
     if (MANAGER_AUTH_REQUIRED && !this.#authToken) {
@@ -4782,6 +5048,34 @@ class ManagerApp {
       }
     });
 
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      const header = (event.target as Element | null)?.closest(
+        '[data-section-key]'
+      );
+      if (!header) {
+        return;
+      }
+      event.preventDefault();
+      const key = header.getAttribute('data-section-key');
+      if (!key) {
+        return;
+      }
+      if (key === 'tasks') {
+        this.#taskSection.toggle();
+        return;
+      }
+      if (key === 'builds') {
+        this.#buildSection.toggle();
+        return;
+      }
+      if ((STATE_ORDER as string[]).includes(key)) {
+        this.#sections[key as ManagerUiState].toggle();
+      }
+    });
+
     const composerInput = document.getElementById(
       'globalComposerInput'
     ) as HTMLTextAreaElement | null;
@@ -5317,6 +5611,7 @@ class ManagerApp {
     this.#renderComposerExpansionState();
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
+    this.#renderContextualComposerHints();
     this.#renderLiveConnectionState();
     this.#syncComposerDockReserve();
 
@@ -5364,6 +5659,20 @@ class ManagerApp {
     }
   }
 
+  #renderContextualComposerHints(): void {
+    const mediaHint = document.getElementById('composerMediaHint');
+    const sendHint = document.getElementById('composerSendHint');
+    const coarsePointer = isCoarsePointerDevice();
+    if (mediaHint) {
+      mediaHint.textContent = coarsePointer
+        ? '画像はアイコンから追加できます。'
+        : '画像はドラッグ&ドロップか Ctrl / Cmd + V で追加できます。';
+    }
+    if (sendHint) {
+      sendHint.classList.toggle('hidden', coarsePointer);
+    }
+  }
+
   #renderComposerTargetBar(): void {
     const label = document.getElementById('composerLabel');
     const hint = document.getElementById('composerHint');
@@ -5395,7 +5704,7 @@ class ManagerApp {
       }
       setHint(
         openThread && openThread.uiState !== 'done'
-          ? 'いまは別件として送ります。必要ならこの会話に戻せます。'
+          ? 'いまは別件として送ります。必要ならこの会話へ戻せます。'
           : ''
       );
       pill.textContent = composerTargetPillLabel(null, openThread);
@@ -5415,11 +5724,11 @@ class ManagerApp {
     setHint(
       openThread && thread.id === openThread.id
         ? thread.uiState === 'ai-working'
-          ? 'この会話の続きはここへ追加指示として直接送れます。別件は右のボタンで切り替えます。'
+          ? 'この会話へ追加指示を送ります。別件は右のボタンで切り替えます。'
           : ''
         : thread.uiState === 'ai-working'
-          ? 'いま AI がこの作業項目を進めています。この作業項目をメンション付きのヒントとして全体へ送り、続きなら追加指示として順番待ちに入れます。別件なら AI が別の作業項目に振り分けます。'
-          : 'いま開いている作業項目をメンション付きのヒントとして全体へ送ります。内容がこの作業項目の続きならここに入り、別件なら AI が別の作業項目に振り分けます。'
+          ? 'この会話の続きならここに入り、別件なら AI が別の作業項目へ分けます。'
+          : 'この会話の続きならここに入り、別件なら AI が分けて進めます。'
     );
     pill.textContent = composerTargetPillLabel(thread, openThread);
     if (sendButton) {
@@ -5454,7 +5763,7 @@ class ManagerApp {
       steps[1].textContent =
         '2. Manager が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する';
       steps[2].textContent =
-        '3. 一覧で queued / working / review を追い、必要な作業項目だけ開いて返す';
+        '3. 一覧で「AI の順番待ち」「AI作業中」「あなたの確認待ち」を追い、必要な作業項目だけ開いて返す';
     }
   }
 
@@ -5462,7 +5771,23 @@ class ManagerApp {
     const primary = document.getElementById('activity-primary');
     const detail = document.getElementById('activity-detail');
     const countsRoot = document.getElementById('activity-counts');
-    if (!primary || !detail || !countsRoot) {
+    const nextStepTitle = document.getElementById('activity-next-step-title');
+    const nextStepCopy = document.getElementById('activity-next-step-copy');
+    const nextStepButton = document.getElementById(
+      'activityNextStepButton'
+    ) as HTMLButtonElement | null;
+    const focusLanes = document.getElementById('activity-focus-lanes');
+    const activitySupport = document.getElementById('activity-support');
+    if (
+      !primary ||
+      !detail ||
+      !countsRoot ||
+      !nextStepTitle ||
+      !nextStepCopy ||
+      !nextStepButton ||
+      !focusLanes ||
+      !activitySupport
+    ) {
       return;
     }
 
@@ -5483,10 +5808,15 @@ class ManagerApp {
     const threadTitlesById = new Map(
       this.allThreads.map((thread) => [thread.id, thread.title])
     );
+    const threadsById = buildThreadMap(this.allThreads);
     const busyThread = currentBusyThread(this.allThreads, this.#managerStatus);
     const busyActivity = busyThread
       ? describeLiveActivity(busyThread, threadTitlesById)
       : null;
+    const priorityThreads = activityPriorityThreads(this.allThreads).slice(
+      0,
+      3
+    );
 
     if (problem === 'error') {
       primary.textContent = 'AI backend で問題が起きています';
@@ -5562,42 +5892,134 @@ class ManagerApp {
     }
 
     countsRoot.innerHTML = '';
-    const chipSpecs: Array<{ label: string; value: number }> = [
+    const chipSpecs: Array<{
+      key: ManagerUiState;
+      label: string;
+      value: number;
+    }> = [
       {
+        key: 'routing-confirmation-needed',
         label: '振り分け確認',
         value: counts['routing-confirmation-needed'],
       },
       {
+        key: 'user-reply-needed',
         label: '返信待ち',
         value: counts['user-reply-needed'],
       },
       {
+        key: 'ai-finished-awaiting-user-confirmation',
         label: 'AIから返答',
         value: counts['ai-finished-awaiting-user-confirmation'],
       },
       {
+        key: 'queued',
         label: 'AI の順番待ち',
         value: counts['queued'],
       },
       {
+        key: 'ai-working',
         label: 'AI作業中',
         value: counts['ai-working'],
       },
       {
+        key: 'cancelled-as-superseded',
         label: '置き換え停止',
         value: counts['cancelled-as-superseded'],
       },
       {
+        key: 'done',
         label: '完了',
         value: counts['done'],
       },
     ];
 
     for (const spec of chipSpecs) {
-      const chip = document.createElement('span');
+      const chip = document.createElement('button');
       chip.className = 'activity-chip';
+      chip.type = 'button';
       chip.textContent = `${spec.label} ${spec.value}`;
+      chip.addEventListener('click', () => {
+        const threads = sortThreadsByUpdatedAt(
+          this.allThreads.filter((thread) => thread.uiState === spec.key),
+          this.#sortOrders[spec.key]
+        );
+        const firstThread = threads[0] ?? null;
+        if (firstThread) {
+          this.#focusThread(firstThread.id);
+          return;
+        }
+        if (spec.key === 'done') {
+          this.#showDone = true;
+          this.#renderDoneToggle();
+          this.#renderAll();
+        }
+      });
       countsRoot.appendChild(chip);
+    }
+
+    nextStepButton.onclick = null;
+    if (problem === 'paused') {
+      nextStepTitle.textContent = 'まずは Manager を再開します';
+      nextStepCopy.textContent =
+        '停止中のキューは、上の「再開する」かここから戻せます。';
+      nextStepButton.textContent = '再開する';
+      nextStepButton.onclick = () => {
+        void this.startManager();
+      };
+    } else if (problem === 'error') {
+      nextStepTitle.textContent = 'まずは状態を読み直します';
+      nextStepCopy.textContent =
+        '一時的な取得失敗かどうかを確認するため、最新状態を読み直します。';
+      nextStepButton.textContent = '今すぐ読み直す';
+      nextStepButton.onclick = () => {
+        void this.loadAll();
+      };
+    } else if (priorityThreads[0]) {
+      nextStepTitle.textContent = `最初に見る: ${priorityThreads[0].title}`;
+      nextStepCopy.textContent = threadNextActionText(priorityThreads[0]);
+      nextStepButton.textContent = 'この件を開く';
+      nextStepButton.onclick = () => {
+        this.#focusThread(priorityThreads[0]!.id);
+      };
+    } else if (busyThread) {
+      nextStepTitle.textContent = `進行中: ${busyThread.title}`;
+      nextStepCopy.textContent =
+        'いまは結果待ちです。急ぎの続きなら、この件を開いてそのまま追加指示を送れます。';
+      nextStepButton.textContent = '進行中の件を開く';
+      nextStepButton.onclick = () => {
+        this.#focusThread(busyThread.id);
+      };
+    } else {
+      nextStepTitle.textContent = 'まずは依頼や質問を送れます';
+      nextStepCopy.textContent =
+        '新しい依頼でも続きでも、上の「いま依頼を送る」か下の送信欄から送れば大丈夫です。';
+      nextStepButton.textContent = '送信欄を開く';
+      nextStepButton.onclick = () => {
+        this.focusComposer();
+      };
+    }
+
+    focusLanes.innerHTML = '';
+    if (priorityThreads.length > 0) {
+      for (const thread of priorityThreads) {
+        focusLanes.appendChild(
+          makeActivityFocusCard(thread, threadTitlesById, threadsById, () =>
+            this.#focusThread(thread.id)
+          )
+        );
+      }
+      activitySupport.textContent =
+        '迷ったら上から順に開けば、いま見る価値が高い件から追えます。';
+      focusLanes.appendChild(activitySupport);
+    } else if (busyThread) {
+      activitySupport.textContent =
+        'いまは AI が進めています。返すものが出ると、ここに優先順で並びます。';
+      focusLanes.appendChild(activitySupport);
+    } else {
+      activitySupport.textContent =
+        '返すべきものが出ると、ここに優先順で並びます。';
+      focusLanes.appendChild(activitySupport);
     }
   }
 
@@ -5629,10 +6051,7 @@ class ManagerApp {
     const thread = this.#findThread(this.#composerTargetThreadId);
     if (thread && thread.uiState !== 'done') {
       context.classList.remove('hidden');
-      context.textContent =
-        thread.uiState === 'ai-working'
-          ? `この送信は「${thread.title}」をメンション付きヒントとして全体へ送り、続きなら追加指示として順番待ちに入ります。`
-          : `この送信は「${thread.title}」をメンション付きヒントとして全体へ送ります。`;
+      context.textContent = `この送信は「${thread.title}」の続き候補として扱います。`;
       return;
     }
     context.textContent = '';
