@@ -354,6 +354,9 @@ describe('createWorkerWorktree', () => {
     let callIndex = 0;
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       gitArgs.push(args);
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(args[2]!, { recursive: true });
+      }
       const factory = calls[callIndex] ?? gitResult(0, '');
       callIndex++;
       return factory();
