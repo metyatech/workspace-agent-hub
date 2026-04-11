@@ -20,7 +20,6 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const DEFAULT_REPO_ROOT = resolve(__dirname, '..');
-const DEFAULT_WORKSPACE_ROOT = resolve(DEFAULT_REPO_ROOT, '..');
 const DEFAULT_BRIDGE_SCRIPT = join(
   DEFAULT_REPO_ROOT,
   'scripts',
@@ -28,9 +27,55 @@ const DEFAULT_BRIDGE_SCRIPT = join(
 );
 const DEFAULT_POWERSHELL_COMMAND =
   process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+const WORKSPACE_ROOT_ENV_VAR = 'WORKSPACE_AGENT_HUB_WORKSPACE_ROOT';
+
 function resolveEnvOverridePath(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? resolve(trimmed) : null;
+}
+
+function trimTrailingSeparators(value: string): string {
+  return value.replace(/[\\/]+$/, '');
+}
+
+function isPathInside(parentPath: string, candidatePath: string): boolean {
+  const normalizedParent = trimTrailingSeparators(resolve(parentPath));
+  const normalizedCandidate = trimTrailingSeparators(resolve(candidatePath));
+  const parentLower = normalizedParent.toLowerCase();
+  const candidateLower = normalizedCandidate.toLowerCase();
+  return (
+    candidateLower === parentLower ||
+    candidateLower.startsWith(`${parentLower}\\`) ||
+    candidateLower.startsWith(`${parentLower}/`)
+  );
+}
+
+export function resolveWorkspaceRoot(options?: {
+  workspaceRoot?: string;
+  packageRoot?: string;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  const explicitRoot = resolveEnvOverridePath(options?.workspaceRoot);
+  if (explicitRoot) {
+    return explicitRoot;
+  }
+
+  const envRoot = resolveEnvOverridePath(
+    options?.env?.[WORKSPACE_ROOT_ENV_VAR] ??
+      process.env[WORKSPACE_ROOT_ENV_VAR]
+  );
+  if (envRoot) {
+    return envRoot;
+  }
+
+  const packageRoot = resolve(options?.packageRoot ?? DEFAULT_REPO_ROOT);
+  if (isPathInside(tmpdir(), packageRoot)) {
+    throw new Error(
+      `Workspace root must be provided explicitly when running Workspace Agent Hub from a temporary checkout (${packageRoot}). Pass --workspace-root or set ${WORKSPACE_ROOT_ENV_VAR}.`
+    );
+  }
+
+  return resolve(packageRoot, '..');
 }
 
 function resolveHubWatchRoot(
@@ -131,9 +176,13 @@ export class PowerShellSessionBridge implements SessionBridge {
     bridgeScriptPath?: string;
     workspaceRoot?: string;
     powerShellCommand?: string;
+    packageRoot?: string;
   }) {
     this.#bridgeScriptPath = options?.bridgeScriptPath ?? DEFAULT_BRIDGE_SCRIPT;
-    this.#workspaceRoot = options?.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT;
+    this.#workspaceRoot = resolveWorkspaceRoot({
+      workspaceRoot: options?.workspaceRoot,
+      packageRoot: options?.packageRoot ?? DEFAULT_REPO_ROOT,
+    });
     this.#powerShellCommand =
       options?.powerShellCommand ?? DEFAULT_POWERSHELL_COMMAND;
   }

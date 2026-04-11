@@ -2,6 +2,7 @@ param(
     [string]$ListenHost = '127.0.0.1',
     [int]$Port = 3360,
     [string]$AuthToken,
+    [string]$WorkspaceRoot = '',
     [string]$PublicUrl,
     [switch]$TailscaleServe,
     [switch]$DisableTailscaleServe,
@@ -31,6 +32,59 @@ $effectiveCliPath = if (
     [IO.Path]::GetFullPath($env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH.Trim())
 } else {
     $distCliPath
+}
+
+function Resolve-NormalizedPath {
+    param(
+        [string]$PathText
+    )
+
+    if (-not $PathText -or -not $PathText.Trim()) {
+        return ''
+    }
+
+    return [IO.Path]::GetFullPath($PathText.Trim())
+}
+
+function Test-PathInsideRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ParentPath,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidatePath
+    )
+
+    $normalizedParent = (Resolve-NormalizedPath -PathText $ParentPath).TrimEnd('\')
+    $normalizedCandidate = (Resolve-NormalizedPath -PathText $CandidatePath).TrimEnd('\')
+    if (-not $normalizedParent -or -not $normalizedCandidate) {
+        return $false
+    }
+
+    $parentLower = $normalizedParent.ToLowerInvariant()
+    $candidateLower = $normalizedCandidate.ToLowerInvariant()
+    return (
+        $candidateLower -eq $parentLower -or
+        $candidateLower.StartsWith($parentLower + '\')
+    )
+}
+
+function Resolve-WorkspaceRoot {
+    $explicitRoot = Resolve-NormalizedPath -PathText $WorkspaceRoot
+    if ($explicitRoot) {
+        return $explicitRoot
+    }
+
+    $envRoot = Resolve-NormalizedPath -PathText $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT
+    if ($envRoot) {
+        return $envRoot
+    }
+
+    $packageRootPath = $repoRoot.Path
+    if (Test-PathInsideRoot -ParentPath ([IO.Path]::GetTempPath()) -CandidatePath $packageRootPath) {
+        throw "Workspace root must be provided explicitly when running Workspace Agent Hub from a temporary checkout ($packageRootPath). Pass -WorkspaceRoot or set WORKSPACE_AGENT_HUB_WORKSPACE_ROOT."
+    }
+
+    return (Split-Path -Parent $packageRootPath)
 }
 
 function Test-BuildRequired {
@@ -139,12 +193,14 @@ try {
     } else {
         $ListenHost
     }
+    $resolvedWorkspaceRoot = Resolve-WorkspaceRoot
 
     $arguments = @(
         $effectiveCliPath,
         'web-ui',
         '--host', $effectiveListenHost,
-        '--port', [string]$Port
+        '--port', [string]$Port,
+        '--workspace-root', $resolvedWorkspaceRoot
     )
     if ($null -ne $resolvedAuthToken -and $resolvedAuthToken -ne '') {
         $arguments += @('--auth-token', $resolvedAuthToken)

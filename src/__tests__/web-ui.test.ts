@@ -263,6 +263,7 @@ describe('web UI server', () => {
       buildWebUiLaunchInfo({
         host: '127.0.0.1',
         port: 3360,
+        workspaceRoot: 'D:\\ghws',
         authConfig: {
           required: true,
           token: 'secret-token',
@@ -276,6 +277,7 @@ describe('web UI server', () => {
       })
     ).toEqual({
       listenUrl: 'http://127.0.0.1:3360',
+      workspaceRoot: 'D:\\ghws',
       preferredConnectUrl: 'https://hub.example.test/connect',
       preferredConnectUrlSource: 'public-url',
       authRequired: true,
@@ -291,6 +293,7 @@ describe('web UI server', () => {
       buildWebUiLaunchInfo({
         host: '127.0.0.1',
         port: 3360,
+        workspaceRoot: 'D:\\ghws',
         authConfig: {
           required: false,
           token: null,
@@ -304,6 +307,7 @@ describe('web UI server', () => {
       })
     ).toEqual({
       listenUrl: 'http://127.0.0.1:3360',
+      workspaceRoot: 'D:\\ghws',
       preferredConnectUrl: 'https://desktop.tail5a2d2d.ts.net',
       preferredConnectUrlSource: 'tailscale-serve',
       authRequired: false,

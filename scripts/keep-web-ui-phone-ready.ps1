@@ -295,6 +295,32 @@ function Test-ManagerHasActiveAssignment {
     return [bool]$currentQueueId.Trim()
 }
 
+function Get-ResolvedWorkspaceRootForEnsure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath
+    )
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    if (
+        $state -and
+        $state.PSObject.Properties.Match('WorkspaceRoot').Count -gt 0 -and
+        $state.WorkspaceRoot -and
+        ([string]$state.WorkspaceRoot).Trim()
+    ) {
+        return ([string]$state.WorkspaceRoot).Trim()
+    }
+
+    if (
+        $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT -and
+        $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT.Trim()
+    ) {
+        return $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT.Trim()
+    }
+
+    return ''
+}
+
 function Get-MutexName {
     param(
         [Parameter(Mandatory = $true)]
@@ -393,6 +419,10 @@ try {
                     Port = $Port
                     StatePath = $resolvedStatePath
                     PhoneReady = $true
+                }
+                $workspaceRoot = Get-ResolvedWorkspaceRootForEnsure -TargetStatePath $resolvedStatePath
+                if ($workspaceRoot) {
+                    $arguments['WorkspaceRoot'] = $workspaceRoot
                 }
                 if ($AuthToken -and $AuthToken.Trim()) {
                     $arguments['AuthToken'] = $AuthToken.Trim()

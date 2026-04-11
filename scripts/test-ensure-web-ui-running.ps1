@@ -52,6 +52,8 @@ function Start-EnsureProcess {
         [AllowEmptyString()]
         [string]$Token = '',
         [Parameter(Mandatory = $true)]
+        [string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)]
         [string]$RunName,
         [Parameter(Mandatory = $true)]
         [string]$TargetDirectory
@@ -69,6 +71,8 @@ function Start-EnsureProcess {
         [string]$PortNumber,
         '-StatePath',
         $TargetStatePath,
+        '-WorkspaceRoot',
+        $WorkspaceRoot,
         '-JsonOutput'
     )
     if ($Token -and $Token.Trim()) {
@@ -201,6 +205,7 @@ function Wait-ForApiReady {
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-open-web-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
 $currentPackageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$currentWorkspaceRoot = Split-Path -Parent $currentPackageRoot
 $statePath = Join-Path $testDirectory 'state.json'
 $mockCliPath = Join-Path $testDirectory 'mock-web-ui.mjs'
 $port = Get-FreeTcpPort
@@ -304,7 +309,7 @@ console.log(
 try {
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL', 'https://desktop-dr5v76c.tail5a2d2d.ts.net', 'Process')
-    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'first' -TargetDirectory $testDirectory
+    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
@@ -331,7 +336,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 "@
     }
 
-    $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'second' -TargetDirectory $testDirectory
+    $secondRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'second' -TargetDirectory $testDirectory
     $second = Wait-ForLaunchMetadata -ProcessInfo $secondRun
     Wait-ForProcessSuccess -ProcessInfo $secondRun
     $secondPort = ([Uri][string]$second.ListenUrl).Port
@@ -351,7 +356,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $legacyState.RequestedPhoneReady = $false
     ($legacyState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
-    $legacyUpgradeRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'legacy-upgrade' -TargetDirectory $testDirectory
+    $legacyUpgradeRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'legacy-upgrade' -TargetDirectory $testDirectory
     $legacyUpgrade = Wait-ForLaunchMetadata -ProcessInfo $legacyUpgradeRun
     Wait-ForProcessSuccess -ProcessInfo $legacyUpgradeRun
     Wait-ForApiReady -PortNumber ([Uri][string]$legacyUpgrade.ListenUrl).Port -Token ''
@@ -372,7 +377,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         throw 'Expected ensure-web-ui-running.ps1 to persist the required PhoneReady launch mode marker.'
     }
 
-    $upgradedReuseRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'upgraded-reuse' -TargetDirectory $testDirectory
+    $upgradedReuseRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'upgraded-reuse' -TargetDirectory $testDirectory
     $upgradedReuse = Wait-ForLaunchMetadata -ProcessInfo $upgradedReuseRun
     Wait-ForProcessSuccess -ProcessInfo $upgradedReuseRun
     Wait-ForApiReady -PortNumber ([Uri][string]$upgradedReuse.ListenUrl).Port -Token ''
@@ -385,7 +390,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $wrongPackageState.PackageRoot = 'D:\ghws\workspace-agent-hub-repofix'
     ($wrongPackageState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
-    $packageMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'package-mismatch' -TargetDirectory $testDirectory
+    $packageMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'package-mismatch' -TargetDirectory $testDirectory
     $packageMismatch = Wait-ForLaunchMetadata -ProcessInfo $packageMismatchRun
     Wait-ForProcessSuccess -ProcessInfo $packageMismatchRun
     Wait-ForApiReady -PortNumber ([Uri][string]$packageMismatch.ListenUrl).Port -Token ''
@@ -398,6 +403,9 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     if ([string]$packageMismatchState.PackageRoot -ne $currentPackageRoot) {
         throw 'Expected ensure-web-ui-running.ps1 to persist the current PackageRoot after restarting from a different checkout.'
     }
+    if ([string]$packageMismatchState.WorkspaceRoot -ne $currentWorkspaceRoot) {
+        throw 'Expected ensure-web-ui-running.ps1 to persist the current WorkspaceRoot after restarting from a different checkout.'
+    }
 
     $tailscaleState = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
     $tailscaleState.PreferredConnectUrlSource = 'tailscale-serve'
@@ -409,7 +417,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:$legacyUpgradeFrontDoorPort
 "@
 
-    $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'serve-healthy' -TargetDirectory $testDirectory
+    $serveHealthyRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'serve-healthy' -TargetDirectory $testDirectory
     $serveHealthy = Wait-ForLaunchMetadata -ProcessInfo $serveHealthyRun
     Wait-ForProcessSuccess -ProcessInfo $serveHealthyRun
     $serveHealthyPort = ([Uri][string]$serveHealthy.ListenUrl).Port
@@ -423,7 +431,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:57921
 '@
 
-    $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'serve-mismatch' -TargetDirectory $testDirectory
+    $serveMismatchRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'serve-mismatch' -TargetDirectory $testDirectory
     $serveMismatch = Wait-ForLaunchMetadata -ProcessInfo $serveMismatchRun
     Wait-ForProcessSuccess -ProcessInfo $serveMismatchRun
     $serveMismatchPort = ([Uri][string]$serveMismatch.ListenUrl).Port
@@ -443,7 +451,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     $corruptedState.ProcessId = 999999
     ($corruptedState | ConvertTo-Json -Depth 8) | Set-Content -Path $statePath -Encoding utf8
 
-    $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -RunName 'stale-pid' -TargetDirectory $testDirectory
+    $stalePidRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'stale-pid' -TargetDirectory $testDirectory
     $stalePid = Wait-ForLaunchMetadata -ProcessInfo $stalePidRun
     Wait-ForProcessSuccess -ProcessInfo $stalePidRun
     Wait-ForApiReady -PortNumber ([Uri][string]$stalePid.ListenUrl).Port -Token ''
@@ -452,7 +460,7 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         throw 'Expected ensure-web-ui-running.ps1 to recover the real listener PID when the saved wrapper PID is stale.'
     }
 
-    $thirdRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-next-token' -RunName 'third' -TargetDirectory $testDirectory
+    $thirdRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'ensure-next-token' -WorkspaceRoot $currentWorkspaceRoot -RunName 'third' -TargetDirectory $testDirectory
     $third = Wait-ForLaunchMetadata -ProcessInfo $thirdRun
     Wait-ForProcessSuccess -ProcessInfo $thirdRun
     Wait-ForApiReady -PortNumber ([Uri][string]$third.ListenUrl).Port -Token 'ensure-next-token'

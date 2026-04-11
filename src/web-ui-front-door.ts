@@ -11,6 +11,8 @@ import { URL } from 'node:url';
 
 interface FrontDoorStateRecord {
   ListenUrl?: string | null;
+  WorkspaceRoot?: string | null;
+  PackageRoot?: string | null;
 }
 
 function filterProxyRequestHeaders(
@@ -52,20 +54,23 @@ function filterProxyResponseHeaders(
   return next;
 }
 
-async function readFrontDoorUpstreamUrl(
+async function readFrontDoorState(
   statePath: string
-): Promise<string | null> {
+): Promise<FrontDoorStateRecord | null> {
   try {
     const raw = await readFile(statePath, 'utf8');
-    const parsed = JSON.parse(
-      raw.replace(/^\uFEFF/, '')
-    ) as FrontDoorStateRecord;
-    const listenUrl =
-      typeof parsed.ListenUrl === 'string' ? parsed.ListenUrl.trim() : '';
-    return listenUrl || null;
+    return JSON.parse(raw.replace(/^\uFEFF/, '')) as FrontDoorStateRecord;
   } catch {
     return null;
   }
+}
+
+async function readFrontDoorUpstreamUrl(
+  statePath: string
+): Promise<string | null> {
+  const state = await readFrontDoorState(statePath);
+  const listenUrl = typeof state?.ListenUrl === 'string' ? state.ListenUrl : '';
+  return listenUrl.trim() || null;
 }
 
 function sendJson(
@@ -157,10 +162,20 @@ export async function createWebUiFrontDoorServer(
         req.method === 'GET' &&
         requestUrl.pathname === '/api/front-door/health'
       ) {
-        const upstreamUrl = await readFrontDoorUpstreamUrl(statePath);
+        const state = await readFrontDoorState(statePath);
+        const upstreamUrl =
+          typeof state?.ListenUrl === 'string' ? state.ListenUrl.trim() : '';
         sendJson(res, upstreamUrl ? 200 : 503, {
-          ok: upstreamUrl !== null,
-          upstreamUrl,
+          ok: Boolean(upstreamUrl),
+          upstreamUrl: upstreamUrl || null,
+          workspaceRoot:
+            typeof state?.WorkspaceRoot === 'string'
+              ? state.WorkspaceRoot.trim() || null
+              : null,
+          packageRoot:
+            typeof state?.PackageRoot === 'string'
+              ? state.PackageRoot.trim() || null
+              : null,
         });
         return;
       }

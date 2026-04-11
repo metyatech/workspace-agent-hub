@@ -11,12 +11,15 @@ import {
 } from '../cli.js';
 
 describe('cli restart helpers', () => {
-  it('builds ensure-web-ui-running arguments with the explicit state path', () => {
+  it('builds ensure-web-ui-running arguments with the explicit state path and workspace root', () => {
     const packageRoot = 'D:\\ghws\\workspace-agent-hub';
     const statePath =
       'C:\\Users\\Origin\\agent-handoff\\workspace-agent-hub-web-ui.json';
+    const workspaceRoot = 'D:\\ghws';
 
-    expect(buildEnsureWebUiRunningArgs(packageRoot, statePath)).toEqual([
+    expect(
+      buildEnsureWebUiRunningArgs(packageRoot, statePath, workspaceRoot)
+    ).toEqual([
       '-NoProfile',
       '-ExecutionPolicy',
       'Bypass',
@@ -25,6 +28,8 @@ describe('cli restart helpers', () => {
       '-StatePath',
       statePath,
       '-JsonOutput',
+      '-WorkspaceRoot',
+      workspaceRoot,
     ]);
   });
 

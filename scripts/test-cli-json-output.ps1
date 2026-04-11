@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$workspaceRoot = Split-Path -Parent $repoRoot
 $stdoutPath = Join-Path $env:TEMP 'workspace-agent-hub-web-ui-json-out.txt'
 $stderrPath = Join-Path $env:TEMP 'workspace-agent-hub-web-ui-json-err.txt'
 
@@ -46,6 +47,7 @@ try {
             'web-ui',
             '--host', '127.0.0.1',
             '--port', '0',
+            '--workspace-root', $workspaceRoot,
             '--auth-token', 'secret-token',
             '--public-url', 'https://hub.example.test/connect',
             '--json',
@@ -74,6 +76,9 @@ try {
     $payload = $jsonLine | ConvertFrom-Json
     if ($payload.listenUrl -notmatch '^http://127\.0\.0\.1:\d+$') {
         throw "Unexpected listenUrl: $($payload.listenUrl)"
+    }
+    if ([string]$payload.workspaceRoot -ne $workspaceRoot) {
+        throw "Unexpected workspaceRoot: $($payload.workspaceRoot)"
     }
     if ($payload.preferredConnectUrl -ne 'https://hub.example.test/connect') {
         throw "Unexpected preferredConnectUrl: $($payload.preferredConnectUrl)"

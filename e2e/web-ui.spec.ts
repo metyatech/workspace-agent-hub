@@ -134,7 +134,7 @@ test.describe.configure({ mode: 'serial' });
 test.setTimeout(600000);
 
 test.beforeAll(async () => {
-  bridge = new PowerShellSessionBridge();
+  bridge = new PowerShellSessionBridge({ workspaceRoot });
   await cleanupPlaywrightSessions();
   const started = await createWebUiServer({
     host: '127.0.0.1',

@@ -661,6 +661,7 @@ export interface StartWebUiOptions {
   authToken?: string;
   publicUrl?: string;
   tailscaleServe?: boolean;
+  workspaceRoot?: string;
   jsonOutput?: boolean;
   openBrowser?: boolean;
   bridge?: SessionBridge;
@@ -670,6 +671,7 @@ export interface StartWebUiOptions {
 
 export interface WebUiLaunchInfo {
   listenUrl: string;
+  workspaceRoot: string;
   preferredConnectUrl: string;
   preferredConnectUrlSource: PreferredConnectUrlSource;
   authRequired: boolean;
@@ -681,6 +683,7 @@ export interface WebUiLaunchInfo {
 export function buildWebUiLaunchInfo(input: {
   host: string;
   port: number;
+  workspaceRoot: string;
   authConfig: WebUiAuthConfig;
   connectInfo: ResolvedConnectInfo;
 }): WebUiLaunchInfo {
@@ -692,6 +695,7 @@ export function buildWebUiLaunchInfo(input: {
       : preferredConnectUrl;
   return {
     listenUrl,
+    workspaceRoot: input.workspaceRoot,
     preferredConnectUrl,
     preferredConnectUrlSource: input.connectInfo.source,
     authRequired: input.authConfig.required,
@@ -724,7 +728,11 @@ export async function createWebUiServer(
   bridge: SessionBridge;
   connectInfo: ResolvedConnectInfo;
 }> {
-  const bridge = options.bridge ?? new PowerShellSessionBridge();
+  const bridge =
+    options.bridge ??
+    new PowerShellSessionBridge({
+      workspaceRoot: options.workspaceRoot,
+    });
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 3360;
   const authConfig = resolveWebUiAuthConfig(
@@ -1183,6 +1191,7 @@ export async function startWebUi(
   const launchInfo = buildWebUiLaunchInfo({
     host,
     port,
+    workspaceRoot: bridge.getWorkspaceRoot(),
     authConfig,
     connectInfo,
   });

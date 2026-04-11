@@ -1,6 +1,7 @@
 param(
     [int]$Port = 3360,
     [string]$AuthToken = '',
+    [string]$WorkspaceRoot = '',
     [string]$StatePath = '',
     [switch]$PhoneReady,
     [switch]$OpenBrowser,
@@ -50,6 +51,40 @@ $buildSourcePaths = Get-BuildSourcePaths
 function Get-DefaultStatePath {
     $stateDirectory = Join-Path $env:USERPROFILE 'agent-handoff'
     return (Join-Path $stateDirectory 'workspace-agent-hub-web-ui.json')
+}
+
+function Resolve-NormalizedPath {
+    param(
+        [string]$PathText
+    )
+
+    if (-not $PathText -or -not $PathText.Trim()) {
+        return ''
+    }
+
+    return [IO.Path]::GetFullPath($PathText.Trim())
+}
+
+function Test-PathInsideRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ParentPath,
+        [Parameter(Mandatory = $true)]
+        [string]$CandidatePath
+    )
+
+    $normalizedParent = (Resolve-NormalizedPath -PathText $ParentPath).TrimEnd('\')
+    $normalizedCandidate = (Resolve-NormalizedPath -PathText $CandidatePath).TrimEnd('\')
+    if (-not $normalizedParent -or -not $normalizedCandidate) {
+        return $false
+    }
+
+    $parentLower = $normalizedParent.ToLowerInvariant()
+    $candidateLower = $normalizedCandidate.ToLowerInvariant()
+    return (
+        $candidateLower -eq $parentLower -or
+        $candidateLower.StartsWith($parentLower + '\')
+    )
 }
 
 function Test-BuildRequired {
@@ -186,6 +221,40 @@ function Read-State {
     }
 
     return ($raw | ConvertFrom-Json)
+}
+
+function Resolve-WorkspaceRoot {
+    param(
+        $ExistingState
+    )
+
+    $explicitRoot = Resolve-NormalizedPath -PathText $WorkspaceRoot
+    if ($explicitRoot) {
+        return $explicitRoot
+    }
+
+    $envRoot = Resolve-NormalizedPath -PathText $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT
+    if ($envRoot) {
+        return $envRoot
+    }
+
+    if (
+        $ExistingState -and
+        $ExistingState.PSObject.Properties.Match('WorkspaceRoot').Count -gt 0 -and
+        $ExistingState.WorkspaceRoot
+    ) {
+        $stateRoot = Resolve-NormalizedPath -PathText ([string]$ExistingState.WorkspaceRoot)
+        if ($stateRoot) {
+            return $stateRoot
+        }
+    }
+
+    $packageRootPath = $repoRoot.Path
+    if (Test-PathInsideRoot -ParentPath ([IO.Path]::GetTempPath()) -CandidatePath $packageRootPath) {
+        throw "Workspace root must be provided explicitly when running Workspace Agent Hub from a temporary checkout ($packageRootPath). Pass -WorkspaceRoot or set WORKSPACE_AGENT_HUB_WORKSPACE_ROOT."
+    }
+
+    return (Split-Path -Parent $packageRootPath)
 }
 
 function Write-State {
@@ -354,6 +423,33 @@ function Test-StatePackageRootMatches {
     }
 
     return ($existingPackageRoot.TrimEnd('\').ToLowerInvariant() -eq $repoRoot.Path.TrimEnd('\').ToLowerInvariant())
+}
+
+function Test-StateWorkspaceRootMatches {
+    param(
+        $ExistingState,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedWorkspaceRoot
+    )
+
+    if (
+        -not $ExistingState -or
+        $ExistingState.PSObject.Properties.Match('WorkspaceRoot').Count -eq 0 -or
+        -not $ExistingState.WorkspaceRoot
+    ) {
+        return $false
+    }
+
+    try {
+        $existingWorkspaceRoot = [IO.Path]::GetFullPath([string]$ExistingState.WorkspaceRoot)
+    } catch {
+        return $false
+    }
+
+    return (
+        $existingWorkspaceRoot.TrimEnd('\').ToLowerInvariant() -eq
+        $ExpectedWorkspaceRoot.TrimEnd('\').ToLowerInvariant()
+    )
 }
 
 function Get-PowerShellPath {
@@ -920,6 +1016,8 @@ function Start-WebUiProcess {
         [Parameter(Mandatory = $true)]
         [string]$Token,
         [Parameter(Mandatory = $true)]
+        [string]$ResolvedWorkspaceRoot,
+        [Parameter(Mandatory = $true)]
         [int]$PreferredPort,
         [Parameter(Mandatory = $true)]
         [bool]$RequestedPhoneReady,
@@ -941,6 +1039,8 @@ function Start-WebUiProcess {
         '0.0.0.0',
         '--port',
         [string]$PreferredPort,
+        '--workspace-root',
+        $ResolvedWorkspaceRoot,
         '--auth-token',
         $Token,
         '--json',
@@ -1077,6 +1177,8 @@ function Build-StateFromLaunchInfo {
         [Parameter(Mandatory = $true)]
         [psobject]$LaunchInfo,
         [Parameter(Mandatory = $true)]
+        [string]$ResolvedWorkspaceRoot,
+        [Parameter(Mandatory = $true)]
         [string]$LocalListenUrl,
         [Parameter(Mandatory = $true)]
         [string]$ResolvedToken,
@@ -1114,6 +1216,7 @@ function Build-StateFromLaunchInfo {
 
     return [pscustomobject]@{
         PackageRoot = $repoRoot.Path
+        WorkspaceRoot = $ResolvedWorkspaceRoot
         ListenUrl = $LocalListenUrl
         FrontDoorListenUrl = if ($FrontDoorListenUrl -and $FrontDoorListenUrl.Trim()) { $FrontDoorListenUrl.Trim() } else { $null }
         FrontDoorProcessId = if ($FrontDoorProcessId -gt 0) { [int]$FrontDoorProcessId } else { $null }
@@ -1220,6 +1323,7 @@ function Ensure-FrontDoorRunning {
 $requestedPhoneReady = $true
 $resolvedStatePath = if ($StatePath -and $StatePath.Trim()) { [IO.Path]::GetFullPath($StatePath.Trim()) } else { Get-DefaultStatePath }
 $existingState = Read-State -TargetStatePath $resolvedStatePath
+$resolvedWorkspaceRoot = Resolve-WorkspaceRoot -ExistingState $existingState
 $resolvedToken = Get-ResolvedAuthToken -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady
 $frontDoorInfo = Ensure-FrontDoorRunning -TargetStatePath $resolvedStatePath -ExistingState $existingState
 $frontDoorPort = ([Uri]$frontDoorInfo.ListenUrl).Port
@@ -1236,6 +1340,7 @@ $canReuseExistingInstance = $false
 if (
     $existingState -and
     (Test-StatePackageRootMatches -ExistingState $existingState) -and
+    (Test-StateWorkspaceRootMatches -ExistingState $existingState -ExpectedWorkspaceRoot $resolvedWorkspaceRoot) -and
     $existingListenUrl -and
     (Test-RequestedAuthMatches -ExistingState $existingState -RequestedTokenOption $resolvedToken) -and
     (Test-RequestedPhoneReadyMatches -ExistingState $existingState -RequestedPhoneReady $requestedPhoneReady) -and
@@ -1272,6 +1377,7 @@ if (
     }
     $finalState = [pscustomobject]@{
         PackageRoot = $repoRoot.Path
+        WorkspaceRoot = $resolvedWorkspaceRoot
         ListenUrl = $localListenUrl
         FrontDoorListenUrl = [string]$frontDoorInfo.ListenUrl
         FrontDoorProcessId = [int]$frontDoorInfo.ProcessId
@@ -1303,6 +1409,7 @@ if (
     }
     $started = Start-WebUiProcess `
         -Token $resolvedToken `
+        -ResolvedWorkspaceRoot $resolvedWorkspaceRoot `
         -PreferredPort $Port `
         -RequestedPhoneReady $requestedPhoneReady `
         -TargetStatePath $resolvedStatePath `
@@ -1322,6 +1429,7 @@ if (
 
         $finalState = Build-StateFromLaunchInfo `
             -LaunchInfo $launchInfo `
+            -ResolvedWorkspaceRoot $resolvedWorkspaceRoot `
             -LocalListenUrl $localListenUrl `
             -ResolvedToken $resolvedToken `
             -ResolvedStatePath $resolvedStatePath `

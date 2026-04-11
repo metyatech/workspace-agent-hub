@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $wrapperScriptPath = Join-Path $PSScriptRoot 'start-web-ui.ps1'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$workspaceRoot = Split-Path -Parent $repoRoot
 $rebuildSourcePath = Join-Path $repoRoot 'src\cli.ts'
 $originalRebuildSourceWriteTimeUtc = (Get-Item -LiteralPath $rebuildSourcePath).LastWriteTimeUtc
 $job = $null
@@ -87,7 +88,9 @@ try {
     $job = Start-Job -ScriptBlock {
         param(
             [Parameter(Mandatory = $true)]
-            [string]$ScriptPath
+            [string]$ScriptPath,
+            [Parameter(Mandatory = $true)]
+            [string]$WorkspaceRoot
         )
 
         & $ScriptPath `
@@ -95,13 +98,17 @@ try {
             -NoOpenBrowser `
             -JsonOutput `
             -Port 0 `
+            -WorkspaceRoot $WorkspaceRoot `
             -AuthToken 'secret-token' `
             -PublicUrl 'https://hub.example.test/connect'
-    } -ArgumentList $wrapperScriptPath
+    } -ArgumentList $wrapperScriptPath, $workspaceRoot
 
     $payload = Wait-ForSingleJsonOutput -Job $job
     if ($payload.listenUrl -notmatch '^http://(127\.0\.0\.1|0\.0\.0\.0):\d+$') {
         throw "Unexpected listenUrl: $($payload.listenUrl)"
+    }
+    if ([string]$payload.workspaceRoot -ne $workspaceRoot) {
+        throw "Unexpected workspaceRoot: $($payload.workspaceRoot)"
     }
     if ($payload.preferredConnectUrl -ne 'https://hub.example.test/connect') {
         throw "Unexpected preferredConnectUrl: $($payload.preferredConnectUrl)"

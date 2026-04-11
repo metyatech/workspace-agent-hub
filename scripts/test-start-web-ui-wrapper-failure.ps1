@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $wrapperScriptPath = Join-Path $PSScriptRoot 'start-web-ui.ps1'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$workspaceRoot = Split-Path -Parent $repoRoot
 $stdoutPath = Join-Path $env:TEMP 'workspace-agent-hub-wrapper-failure-out.txt'
 $stderrPath = Join-Path $env:TEMP 'workspace-agent-hub-wrapper-failure-err.txt'
 $failingCliPath = Join-Path $env:TEMP 'workspace-agent-hub-wrapper-failure.js'
@@ -74,6 +75,8 @@ try {
             '-JsonOutput',
             '-Port',
             '0',
+            '-WorkspaceRoot',
+            $workspaceRoot,
             '-AuthToken',
             'secret-token'
         ) `

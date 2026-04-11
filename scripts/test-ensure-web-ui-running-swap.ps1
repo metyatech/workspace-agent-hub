@@ -29,6 +29,8 @@ function Start-EnsureProcess {
         [AllowEmptyString()]
         [string]$Token = '',
         [Parameter(Mandatory = $true)]
+        [string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)]
         [string]$RunName,
         [Parameter(Mandatory = $true)]
         [string]$TargetDirectory
@@ -46,6 +48,8 @@ function Start-EnsureProcess {
         [string]$PortNumber,
         '-StatePath',
         $TargetStatePath,
+        '-WorkspaceRoot',
+        $WorkspaceRoot,
         '-PhoneReady',
         '-JsonOutput'
     )
@@ -254,6 +258,7 @@ function Wait-ForPortClosed {
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-swap-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+$workspaceRoot = Split-Path -Parent $repoRoot
 $frontDoorSourcePath = Join-Path $repoRoot 'src\web-ui-front-door.ts'
 $originalFrontDoorSourceWriteTimeUtc = (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc
 $statePath = Join-Path $testDirectory 'state.json'
@@ -385,7 +390,7 @@ try {
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SWAP_DELAY_MS', '0', 'Process')
 
-    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -RunName 'first' -TargetDirectory $testDirectory
+    $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -WorkspaceRoot $workspaceRoot -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
 
@@ -397,7 +402,7 @@ try {
     }
 
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_SWAP_DELAY_MS', '2500', 'Process')
-    $replacementRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'replacement-token' -RunName 'replacement' -TargetDirectory $testDirectory
+    $replacementRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token 'replacement-token' -WorkspaceRoot $workspaceRoot -RunName 'replacement' -TargetDirectory $testDirectory
 
     $frontDoorStayedAvailable = $false
     $availabilityDeadline = [DateTime]::UtcNow.AddSeconds(2)

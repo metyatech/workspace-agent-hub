@@ -169,6 +169,12 @@ available for phone access without reopening the PC UI:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-web-ui-running.ps1 -PhoneReady
 ```
 
+If the live runtime is launched from a detached checkout under the OS temporary
+directory, pass the canonical workspace explicitly with `-WorkspaceRoot` (or set
+`WORKSPACE_AGENT_HUB_WORKSPACE_ROOT`) so Hub keeps reading the real
+`.threads.jsonl`, `.tasks.jsonl`, and Manager queue files instead of inferring a
+temporary parent directory.
+
 When it needs to replace an existing phone-ready instance, it now starts the
 replacement in the background, waits for it to become healthy, and only then
 stops the previous managed process. That keeps the stable Tailscale-facing Hub
@@ -280,26 +286,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -Js
 
 Wrapper-specific parameters that differ from the CLI:
 
-| Parameter            | Description                                                                                                                                                                              | Example                                                                                                   |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `-ListenHost <host>` | PowerShell-safe equivalent of the CLI `--host` option.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0`        |
-| `-PhoneReady`        | PowerShell shortcut for `--tailscale-serve` plus the normal wrapper defaults. When no `-AuthToken` is given, this mode trusts the Tailscale path and disables the extra app access code. | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady -NoOpenBrowser` |
-| `-JsonOutput`        | PowerShell wrapper switch for CLI `--json`.                                                                                                                                              | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser` |
-| `-NoOpenBrowser`     | PowerShell wrapper switch for CLI `--no-open-browser`.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -NoOpenBrowser`             |
+| Parameter               | Description                                                                                                                                                                              | Example                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `-ListenHost <host>`    | PowerShell-safe equivalent of the CLI `--host` option.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -ListenHost 0.0.0.0`        |
+| `-WorkspaceRoot <path>` | Explicit workspace root that contains `.threads.jsonl`, `.tasks.jsonl`, and Manager runtime files. Required when the package itself runs from a temporary/detached checkout.             | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -WorkspaceRoot D:\ghws`     |
+| `-PhoneReady`           | PowerShell shortcut for `--tailscale-serve` plus the normal wrapper defaults. When no `-AuthToken` is given, this mode trusts the Tailscale path and disables the extra app access code. | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -PhoneReady -NoOpenBrowser` |
+| `-JsonOutput`           | PowerShell wrapper switch for CLI `--json`.                                                                                                                                              | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -JsonOutput -NoOpenBrowser` |
+| `-NoOpenBrowser`        | PowerShell wrapper switch for CLI `--no-open-browser`.                                                                                                                                   | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web-ui.ps1 -NoOpenBrowser`             |
 
 #### CLI parameters
 
 `workspace-agent-hub web-ui` supports these parameters:
 
-| Parameter              | Description                                                                                                                                                       | Example                                                                    |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `--host <host>`        | Host/IP to bind. Use `127.0.0.1` for local-only access or `0.0.0.0` when another device reaches the PC through Tailscale or another trusted network path.         | `workspace-agent-hub web-ui --host 0.0.0.0`                                |
-| `--port <port>`        | Preferred port. If already taken, the server walks upward to the next free port.                                                                                  | `workspace-agent-hub web-ui --port 3360`                                   |
-| `--public-url <url>`   | Phone-facing URL used for reconnect links and QR pairing. Point this at Tailscale Serve or another trusted HTTPS reverse proxy when using the PWA from a phone.   | `workspace-agent-hub web-ui --public-url https://agent-hub.example.ts.net` |
-| `--tailscale-serve`    | Configure Tailscale Serve for this run and prefer the resulting HTTPS tailnet URL. Useful for the normal smartphone/PWA path when the PC is already on Tailscale. | `workspace-agent-hub web-ui --tailscale-serve`                             |
-| `--auth-token <token>` | Access code for API/browser auth. Use `auto` to generate one, or `none` when the Tailscale path itself is the trust boundary and you want direct phone access.    | `workspace-agent-hub web-ui --auth-token none`                             |
-| `--json`               | Print a single JSON object describing the live web UI endpoint, connect URL, access code, and pairing link.                                                       | `workspace-agent-hub web-ui --json --no-open-browser`                      |
-| `--no-open-browser`    | Start the server without opening the default desktop browser.                                                                                                     | `workspace-agent-hub web-ui --no-open-browser`                             |
+| Parameter                 | Description                                                                                                                                                       | Example                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `--host <host>`           | Host/IP to bind. Use `127.0.0.1` for local-only access or `0.0.0.0` when another device reaches the PC through Tailscale or another trusted network path.         | `workspace-agent-hub web-ui --host 0.0.0.0`                                |
+| `--port <port>`           | Preferred port. If already taken, the server walks upward to the next free port.                                                                                  | `workspace-agent-hub web-ui --port 3360`                                   |
+| `--workspace-root <path>` | Explicit workspace root that contains `.threads.jsonl`, `.tasks.jsonl`, and Manager queue/state files. Required when the package runs from a temporary checkout.  | `workspace-agent-hub web-ui --workspace-root D:\ghws`                      |
+| `--public-url <url>`      | Phone-facing URL used for reconnect links and QR pairing. Point this at Tailscale Serve or another trusted HTTPS reverse proxy when using the PWA from a phone.   | `workspace-agent-hub web-ui --public-url https://agent-hub.example.ts.net` |
+| `--tailscale-serve`       | Configure Tailscale Serve for this run and prefer the resulting HTTPS tailnet URL. Useful for the normal smartphone/PWA path when the PC is already on Tailscale. | `workspace-agent-hub web-ui --tailscale-serve`                             |
+| `--auth-token <token>`    | Access code for API/browser auth. Use `auto` to generate one, or `none` when the Tailscale path itself is the trust boundary and you want direct phone access.    | `workspace-agent-hub web-ui --auth-token none`                             |
+| `--json`                  | Print a single JSON object describing the live web UI endpoint, connect URL, access code, and pairing link.                                                       | `workspace-agent-hub web-ui --json --no-open-browser`                      |
+| `--no-open-browser`       | Start the server without opening the default desktop browser.                                                                                                     | `workspace-agent-hub web-ui --no-open-browser`                             |
 
 End-to-end example:
 
@@ -668,6 +676,10 @@ This repository claims the following primary handoff paths.
   service manager wants to inject one.
 - `WORKSPACE_AGENT_HUB_WEB_UI_PUBLIC_URL`
   Optional phone-facing URL used for the reconnect QR and one-tap pairing link.
+- `WORKSPACE_AGENT_HUB_WORKSPACE_ROOT`
+  Optional explicit workspace root override for detached/temp runtime checkouts.
+  Use this when the package root is not the canonical repository parent and you
+  still want Hub/Manager to read the real workspace state.
 - `AI_AGENT_SESSION_NO_ATTACH=1`
   Keeps the mobile menu tests from attaching the current shell to the created
   session.

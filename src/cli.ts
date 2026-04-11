@@ -27,6 +27,7 @@ interface WebUiState {
   ListenUrl: string;
   AccessCode: string | null;
   ProcessId: number | null;
+  WorkspaceRoot?: string | null;
   AuthDisabled?: boolean;
   FrontDoorProcessId?: number | null;
   StatePath?: string | null;
@@ -36,9 +37,10 @@ interface WebUiState {
 
 export function buildEnsureWebUiRunningArgs(
   packageRoot: string,
-  statePath: string
+  statePath: string,
+  workspaceRoot?: string | null
 ): string[] {
-  return [
+  const args = [
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
@@ -48,6 +50,10 @@ export function buildEnsureWebUiRunningArgs(
     statePath,
     '-JsonOutput',
   ];
+  if (workspaceRoot?.trim()) {
+    args.push('-WorkspaceRoot', workspaceRoot.trim());
+  }
+  return args;
 }
 
 export function createStreamingSpawnOptions(cwd: string): {
@@ -234,8 +240,13 @@ async function runEnsureWebUiRunning(
   state: WebUiState | null
 ): Promise<void> {
   const statePath = state?.StatePath?.trim() || webUiStatePath();
+  const workspaceRoot = state?.WorkspaceRoot?.trim() || null;
   const command = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
-  const args = buildEnsureWebUiRunningArgs(packageRoot, statePath);
+  const args = buildEnsureWebUiRunningArgs(
+    packageRoot,
+    statePath,
+    workspaceRoot
+  );
   if (process.platform === 'win32') {
     await launchDetachedCommand(command, args, packageRoot);
     await waitForWebUiReadyFromState(statePath, state?.UpdatedUtc ?? null);
@@ -283,6 +294,9 @@ async function spawnAndWaitForReady(
 ): Promise<boolean> {
   const cliPath = join(packageRoot, 'dist', 'cli.js');
   const args = [cliPath, 'web-ui', '--json', '--no-open-browser'];
+  if (state?.WorkspaceRoot?.trim()) {
+    args.push('--workspace-root', state.WorkspaceRoot.trim());
+  }
   if (state?.AuthDisabled) {
     args.push('--auth-token', 'none');
   } else if (state?.AccessCode) {
@@ -405,6 +419,10 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
       'Access code required by the browser UI. Use auto to generate one, or none to disable auth.'
     )
     .option(
+      '--workspace-root <path>',
+      'Explicit workspace root containing .tasks.jsonl, .threads.jsonl, and Manager state'
+    )
+    .option(
       '--json',
       'Print machine-readable launch metadata as a single JSON object'
     )
@@ -419,6 +437,7 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
         publicUrl?: string;
         tailscaleServe?: boolean;
         authToken: string;
+        workspaceRoot?: string;
         json?: boolean;
         openBrowser?: boolean;
       }) => {
@@ -428,6 +447,7 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
           publicUrl: options.publicUrl,
           tailscaleServe: Boolean(options.tailscaleServe),
           authToken: options.authToken,
+          workspaceRoot: options.workspaceRoot,
           jsonOutput: Boolean(options.json),
           openBrowser: options.openBrowser,
         });
