@@ -9,7 +9,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { spawnMock } = vi.hoisted(() => ({
@@ -32,6 +32,7 @@ import {
   removeWorktree,
   resolveTargetRepoRoot,
   runPostMergeDeliveryChain,
+  syncCanonicalCheckoutToRemoteBranch,
   validateWorktreeReadyForMerge,
 } from '../manager-worktree.js';
 
@@ -313,15 +314,14 @@ describe('createIntegrationWorktree', () => {
         assignmentId,
       });
       createdPath = result.worktreePath;
+      expect(dirname(result.worktreePath)).toBe(dirname(targetRepoRoot));
 
       expect(
         await readFile(join(result.worktreePath, '.env.local'), 'utf8')
       ).toBe('BASE_URL=https://example.test\n');
       expect(
         await readFile(join(result.worktreePath, '.env.course.local'), 'utf8')
-      ).toBe(
-        `COURSE_CONTENT_SOURCE=${resolvePath(targetRepoRoot, '../course-content')}\n`
-      );
+      ).toBe('COURSE_CONTENT_SOURCE=../course-content\n');
       expect(existsSync(join(result.worktreePath, '.env'))).toBe(false);
       expect(existsSync(join(result.worktreePath, 'node_modules'))).toBe(false);
       expect(gitArgs).toEqual(
@@ -340,6 +340,53 @@ describe('createIntegrationWorktree', () => {
 });
 
 describe('createWorkerWorktree', () => {
+  it('bases worker worktrees on the latest tracked upstream branch when available', async () => {
+    const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-base-'));
+    const gitArgs: string[][] = [];
+    const calls = [
+      gitResult(0, 'origin/main'),
+      gitResult(0, 'fetched'),
+      gitResult(0, 'refs/remotes/origin/main'),
+      gitResult(0, ''),
+      gitResult(0, ''),
+      gitResult(0, ''),
+    ];
+    let callIndex = 0;
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      const factory = calls[callIndex] ?? gitResult(0, '');
+      callIndex++;
+      return factory();
+    });
+
+    try {
+      const result = await createWorkerWorktree({
+        targetRepoRoot,
+        assignmentId: 'assign-worker-upstream',
+      });
+
+      expect(result.worktreePath).toContain('wah-wt-assign-worker-upstream');
+      expect(result.branchName).toBe('wah-worker-assign-worker-upstream');
+      expect(gitArgs).toEqual(
+        expect.arrayContaining([
+          ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+          ['fetch', 'origin', 'main'],
+          ['rev-parse', '--verify', 'refs/remotes/origin/main'],
+          [
+            'worktree',
+            'add',
+            result.worktreePath,
+            '-b',
+            'wah-worker-assign-worker-upstream',
+            'refs/remotes/origin/main',
+          ],
+        ])
+      );
+    } finally {
+      await rm(targetRepoRoot, { recursive: true, force: true });
+    }
+  });
+
   it('allocates a fresh temp path when the legacy assignment path is already occupied', async () => {
     const assignmentId = `assign-stale-${Date.now()}`;
     const targetRepoRoot = await mkdtemp(join(tmpdir(), 'wah-worker-base-'));
@@ -480,15 +527,14 @@ describe('createWorkerWorktree', () => {
         assignmentId,
       });
       createdPath = result.worktreePath;
+      expect(dirname(result.worktreePath)).toBe(dirname(targetRepoRoot));
 
       expect(
         await readFile(join(result.worktreePath, '.env.local'), 'utf8')
       ).toBe('API_BASE_URL=https://example.test\n');
       expect(
         await readFile(join(result.worktreePath, '.env.course.local'), 'utf8')
-      ).toBe(
-        `COURSE_CONTENT_SOURCE=${resolvePath(targetRepoRoot, '../course-content')}\n`
-      );
+      ).toBe('COURSE_CONTENT_SOURCE=../course-content\n');
       expect(existsSync(join(result.worktreePath, '.env.example'))).toBe(false);
       expect(existsSync(join(result.worktreePath, 'node_modules'))).toBe(false);
       expect(gitArgs).toEqual(
@@ -687,6 +733,73 @@ describe('pushWithRetry', () => {
       ['pull', '--rebase', '--no-edit', 'origin', 'main'],
       ['push', 'origin', 'HEAD:main'],
     ]);
+  });
+});
+
+describe('syncCanonicalCheckoutToRemoteBranch', () => {
+  it('fast-forwards a clean canonical checkout on the tracked branch', async () => {
+    const gitArgs: string[][] = [];
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      if (args[0] === 'status') {
+        return gitResult(0, '')();
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--git-path') {
+        return gitResult(0, `.git/${args[2]}`)();
+      }
+      if (args[0] === 'branch' && args[1] === '--show-current') {
+        return gitResult(0, 'main')();
+      }
+      if (args[0] === 'fetch') {
+        return gitResult(0, 'fetched')();
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') {
+        return gitResult(0, 'refs/remotes/origin/main')();
+      }
+      if (args[0] === 'merge' && args[1] === '--ff-only') {
+        return gitResult(0, 'Updating 123..456')();
+      }
+      return gitResult(0, '')();
+    });
+
+    const result = await syncCanonicalCheckoutToRemoteBranch({
+      targetRepoRoot: '/repo',
+      remoteName: 'origin',
+      remoteBranch: 'main',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.synced).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(gitArgs).toEqual(
+      expect.arrayContaining([
+        ['status', '--porcelain'],
+        ['branch', '--show-current'],
+        ['fetch', 'origin', 'main'],
+        ['rev-parse', '--verify', 'refs/remotes/origin/main'],
+        ['merge', '--ff-only', 'refs/remotes/origin/main'],
+      ])
+    );
+  });
+
+  it('skips syncing when the canonical checkout is dirty', async () => {
+    const gitArgs: string[][] = [];
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      gitArgs.push(args);
+      return gitResult(0, ' M src/manager-backend.ts')();
+    });
+
+    const result = await syncCanonicalCheckoutToRemoteBranch({
+      targetRepoRoot: '/repo',
+      remoteName: 'origin',
+      remoteBranch: 'main',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.synced).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('dirty');
+    expect(gitArgs).toEqual([['status', '--porcelain']]);
   });
 });
 

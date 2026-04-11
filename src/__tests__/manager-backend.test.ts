@@ -96,6 +96,13 @@ vi.mock('../manager-worktree.js', () => ({
     detail: 'mock delivery chain',
     performed: [],
   }),
+  syncCanonicalCheckoutToRemoteBranch: vi.fn().mockResolvedValue({
+    success: true,
+    synced: true,
+    skipped: false,
+    reason: 'synced',
+    detail: 'mock canonical sync',
+  }),
   removeWorktree: vi.fn().mockResolvedValue(undefined),
   resolveTargetRepoRoot: vi
     .fn()
@@ -157,6 +164,7 @@ import {
   removeWorktree,
   resolveTargetRepoRoot,
   runPostMergeDeliveryChain,
+  syncCanonicalCheckoutToRemoteBranch,
   validateWorktreeReadyForMerge,
 } from '../manager-worktree.js';
 
@@ -440,6 +448,14 @@ beforeEach(async () => {
     success: true,
     detail: 'mock delivery chain',
     performed: [],
+  });
+  vi.mocked(syncCanonicalCheckoutToRemoteBranch).mockReset();
+  vi.mocked(syncCanonicalCheckoutToRemoteBranch).mockResolvedValue({
+    success: true,
+    synced: true,
+    skipped: false,
+    reason: 'synced',
+    detail: 'mock canonical sync',
   });
 });
 
@@ -2067,16 +2083,14 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 
-  it('falls back to Claude when manager Codex hits a usage limit during dispatch and manager-direct turns', async () => {
+  it('pauses the queue on manager Codex usage limits and resumes after start', async () => {
     const dispatchCodexProc = makeProc(6119);
-    const dispatchClaudeProc = makeProc(6120);
-    const managerCodexProc = makeProc(6121);
-    const managerClaudeProc = makeProc(6122);
+    const dispatchRetryProc = makeProc(6120);
+    const managerRetryProc = makeProc(6121);
     spawnMock
       .mockReturnValueOnce(dispatchCodexProc)
-      .mockReturnValueOnce(dispatchClaudeProc)
-      .mockReturnValueOnce(managerCodexProc)
-      .mockReturnValueOnce(managerClaudeProc);
+      .mockReturnValueOnce(dispatchRetryProc)
+      .mockReturnValueOnce(managerRetryProc);
 
     await sendToBuiltinManager(
       tempDir,
@@ -2094,27 +2108,35 @@ describe('manager backend codex integration', () => {
     );
     dispatchCodexProc.emit('close', 1);
 
+    await waitFor(async () => {
+      const status = await getBuiltinManagerStatus(tempDir);
+      return (
+        status.health === 'paused' &&
+        status.pendingCount === 1 &&
+        (status.errorMessage?.includes('usage limit') ?? false)
+      );
+    });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    const pausedStatus = await getBuiltinManagerStatus(tempDir);
+    expect(pausedStatus.health).toBe('paused');
+    expect(pausedStatus.detail).toBe('Manager Codex の利用上限で停止中です');
+
+    await startBuiltinManager(tempDir);
     await waitFor(() => spawnMock.mock.calls.length === 2);
-    completeGenericRuntimeTurn(dispatchClaudeProc, {
-      sessionId: 'claude-routing-session',
+    completeCodexTurn(dispatchRetryProc, {
+      sessionId: 'codex-dispatch-session',
       text: JSON.stringify({
         assignee: 'manager',
         status: 'active',
-        reply: 'Claude manager will handle it.',
+        reply: 'resume this directly',
       }),
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 3);
-    managerCodexProc.stderr.emit(
-      'data',
-      Buffer.from("You've hit your usage limit. Upgrade to Pro to continue.")
-    );
-    managerCodexProc.emit('close', 1);
-
-    await waitFor(() => spawnMock.mock.calls.length === 4);
-    completeGenericRuntimeTurn(managerClaudeProc, {
-      sessionId: 'claude-manager-session',
-      text: '{"status":"review","reply":"Claude fallback answer"}',
+    completeCodexTurn(managerRetryProc, {
+      sessionId: 'codex-manager-session',
+      text: '{"status":"review","reply":"Codex resumed answer"}',
     });
 
     await waitFor(async () => {
@@ -2124,14 +2146,12 @@ describe('manager backend codex integration', () => {
     });
 
     expect(spawnMock.mock.calls[0]?.[0]).toMatch(/cmd\.exe$/i);
-    expect(spawnMock.mock.calls[1]?.[0]).toBe('claude.exe');
     expect(spawnMock.mock.calls[2]?.[0]).toMatch(/cmd\.exe$/i);
-    expect(spawnMock.mock.calls[3]?.[0]).toBe('claude.exe');
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe(
       'thread-manager-codex-limit'
     );
-    expect(addMessageMock.mock.calls[0]?.[2]).toBe('Claude fallback answer');
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('Codex resumed answer');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
   });
 

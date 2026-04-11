@@ -60,6 +60,10 @@ export interface ManagerThreadMeta {
   workerSessionRuntime?: ManagerWorkerRuntime | null;
   workerSessionModel?: string | null;
   workerSessionEffort?: string | null;
+  pausedAssignmentId?: string | null;
+  pausedWorktreePath?: string | null;
+  pausedWorktreeBranch?: string | null;
+  pausedTargetRepoRoot?: string | null;
   workerLastStartedAt?: string | null;
   assigneeKind?: 'manager' | 'worker' | null;
   assigneeLabel?: string | null;
@@ -287,6 +291,7 @@ function normalizeWorkerRuntimeState(
 ): ManagerWorkerRuntimeState | null {
   if (
     value === 'manager-answering' ||
+    value === 'manager-recovery' ||
     value === 'worker-running' ||
     value === 'blocked-by-scope' ||
     value === 'cancelled-as-superseded'

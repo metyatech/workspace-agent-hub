@@ -86,6 +86,7 @@ import {
   execGit,
   findGitRoot,
   runPostMergeDeliveryChain,
+  syncCanonicalCheckoutToRemoteBranch,
   validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
@@ -287,6 +288,9 @@ export interface ManagerSession {
   /** Latest manager-runtime error surfaced to the GUI. */
   lastErrorMessage: string | null;
   lastErrorAt: string | null;
+  /** Latest manager-runtime pause surfaced to the GUI. */
+  lastPauseMessage: string | null;
+  lastPauseAt: string | null;
   /** Active manager/worker assignments currently running for queued work items. */
   activeAssignments: ManagerActiveAssignment[];
 }
@@ -312,7 +316,7 @@ export interface ManagerActiveAssignment {
   workingDirectory: string | null;
 }
 
-export type ManagerHealth = 'ok' | 'error';
+export type ManagerHealth = 'ok' | 'error' | 'paused';
 const MANAGER_RECONCILE_GRACE_MS = 15 * 1000;
 const MAX_PARALLEL_WORKER_AGENTS = 3;
 const MAX_PARALLEL_MANAGER_ASSIGNMENTS = 1;
@@ -469,6 +473,8 @@ function makeDefaultSession(dir: string): ManagerSession {
     lastProgressAt: null,
     lastErrorMessage: null,
     lastErrorAt: null,
+    lastPauseMessage: null,
+    lastPauseAt: null,
     activeAssignments: [],
   };
 }
@@ -871,6 +877,29 @@ async function setManagerRuntimeError(
     lastErrorMessage: message,
     lastErrorAt: new Date().toISOString(),
   }));
+}
+
+async function setManagerRuntimePause(
+  dir: string,
+  message: string
+): Promise<void> {
+  await updateSession(dir, (session) => ({
+    ...session,
+    lastPauseMessage: message,
+    lastPauseAt: new Date().toISOString(),
+  }));
+}
+
+async function clearManagerRuntimePause(dir: string): Promise<void> {
+  await updateSession(dir, (session) =>
+    session.lastPauseMessage === null && session.lastPauseAt === null
+      ? session
+      : {
+          ...session,
+          lastPauseMessage: null,
+          lastPauseAt: null,
+        }
+  );
 }
 
 export async function readQueue(dir: string): Promise<QueueEntry[]> {
@@ -3284,6 +3313,16 @@ async function runCodexTurn(input: {
   });
 }
 
+class ManagerCodexUsageLimitError extends Error {
+  readonly combinedOutput: string;
+
+  constructor(message: string, combinedOutput: string) {
+    super(message);
+    this.name = 'ManagerCodexUsageLimitError';
+    this.combinedOutput = combinedOutput;
+  }
+}
+
 function isCodexUsageLimitError(output: string): boolean {
   const normalized = output.trim();
   if (!normalized) {
@@ -3292,6 +3331,13 @@ function isCodexUsageLimitError(output: string): boolean {
   return /usage limit|purchase more credits|upgrade to (?:plus|pro)|try again at/i.test(
     normalized
   );
+}
+
+function buildManagerCodexUsageLimitMessage(output: string): string {
+  const detail =
+    extractRuntimeFailureDetail(output, 280) ??
+    'Manager Codex hit its usage limit.';
+  return `[Manager paused] Manager Codex が usage limit に達したため停止しました。${detail}\n課金が終わったら「再開」を押すか、メッセージ送信で再開してください。`;
 }
 
 async function runManagerRuntimeTurn(input: {
@@ -3309,36 +3355,19 @@ async function runManagerRuntimeTurn(input: {
   stdout: string;
   stderr: string;
   parsed: { text: string; sessionId: string | null };
-  runtime: 'codex' | 'claude';
+  runtime: 'codex';
 }> {
   const codexResult = await runCodexTurn(input);
   const combinedOutput = `${codexResult.stdout}\n${codexResult.stderr}`;
-  if (codexResult.code === 0 || !isCodexUsageLimitError(combinedOutput)) {
-    return { ...codexResult, runtime: 'codex' };
+  if (codexResult.code !== 0 && isCodexUsageLimitError(combinedOutput)) {
+    throw new ManagerCodexUsageLimitError(
+      buildManagerCodexUsageLimitMessage(combinedOutput),
+      combinedOutput
+    );
   }
-
-  const claudeDefaults = workerRuntimeDefaults('claude');
-  const claudeResult = await runWorkerRuntimeTurn({
-    runtime: 'claude',
-    model: claudeDefaults.model,
-    effort: claudeDefaults.effort,
-    dir: input.dir,
-    resolvedDir: input.resolvedDir,
-    prompt: input.prompt,
-    sessionId: null,
-    runMode: input.runMode,
-    threadStartedText: input.threadStartedText,
-    imagePaths: input.imagePaths,
-    onSpawn: input.onSpawn,
-    onProgress: input.onProgress,
-  });
   return {
-    ...claudeResult,
-    parsed: {
-      ...claudeResult.parsed,
-      sessionId: null,
-    },
-    runtime: 'claude',
+    ...codexResult,
+    runtime: 'codex',
   };
 }
 
@@ -3621,6 +3650,51 @@ async function clearThreadRuntimeStatePreservingContinuity(
   await updateManagerThreadMeta(dir, threadId, (current) =>
     stripManagerRuntimeStatePreservingContinuity(current)
   );
+}
+
+interface PausedWorktreeSnapshot {
+  assignmentId: string;
+  worktreePath: string;
+  worktreeBranch: string;
+  targetRepoRoot: string;
+}
+
+async function preservePausedWorktreeForThread(
+  dir: string,
+  threadId: string,
+  assignment: ManagerActiveAssignment
+): Promise<void> {
+  if (
+    !assignment.worktreePath ||
+    !assignment.worktreeBranch ||
+    !assignment.targetRepoRoot
+  ) {
+    return;
+  }
+  await updateManagerThreadMeta(dir, threadId, (current) => ({
+    ...(current ?? {}),
+    pausedAssignmentId: assignment.id,
+    pausedWorktreePath: assignment.worktreePath,
+    pausedWorktreeBranch: assignment.worktreeBranch,
+    pausedTargetRepoRoot: assignment.targetRepoRoot,
+  }));
+}
+
+async function clearPausedWorktreeForThread(
+  dir: string,
+  threadId: string
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    if (!current) {
+      return null;
+    }
+    const next = { ...current };
+    delete next.pausedAssignmentId;
+    delete next.pausedWorktreePath;
+    delete next.pausedWorktreeBranch;
+    delete next.pausedTargetRepoRoot;
+    return next;
+  });
 }
 
 async function withRoutingLock<T>(
@@ -4008,6 +4082,8 @@ async function reserveAssignment(input: {
     priorityStreak: input.priorityStreak,
     lastErrorMessage: null,
     lastErrorAt: null,
+    lastPauseMessage: null,
+    lastPauseAt: null,
   }));
 }
 
@@ -5448,6 +5524,25 @@ async function runQueuedAssignment(input: {
             return;
           }
 
+          const canonicalSyncResult = await syncCanonicalCheckoutToRemoteBranch(
+            {
+              targetRepoRoot,
+              remoteName: integrationWorktree.remoteName,
+              remoteBranch: integrationWorktree.remoteBranch,
+            }
+          );
+          if (!canonicalSyncResult.success) {
+            console.warn(
+              '[manager-backend] Canonical checkout sync failed:',
+              canonicalSyncResult.detail
+            );
+          } else if (!canonicalSyncResult.synced) {
+            console.warn(
+              '[manager-backend] Canonical checkout sync skipped:',
+              canonicalSyncResult.detail
+            );
+          }
+
           if (deliveryAheadCommitCount > 0) {
             await appendWorkerLiveOutput({
               dir: resolvedDir,
@@ -5617,6 +5712,28 @@ async function runQueuedAssignment(input: {
       (current) => current.id === assignment.id
     );
     if (!stillTracked) {
+      return;
+    }
+
+    if (error instanceof ManagerCodexUsageLimitError) {
+      await preservePausedWorktreeForThread(resolvedDir, thread.id, assignment);
+      await clearWorkerLiveOutput(
+        resolvedDir,
+        thread.id,
+        assignment.assigneeKind,
+        assignment.assigneeLabel,
+        {
+          workerAgentId: assignment.id,
+          runtimeState: null,
+          runtimeDetail: null,
+          workerWriteScopes: assignment.writeScopes,
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+        }
+      );
+      await removeAssignment(dir, assignment.id);
+      await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
+      await setManagerRuntimePause(dir, error.message);
       return;
     }
 
@@ -6169,13 +6286,33 @@ export async function processNextQueued(
               targetRepoRoot: targetRepo,
             });
           } else {
-            const wt = await createWorkerWorktree({
-              targetRepoRoot: targetRepo,
-              assignmentId: assignment.id,
-            });
-            assignment.worktreePath = wt.worktreePath;
-            assignment.worktreeBranch = wt.branchName;
-            assignment.targetRepoRoot = wt.targetRepoRoot;
+            const pausedWorktreeReusable =
+              threadMeta?.pausedAssignmentId === assignment.id &&
+              typeof threadMeta.pausedWorktreePath === 'string' &&
+              threadMeta.pausedWorktreePath.trim() &&
+              typeof threadMeta.pausedWorktreeBranch === 'string' &&
+              threadMeta.pausedWorktreeBranch.trim() &&
+              typeof threadMeta.pausedTargetRepoRoot === 'string' &&
+              resolvePath(threadMeta.pausedTargetRepoRoot) ===
+                resolvePath(targetRepo) &&
+              existsSync(threadMeta.pausedWorktreePath);
+            if (pausedWorktreeReusable) {
+              assignment.worktreePath = threadMeta!.pausedWorktreePath!.trim();
+              assignment.worktreeBranch =
+                threadMeta!.pausedWorktreeBranch!.trim();
+              assignment.targetRepoRoot =
+                threadMeta!.pausedTargetRepoRoot!.trim();
+              await clearPausedWorktreeForThread(resolvedDir, thread.id);
+            } else {
+              await clearPausedWorktreeForThread(resolvedDir, thread.id);
+              const wt = await createWorkerWorktree({
+                targetRepoRoot: targetRepo,
+                assignmentId: assignment.id,
+              });
+              assignment.worktreePath = wt.worktreePath;
+              assignment.worktreeBranch = wt.branchName;
+              assignment.targetRepoRoot = wt.targetRepoRoot;
+            }
           }
 
           const workerRoot =
@@ -6293,6 +6430,29 @@ export async function processNextQueued(
             }
           }
         } catch (wtErr) {
+          if (wtErr instanceof ManagerCodexUsageLimitError) {
+            await preservePausedWorktreeForThread(
+              resolvedDir,
+              thread.id,
+              assignment
+            );
+            await clearWorkerLiveOutput(
+              resolvedDir,
+              thread.id,
+              'worker',
+              assignment.assigneeLabel,
+              {
+                workerAgentId: null,
+                runtimeState: null,
+                runtimeDetail: null,
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+              }
+            );
+            await setManagerRuntimePause(dir, wtErr.message);
+            return;
+          }
           const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
           try {
             await addMessage(
@@ -6375,6 +6535,10 @@ export async function processNextQueued(
       });
     }
   } catch (err) {
+    if (err instanceof ManagerCodexUsageLimitError) {
+      await setManagerRuntimePause(dir, err.message);
+      return;
+    }
     hadInternalError = true;
     console.error('[manager-backend] processNextQueued error:', err);
     try {
@@ -6551,13 +6715,24 @@ export async function sendGlobalToBuiltinManager(
         startedAt: currentSession.startedAt ?? new Date().toISOString(),
       }));
     }
+    await clearManagerRuntimePause(dir);
 
-    const { plan, routingSessionId } = await routeFreeformMessage({
-      dir,
-      resolvedDir,
-      content,
-      contextThreadId: options?.contextThreadId ?? null,
-    });
+    let routed: Awaited<ReturnType<typeof routeFreeformMessage>>;
+    try {
+      routed = await routeFreeformMessage({
+        dir,
+        resolvedDir,
+        content,
+        contextThreadId: options?.contextThreadId ?? null,
+      });
+    } catch (error) {
+      if (error instanceof ManagerCodexUsageLimitError) {
+        await setManagerRuntimePause(dir, error.message);
+        throw new Error(error.message);
+      }
+      throw error;
+    }
+    const { plan, routingSessionId } = routed;
 
     await updateSession(dir, (session) => ({
       ...session,
@@ -6884,6 +7059,21 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
         startedAt: currentSession.startedAt ?? new Date().toISOString(),
       }));
     }
+    if (latestSession.lastPauseMessage) {
+      return {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'paused',
+        detail: 'Manager Codex の利用上限で停止中です',
+        pendingCount: pending,
+        currentQueueId: null,
+        currentThreadId: null,
+        currentThreadTitle: null,
+        errorMessage: latestSession.lastPauseMessage,
+        errorAt: latestSession.lastPauseAt,
+      };
+    }
     if (latestSession.lastErrorMessage) {
       return {
         running: true,
@@ -6914,6 +7104,22 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       currentThreadTitle: null,
       errorMessage: null,
       errorAt: null,
+    };
+  }
+
+  if (session.lastPauseMessage) {
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'paused',
+      detail: 'Manager Codex の利用上限で停止中です',
+      pendingCount: pending,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+      errorMessage: session.lastPauseMessage,
+      errorAt: session.lastPauseAt,
     };
   }
 
@@ -6959,6 +7165,7 @@ export async function startBuiltinManager(
       startedAt: new Date().toISOString(),
     }));
   }
+  await clearManagerRuntimePause(dir);
   void processNextQueued(dir, resolvePath(dir));
   return { started: true, detail: 'ビルトインマネージャーを起動しました' };
 }
@@ -6987,6 +7194,7 @@ export async function sendToBuiltinManager(
       startedAt: new Date().toISOString(),
     }));
   }
+  await clearManagerRuntimePause(dir);
   await enqueueMessage(dir, threadId, content, options);
   void processNextQueued(dir, resolvePath(dir));
 }

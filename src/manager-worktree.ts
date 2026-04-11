@@ -2,10 +2,12 @@
  * Git worktree lifecycle management for worker isolation.
  *
  * Every worker agent runs in an isolated git worktree created from the
- * target repository's HEAD.  After the worker (and the Manager review step)
- * finishes, the worktree branch is merged back to the main branch by the
- * Manager backend.  This module owns: create, merge, conflict-resolution,
- * push, remove, and orphan-cleanup operations.
+ * latest tracked base branch when available (falling back to the current
+ * HEAD only when the checkout has no tracked base). After the worker (and
+ * the Manager review step) finishes, the worktree branch is merged back by
+ * the Manager backend. This module owns: create, merge,
+ * conflict-resolution, push, canonical-checkout sync, remove, and
+ * orphan-cleanup operations.
  */
 
 import { spawn } from 'child_process';
@@ -21,7 +23,6 @@ import {
   unlink,
   writeFile,
 } from 'fs/promises';
-import { tmpdir } from 'os';
 import { dirname, join, relative, resolve as resolvePath, sep } from 'path';
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,25 @@ export interface PostMergeDeliveryResult {
   success: boolean;
   detail: string;
   performed: string[];
+}
+
+export interface CanonicalCheckoutSyncResult {
+  success: boolean;
+  synced: boolean;
+  skipped: boolean;
+  reason:
+    | 'synced'
+    | 'dirty'
+    | 'detached-head'
+    | 'branch-mismatch'
+    | 'git-operation-in-progress'
+    | 'not-fast-forwardable'
+    | 'status-failed'
+    | 'branch-check-failed'
+    | 'fetch-failed'
+    | 'remote-ref-missing'
+    | 'merge-failed';
+  detail: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +390,36 @@ async function gitRefExists(cwd: string, ref: string): Promise<boolean> {
   return result?.code === 0;
 }
 
+async function resolveGitPath(
+  cwd: string,
+  gitPath: string
+): Promise<string | null> {
+  const result = await execGit(cwd, ['rev-parse', '--git-path', gitPath]).catch(
+    () => null
+  );
+  if (result?.code !== 0 || !result.stdout.trim()) {
+    return null;
+  }
+  return resolvePath(cwd, result.stdout.trim());
+}
+
+async function hasGitOperationInProgress(cwd: string): Promise<boolean> {
+  const sentinelPaths = [
+    'MERGE_HEAD',
+    'CHERRY_PICK_HEAD',
+    'REVERT_HEAD',
+    'rebase-apply',
+    'rebase-merge',
+  ];
+  for (const sentinelPath of sentinelPaths) {
+    const resolvedPath = await resolveGitPath(cwd, sentinelPath);
+    if (resolvedPath && existsSync(resolvedPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 interface PublishablePackageInfo {
   name: string;
   version: string;
@@ -556,65 +606,6 @@ export async function prepareNewRepoWorkspace(input: {
 
 const ROOT_LOCAL_ENV_OVERLAY_PATTERN = /^\.env(?:\..+)?\.local$/;
 const GIT_WORKTREE_CONTROL_NAMES = new Set(['.git']);
-const DOTENV_ASSIGNMENT_PATTERN =
-  /^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.*)$/;
-const RELATIVE_LOCAL_ENV_PATH_PATTERN = /^\.\.?([\\/]|$)/;
-
-function rewriteRelativeLocalEnvValue(
-  rawValue: string,
-  targetRepoRoot: string
-): string {
-  const leadingWhitespaceMatch = rawValue.match(/^\s*/);
-  const trailingWhitespaceMatch = rawValue.match(/\s*$/);
-  const leadingWhitespace = leadingWhitespaceMatch?.[0] ?? '';
-  const trailingWhitespace = trailingWhitespaceMatch?.[0] ?? '';
-  const trimmedValue = rawValue.trim();
-  if (!trimmedValue) {
-    return rawValue;
-  }
-
-  let quote: '"' | "'" | null = null;
-  let innerValue = trimmedValue;
-  if (
-    (trimmedValue.startsWith('"') && trimmedValue.endsWith('"')) ||
-    (trimmedValue.startsWith("'") && trimmedValue.endsWith("'"))
-  ) {
-    quote = trimmedValue[0] as '"' | "'";
-    innerValue = trimmedValue.slice(1, -1);
-  }
-
-  if (!RELATIVE_LOCAL_ENV_PATH_PATTERN.test(innerValue)) {
-    return rawValue;
-  }
-
-  const normalizedValue = resolvePath(targetRepoRoot, innerValue);
-  const rewritten = quote
-    ? `${quote}${normalizedValue}${quote}`
-    : normalizedValue;
-  return `${leadingWhitespace}${rewritten}${trailingWhitespace}`;
-}
-
-function normalizeRootLocalEnvOverlayContent(
-  content: string,
-  targetRepoRoot: string
-): string {
-  const newline = content.includes('\r\n') ? '\r\n' : '\n';
-  return content
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) {
-        return line;
-      }
-      const match = line.match(DOTENV_ASSIGNMENT_PATTERN);
-      if (!match) {
-        return line;
-      }
-      const [, prefix, value] = match;
-      return `${prefix}${rewriteRelativeLocalEnvValue(value, targetRepoRoot)}`;
-    })
-    .join(newline);
-}
 
 async function copyRootLocalEnvOverlays(
   targetRepoRoot: string,
@@ -632,12 +623,7 @@ async function copyRootLocalEnvOverlays(
     }
     const sourcePath = join(targetRepoRoot, entry.name);
     const targetPath = join(worktreePath, entry.name);
-    const content = await readFile(sourcePath, 'utf8');
-    await writeFile(
-      targetPath,
-      normalizeRootLocalEnvOverlayContent(content, targetRepoRoot),
-      'utf8'
-    );
+    await copyFile(sourcePath, targetPath);
   }
 }
 
@@ -855,8 +841,11 @@ async function bootstrapIsolatedWorktree(
   await normalizeExternalWorktreeLinks({ worktreePath });
 }
 
-function allocateWorktreePath(baseName: string): string {
-  const basePath = join(tmpdir(), baseName);
+function allocateWorktreePath(
+  targetRepoRoot: string,
+  baseName: string
+): string {
+  const basePath = join(dirname(resolvePath(targetRepoRoot)), baseName);
   if (!existsSync(basePath)) {
     return basePath;
   }
@@ -1072,13 +1061,19 @@ export async function createWorkerWorktree(input: {
 }): Promise<WorktreeInfo> {
   const { targetRepoRoot, assignmentId } = input;
   const branchName = `wah-worker-${assignmentId}`;
-  const worktreePath = allocateWorktreePath(`wah-wt-${assignmentId}`);
+  const worktreePath = allocateWorktreePath(
+    targetRepoRoot,
+    `wah-wt-${assignmentId}`
+  );
+  const trackedBase = await resolveIntegrationBase({ targetRepoRoot }).catch(
+    () => null
+  );
 
   await createIsolatedWorktree({
     targetRepoRoot,
     worktreePath,
     branchName,
-    startPoint: 'HEAD',
+    startPoint: trackedBase?.startPoint ?? 'HEAD',
   });
 
   return { worktreePath, branchName, targetRepoRoot };
@@ -1094,7 +1089,10 @@ export async function createIntegrationWorktree(input: {
 }): Promise<IntegrationWorktreeInfo> {
   const { targetRepoRoot, assignmentId } = input;
   const branchName = `wah-merge-${assignmentId}`;
-  const worktreePath = allocateWorktreePath(`wah-merge-${assignmentId}`);
+  const worktreePath = allocateWorktreePath(
+    targetRepoRoot,
+    `wah-merge-${assignmentId}`
+  );
   const integrationBase = await resolveIntegrationBase({ targetRepoRoot });
 
   await createIsolatedWorktree({
@@ -1330,6 +1328,162 @@ export async function pushWithRetry(input: {
   }
 
   return { success: false, detail: 'max push retries exceeded' };
+}
+
+export async function syncCanonicalCheckoutToRemoteBranch(input: {
+  targetRepoRoot: string;
+  remoteName: string;
+  remoteBranch: string;
+}): Promise<CanonicalCheckoutSyncResult> {
+  const { targetRepoRoot, remoteName, remoteBranch } = input;
+  return withMergeLock(targetRepoRoot, async () => {
+    const statusResult = await execGit(targetRepoRoot, [
+      'status',
+      '--porcelain',
+    ]);
+    if (statusResult.code !== 0) {
+      return {
+        success: false,
+        synced: false,
+        skipped: false,
+        reason: 'status-failed',
+        detail: summarizeCommandFailure('git status --porcelain', statusResult),
+      };
+    }
+    if (statusResult.stdout.trim()) {
+      return {
+        success: true,
+        synced: false,
+        skipped: true,
+        reason: 'dirty',
+        detail:
+          'Skipped canonical checkout sync because the checkout has local changes.',
+      };
+    }
+
+    if (await hasGitOperationInProgress(targetRepoRoot)) {
+      return {
+        success: true,
+        synced: false,
+        skipped: true,
+        reason: 'git-operation-in-progress',
+        detail:
+          'Skipped canonical checkout sync because another git operation is already in progress.',
+      };
+    }
+
+    const branchResult = await execGit(targetRepoRoot, [
+      'branch',
+      '--show-current',
+    ]);
+    if (branchResult.code !== 0) {
+      return {
+        success: false,
+        synced: false,
+        skipped: false,
+        reason: 'branch-check-failed',
+        detail: summarizeCommandFailure(
+          'git branch --show-current',
+          branchResult
+        ),
+      };
+    }
+    const currentBranch = branchResult.stdout.trim();
+    if (!currentBranch) {
+      return {
+        success: true,
+        synced: false,
+        skipped: true,
+        reason: 'detached-head',
+        detail:
+          'Skipped canonical checkout sync because the checkout is detached.',
+      };
+    }
+    if (currentBranch !== remoteBranch) {
+      return {
+        success: true,
+        synced: false,
+        skipped: true,
+        reason: 'branch-mismatch',
+        detail: `Skipped canonical checkout sync because the checkout is on '${currentBranch}' instead of '${remoteBranch}'.`,
+      };
+    }
+
+    const fetchResult = await execGit(targetRepoRoot, [
+      'fetch',
+      remoteName,
+      remoteBranch,
+    ]);
+    if (fetchResult.code !== 0) {
+      return {
+        success: false,
+        synced: false,
+        skipped: false,
+        reason: 'fetch-failed',
+        detail: summarizeCommandFailure(
+          `git fetch ${remoteName} ${remoteBranch}`,
+          fetchResult
+        ),
+      };
+    }
+
+    const remoteRef = `refs/remotes/${remoteName}/${remoteBranch}`;
+    if (!(await gitRefExists(targetRepoRoot, remoteRef))) {
+      return {
+        success: false,
+        synced: false,
+        skipped: false,
+        reason: 'remote-ref-missing',
+        detail: `Remote ref ${remoteRef} is missing after fetch.`,
+      };
+    }
+
+    const mergeResult = await execGit(targetRepoRoot, [
+      'merge',
+      '--ff-only',
+      remoteRef,
+    ]);
+    if (mergeResult.code === 0) {
+      return {
+        success: true,
+        synced: true,
+        skipped: false,
+        reason: 'synced',
+        detail:
+          mergeResult.stdout.trim() ||
+          mergeResult.stderr.trim() ||
+          `Fast-forwarded ${currentBranch} to ${remoteRef}.`,
+      };
+    }
+
+    const mergeDetail =
+      mergeResult.stderr.trim() ||
+      mergeResult.stdout.trim() ||
+      `git merge --ff-only exited with code ${mergeResult.code ?? '?'}.`;
+    if (
+      mergeDetail.includes('Not possible to fast-forward') ||
+      mergeDetail.includes('fast-forward')
+    ) {
+      return {
+        success: true,
+        synced: false,
+        skipped: true,
+        reason: 'not-fast-forwardable',
+        detail: `Skipped canonical checkout sync because '${currentBranch}' is not a fast-forward of ${remoteRef}: ${mergeDetail}`,
+      };
+    }
+
+    return {
+      success: false,
+      synced: false,
+      skipped: false,
+      reason: 'merge-failed',
+      detail: summarizeCommandFailure(
+        `git merge --ff-only ${remoteRef}`,
+        mergeResult
+      ),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1806,7 +1960,10 @@ async function cleanupUnregisteredTempWorktrees(input: {
   activeAssignmentIds: string[];
   tempRoot?: string;
 }): Promise<void> {
-  const tempRoot = input.tempRoot ?? tmpdir();
+  const tempRoot = input.tempRoot;
+  if (!tempRoot) {
+    return;
+  }
   let tempEntries: Dirent[];
   try {
     tempEntries = await readdir(tempRoot, { withFileTypes: true });
@@ -1925,7 +2082,7 @@ async function cleanupInactiveRemoteTempBranches(input: {
 
 /**
  * Remove worktrees whose assignment ID is no longer active.
- * Removes both git-registered orphaned worktrees and stray temp directories
+ * Removes both git-registered orphaned worktrees and stray managed directories
  * left behind after earlier cleanup failures.
  */
 export async function cleanupOrphanedWorktrees(
@@ -1975,7 +2132,7 @@ export async function cleanupOrphanedWorktrees(
   await cleanupUnregisteredTempWorktrees({
     registeredWorktreePaths,
     activeAssignmentIds,
-    tempRoot: options?.tempRoot,
+    tempRoot: options?.tempRoot ?? dirname(resolvePath(targetRepoRoot)),
   });
 
   await cleanupInactiveRemoteTempBranches({

@@ -45,6 +45,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [],
@@ -100,6 +102,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: '2026-03-21T00:00:12.000Z',
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [
           {
             id: 'assign-working',
@@ -187,6 +191,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: '2026-04-09T10:58:00.000Z',
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [
           {
             id: 'assign-retrying',
@@ -278,6 +284,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: '2026-04-09T10:58:00.000Z',
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [
           {
             id: 'assign-working',
@@ -377,6 +385,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [
@@ -451,6 +461,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [
@@ -525,6 +537,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [
@@ -598,6 +612,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [
@@ -648,6 +664,8 @@ describe('manager thread state derivation', () => {
         lastProgressAt: null,
         lastErrorMessage: null,
         lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
         activeAssignments: [],
       },
       queue: [],
@@ -700,6 +718,8 @@ describe('manager thread state derivation', () => {
           lastProgressAt: null,
           lastErrorMessage: null,
           lastErrorAt: null,
+          lastPauseMessage: null,
+          lastPauseAt: null,
           activeAssignments: [],
         },
         queue: [],
