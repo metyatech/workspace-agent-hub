@@ -449,7 +449,7 @@ function shouldIncludeInManagerThreadViews(input: {
   ) {
     return true;
   }
-  return lastSender(input.thread) === 'ai';
+  return true;
 }
 
 function deriveUiState(input: {

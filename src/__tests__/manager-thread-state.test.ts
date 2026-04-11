@@ -656,7 +656,7 @@ describe('manager thread state derivation', () => {
     expect(views[0]?.uiState).toBe('queued');
   });
 
-  it('does not treat continuity-only metadata as a queued AI footprint', () => {
+  it('keeps manager-owned waiting topics visible even when only continuity metadata remains', () => {
     const views = deriveManagerThreadViews({
       threads: [
         {
@@ -706,7 +706,9 @@ describe('manager thread state derivation', () => {
       },
     });
 
-    expect(views).toEqual([]);
+    expect(views).toHaveLength(1);
+    expect(views[0]?.id).toBe('thread-continuity-only');
+    expect(views[0]?.uiState).toBe('queued');
   });
 
   it('excludes non-manager threads even when their statuses would otherwise map into manager buckets', () => {
