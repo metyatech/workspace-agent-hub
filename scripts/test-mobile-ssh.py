@@ -65,6 +65,10 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
+def normalize_wrapped_terminal_text(text: str) -> str:
+    return "".join(strip_ansi(text).split())
+
+
 def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -276,6 +280,20 @@ class InteractiveSsh:
             time.sleep(0.05)
         raise RuntimeError(f"Timed out waiting for '{needle}'.\nOutput tail:\n{self.output()[-4000:]}")
 
+    def wait_for_wrapped_path(self, path_text: str, timeout_seconds: float, *, after: int = 0) -> str:
+        normalized_needle = normalize_wrapped_terminal_text(path_text)
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            stdout_text = self.stdout_output()
+            normalized_output = normalize_wrapped_terminal_text(stdout_text[after:])
+            if normalized_needle in normalized_output:
+                return stdout_text
+            if self.process.poll() is not None:
+                time.sleep(0.2)
+                raise RuntimeError(f"SSH process exited before '{path_text}' appeared.\nOutput:\n{self.output()}")
+            time.sleep(0.05)
+        raise RuntimeError(f"Timed out waiting for '{path_text}' with wrapped-path matching.\nOutput tail:\n{self.output()[-4000:]}")
+
     def send(self, text: str) -> None:
         if not self.process.stdin:
             raise RuntimeError("SSH stdin is unavailable.")
@@ -449,7 +467,7 @@ def assert_pc_to_mobile_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[s
         selected_index = parse_session_index(output, f"Matrix PC Mobile {suffix}", str(WORKSPACE_ROOT))
         after = ssh.checkpoint()
         ssh.send(f"{selected_index}\n")
-        ssh.wait_for(to_wsl_path(WORKSPACE_ROOT), 15, after=after)
+        ssh.wait_for_wrapped_path(to_wsl_path(WORKSPACE_ROOT), 15, after=after)
         disconnect_ssh(ssh)
     finally:
         if ssh.process.poll() is None:
@@ -478,7 +496,7 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
 
         after = ssh.checkpoint()
         ssh.send(f"{to_wsl_path(REPO_ROOT)}\n")
-        ssh.wait_for(to_wsl_path(REPO_ROOT), 15, after=after)
+        ssh.wait_for_wrapped_path(to_wsl_path(REPO_ROOT), 15, after=after)
 
         disconnect_ssh(ssh)
     finally:
@@ -525,7 +543,7 @@ def assert_multi_session_selection_flow(sshd: TemporarySshd, cleanup_sessions: s
         selected_index = parse_session_index(output, f"Matrix Pick B {suffix}", str(REPO_ROOT))
         after = ssh.checkpoint()
         ssh.send(f"{selected_index}\n")
-        ssh.wait_for(to_wsl_path(REPO_ROOT), 15, after=after)
+        ssh.wait_for_wrapped_path(to_wsl_path(REPO_ROOT), 15, after=after)
         disconnect_ssh(ssh)
     finally:
         if ssh.process.poll() is None:

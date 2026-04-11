@@ -79,6 +79,9 @@ It provides:
    automatically if that background process exits. It now waits on the managed
    Hub PID so unexpected exits trigger an immediate restart instead of waiting
    for the next periodic health pass.
+   The installed shortcuts also persist the current canonical workspace root, so
+   the live Hub keeps reading the real `.threads.jsonl`, `.tasks.jsonl`, and
+   Manager queue files even if the runtime checkout lives elsewhere.
 
    This is the canonical day-to-day entrypoint. The installer also removes the
    old `AI Agent Sessions` shortcut if it still exists on this PC.
@@ -174,6 +177,8 @@ directory, pass the canonical workspace explicitly with `-WorkspaceRoot` (or set
 `WORKSPACE_AGENT_HUB_WORKSPACE_ROOT`) so Hub keeps reading the real
 `.threads.jsonl`, `.tasks.jsonl`, and Manager queue files instead of inferring a
 temporary parent directory.
+The shortcut installer now embeds that same workspace root into the Desktop,
+Start Menu, and Startup entries automatically.
 
 When it needs to replace an existing phone-ready instance, it now starts the
 replacement in the background, waits for it to become healthy, and only then

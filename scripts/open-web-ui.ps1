@@ -1,7 +1,8 @@
 param(
     [int]$Port = 3360,
     [string]$StatePath = '',
-    [string]$AuthToken = ''
+    [string]$AuthToken = '',
+    [string]$WorkspaceRoot = ''
 )
 
 Set-StrictMode -Version Latest
@@ -12,7 +13,17 @@ if (-not (Test-Path -Path $ensureScriptPath)) {
     throw "Missing script: $ensureScriptPath"
 }
 
-& $ensureScriptPath -OpenBrowser -Port $Port -StatePath $StatePath -AuthToken $AuthToken
+$arguments = @{
+    OpenBrowser = $true
+    Port = $Port
+    StatePath = $StatePath
+    AuthToken = $AuthToken
+}
+if ($WorkspaceRoot -and $WorkspaceRoot.Trim()) {
+    $arguments['WorkspaceRoot'] = $WorkspaceRoot.Trim()
+}
+
+& $ensureScriptPath @arguments
 if ($LASTEXITCODE -ne 0) {
     throw 'Workspace Agent Hub could not be opened.'
 }

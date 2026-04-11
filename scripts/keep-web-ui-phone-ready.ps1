@@ -2,6 +2,7 @@ param(
     [int]$Port = 3360,
     [string]$AuthToken = '',
     [string]$StatePath = '',
+    [string]$WorkspaceRoot = '',
     [int]$IntervalSeconds = 60,
     [int]$MaxIterations = 0,
     [switch]$OpenBrowser,
@@ -139,6 +140,18 @@ function Get-StateString {
     }
 
     return ([string]$State.$PropertyName).Trim()
+}
+
+function Resolve-NormalizedPath {
+    param(
+        [string]$PathText
+    )
+
+    if (-not $PathText -or -not $PathText.Trim()) {
+        return ''
+    }
+
+    return [IO.Path]::GetFullPath($PathText.Trim())
 }
 
 function Get-TailscaleServeProxyTarget {
@@ -301,6 +314,11 @@ function Get-ResolvedWorkspaceRootForEnsure {
         [string]$TargetStatePath
     )
 
+    $explicitRoot = Resolve-NormalizedPath -PathText $WorkspaceRoot
+    if ($explicitRoot) {
+        return $explicitRoot
+    }
+
     $state = Read-State -TargetStatePath $TargetStatePath
     if (
         $state -and
@@ -308,14 +326,14 @@ function Get-ResolvedWorkspaceRootForEnsure {
         $state.WorkspaceRoot -and
         ([string]$state.WorkspaceRoot).Trim()
     ) {
-        return ([string]$state.WorkspaceRoot).Trim()
+        return (Resolve-NormalizedPath -PathText ([string]$state.WorkspaceRoot))
     }
 
     if (
         $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT -and
         $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT.Trim()
     ) {
-        return $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT.Trim()
+        return (Resolve-NormalizedPath -PathText $env:WORKSPACE_AGENT_HUB_WORKSPACE_ROOT)
     }
 
     return ''

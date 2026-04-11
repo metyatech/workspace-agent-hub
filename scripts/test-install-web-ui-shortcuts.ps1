@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path $PSScriptRoot 'install-web-ui-shortcuts.ps1'
+$expectedWorkspaceRoot = Split-Path -Parent ((Resolve-Path (Join-Path $PSScriptRoot '..')).Path)
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("wah-shortcuts-" + [Guid]::NewGuid().ToString('N'))
 $desktopPath = Join-Path $tempRoot 'Desktop'
 $programsPath = Join-Path $tempRoot 'Programs'
@@ -25,7 +26,7 @@ try {
     $env:WORKSPACE_AGENT_HUB_SHORTCUTS_PROGRAMS_PATH = $programsPath
     $env:WORKSPACE_AGENT_HUB_SHORTCUTS_STARTUP_PATH = $startupPath
 
-    & $scriptPath | Out-Null
+    & $scriptPath -WorkspaceRoot $expectedWorkspaceRoot | Out-Null
 
     $expectedShortcuts = @(
         (Join-Path $desktopPath 'Workspace Agent Hub.lnk'),
@@ -40,9 +41,22 @@ try {
     }
 
     $shell = New-Object -ComObject WScript.Shell
+    $desktopShortcut = $shell.CreateShortcut((Join-Path $desktopPath 'Workspace Agent Hub.lnk'))
+    if ([string]$desktopShortcut.Arguments -notmatch '(?i)-WorkspaceRoot') {
+        throw 'Expected the Desktop shortcut to persist the workspace root.'
+    }
+    if ([string]$desktopShortcut.Arguments -notmatch [regex]::Escape($expectedWorkspaceRoot)) {
+        throw "Expected the Desktop shortcut to point at workspace root $expectedWorkspaceRoot."
+    }
     $backgroundShortcut = $shell.CreateShortcut((Join-Path $startupPath 'Workspace Agent Hub Background.lnk'))
     if ([string]$backgroundShortcut.Arguments -notmatch '(?i)keep-web-ui-phone-ready\.ps1') {
         throw 'Expected the Startup shortcut to launch the phone-ready watchdog.'
+    }
+    if ([string]$backgroundShortcut.Arguments -notmatch '(?i)-WorkspaceRoot') {
+        throw 'Expected the Startup shortcut to persist the workspace root.'
+    }
+    if ([string]$backgroundShortcut.Arguments -notmatch [regex]::Escape($expectedWorkspaceRoot)) {
+        throw "Expected the Startup shortcut to point at workspace root $expectedWorkspaceRoot."
     }
 
     foreach ($legacyPath in @($desktopLegacyPath, $programsLegacyPath)) {

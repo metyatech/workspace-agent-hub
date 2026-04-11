@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path $PSScriptRoot 'keep-web-ui-phone-ready.ps1'
+$currentWorkspaceRoot = Split-Path -Parent ((Resolve-Path (Join-Path $PSScriptRoot '..')).Path)
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("wah-phone-ready-" + [Guid]::NewGuid().ToString('N'))
 $statePath = Join-Path $tempRoot 'state\hub.json'
 $counterPath = Join-Path $tempRoot 'counter.txt'
@@ -104,6 +105,7 @@ param(
     [int]$Port = 3360,
     [string]$AuthToken = '',
     [string]$StatePath = '',
+    [string]$WorkspaceRoot = '',
     [switch]$PhoneReady,
     [switch]$OpenBrowser
 )
@@ -128,6 +130,12 @@ if (-not $PhoneReady) {
 }
 if (-not $StatePath) {
     throw 'Expected watchdog to pass a state path.'
+}
+$expectedWorkspaceRoot = [Environment]::GetEnvironmentVariable('WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT', 'Process')
+if (-not [string]::IsNullOrWhiteSpace($expectedWorkspaceRoot)) {
+    if ([IO.Path]::GetFullPath($WorkspaceRoot) -ne [IO.Path]::GetFullPath($expectedWorkspaceRoot)) {
+        throw "Expected WorkspaceRoot '$expectedWorkspaceRoot' but got '$WorkspaceRoot'."
+    }
 }
 
 $writeStateWithSleeper = [Environment]::GetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER', 'Process')
@@ -230,6 +238,7 @@ $previousCounterPath = $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH
 $previousWriteStateWithSleeper = $env:WORKSPACE_AGENT_HUB_TEST_WRITE_STATE_WITH_SLEEPER
 $previousSleeperMs = $env:WORKSPACE_AGENT_HUB_TEST_SLEEPER_MS
 $previousTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
+$previousExpectedWorkspaceRoot = $env:WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT
 $testPassed = $false
 $firstProcess = $null
 $managerStatusJob = $null
@@ -238,6 +247,7 @@ $frontDoorHealthyJob = $null
 $frontDoorStaleServeJob = $null
 
 try {
+    [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT', $currentWorkspaceRoot, 'Process')
     $activeStatePath = Join-Path $tempRoot 'active-state\hub.json'
     $activeCounterPath = Join-Path $tempRoot 'active-counter.txt'
     $activeStatusPort = Get-FreeTcpPort
@@ -261,6 +271,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $activeStatePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 1 `
         -MaxIterations 1
 
@@ -294,6 +305,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $directPromoteStatePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 1 `
         -MaxIterations 1
 
@@ -325,6 +337,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $staleServeStatePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 1 `
         -MaxIterations 1
 
@@ -339,6 +352,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 1 `
         -MaxIterations 2
 
@@ -359,6 +373,8 @@ https://agent-hub.example.ts.net (tailnet only)
             $mockEnsurePath,
             '-StatePath',
             $statePath,
+            '-WorkspaceRoot',
+            $currentWorkspaceRoot,
             '-IntervalSeconds',
             '3',
             '-MaxIterations',
@@ -386,6 +402,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 1 `
         -MaxIterations 1
 
@@ -408,6 +425,7 @@ https://agent-hub.example.ts.net (tailnet only)
     & $scriptPath `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
         -IntervalSeconds 30 `
         -MaxIterations 2
     $fastRecoveryStopwatch.Stop()
@@ -460,6 +478,12 @@ https://agent-hub.example.ts.net (tailnet only)
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $null, 'Process')
     } else {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $previousTailscaleServeStatusText, 'Process')
+    }
+
+    if ($null -eq $previousExpectedWorkspaceRoot) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT', $null, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT', $previousExpectedWorkspaceRoot, 'Process')
     }
 
     if (Test-Path -Path $statePath) {
