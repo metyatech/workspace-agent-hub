@@ -2848,6 +2848,86 @@ describe('manager backend codex integration', () => {
     ).toBe(true);
   });
 
+  it('dedupes duplicate active assignments with the same id and keeps the newest reservation', async () => {
+    await writeQueue(tempDir, [
+      {
+        id: 'q_duplicate',
+        threadId: 'thread-duplicate',
+        content: 'resume this assignment',
+        createdAt: new Date(Date.now() - 60 * 1000).toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      pid: process.pid,
+      currentQueueId: 'q_duplicate',
+      activeAssignments: [
+        {
+          id: 'assign-duplicate',
+          threadId: 'thread-duplicate',
+          queueEntryIds: ['q_duplicate'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: 'D:\\ghws\\workspace-agent-hub-mgr-old',
+          workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+          pid: process.pid,
+          startedAt: '2026-04-11T09:56:44.384Z',
+          lastProgressAt: '2026-04-11T09:56:45.000Z',
+          worktreePath: 'D:\\ghws\\workspace-agent-hub-mgr-old',
+          worktreeBranch: 'mgr/duplicate/old',
+          targetRepoRoot: tempDir,
+        },
+        {
+          id: 'assign-duplicate',
+          threadId: 'thread-duplicate',
+          queueEntryIds: ['q_duplicate'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: 'D:\\ghws\\workspace-agent-hub-mgr-new',
+          workerRuntime: 'codex',
+          workerModel: null,
+          workerEffort: null,
+          assigneeLabel: 'Worker agent gpt-5.4 (xhigh)',
+          writeScopes: ['workspace-agent-hub/src/manager-backend.ts'],
+          pid: process.pid,
+          startedAt: '2026-04-11T09:56:57.357Z',
+          lastProgressAt: '2026-04-11T09:56:58.000Z',
+          worktreePath: 'D:\\ghws\\workspace-agent-hub-mgr-new',
+          worktreeBranch: 'mgr/duplicate/new',
+          targetRepoRoot: tempDir,
+        },
+      ],
+    });
+    vi.mocked(dropManagerWorktree).mockResolvedValueOnce(true);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('ok');
+    expect(status.currentThreadId).toBe('thread-duplicate');
+    expect(vi.mocked(dropManagerWorktree)).toHaveBeenCalledWith({
+      worktreePath: 'D:\\ghws\\workspace-agent-hub-mgr-old',
+    });
+
+    const latestSession = await readSession(tempDir);
+    expect(latestSession.activeAssignments).toHaveLength(1);
+    expect(latestSession.activeAssignments[0]?.workingDirectory).toBe(
+      'D:\\ghws\\workspace-agent-hub-mgr-new'
+    );
+    expect(latestSession.activeAssignments[0]?.worktreeBranch).toBe(
+      'mgr/duplicate/new'
+    );
+  });
+
   it('clears stale error from manager status when idle with no active assignments', async () => {
     const session = await readSession(tempDir);
     await writeSession(tempDir, {

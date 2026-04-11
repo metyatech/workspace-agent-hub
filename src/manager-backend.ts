@@ -1213,8 +1213,8 @@ async function reconcileActiveAssignments(
     const queue = await readQueue(dir);
     const queueById = new Map(queue.map((entry) => [entry.id, entry]));
     let mutated = false;
-    survivingAssignments = [];
     droppedAssignments.length = 0;
+    const dedupedAssignments = new Map<string, ManagerActiveAssignment>();
 
     for (const assignment of session.activeAssignments) {
       const resolvedThreadId =
@@ -1232,25 +1232,33 @@ async function reconcileActiveAssignments(
         mutated = true;
       }
 
-      const latestObservedAt =
-        parseMessageTimestamp(normalizedAssignment.lastProgressAt) ??
-        parseMessageTimestamp(normalizedAssignment.startedAt) ??
-        Number.NEGATIVE_INFINITY;
-      const withinGraceWindow =
-        Number.isFinite(latestObservedAt) &&
-        Date.now() - latestObservedAt < MANAGER_RECONCILE_GRACE_MS;
-      const lostProcessReservation =
-        normalizedAssignment.pid === null && !withinGraceWindow;
-      if (
-        lostProcessReservation ||
-        (normalizedAssignment.pid !== null &&
-          !isPidAlive(normalizedAssignment.pid) &&
-          !withinGraceWindow)
-      ) {
-        droppedAssignments.push(normalizedAssignment);
+      const existingAssignment = dedupedAssignments.get(
+        normalizedAssignment.id
+      );
+      if (existingAssignment) {
+        mutated = true;
+        const preferredAssignment = choosePreferredAssignment(
+          existingAssignment,
+          normalizedAssignment
+        );
+        const duplicateAssignment =
+          preferredAssignment === existingAssignment
+            ? normalizedAssignment
+            : existingAssignment;
+        dedupedAssignments.set(normalizedAssignment.id, preferredAssignment);
+        droppedAssignments.push(duplicateAssignment);
         continue;
       }
-      survivingAssignments.push(normalizedAssignment);
+      dedupedAssignments.set(normalizedAssignment.id, normalizedAssignment);
+    }
+
+    survivingAssignments = [];
+    for (const assignment of dedupedAssignments.values()) {
+      if (!inspectAssignmentReservation(assignment).active) {
+        droppedAssignments.push(assignment);
+        continue;
+      }
+      survivingAssignments.push(assignment);
     }
 
     if (droppedAssignments.length === 0 && !mutated) {
@@ -4237,16 +4245,21 @@ async function reserveAssignment(input: {
   assignment: ManagerActiveAssignment;
   priorityStreak: number;
 }): Promise<void> {
-  await updateSession(input.dir, (session) => ({
-    ...session,
-    activeAssignments: [...session.activeAssignments, input.assignment],
-    lastMessageAt: new Date().toISOString(),
-    priorityStreak: input.priorityStreak,
-    lastErrorMessage: null,
-    lastErrorAt: null,
-    lastPauseMessage: null,
-    lastPauseAt: null,
-  }));
+  await updateSession(input.dir, (session) => {
+    const withoutSameAssignment = session.activeAssignments.filter(
+      (assignment) => assignment.id !== input.assignment.id
+    );
+    return {
+      ...session,
+      activeAssignments: [...withoutSameAssignment, input.assignment],
+      lastMessageAt: new Date().toISOString(),
+      priorityStreak: input.priorityStreak,
+      lastErrorMessage: null,
+      lastErrorAt: null,
+      lastPauseMessage: null,
+      lastPauseAt: null,
+    };
+  });
 }
 
 async function removeAssignment(
@@ -4285,6 +4298,53 @@ function parseMessageTimestamp(
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function inspectAssignmentReservation(assignment: ManagerActiveAssignment): {
+  latestObservedAt: number;
+  active: boolean;
+} {
+  const latestObservedAt =
+    parseMessageTimestamp(assignment.lastProgressAt) ??
+    parseMessageTimestamp(assignment.startedAt) ??
+    Number.NEGATIVE_INFINITY;
+  const withinGraceWindow =
+    Number.isFinite(latestObservedAt) &&
+    Date.now() - latestObservedAt < MANAGER_RECONCILE_GRACE_MS;
+  const active =
+    assignment.pid === null
+      ? withinGraceWindow
+      : isPidAlive(assignment.pid) || withinGraceWindow;
+  return {
+    latestObservedAt,
+    active,
+  };
+}
+
+function choosePreferredAssignment(
+  current: ManagerActiveAssignment,
+  candidate: ManagerActiveAssignment
+): ManagerActiveAssignment {
+  const currentReservation = inspectAssignmentReservation(current);
+  const candidateReservation = inspectAssignmentReservation(candidate);
+  if (currentReservation.active !== candidateReservation.active) {
+    return candidateReservation.active ? candidate : current;
+  }
+  if (
+    candidateReservation.latestObservedAt !==
+    currentReservation.latestObservedAt
+  ) {
+    return candidateReservation.latestObservedAt >
+      currentReservation.latestObservedAt
+      ? candidate
+      : current;
+  }
+
+  const currentStartedAt =
+    parseMessageTimestamp(current.startedAt) ?? Number.NEGATIVE_INFINITY;
+  const candidateStartedAt =
+    parseMessageTimestamp(candidate.startedAt) ?? Number.NEGATIVE_INFINITY;
+  return candidateStartedAt >= currentStartedAt ? candidate : current;
 }
 
 function hasSupersedingAiReply(thread: Thread, entries: QueueEntry[]): boolean {
