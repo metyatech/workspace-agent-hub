@@ -74,21 +74,25 @@ import {
 } from './manager-queue-priority.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
 import {
-  createIntegrationWorktree,
-  createWorkerWorktree,
-  mergeWorktreeToMain,
   prepareNewRepoWorkspace,
-  pushWithRetry,
   removeWorktree,
-  resolveConflictAndVerify,
   resolveTargetRepoRoot,
   cleanupOrphanedWorktrees,
   execGit,
   findGitRoot,
   runPostMergeDeliveryChain,
-  syncCanonicalCheckoutToRemoteBranch,
   validateWorktreeReadyForMerge,
 } from './manager-worktree.js';
+import {
+  cleanupOrphanedManagerWorktrees,
+  createManagerWorktree,
+  deliverManagerWorktree,
+  describeMwtError,
+  dropManagerWorktree,
+  isManagerManagedWorktreePath,
+  isManagedWorktreeRepository,
+  isMwtDeliverConflictError,
+} from './manager-mwt.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
 import {
   findManagedRepoByRoot,
@@ -159,7 +163,7 @@ const MANAGER_WORKER_SYSTEM_PROMPT =
   'After the Manager routes a user request into a topic, you must actually do the work in this repository when possible: inspect files, modify code, run verification, and continue until you either reach a reviewable result or need user input. ' +
   'Do not stop at acknowledgement-only replies. ' +
   'Return concise user-facing progress/result text, but only after you have genuinely attempted the work. ' +
-  'Implement and verify the task yourself, but in isolated Manager worktrees do not commit, push, release, or publish; the Manager backend handles delivery after review. ' +
+  'Implement and verify the task yourself, but in isolated Manager worktrees do not push, release, or publish; the Manager backend handles delivery after review. Commit only when the worktree is actually ready for Manager delivery. ' +
   `${MANAGER_TOPIC_SCOPE_GUARD} ` +
   'Write user-facing replies in plain, natural Japanese that reads like a capable coworker, not a tool log. ' +
   'Avoid internal AI/platform/process jargon unless the user explicitly asked for it or it is necessary to unblock them. ' +
@@ -1303,6 +1307,34 @@ async function reconcileActiveAssignments(
   // Clean up orphaned worktrees whose assignment IDs are no longer active.
   const activeIds = survivingAssignments.map((a) => a.id);
   await cleanupOrphanedWorktrees(dir, activeIds).catch(() => {});
+  const activeWorktreePathsByRepo = new Map<string, string[]>();
+  for (const assignment of survivingAssignments) {
+    if (!assignment.targetRepoRoot || !assignment.worktreePath) {
+      continue;
+    }
+    const key = resolvePath(assignment.targetRepoRoot);
+    const current = activeWorktreePathsByRepo.get(key) ?? [];
+    current.push(assignment.worktreePath);
+    activeWorktreePathsByRepo.set(key, current);
+  }
+  for (const assignment of droppedAssignments) {
+    if (!assignment.targetRepoRoot) {
+      continue;
+    }
+    const key = resolvePath(assignment.targetRepoRoot);
+    if (!activeWorktreePathsByRepo.has(key)) {
+      activeWorktreePathsByRepo.set(key, []);
+    }
+  }
+  for (const [
+    targetRepoRoot,
+    activeWorktreePaths,
+  ] of activeWorktreePathsByRepo) {
+    await cleanupOrphanedManagerWorktrees({
+      targetRepoRoot,
+      activeWorktreePaths,
+    }).catch(() => {});
+  }
 
   return nextSession;
 }
@@ -1675,7 +1707,7 @@ export function buildWorkerExecutionPrompt(input: {
   const worktreeNotice = input.worktreePath
     ? input.requestedRunMode === 'read-only'
       ? 'This is an isolated git worktree prepared for inspection. Do NOT modify files, commit, or push. Read the repository state and run read-only verification only.'
-      : 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
+      : 'This is an isolated managed task worktree. Make your changes and run verification, but do NOT push from this worktree. Commit only when the branch is genuinely ready for Manager delivery. The Manager will handle the final deliver, push, seed sync, and any release/publish follow-through.'
     : input.repoTargetKind === 'new-repo'
       ? 'This task targets a brand-new repository directory under the workspace root. Create and initialize the repository there as needed. Because there is no existing main branch to merge into, you own the direct delivery flow inside that repo.'
       : '';
@@ -1755,7 +1787,7 @@ export function buildManagerReviewPrompt(input: {
 
   const deliveryInstruction =
     input.worktreePath && input.requestedRunMode !== 'read-only'
-      ? 'This review is running inside an isolated worktree for an existing repository. Commit your verified changes in this temporary branch when needed, but do NOT push, release, or publish from this worktree. The Manager backend will merge to the integration worktree, push to the tracked base branch, and run any required release/publish follow-through. Do not return status "review" unless the branch is left fully committed and ready for that backend delivery chain.'
+      ? 'This review is running inside an isolated managed task worktree for an existing repository. Commit your verified changes in this temporary branch when needed, but do NOT push, release, or publish from this worktree. The Manager backend will rebase this task worktree onto the latest target branch, run the final deliver verification, push it, sync the seed checkout, and then run any required release/publish follow-through. Do not return status "review" unless the branch is left fully committed and ready for that backend delivery chain.'
       : 'If this review is for a direct-delivery target without an isolated worktree and the work is acceptable, you own the in-scope delivery chain yourself: commit, push, and continue through release or publish when it is required for completion.';
 
   const structuralSection =
@@ -1935,7 +1967,7 @@ function buildManagerRecoveryFixPrompt(input: {
   const workspace =
     input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const worktreeNotice = input.worktreePath
-    ? 'This recovery fix is running inside an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager backend handles delivery after review.'
+    ? 'This recovery fix is running inside an isolated managed task worktree. Make your changes and run verification, but do NOT push from this worktree. Commit only when the branch is genuinely ready for Manager delivery.'
     : '';
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
@@ -1980,7 +2012,7 @@ function buildWorkerRetryPrompt(input: {
   const workspace =
     input.workingDirectory ?? input.worktreePath ?? input.resolvedDir;
   const worktreeNotice = input.worktreePath
-    ? 'This is an isolated git worktree. Make your changes and run verification, but do NOT commit or push. The Manager will handle the commit, merge, and push.'
+    ? 'This is an isolated managed task worktree. Make your changes and run verification, but do NOT push from this worktree. Commit only when the branch is genuinely ready for Manager delivery. The Manager will handle the final deliver and push.'
     : '';
   const declaredWriteScopes =
     input.writeScopes.length > 0 ? input.writeScopes.join(', ') : '(read-only)';
@@ -4057,6 +4089,13 @@ async function cleanupWorktreeBestEffort(input: {
   }
 
   try {
+    if (
+      await dropManagerWorktree({
+        worktreePath: input.worktreePath,
+      }).catch(() => false)
+    ) {
+      return null;
+    }
     await removeWorktree({
       targetRepoRoot: input.targetRepoRoot,
       worktreePath: input.worktreePath,
@@ -4068,6 +4107,129 @@ async function cleanupWorktreeBestEffort(input: {
     console.error(`[manager-backend] ${input.context}: ${detail}`);
     return detail;
   }
+}
+
+async function listRebaseConflictFiles(
+  taskWorktreePath: string
+): Promise<string[]> {
+  const result = await execGit(taskWorktreePath, [
+    'diff',
+    '--name-only',
+    '--diff-filter=U',
+  ]).catch(() => null);
+  if (!result || result.code !== 0) {
+    return [];
+  }
+
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+async function resolveRebaseConflictAndContinue(input: {
+  dir: string;
+  taskWorktreePath: string;
+  thread: Thread;
+  currentUserRequest: string;
+  managedVerifyCommand?: string | null;
+}): Promise<{ success: boolean; detail: string }> {
+  const MAX_ATTEMPTS = 5;
+  let conflictFiles = await listRebaseConflictFiles(input.taskWorktreePath);
+  if (conflictFiles.length === 0) {
+    return {
+      success: false,
+      detail:
+        'Rebase reported a conflict, but no conflicted files were listed.',
+    };
+  }
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const conflictDiff =
+      (
+        await execGit(input.taskWorktreePath, ['diff']).catch(() => null)
+      )?.stdout.slice(0, 12_000) ?? '';
+    const verificationHint = input.managedVerifyCommand?.trim()
+      ? `Use the repo-standard verification command first: ${input.managedVerifyCommand.trim()}.`
+      : 'Use the repository-standard verification command first.';
+    const prompt = [
+      MANAGER_RECOVERY_FIX_SYSTEM_PROMPT,
+      MANAGER_WORKER_JSON_RULES,
+      `Workspace: ${input.taskWorktreePath}`,
+      '[Context]',
+      'A managed task worktree hit a git rebase conflict during final Manager delivery.',
+      `Attempt: ${attempt + 1}/${MAX_ATTEMPTS}`,
+      '[Latest user request]',
+      buildManagerMessagePromptContent(input.currentUserRequest).text,
+      `[Work item: ${input.thread.title}]`,
+      'Conflicted files:',
+      conflictFiles.map((file) => `- ${file}`).join('\n'),
+      'Conflict diff (may be truncated):',
+      conflictDiff || '(no diff output)',
+      'Instructions:',
+      '1. Read each conflicted file and resolve the conflict markers.',
+      '2. Run git add on every resolved conflicted file.',
+      `3. ${verificationHint}`,
+      '4. Do NOT run git commit, git push, or git rebase --continue yourself. The backend will continue the rebase after your fix.',
+      '5. Return strict JSON with status "review" only when the worktree is ready for rebase continuation.',
+    ].join('\n\n');
+
+    const fixResult = await runManagerRuntimeTurn({
+      dir: input.dir,
+      resolvedDir: input.taskWorktreePath,
+      prompt,
+      sessionId: null,
+      runMode: 'write',
+    });
+    if (fixResult.code !== 0) {
+      await execGit(input.taskWorktreePath, ['rebase', '--abort']).catch(
+        () => {}
+      );
+      return {
+        success: false,
+        detail: `Manager conflict-fix turn exited with code ${fixResult.code ?? '?'}.`,
+      };
+    }
+
+    const diffCheck = await execGit(input.taskWorktreePath, [
+      'diff',
+      '--check',
+    ]).catch(() => null);
+    if (!diffCheck || diffCheck.code !== 0) {
+      conflictFiles = await listRebaseConflictFiles(input.taskWorktreePath);
+      continue;
+    }
+
+    const continueResult = await execGit(input.taskWorktreePath, [
+      '-c',
+      'core.editor=true',
+      'rebase',
+      '--continue',
+    ]).catch(() => null);
+    if (continueResult?.code === 0) {
+      return { success: true, detail: 'rebase conflict resolved' };
+    }
+
+    conflictFiles = await listRebaseConflictFiles(input.taskWorktreePath);
+    if (conflictFiles.length === 0) {
+      await execGit(input.taskWorktreePath, ['rebase', '--abort']).catch(
+        () => {}
+      );
+      return {
+        success: false,
+        detail:
+          continueResult?.stderr ||
+          continueResult?.stdout ||
+          'git rebase --continue failed after conflict resolution.',
+      };
+    }
+  }
+
+  await execGit(input.taskWorktreePath, ['rebase', '--abort']).catch(() => {});
+  return {
+    success: false,
+    detail: `Manager could not finish resolving the rebase conflict after ${MAX_ATTEMPTS} attempts.`,
+  };
 }
 
 async function reserveAssignment(input: {
@@ -4846,7 +5008,6 @@ async function runQueuedAssignment(input: {
 
     let currentParsedReply = finalParsedReply;
     let currentFallbackReply = finalFallbackReply;
-    let deliveryMergeSourceRef: string | null = null;
     const isResultApproved = (
       code: number | null,
       parsed: ManagerReplyPayload | null,
@@ -4876,7 +5037,6 @@ async function runQueuedAssignment(input: {
       });
       deliveryReadinessDetail = readiness.detail;
       deliveryAheadCommitCount = readiness.aheadCommitCount;
-      deliveryMergeSourceRef = readiness.mergeSourceRef ?? null;
       approved = readiness.ready;
     }
 
@@ -5302,7 +5462,7 @@ async function runQueuedAssignment(input: {
         await appendWorkerLiveOutput({
           dir: resolvedDir,
           threadId: thread.id,
-          text: 'リポジトリ変更がないため、マージと push をスキップして返信を返します…',
+          text: 'リポジトリ変更がないため、deliver と push をスキップして返信を返します…',
           kind: 'status',
           assigneeKind: 'manager',
           assigneeLabel: defaultAssigneeLabel('manager'),
@@ -5322,14 +5482,14 @@ async function runQueuedAssignment(input: {
         await appendWorkerLiveOutput({
           dir: resolvedDir,
           threadId: thread.id,
-          text: 'Worker の変更をメインブランチにマージしています…',
+          text: 'Worker の変更を最新 target branch へ deliver しています…',
           kind: 'status',
           assigneeKind: 'manager',
           assigneeLabel: defaultAssigneeLabel('manager'),
           workerSessionId,
           workerAgentId: assignment.id,
           runtimeState: 'manager-answering',
-          runtimeDetail: 'メインブランチへマージ中…',
+          runtimeDetail: 'managed task worktree を deliver 中…',
           workerWriteScopes: assignment.writeScopes,
         });
 
@@ -5354,141 +5514,85 @@ async function runQueuedAssignment(input: {
           )
         );
 
-        let integrationWorktree: Awaited<
-          ReturnType<typeof createIntegrationWorktree>
-        > | null = null;
         try {
-          integrationWorktree = await createIntegrationWorktree({
-            targetRepoRoot,
-            assignmentId: assignment.id,
-          });
-        } catch (integrationErr) {
-          const errMsg = `[Manager] クリーンな統合 worktree の準備に失敗しました: ${
-            integrationErr instanceof Error
-              ? integrationErr.message
-              : String(integrationErr)
-          }`;
+          const deliveryTargetBranch =
+            threadMeta?.managedBaseBranch?.trim() || null;
+          let deliverResult;
           try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              errMsg,
-              'ai',
-              'needs-reply'
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
-          await cleanupWorktreeBestEffort({
-            targetRepoRoot,
-            worktreePath: assignment.worktreePath,
-            branchName: assignment.worktreeBranch,
-            context: `Integration preparation cleanup for ${assignment.id}`,
-          });
-          await removeAssignment(dir, assignment.id);
-          void processNextQueued(dir, resolvedDir);
-          return;
-        }
-
-        try {
-          const mergeSourceRef =
-            deliveryMergeSourceRef?.trim() || assignment.worktreeBranch;
-          if (!mergeSourceRef) {
-            throw new Error('No merge source ref was available for delivery.');
-          }
-          let mergeResult = await mergeWorktreeToMain({
-            targetRepoRoot: integrationWorktree.worktreePath,
-            sourceRef: mergeSourceRef,
-            lockRepoRoot: targetRepoRoot,
-          });
-
-          if (!mergeResult.success && mergeResult.conflicted) {
-            await appendWorkerLiveOutput({
-              dir: resolvedDir,
-              threadId: thread.id,
-              text: `コンフリクト検出（${mergeResult.conflictFiles.length} ファイル）。Manager が解消中…`,
-              kind: 'status',
-              assigneeKind: 'manager',
-              assigneeLabel: defaultAssigneeLabel('manager'),
-              workerSessionId,
-              workerAgentId: assignment.id,
-              runtimeState: 'manager-answering',
-              runtimeDetail: 'マージコンフリクト解消中…',
-              workerWriteScopes: assignment.writeScopes,
-            });
-            mergeResult = await resolveConflictAndVerify({
-              targetRepoRoot: integrationWorktree.worktreePath,
-              conflictFiles: mergeResult.conflictFiles,
-              runCodexTurnFn: async (prompt, cwd) => {
-                const result = await runManagerRuntimeTurn({
-                  dir,
-                  resolvedDir: cwd,
-                  prompt,
-                  sessionId: null,
-                  runMode: 'write',
-                });
-                return { code: result.code, stderr: result.stderr };
-              },
-            });
-          }
-
-          if (!mergeResult.success) {
-            const errMsg = `[Manager] マージに失敗しました: ${mergeResult.detail}`;
-            try {
-              await addMessage(
-                resolvedDir,
-                thread.id,
-                errMsg,
-                'ai',
-                'needs-reply'
-              );
-            } catch {
-              /* thread may have been deleted */
-            }
-            await cleanupWorktreeBestEffort({
-              targetRepoRoot,
+            deliverResult = await deliverManagerWorktree({
               worktreePath: assignment.worktreePath,
-              branchName: assignment.worktreeBranch,
-              context: `Merge failure cleanup for ${assignment.id}`,
+              targetBranch: deliveryTargetBranch,
             });
-            await removeAssignment(dir, assignment.id);
-            void processNextQueued(dir, resolvedDir);
-            return;
+          } catch (deliveryError) {
+            if (isMwtDeliverConflictError(deliveryError)) {
+              const conflictFiles = await listRebaseConflictFiles(
+                assignment.worktreePath
+              );
+              await appendWorkerLiveOutput({
+                dir: resolvedDir,
+                threadId: thread.id,
+                text:
+                  conflictFiles.length > 0
+                    ? `rebase コンフリクト検出（${conflictFiles.length} ファイル）。Manager が task worktree 上で解消を試みます…`
+                    : 'rebase コンフリクトを検出しました。Manager が task worktree 上で解消を試みます…',
+                kind: 'status',
+                assigneeKind: 'manager',
+                assigneeLabel: defaultAssigneeLabel('manager'),
+                workerSessionId,
+                workerAgentId: assignment.id,
+                runtimeState: 'manager-answering',
+                runtimeDetail: 'rebase コンフリクト解消中…',
+                workerWriteScopes: assignment.writeScopes,
+              });
+              const conflictResolution = await resolveRebaseConflictAndContinue(
+                {
+                  dir,
+                  taskWorktreePath: assignment.worktreePath,
+                  thread,
+                  currentUserRequest: promptContent,
+                  managedVerifyCommand:
+                    threadMeta?.managedVerifyCommand ?? null,
+                }
+              );
+              if (!conflictResolution.success) {
+                throw new Error(
+                  `managed worktree deliver conflict could not be resolved: ${conflictResolution.detail}`
+                );
+              }
+              deliverResult = await deliverManagerWorktree({
+                worktreePath: assignment.worktreePath,
+                targetBranch: deliveryTargetBranch,
+                resume: true,
+              });
+            } else {
+              throw deliveryError;
+            }
           }
 
-          // Push after successful merge.
           await appendWorkerLiveOutput({
             dir: resolvedDir,
             threadId: thread.id,
-            text: 'マージ完了。リモートへ push しています…',
+            text: 'deliver 完了。必要な release / publish を続けて実行しています…',
             kind: 'status',
             assigneeKind: 'manager',
             assigneeLabel: defaultAssigneeLabel('manager'),
             workerSessionId,
             workerAgentId: assignment.id,
             runtimeState: 'manager-answering',
-            runtimeDetail: 'リモートへ push 中…',
+            runtimeDetail: 'release / publish の最終確認中…',
             workerWriteScopes: assignment.writeScopes,
           });
-          const pushResult = await pushWithRetry({
-            targetRepoRoot: integrationWorktree.worktreePath,
-            remoteName: integrationWorktree.remoteName,
-            remoteBranch: integrationWorktree.remoteBranch,
-          });
-          const pushFailureDetail = pushResult.success
-            ? null
-            : pushResult.detail;
 
-          // Clean up the worker authoring worktree once its commits are merged.
-          await cleanupWorktreeBestEffort({
+          const releaseResult = await runPostMergeDeliveryChain({
             targetRepoRoot,
-            worktreePath: assignment.worktreePath,
-            branchName: assignment.worktreeBranch,
-            context: `Post-merge worker cleanup for ${assignment.id}`,
           });
-
-          if (pushFailureDetail) {
-            const errMsg = `[Manager] コミットは反映されましたが、リモートへの push に失敗しました: ${pushFailureDetail}`;
+          if (!releaseResult.success) {
+            await preservePausedWorktreeForThread(
+              resolvedDir,
+              thread.id,
+              assignment
+            );
+            const errMsg = `[Manager] deliver と push は完了しましたが、release / publish の完了前に停止しました: ${releaseResult.detail}`;
             try {
               await addMessage(
                 resolvedDir,
@@ -5524,86 +5628,57 @@ async function runQueuedAssignment(input: {
             return;
           }
 
-          const canonicalSyncResult = await syncCanonicalCheckoutToRemoteBranch(
-            {
-              targetRepoRoot,
-              remoteName: integrationWorktree.remoteName,
-              remoteBranch: integrationWorktree.remoteBranch,
-            }
-          );
-          if (!canonicalSyncResult.success) {
-            console.warn(
-              '[manager-backend] Canonical checkout sync failed:',
-              canonicalSyncResult.detail
-            );
-          } else if (!canonicalSyncResult.synced) {
-            console.warn(
-              '[manager-backend] Canonical checkout sync skipped:',
-              canonicalSyncResult.detail
-            );
-          }
-
-          if (deliveryAheadCommitCount > 0) {
-            await appendWorkerLiveOutput({
-              dir: resolvedDir,
-              threadId: thread.id,
-              text: 'push 完了。必要な release / publish を続けて実行しています…',
-              kind: 'status',
-              assigneeKind: 'manager',
-              assigneeLabel: defaultAssigneeLabel('manager'),
-              workerSessionId,
-              workerAgentId: assignment.id,
-              runtimeState: 'manager-answering',
-              runtimeDetail: 'release / publish の最終確認中…',
-              workerWriteScopes: assignment.writeScopes,
-            });
-            const deliveryResult = await runPostMergeDeliveryChain({
-              targetRepoRoot: integrationWorktree.worktreePath,
-            });
-            if (!deliveryResult.success) {
-              const errMsg = `[Manager] コミットと push は完了しましたが、release / publish の完了前に停止しました: ${deliveryResult.detail}`;
-              try {
-                await addMessage(
-                  resolvedDir,
-                  thread.id,
-                  errMsg,
-                  'ai',
-                  'needs-reply'
-                );
-              } catch {
-                /* thread may have been deleted */
-              }
-              await updateQueueLocked(dir, (queue) =>
-                queue.filter(
-                  (entry) => !assignment.queueEntryIds.includes(entry.id)
-                )
-              );
-              await clearWorkerLiveOutput(
-                resolvedDir,
-                thread.id,
-                assignment.assigneeKind,
-                assignment.assigneeLabel,
-                {
-                  workerAgentId: assignment.id,
-                  runtimeState: null,
-                  runtimeDetail: null,
-                  workerWriteScopes: assignment.writeScopes,
-                  workerBlockedByThreadIds: [],
-                  supersededByThreadId: null,
-                }
-              );
-              await removeAssignment(dir, assignment.id);
-              void processNextQueued(dir, resolvedDir);
-              return;
-            }
-          }
-        } finally {
           await cleanupWorktreeBestEffort({
             targetRepoRoot,
-            worktreePath: integrationWorktree?.worktreePath,
-            branchName: integrationWorktree?.branchName,
-            context: `Integration worktree cleanup for ${assignment.id}`,
+            worktreePath: assignment.worktreePath,
+            branchName: assignment.worktreeBranch,
+            context: `Post-deliver manager worktree cleanup for ${assignment.id}`,
           });
+          deliveryReadinessDetail =
+            deliveryReadinessDetail ??
+            `Delivered ${deliverResult.worktreeId} to ${deliverResult.targetBranch}.`;
+        } catch (deliveryError) {
+          await preservePausedWorktreeForThread(
+            resolvedDir,
+            thread.id,
+            assignment
+          );
+          const errMsg = `[Manager] managed task worktree の deliver に失敗しました: ${describeMwtError(
+            deliveryError
+          )}`;
+          try {
+            await addMessage(
+              resolvedDir,
+              thread.id,
+              errMsg,
+              'ai',
+              'needs-reply'
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
+          await updateQueueLocked(dir, (queue) =>
+            queue.filter(
+              (entry) => !assignment.queueEntryIds.includes(entry.id)
+            )
+          );
+          await clearWorkerLiveOutput(
+            resolvedDir,
+            thread.id,
+            assignment.assigneeKind,
+            assignment.assigneeLabel,
+            {
+              workerAgentId: assignment.id,
+              runtimeState: null,
+              runtimeDetail: null,
+              workerWriteScopes: assignment.writeScopes,
+              workerBlockedByThreadIds: [],
+              supersededByThreadId: null,
+            }
+          );
+          await removeAssignment(dir, assignment.id);
+          void processNextQueued(dir, resolvedDir);
+          return;
         }
       }
 
@@ -6287,15 +6362,17 @@ export async function processNextQueued(
             });
           } else {
             const pausedWorktreeReusable =
-              threadMeta?.pausedAssignmentId === assignment.id &&
-              typeof threadMeta.pausedWorktreePath === 'string' &&
+              typeof threadMeta?.pausedWorktreePath === 'string' &&
               threadMeta.pausedWorktreePath.trim() &&
               typeof threadMeta.pausedWorktreeBranch === 'string' &&
               threadMeta.pausedWorktreeBranch.trim() &&
               typeof threadMeta.pausedTargetRepoRoot === 'string' &&
               resolvePath(threadMeta.pausedTargetRepoRoot) ===
                 resolvePath(targetRepo) &&
-              existsSync(threadMeta.pausedWorktreePath);
+              existsSync(threadMeta.pausedWorktreePath) &&
+              (await isManagerManagedWorktreePath(
+                threadMeta.pausedWorktreePath
+              ).catch(() => false));
             if (pausedWorktreeReusable) {
               assignment.worktreePath = threadMeta!.pausedWorktreePath!.trim();
               assignment.worktreeBranch =
@@ -6305,13 +6382,51 @@ export async function processNextQueued(
               await clearPausedWorktreeForThread(resolvedDir, thread.id);
             } else {
               await clearPausedWorktreeForThread(resolvedDir, thread.id);
-              const wt = await createWorkerWorktree({
-                targetRepoRoot: targetRepo,
-                assignmentId: assignment.id,
-              });
-              assignment.worktreePath = wt.worktreePath;
-              assignment.worktreeBranch = wt.branchName;
-              assignment.targetRepoRoot = wt.targetRepoRoot;
+              if (await isManagedWorktreeRepository(targetRepo)) {
+                const wt = await createManagerWorktree({
+                  targetRepoRoot: targetRepo,
+                  assignmentId: assignment.id,
+                });
+                assignment.worktreePath = wt.worktreePath;
+                assignment.worktreeBranch = wt.branchName;
+                assignment.targetRepoRoot = wt.targetRepoRoot;
+              } else {
+                const errMsg =
+                  '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できません。seed リポジトリで `mwt init` を実行してから再開してください。';
+                try {
+                  await addMessage(
+                    resolvedDir,
+                    thread.id,
+                    errMsg,
+                    'ai',
+                    'needs-reply'
+                  );
+                } catch {
+                  /* thread may have been deleted */
+                }
+                await updateQueueLocked(dir, (queue) =>
+                  queue.filter(
+                    (entry) => !assignment.queueEntryIds.includes(entry.id)
+                  )
+                );
+                await removeAssignment(dir, assignment.id);
+                await clearWorkerLiveOutput(
+                  resolvedDir,
+                  thread.id,
+                  assignment.assigneeKind,
+                  assignment.assigneeLabel,
+                  {
+                    workerAgentId: assignment.id,
+                    runtimeState: null,
+                    runtimeDetail: null,
+                    workerWriteScopes: assignment.writeScopes,
+                    workerBlockedByThreadIds: [],
+                    supersededByThreadId: null,
+                  }
+                );
+                void processNextQueued(dir, resolvedDir);
+                return;
+              }
             }
           }
 

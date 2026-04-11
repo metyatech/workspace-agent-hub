@@ -116,6 +116,30 @@ vi.mock('../manager-worktree.js', () => ({
   execGit: vi.fn().mockResolvedValue({ stdout: '', stderr: '', code: 0 }),
 }));
 
+vi.mock('../manager-mwt.js', () => ({
+  cleanupOrphanedManagerWorktrees: vi.fn().mockResolvedValue(undefined),
+  createManagerWorktree: vi.fn().mockResolvedValue({
+    worktreePath: '',
+    branchName: '',
+    targetRepoRoot: '',
+  }),
+  deliverManagerWorktree: vi.fn().mockResolvedValue({
+    worktreeId: 'mgr-worktree-default',
+    targetBranch: 'main',
+    pushedCommit: 'mock-pushed-commit',
+    seedSyncedTo: 'mock-seed-sync',
+  }),
+  describeMwtError: vi
+    .fn()
+    .mockImplementation((error: unknown) =>
+      error instanceof Error ? error.message : String(error)
+    ),
+  dropManagerWorktree: vi.fn().mockResolvedValue(false),
+  isManagerManagedWorktreePath: vi.fn().mockResolvedValue(true),
+  isManagedWorktreeRepository: vi.fn().mockResolvedValue(true),
+  isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
+}));
+
 import {
   buildCodexSpawnOptions,
   buildCodexSpawnSpec,
@@ -157,7 +181,6 @@ import {
 } from '../manager-thread-state.js';
 import {
   createIntegrationWorktree,
-  createWorkerWorktree,
   mergeWorktreeToMain,
   prepareNewRepoWorkspace,
   pushWithRetry,
@@ -167,6 +190,13 @@ import {
   syncCanonicalCheckoutToRemoteBranch,
   validateWorktreeReadyForMerge,
 } from '../manager-worktree.js';
+import {
+  createManagerWorktree,
+  deliverManagerWorktree,
+  dropManagerWorktree,
+  isManagedWorktreeRepository,
+  isMwtDeliverConflictError,
+} from '../manager-mwt.js';
 
 interface FakeProc extends EventEmitter {
   pid: number;
@@ -324,6 +354,8 @@ let tempDir = '';
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
+  const defaultManagerWorktree = join(tempDir, 'manager-task-worktree');
+  await mkdir(defaultManagerWorktree, { recursive: true });
   resetProcessNextQueuedStateForTests();
   spawnMock.mockReset();
   execFileMock.mockReset();
@@ -404,12 +436,25 @@ beforeEach(async () => {
       text: async () => body,
     };
   });
-  vi.mocked(createWorkerWorktree).mockReset();
-  vi.mocked(createWorkerWorktree).mockResolvedValue({
-    worktreePath: '',
-    branchName: '',
-    targetRepoRoot: '',
+  vi.mocked(isManagedWorktreeRepository).mockReset();
+  vi.mocked(isManagedWorktreeRepository).mockResolvedValue(true);
+  vi.mocked(createManagerWorktree).mockReset();
+  vi.mocked(createManagerWorktree).mockResolvedValue({
+    worktreePath: defaultManagerWorktree,
+    branchName: 'mgr/default-task/preview000',
+    targetRepoRoot: tempDir,
   });
+  vi.mocked(deliverManagerWorktree).mockReset();
+  vi.mocked(deliverManagerWorktree).mockResolvedValue({
+    worktreeId: 'mgr-worktree-default',
+    targetBranch: 'main',
+    pushedCommit: 'mock-pushed-commit',
+    seedSyncedTo: 'mock-seed-sync',
+  });
+  vi.mocked(dropManagerWorktree).mockReset();
+  vi.mocked(dropManagerWorktree).mockResolvedValue(false);
+  vi.mocked(isMwtDeliverConflictError).mockReset();
+  vi.mocked(isMwtDeliverConflictError).mockReturnValue(false);
   vi.mocked(createIntegrationWorktree).mockReset();
   vi.mocked(createIntegrationWorktree).mockResolvedValue({
     worktreePath: 'C:\\temp\\wah-merge-default',
@@ -684,7 +729,7 @@ describe('manager backend codex integration', () => {
       'do NOT push, release, or publish from this worktree'
     );
     expect(reviewPrompt).toContain(
-      'The Manager backend will merge to the integration worktree'
+      'The Manager backend will rebase this task worktree onto the latest target branch'
     );
     expect(reviewPrompt).toContain('Do not return status "review"');
     expect(reviewPrompt).toContain(
@@ -1416,7 +1461,7 @@ describe('manager backend codex integration', () => {
     spawnMock
       .mockReturnValueOnce(claudeWorkerProc)
       .mockReturnValueOnce(managerReviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: join(tempDir, 'worktrees', 'claude-runtime'),
       branchName: 'agent/claude-runtime',
       targetRepoRoot: tempDir,
@@ -1910,7 +1955,7 @@ describe('manager backend codex integration', () => {
       .mockReturnValueOnce(dispatchProc)
       .mockReturnValueOnce(workerProc)
       .mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: join(tempDir, 'worktrees', 'repo-inferred'),
       branchName: 'agent/repo-inferred',
       targetRepoRoot: repoRoot,
@@ -1941,10 +1986,10 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(
-      () => vi.mocked(createWorkerWorktree).mock.calls.length === 1
+      () => vi.mocked(createManagerWorktree).mock.calls.length === 1
     );
     expect(vi.mocked(resolveTargetRepoRoot).mock.calls.length).toBe(0);
-    expect(vi.mocked(createWorkerWorktree).mock.calls[0]?.[0]).toMatchObject({
+    expect(vi.mocked(createManagerWorktree).mock.calls[0]?.[0]).toMatchObject({
       targetRepoRoot: repoRoot,
     });
 
@@ -1992,7 +2037,7 @@ describe('manager backend codex integration', () => {
 
     await waitFor(() => addMessageMock.mock.calls.length === 1);
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-ambiguous-repo');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('判断できるよう');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
@@ -2187,7 +2232,7 @@ describe('manager backend codex integration', () => {
     });
 
     await waitFor(() => spawnMock.mock.calls.length === 2);
-    expect(vi.mocked(createWorkerWorktree)).not.toHaveBeenCalled();
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
     expect(vi.mocked(prepareNewRepoWorkspace)).toHaveBeenCalledWith({
       workspaceRoot: tempDir,
       targetRepoRoot: newRepoRoot,
@@ -2236,7 +2281,7 @@ describe('manager backend codex integration', () => {
       .mockReturnValueOnce(dispatchProc)
       .mockReturnValueOnce(workerProc)
       .mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath,
       branchName: 'agent/repo-working-dir',
       targetRepoRoot: repoRoot,
@@ -2297,7 +2342,7 @@ describe('manager backend codex integration', () => {
     spawnMock
       .mockReturnValueOnce(dispatchProc)
       .mockReturnValueOnce(recoveryProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath,
       branchName: 'agent/repo-missing-working-dir',
       targetRepoRoot: repoRoot,
@@ -2389,7 +2434,7 @@ describe('manager backend codex integration', () => {
     );
     expect(reviewProc.stdin.write).toHaveBeenCalledWith(
       expect.stringContaining(
-        'own the in-scope delivery chain yourself: commit, push'
+        'rebase this task worktree onto the latest target branch'
       )
     );
 
@@ -3315,7 +3360,7 @@ describe('manager backend codex integration', () => {
 
     const runningRepoRoot = join(tempDir, 'workspace-agent-hub');
     const queuedRepoRoot = join(tempDir, 'course-docs-site');
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: join(queuedRepoRoot, '.wah-worker'),
       branchName: 'wah-worker-q_other_repo',
       targetRepoRoot: queuedRepoRoot,
@@ -3815,7 +3860,7 @@ describe('manager backend codex integration', () => {
       retryWorkerProc,
       finalReviewProc
     );
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: 'C:\\temp\\wah-wt-recovery-retry',
       branchName: 'wah-worker-recovery-retry',
       targetRepoRoot: tempDir,
@@ -3942,17 +3987,10 @@ describe('manager backend codex integration', () => {
     const workerProc = makeProc(8401);
     const reviewProc = makeProc(8402);
     spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
-      worktreePath: 'C:\\temp\\wah-wt-assign_thread-push-fail',
-      branchName: 'wah-worker-assign_thread-push-fail',
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\workspace-agent-hub-mgr-assign_thread-push-fail',
+      branchName: 'mgr/assign_thread-push-fail/preview000',
       targetRepoRoot: tempDir,
-    });
-    vi.mocked(createIntegrationWorktree).mockResolvedValueOnce({
-      worktreePath: 'C:\\temp\\wah-merge-assign_thread-push-fail',
-      branchName: 'wah-merge-assign_thread-push-fail',
-      targetRepoRoot: tempDir,
-      remoteName: 'origin',
-      remoteBranch: 'main',
     });
     vi.mocked(validateWorktreeReadyForMerge).mockResolvedValueOnce({
       ready: true,
@@ -3960,10 +3998,9 @@ describe('manager backend codex integration', () => {
       aheadCommitCount: 1,
       mergeSourceRef: 'worker-commit-sha',
     });
-    vi.mocked(pushWithRetry).mockResolvedValueOnce({
-      success: false,
-      detail: 'remote rejected',
-    });
+    vi.mocked(deliverManagerWorktree).mockRejectedValueOnce(
+      new Error('Push failed during deliver: remote rejected')
+    );
 
     await sendToBuiltinManager(tempDir, 'thread-push-fail', 'message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
@@ -3986,24 +4023,16 @@ describe('manager backend codex integration', () => {
     });
 
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(createIntegrationWorktree)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledWith({
-      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-push-fail',
-      sourceRef: 'worker-commit-sha',
-      lockRepoRoot: tempDir,
-    });
-    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledWith({
-      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-push-fail',
-      remoteName: 'origin',
-      remoteBranch: 'main',
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledWith({
+      worktreePath: 'C:\\temp\\workspace-agent-hub-mgr-assign_thread-push-fail',
+      targetBranch: null,
     });
     expect(vi.mocked(runPostMergeDeliveryChain)).not.toHaveBeenCalled();
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-push-fail');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('push');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('deliver');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
   });
 
@@ -4011,9 +4040,10 @@ describe('manager backend codex integration', () => {
     const workerProc = makeProc(8451);
     const reviewProc = makeProc(8452);
     spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
-      worktreePath: 'C:\\temp\\wah-wt-assign_thread-noop-delivery',
-      branchName: 'wah-worker-assign_thread-noop-delivery',
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-noop-delivery',
+      branchName: 'mgr/assign_thread-noop-delivery/preview000',
       targetRepoRoot: tempDir,
     });
     vi.mocked(validateWorktreeReadyForMerge).mockResolvedValueOnce({
@@ -4046,12 +4076,13 @@ describe('manager backend codex integration', () => {
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(createIntegrationWorktree)).not.toHaveBeenCalled();
     expect(vi.mocked(mergeWorktreeToMain)).not.toHaveBeenCalled();
-    expect(vi.mocked(pushWithRetry)).not.toHaveBeenCalled();
+    expect(vi.mocked(deliverManagerWorktree)).not.toHaveBeenCalled();
     expect(vi.mocked(runPostMergeDeliveryChain)).not.toHaveBeenCalled();
     expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith({
       targetRepoRoot: tempDir,
-      worktreePath: 'C:\\temp\\wah-wt-assign_thread-noop-delivery',
-      branchName: 'wah-worker-assign_thread-noop-delivery',
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-noop-delivery',
+      branchName: 'mgr/assign_thread-noop-delivery/preview000',
     });
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-noop-delivery');
@@ -4063,17 +4094,16 @@ describe('manager backend codex integration', () => {
     const workerProc = makeProc(8501);
     const reviewProc = makeProc(8502);
     spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
-      worktreePath: 'C:\\temp\\wah-wt-assign_thread-release',
-      branchName: 'wah-worker-assign_thread-release',
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\workspace-agent-hub-mgr-assign_thread-release',
+      branchName: 'mgr/assign_thread-release/preview000',
       targetRepoRoot: tempDir,
     });
-    vi.mocked(createIntegrationWorktree).mockResolvedValueOnce({
-      worktreePath: 'C:\\temp\\wah-merge-assign_thread-release',
-      branchName: 'wah-merge-assign_thread-release',
-      targetRepoRoot: tempDir,
-      remoteName: 'origin',
-      remoteBranch: 'main',
+    vi.mocked(deliverManagerWorktree).mockResolvedValueOnce({
+      worktreeId: 'assign_thread-release',
+      targetBranch: 'main',
+      pushedCommit: 'mock-release-commit',
+      seedSyncedTo: 'mock-release-seed-sync',
     });
 
     await sendToBuiltinManager(tempDir, 'thread-release', 'message');
@@ -4097,10 +4127,10 @@ describe('manager backend codex integration', () => {
     });
 
     expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledWith({
-      targetRepoRoot: 'C:\\temp\\wah-merge-assign_thread-release',
+      targetRepoRoot: tempDir,
     });
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-release');
@@ -4117,7 +4147,7 @@ describe('manager backend codex integration', () => {
     const workerProc = makeProc(8601);
     const reviewProc = makeProc(8602);
     spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: 'C:\\temp\\wah-wt-assign_thread-stalled-review',
       branchName: 'wah-worker-assign_thread-stalled-review',
       targetRepoRoot: tempDir,
@@ -4148,8 +4178,7 @@ describe('manager backend codex integration', () => {
       return queue.length === 0 && session.status === 'idle';
     });
 
-    expect(vi.mocked(mergeWorktreeToMain)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(pushWithRetry)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(1);
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-stalled-review');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
@@ -4286,7 +4315,7 @@ describe('manager backend codex integration', () => {
       .mockImplementation(() => {});
     const workerProc = makeProc(8631);
     spawnMock.mockReturnValueOnce(workerProc);
-    vi.mocked(createWorkerWorktree).mockResolvedValueOnce({
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: 'C:\\temp\\wah-wt-assign_thread-cleanup-warning',
       branchName: 'wah-worker-assign_thread-cleanup-warning',
       targetRepoRoot: tempDir,

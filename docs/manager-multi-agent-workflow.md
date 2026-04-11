@@ -18,8 +18,9 @@ see and what the system should automate before expanding the implementation.
 Already implemented in the current line:
 
 - the Manager inbox and work-item graph
-- isolated git worktree delivery for Manager worker tasks
-- Manager-owned merge, push, and post-merge delivery for worker results
+- isolated `mwt` task-worktree delivery for Manager worker tasks
+- Manager-owned deliver, push, seed-sync, and post-delivery follow-through for
+  worker results
 - scope-aware worker parallelism and scope-blocked visibility
 
 Not yet generalized enough for the target operator experience:
@@ -45,7 +46,7 @@ The human should not need to:
 
 The system should instead:
 
-- create one branch + one worktree per write run
+- create one managed task branch + one managed task worktree per write run
 - route each run to the requested worker runtime
 - keep completed runs in a repo-scoped merge queue
 - let a repo-scoped merge agent integrate them one by one
@@ -87,16 +88,19 @@ ai_surface:
 sync:
   task_start:
     - inspect discovered workspace repos when targeting an existing repo
-    - create task branch + isolated worktree for existing-repo write runs
+    - require the seed repo to be initialized with managed-worktree-system
+    - create a managed task branch + isolated task worktree for existing-repo
+      write runs
     - launch worker runtime
   task_finish:
     - verify
-    - enqueue in repo merge lane for existing repos
+    - enqueue in repo delivery lane for existing repos
   integration:
-    - create a clean integration worktree from the latest upstream base branch
-    - rebase or merge onto latest base branch
-    - verify again
+    - rebase the approved managed task worktree onto the latest upstream target
+      branch
+    - verify again through the repo's configured deliver gate
     - push
+    - sync the seed checkout
     - optional release/publish chain
 conflict_policy:
   - never silently overwrite another run
@@ -110,7 +114,7 @@ validation:
 outputs:
   - isolated worktree
   - run log
-  - merge-lane record
+  - delivery-lane record
   - pushed branch or merged mainline commit
 gui_selection:
   pattern: hybrid-gui
@@ -168,13 +172,13 @@ state.
 When an existing-repo write run finishes and passes its run-level verification:
 
 1. the run moves to `awaiting-merge`
-2. the repo's merge lane picks it up in FIFO order within that lane, subject to
+2. the repo's delivery lane picks it up in FIFO order within that lane, subject to
    explicit priority rules
-3. the merge-lane agent rebases or merges it onto the latest base branch
-4. the merge-lane agent runs repo verification
-5. if successful, the merge-lane agent pushes the result
+3. the Manager rebases that managed task worktree onto the latest base branch
+4. the Manager runs repo verification through `mwt deliver`
+5. if successful, the Manager pushes the result and syncs the seed checkout
 
-The human should see one queue per existing repo, not one global merge pile.
+The human should see one queue per existing repo, not one global delivery pile.
 
 ### 5. Handle conflicts
 

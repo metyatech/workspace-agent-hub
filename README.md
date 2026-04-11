@@ -473,12 +473,17 @@ Important behavior:
   per task from live third-party Scale leaderboards plus `ai-quota`, so the
   backend prefers the highest-ranked currently-available Codex/Claude worker
   instead of pinning every task to one static worker model.
-- Manager-owned git worktrees are created next to the target repository instead
-  of under the OS temp directory. That preserves the repository's original
-  parent-directory topology, so local overlays such as `.env*.local` keep the
-  same relative-path semantics without content rewriting heuristics. The
-  Manager does not graft `node_modules` or other repository directories into
-  those worktrees, and after bootstrap it quarantines non-Git
+- Existing-repo write work now uses `managed-worktree-system` (`mwt`) as the
+  isolation contract. The target repository must be initialized once from its
+  canonical seed checkout with `mwt init`, after which manual work keeps the
+  default `repo-wt-*` task naming and Manager creates explicit `repo-mgr-*`
+  task worktrees and `mgr/*` branches through the same managed-worktree
+  boundary.
+- Because Manager now reuses `mwt` sibling task worktrees, repository-relative
+  filesystem topology stays intact, so local overlays such as `.env*.local`
+  keep the same relative-path semantics without content rewriting heuristics.
+  The Manager does not graft `node_modules` or other repository directories
+  into those worktrees, and after bootstrap it quarantines non-Git
   symlinks/junctions that resolve outside the worktree: tracked links fail
   fast, while untracked links are materialized into ordinary files/directories.
 - Static worker env settings such as `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
@@ -550,6 +555,11 @@ Important behavior:
   Manager Codex hits a usage limit, Hub surfaces a paused state, leaves queued
   work pending, and resumes when the user clicks `再開する` in the Manager GUI
   or starts Manager again after topping up quota.
+- For existing repositories, Manager delivers approved changes by calling
+  `mwt deliver` from the Manager-owned task worktree instead of creating a
+  second integration checkout. That final step rebases onto the latest target
+  branch, runs the repository's configured verify command, pushes, syncs the
+  seed checkout, and then continues any required release/publish chain.
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
