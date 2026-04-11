@@ -4711,13 +4711,6 @@ async function stopSupersededAssignments(input: {
     await updateQueueLocked(input.dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
     );
-    await removeAssignment(input.dir, assignment.id);
-    await cleanupWorktreeBestEffort({
-      targetRepoRoot: assignment.targetRepoRoot ?? input.dir,
-      worktreePath: assignment.worktreePath,
-      branchName: assignment.worktreeBranch,
-      context: `Superseded assignment cleanup for ${assignment.id}`,
-    });
     await clearWorkerLiveOutput(
       input.dir,
       assignment.threadId,
@@ -4731,6 +4724,13 @@ async function stopSupersededAssignments(input: {
         supersededByThreadId: input.supersedingThreadId,
       }
     );
+    await removeAssignment(input.dir, assignment.id);
+    await cleanupWorktreeBestEffort({
+      targetRepoRoot: assignment.targetRepoRoot ?? input.dir,
+      worktreePath: assignment.worktreePath,
+      branchName: assignment.worktreeBranch,
+      context: `Superseded assignment cleanup for ${assignment.id}`,
+    });
     try {
       await addMessage(
         input.dir,
@@ -5781,8 +5781,8 @@ async function runQueuedAssignment(input: {
           supersededByThreadId: null,
         }
       );
-      await removeAssignment(dir, assignment.id);
       await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
+      await removeAssignment(dir, assignment.id);
       void processNextQueued(dir, resolvedDir);
       return;
     }
@@ -5833,8 +5833,8 @@ async function runQueuedAssignment(input: {
         supersededByThreadId: null,
       }
     );
-    await removeAssignment(dir, assignment.id);
     await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
+    await removeAssignment(dir, assignment.id);
     await cleanupWorktreeBestEffort({
       targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
       worktreePath: assignment.worktreePath,
@@ -5866,8 +5866,8 @@ async function runQueuedAssignment(input: {
           supersededByThreadId: null,
         }
       );
-      await removeAssignment(dir, assignment.id);
       await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
+      await removeAssignment(dir, assignment.id);
       await setManagerRuntimePause(dir, error.message);
       return;
     }
@@ -5899,8 +5899,8 @@ async function runQueuedAssignment(input: {
         supersededByThreadId: null,
       }
     );
-    await removeAssignment(dir, assignment.id);
     await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
+    await removeAssignment(dir, assignment.id);
     await cleanupWorktreeBestEffort({
       targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
       worktreePath: assignment.worktreePath,
@@ -6469,7 +6469,6 @@ export async function processNextQueued(
                     (entry) => !assignment.queueEntryIds.includes(entry.id)
                   )
                 );
-                await removeAssignment(dir, assignment.id);
                 await clearWorkerLiveOutput(
                   resolvedDir,
                   thread.id,
@@ -6484,6 +6483,7 @@ export async function processNextQueued(
                     supersededByThreadId: null,
                   }
                 );
+                await removeAssignment(dir, assignment.id);
                 void processNextQueued(dir, resolvedDir);
                 return;
               }
