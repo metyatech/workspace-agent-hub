@@ -50,7 +50,16 @@ describe('manager thread state derivation', () => {
         activeAssignments: [],
       },
       queue: [],
-      meta: {},
+      meta: {
+        'thread-working': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoLabel: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          managedBaseBranch: 'main',
+          managedVerifyCommand: 'npm run verify',
+          requestedRunMode: 'write',
+        },
+      },
     });
 
     expect(views).toHaveLength(1);
@@ -552,8 +561,22 @@ describe('manager thread state derivation', () => {
         },
       ],
       meta: {
+        'thread-parent': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoLabel: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          managedBaseBranch: 'main',
+          managedVerifyCommand: 'npm run verify',
+          requestedRunMode: 'read-only',
+        },
         'thread-child': {
           derivedFromThreadIds: ['thread-parent'],
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoLabel: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          managedBaseBranch: 'main',
+          managedVerifyCommand: 'npm run verify',
+          requestedRunMode: 'write',
         },
       },
     });
@@ -684,6 +707,101 @@ describe('manager thread state derivation', () => {
     });
 
     expect(views).toEqual([]);
+  });
+
+  it('excludes non-manager threads even when their statuses would otherwise map into manager buckets', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-direct-waiting',
+          title: '個別エージェントの相談',
+          status: 'waiting',
+          updatedAt: '2026-04-11T11:30:00.000Z',
+          createdAt: '2026-04-11T11:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'manager とは別件で相談したい',
+              at: '2026-04-11T11:00:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: 'この thread は direct mode の bookkeeping です',
+              at: '2026-04-11T11:30:00.000Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-direct-review',
+          title: '別 repo の確認',
+          status: 'review',
+          updatedAt: '2026-04-11T11:31:00.000Z',
+          createdAt: '2026-04-11T11:01:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '通常会話のレビュー',
+              at: '2026-04-11T11:01:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: 'manager 所有ではない完了報告',
+              at: '2026-04-11T11:31:00.000Z',
+            },
+          ],
+        },
+        {
+          id: 'thread-manager-review',
+          title: 'manager 管理の作業',
+          status: 'review',
+          updatedAt: '2026-04-11T11:32:00.000Z',
+          createdAt: '2026-04-11T11:02:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'manager で直してください',
+              at: '2026-04-11T11:02:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: 'manager 側の作業結果です',
+              at: '2026-04-11T11:32:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-11T11:00:00.000Z',
+        lastMessageAt: '2026-04-11T11:32:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-manager-review': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoLabel: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          managedBaseBranch: 'main',
+          managedVerifyCommand: 'npm run verify',
+          requestedRunMode: 'write',
+        },
+      },
+    });
+
+    expect(views.map((view) => view.id)).toEqual(['thread-manager-review']);
+    expect(views[0]?.uiState).toBe('ai-finished-awaiting-user-confirmation');
   });
 
   it('reconciles stale runtime metadata when no queue or active assignment remains', async () => {

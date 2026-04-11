@@ -448,6 +448,14 @@ export async function handleManagerUiRequest(input: {
       input.workspaceRoot,
       body.title.trim()
     );
+    await updateManagerThreadMeta(
+      input.workspaceRoot,
+      createdThread.id,
+      (current) => ({
+        ...(current ?? {}),
+        managerOwned: true,
+      })
+    );
     notifyManagerUpdate(input.workspaceRoot);
     sendJson(input.res, createdThread, 201);
     return true;

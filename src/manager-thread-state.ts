@@ -42,6 +42,7 @@ export interface ManagerWorkerLiveEntry {
 }
 
 export interface ManagerThreadMeta {
+  managerOwned?: boolean;
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
   derivedFromThreadIds?: string[] | null;
@@ -428,6 +429,14 @@ function shouldIncludeInManagerThreadViews(input: {
   queueDepth: number;
   isWorking: boolean;
 }): boolean {
+  const managerOwned =
+    input.queueDepth > 0 ||
+    input.isWorking ||
+    managerThreadMetaHasContent(input.meta);
+  if (!managerOwned) {
+    return false;
+  }
+
   if (input.thread.status !== 'waiting') {
     return true;
   }
