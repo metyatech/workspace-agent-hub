@@ -82,6 +82,28 @@ function mwtErrorId(error: unknown): string | null {
     : null;
 }
 
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const MWT_OUTPUT_PREVIEW_LIMIT = 4_000;
+
+function normalizeMwtOutput(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(ANSI_ESCAPE_PATTERN, '').trim();
+}
+
+function formatMwtOutputSection(label: string, value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = normalizeMwtOutput(value);
+  if (!normalized) {
+    return null;
+  }
+  const preview =
+    normalized.length > MWT_OUTPUT_PREVIEW_LIMIT
+      ? `${normalized.slice(0, MWT_OUTPUT_PREVIEW_LIMIT)}\n...[truncated]`
+      : normalized;
+  return `${label}:\n${preview}`;
+}
+
 export function describeMwtError(error: unknown): string {
   if (!looksLikeMwtError(error)) {
     return String(error);
@@ -97,7 +119,26 @@ export function describeMwtError(error: unknown): string {
     typeof (error.details as { recovery?: unknown }).recovery === 'string'
       ? ((error.details as { recovery: string }).recovery ?? '').trim()
       : '';
-  return recovery ? `${message} ${recovery}`.trim() : message;
+  const stderrSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtOutputSection(
+          'stderr',
+          (error.details as { stderr?: unknown }).stderr
+        )
+      : null;
+  const stdoutSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtOutputSection(
+          'stdout',
+          (error.details as { stdout?: unknown }).stdout
+        )
+      : null;
+  const distinctStdoutSection =
+    stdoutSection && stdoutSection !== stderrSection ? stdoutSection : null;
+
+  return [message, recovery || null, stderrSection, distinctStdoutSection]
+    .filter((part): part is string => Boolean(part))
+    .join('\n\n');
 }
 
 export async function isManagedWorktreeRepository(

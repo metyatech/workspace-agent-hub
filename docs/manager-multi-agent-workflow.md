@@ -178,6 +178,12 @@ When an existing-repo write run finishes and passes its run-level verification:
 4. the Manager runs repo verification through `mwt deliver`
 5. if successful, the Manager pushes the result and syncs the seed checkout
 
+This final `mwt deliver` verify is an intentional integration gate, not a
+duplicate no-op. A worker can pass branch-local verification and still fail
+here after rebasing onto the latest target branch or when the repo's runtime
+environment is not clean. Manager should surface the concrete verify failure
+detail and pause for recovery instead of silently hiding that distinction.
+
 The human should see one queue per existing repo, not one global delivery pile.
 
 ### 5. Handle conflicts

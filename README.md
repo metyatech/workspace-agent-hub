@@ -573,6 +573,9 @@ Continue` recovery path. That action stashes the tracked seed changes with a
   second integration checkout. That final step rebases onto the latest target
   branch, runs the repository's configured verify command, pushes, syncs the
   seed checkout, and then continues any required release/publish chain.
+  Deliver starts automatically only after Manager review approves a write task
+  for an existing repository, and that final post-rebase verify step can still
+  fail even when the worker's own branch-level verify already passed.
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
