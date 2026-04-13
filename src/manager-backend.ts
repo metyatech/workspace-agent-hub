@@ -3703,6 +3703,15 @@ interface PausedWorktreeSnapshot {
   targetRepoRoot: string;
 }
 
+interface PausedWorktreeReuseDecision {
+  hasSnapshot: boolean;
+  reusable: boolean;
+  reason: string | null;
+  worktreePath: string | null;
+  worktreeBranch: string | null;
+  targetRepoRoot: string | null;
+}
+
 interface LatestStashEntry {
   commit: string;
   ref: string;
@@ -3765,6 +3774,95 @@ async function clearPausedWorktreeForThread(
     delete next.pausedTargetRepoRoot;
     return next;
   });
+}
+
+async function evaluatePausedWorktreeReuse(input: {
+  threadMeta: ManagerThreadMeta | null;
+  targetRepoRoot: string;
+}): Promise<PausedWorktreeReuseDecision> {
+  const worktreePath =
+    typeof input.threadMeta?.pausedWorktreePath === 'string' &&
+    input.threadMeta.pausedWorktreePath.trim()
+      ? input.threadMeta.pausedWorktreePath.trim()
+      : null;
+  const worktreeBranch =
+    typeof input.threadMeta?.pausedWorktreeBranch === 'string' &&
+    input.threadMeta.pausedWorktreeBranch.trim()
+      ? input.threadMeta.pausedWorktreeBranch.trim()
+      : null;
+  const pausedTargetRepoRoot =
+    typeof input.threadMeta?.pausedTargetRepoRoot === 'string' &&
+    input.threadMeta.pausedTargetRepoRoot.trim()
+      ? input.threadMeta.pausedTargetRepoRoot.trim()
+      : null;
+
+  if (!worktreePath && !worktreeBranch && !pausedTargetRepoRoot) {
+    return {
+      hasSnapshot: false,
+      reusable: false,
+      reason: null,
+      worktreePath: null,
+      worktreeBranch: null,
+      targetRepoRoot: null,
+    };
+  }
+
+  if (!worktreePath || !worktreeBranch || !pausedTargetRepoRoot) {
+    return {
+      hasSnapshot: true,
+      reusable: false,
+      reason:
+        'saved paused worktree metadata is incomplete. assignment, path, branch, and target repo must all be present.',
+      worktreePath,
+      worktreeBranch,
+      targetRepoRoot: pausedTargetRepoRoot,
+    };
+  }
+
+  if (resolvePath(pausedTargetRepoRoot) !== resolvePath(input.targetRepoRoot)) {
+    return {
+      hasSnapshot: true,
+      reusable: false,
+      reason: `saved paused worktree targets ${pausedTargetRepoRoot}, but this retry resolved ${input.targetRepoRoot}.`,
+      worktreePath,
+      worktreeBranch,
+      targetRepoRoot: pausedTargetRepoRoot,
+    };
+  }
+
+  if (!existsSync(worktreePath)) {
+    return {
+      hasSnapshot: true,
+      reusable: false,
+      reason: `saved paused worktree path does not exist: ${worktreePath}`,
+      worktreePath,
+      worktreeBranch,
+      targetRepoRoot: pausedTargetRepoRoot,
+    };
+  }
+
+  const managerOwned = await isManagerManagedWorktreePath(worktreePath).catch(
+    () => false
+  );
+  if (!managerOwned) {
+    return {
+      hasSnapshot: true,
+      reusable: false,
+      reason: `saved paused worktree is no longer recognized as a manager-owned mwt task worktree: ${worktreePath}`,
+      worktreePath,
+      worktreeBranch,
+      targetRepoRoot: pausedTargetRepoRoot,
+    };
+  }
+
+  return {
+    hasSnapshot: true,
+    reusable: true,
+    reason: null,
+    worktreePath,
+    worktreeBranch,
+    targetRepoRoot: pausedTargetRepoRoot,
+  };
 }
 
 async function clearSeedRecoveryState(
@@ -3978,6 +4076,18 @@ function buildAutoMwtInitBlockedMessage(input: {
     input.detail,
     changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
     `seed リポジトリで \`${suggestedCommand}\` を実行してから再開してください。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildPausedWorktreeResumeBlockedMessage(input: {
+  detail: string;
+}): string {
+  return [
+    '[Manager] 保存されていた paused managed task worktree を再利用できませんでした。',
+    input.detail,
+    'paused worktree の情報は保持したまま停止しました。原因を直したら同じ thread に続きの依頼を送ってください。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -6741,27 +6851,55 @@ export async function processNextQueued(
               targetRepoRoot: targetRepo,
             });
           } else {
-            const pausedWorktreeReusable =
-              typeof threadMeta?.pausedWorktreePath === 'string' &&
-              threadMeta.pausedWorktreePath.trim() &&
-              typeof threadMeta.pausedWorktreeBranch === 'string' &&
-              threadMeta.pausedWorktreeBranch.trim() &&
-              typeof threadMeta.pausedTargetRepoRoot === 'string' &&
-              resolvePath(threadMeta.pausedTargetRepoRoot) ===
-                resolvePath(targetRepo) &&
-              existsSync(threadMeta.pausedWorktreePath) &&
-              (await isManagerManagedWorktreePath(
-                threadMeta.pausedWorktreePath
-              ).catch(() => false));
-            if (pausedWorktreeReusable) {
-              assignment.worktreePath = threadMeta!.pausedWorktreePath!.trim();
-              assignment.worktreeBranch =
-                threadMeta!.pausedWorktreeBranch!.trim();
-              assignment.targetRepoRoot =
-                threadMeta!.pausedTargetRepoRoot!.trim();
+            const pausedWorktreeReuse = await evaluatePausedWorktreeReuse({
+              threadMeta,
+              targetRepoRoot: targetRepo,
+            });
+            if (pausedWorktreeReuse.reusable) {
+              assignment.worktreePath = pausedWorktreeReuse.worktreePath;
+              assignment.worktreeBranch = pausedWorktreeReuse.worktreeBranch;
+              assignment.targetRepoRoot = pausedWorktreeReuse.targetRepoRoot;
               await clearPausedWorktreeForThread(resolvedDir, thread.id);
+            } else if (pausedWorktreeReuse.hasSnapshot) {
+              const errMsg = buildPausedWorktreeResumeBlockedMessage({
+                detail:
+                  pausedWorktreeReuse.reason ??
+                  'saved paused worktree metadata could not be validated.',
+              });
+              try {
+                await addMessage(
+                  resolvedDir,
+                  thread.id,
+                  errMsg,
+                  'ai',
+                  'needs-reply'
+                );
+              } catch {
+                /* thread may have been deleted */
+              }
+              await updateQueueLocked(dir, (queue) =>
+                queue.filter(
+                  (entry) => !assignment.queueEntryIds.includes(entry.id)
+                )
+              );
+              await clearWorkerLiveOutput(
+                resolvedDir,
+                thread.id,
+                assignment.assigneeKind,
+                assignment.assigneeLabel,
+                {
+                  workerAgentId: assignment.id,
+                  runtimeState: null,
+                  runtimeDetail: null,
+                  workerWriteScopes: assignment.writeScopes,
+                  workerBlockedByThreadIds: [],
+                  supersededByThreadId: null,
+                }
+              );
+              await removeAssignment(dir, assignment.id);
+              void processNextQueued(dir, resolvedDir);
+              return;
             } else {
-              await clearPausedWorktreeForThread(resolvedDir, thread.id);
               const managedRepoReady =
                 await isManagedWorktreeRepository(targetRepo);
               if (!managedRepoReady) {

@@ -225,6 +225,7 @@ import {
   createManagerWorktree,
   deliverManagerWorktree,
   dropManagerWorktree,
+  isManagerManagedWorktreePath,
   isManagedWorktreeRepository,
   isMwtDeliverConflictError,
   maybeAutoInitializeManagerRepository,
@@ -496,6 +497,8 @@ beforeEach(async () => {
     branchName: 'mgr/default-task/preview000',
     targetRepoRoot: tempDir,
   });
+  vi.mocked(isManagerManagedWorktreePath).mockReset();
+  vi.mocked(isManagerManagedWorktreePath).mockResolvedValue(true);
   vi.mocked(deliverManagerWorktree).mockReset();
   vi.mocked(deliverManagerWorktree).mockResolvedValue({
     worktreeId: 'mgr-worktree-default',
@@ -2185,6 +2188,114 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'mwt init --base main --remote origin'
     );
+  });
+
+  it('reuses a saved paused manager worktree on the next retry instead of creating a new one', async () => {
+    const workerProc = makeProc(6121);
+    const reviewProc = makeProc(6122);
+    const pausedWorktreePath = join(tempDir, 'paused-manager-worktree');
+    await mkdir(pausedWorktreePath, { recursive: true });
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    await writeManagerThreadMeta(tempDir, {
+      'thread-paused-reuse': {
+        managedRepoRoot: tempDir,
+        managedBaseBranch: 'main',
+        managedVerifyCommand: 'npm run verify',
+        requestedRunMode: 'write',
+        pausedAssignmentId: 'assign_paused_reuse',
+        pausedWorktreePath,
+        pausedWorktreeBranch: 'mgr/paused-reuse/preview000',
+        pausedTargetRepoRoot: tempDir,
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-paused-reuse',
+      '続きを進めてください',
+      {
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+      }
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(maybeAutoInitializeManagerRepository)
+    ).not.toHaveBeenCalled();
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+      cwd: pausedWorktreePath,
+    });
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-paused-reuse',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-paused-reuse',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-paused-reuse']?.pausedWorktreePath).toBeUndefined();
+    expect(meta['thread-paused-reuse']?.pausedWorktreeBranch).toBeUndefined();
+    expect(meta['thread-paused-reuse']?.pausedTargetRepoRoot).toBeUndefined();
+  });
+
+  it('keeps the paused worktree snapshot and reports a paused-worktree-specific blocker when reuse validation fails', async () => {
+    const pausedWorktreePath = join(tempDir, 'paused-manager-worktree-invalid');
+    await mkdir(pausedWorktreePath, { recursive: true });
+    vi.mocked(isManagerManagedWorktreePath).mockResolvedValueOnce(false);
+    await writeManagerThreadMeta(tempDir, {
+      'thread-paused-reuse-blocked': {
+        managedRepoRoot: tempDir,
+        managedBaseBranch: 'main',
+        managedVerifyCommand: 'npm run verify',
+        requestedRunMode: 'write',
+        pausedAssignmentId: 'assign_paused_reuse_blocked',
+        pausedWorktreePath,
+        pausedWorktreeBranch: 'mgr/paused-reuse-blocked/preview000',
+        pausedTargetRepoRoot: tempDir,
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-paused-reuse-blocked',
+      '続きを進めてください',
+      {
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+      }
+    );
+
+    await waitForManagerIdle(tempDir);
+
+    expect(
+      vi.mocked(maybeAutoInitializeManagerRepository)
+    ).not.toHaveBeenCalled();
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-paused-reuse-blocked'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'paused managed task worktree を再利用できませんでした'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'manager-owned mwt task worktree'
+    );
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-paused-reuse-blocked']).toMatchObject({
+      pausedWorktreePath,
+      pausedWorktreeBranch: 'mgr/paused-reuse-blocked/preview000',
+      pausedTargetRepoRoot: tempDir,
+    });
   });
 
   it('asks for a concrete repo instead of dispatching a worker when an existing-repo write task is ambiguous', async () => {
