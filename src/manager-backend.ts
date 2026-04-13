@@ -2570,6 +2570,7 @@ export function isSessionInvalidError(output: string): boolean {
   return (
     (lower.includes('resume') &&
       (lower.includes('not found') ||
+        lower.includes('no rollout found') ||
         lower.includes('invalid') ||
         lower.includes('expired'))) ||
     ((lower.includes('thread') || lower.includes('session')) &&

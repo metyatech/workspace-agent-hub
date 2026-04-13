@@ -983,6 +983,11 @@ describe('manager backend codex integration', () => {
     expect(
       isSessionInvalidError('resume failed: session not found for thread-abc')
     ).toBe(true);
+    expect(
+      isSessionInvalidError(
+        'thread/resume: thread/resume failed: no rollout found for thread id 405238be-47f3-49e1-9e9f-1b5b6c390c78'
+      )
+    ).toBe(true);
   });
 
   it('reuses one routing session across global sends while keeping topic context current', async () => {
@@ -3889,7 +3894,9 @@ describe('manager backend codex integration', () => {
     await waitFor(() => spawnMock.mock.calls.length === 3);
     failingProc.stderr.emit(
       'data',
-      Buffer.from('resume failed: session not found for codex-thread-stale')
+      Buffer.from(
+        'thread/resume: thread/resume failed: no rollout found for thread id codex-thread-stale'
+      )
     );
     failingProc.emit('close', 1);
 
