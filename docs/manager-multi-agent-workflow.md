@@ -182,7 +182,11 @@ This final `mwt deliver` verify is an intentional integration gate, not a
 duplicate no-op. A worker can pass branch-local verification and still fail
 here after rebasing onto the latest target branch or when the repo's runtime
 environment is not clean. Manager should surface the concrete verify failure
-detail and pause for recovery instead of silently hiding that distinction.
+detail, attempt bounded automatic recovery in the same task worktree, and
+pause for human input only if that recovery loop is exhausted. The preserved
+task worktree in that terminal state is the paused worktree: it keeps the
+branch/worktree pair alive so a later retry can continue from the exact failed
+integration state instead of starting from scratch.
 
 The human should see one queue per existing repo, not one global delivery pile.
 

@@ -1888,8 +1888,8 @@ function buildWorkingDirectoryRecoveryPrompt(input: {
 
 const MANAGER_RECOVERY_SYSTEM_PROMPT =
   'You are the Manager recovery router for Workspace Agent Hub. ' +
-  'The review step for this work item did not approve the result. ' +
-  'Analyse the error context, the original request, and the current repository state to decide the best recovery action. ' +
+  'A review or delivery step for this work item failed to reach a clean final state. ' +
+  'Analyse the failure context, the original request, and the current repository state to decide the best recovery action. ' +
   'Return strict JSON: {"decision":"fix-self"|"retry-worker"|"restart"|"escalate","reason":"...","instructions":"..."}. ' +
   'decision meanings: ' +
   'fix-self — the issue is quick to fix (a few lines, a config tweak, a missed file); you will fix it yourself in the next turn. ' +
@@ -1902,7 +1902,7 @@ const MANAGER_RECOVERY_SYSTEM_PROMPT =
 
 const MANAGER_RECOVERY_FIX_SYSTEM_PROMPT =
   'You are the Manager for Workspace Agent Hub. ' +
-  "The review found issues with the worker's output. " +
+  'The previous attempt hit a recoverable issue in review or deliver. ' +
   'Fix the specified issues in this workspace. Run verification after your fix. ' +
   `${MANAGER_TOPIC_SCOPE_GUARD} ` +
   'Write the user-facing reply in plain, natural Japanese. ' +
@@ -2043,7 +2043,7 @@ function buildWorkerRetryPrompt(input: {
       : []),
     'Topic history:',
     formatThreadHistory(input.thread),
-    'Previous attempt had issues found during review. Please address the following:',
+    'The previous attempt hit a recoverable issue. Please address the following:',
     input.instructions,
   ].join('\n\n');
 }
@@ -5405,29 +5405,18 @@ async function runQueuedAssignment(input: {
     }
 
     // -----------------------------------------------------------------------
-    // Recovery loop — Manager decides how to handle review failures
+    // Recovery loop — Manager decides how to handle review/deliver failures
     // -----------------------------------------------------------------------
 
-    if (!approved && reviewStepAttempted) {
-      let recoveryErrorContext: string;
-      if (deliveryReadinessDetail) {
-        recoveryErrorContext = `Delivery readiness check failed:\n${deliveryReadinessDetail}`;
-      } else if (finalResult.code !== 0) {
-        recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${formatRuntimeFailureSuffix(
-          {
-            stdout: finalResult.stdout,
-            stderr: finalResult.stderr,
-            maxLength: 500,
-          }
-        )}`;
-      } else if (currentParsedReply?.status === 'needs-reply') {
-        recoveryErrorContext = `Review returned needs-reply:\n${currentParsedReply.reply}`;
-      } else {
-        recoveryErrorContext =
-          'The review reply could not be parsed as valid Manager JSON.';
-      }
+    const MAX_RECOVERY_ATTEMPTS = 10;
+    const attemptAutomaticRecovery = async (input: {
+      initialErrorContext: string;
+      recoverySubject: string;
+      preservePausedWorktreeOnFailure: boolean;
+      resetQueueProcessedOnRestart: boolean;
+    }): Promise<boolean> => {
+      let recoveryErrorContext = input.initialErrorContext;
 
-      const MAX_RECOVERY_ATTEMPTS = 10;
       for (
         let recoveryAttempt = 0;
         recoveryAttempt < MAX_RECOVERY_ATTEMPTS;
@@ -5437,10 +5426,9 @@ async function runQueuedAssignment(input: {
           await readSession(dir)
         ).activeAssignments.some((current) => current.id === assignment.id);
         if (!stillTrackedRecovery) {
-          return;
+          return false;
         }
 
-        // --- Recovery decision turn ---
         const recoveryDecisionResult = await runTurn({
           prompt: buildManagerRecoveryPrompt({
             thread: promptThread,
@@ -5453,9 +5441,8 @@ async function runQueuedAssignment(input: {
           assigneeKind: 'manager',
           assigneeLabel: defaultAssigneeLabel('manager'),
           runtimeState: 'manager-recovery',
-          runtimeDetail: `Manager がレビュー結果を分析し回復方法を決定中（試行 ${recoveryAttempt + 1}/${MAX_RECOVERY_ATTEMPTS}）`,
-          initialLiveOutput:
-            'Manager がレビュー結果の回復方法を判断しています…',
+          runtimeDetail: `Manager が${input.recoverySubject}を分析し回復方法を決定中（試行 ${recoveryAttempt + 1}/${MAX_RECOVERY_ATTEMPTS}）`,
+          initialLiveOutput: `Manager が${input.recoverySubject}の回復方法を判断しています…`,
           clearLiveLog: false,
           preserveWorkerSessionId: true,
         });
@@ -5464,8 +5451,14 @@ async function runQueuedAssignment(input: {
           recoveryDecisionResult.parsed.text
         );
 
-        // --- Escalate: cannot recover automatically ---
         if (!decision || decision.decision === 'escalate') {
+          if (input.preservePausedWorktreeOnFailure) {
+            await preservePausedWorktreeForThread(
+              resolvedDir,
+              thread.id,
+              assignment
+            );
+          }
           const escalateMsg = decision?.reason
             ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
             : `[Manager] 回復判断を解釈できませんでした。\n\n元のエラー:\n${recoveryErrorContext}`;
@@ -5510,17 +5503,18 @@ async function runQueuedAssignment(input: {
             }
           );
           await removeAssignment(dir, assignment.id);
-          await cleanupWorktreeBestEffort({
-            targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
-            worktreePath: assignment.worktreePath,
-            branchName: assignment.worktreeBranch,
-            context: `Escalated recovery cleanup for ${assignment.id}`,
-          });
+          if (!input.preservePausedWorktreeOnFailure) {
+            await cleanupWorktreeBestEffort({
+              targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
+              worktreePath: assignment.worktreePath,
+              branchName: assignment.worktreeBranch,
+              context: `Escalated recovery cleanup for ${assignment.id}`,
+            });
+          }
           void processNextQueued(dir, resolvedDir);
-          return;
+          return false;
         }
 
-        // --- Restart: clean up and re-queue from scratch ---
         if (decision.decision === 'restart') {
           try {
             await addMessage(
@@ -5533,6 +5527,16 @@ async function runQueuedAssignment(input: {
           } catch {
             /* thread may have been deleted */
           }
+          if (input.resetQueueProcessedOnRestart) {
+            await updateQueueLocked(dir, (queue) =>
+              queue.map((entry) =>
+                assignment.queueEntryIds.includes(entry.id)
+                  ? { ...entry, processed: false }
+                  : entry
+              )
+            );
+          }
+          await clearPausedWorktreeForThread(resolvedDir, thread.id);
           await clearWorkerLiveOutput(
             resolvedDir,
             thread.id,
@@ -5554,7 +5558,6 @@ async function runQueuedAssignment(input: {
             branchName: assignment.worktreeBranch,
             context: `Restart recovery cleanup for ${assignment.id}`,
           });
-          // Queue entries are NOT removed — they will be re-dispatched
           await writeWorkerSessionId(
             resolvedDir,
             thread.id,
@@ -5564,10 +5567,9 @@ async function runQueuedAssignment(input: {
             null
           );
           void processNextQueued(dir, resolvedDir);
-          return;
+          return false;
         }
 
-        // --- fix-self or retry-worker: execute fix then re-review ---
         let fixResult;
         if (decision.decision === 'fix-self') {
           fixResult = await runTurn({
@@ -5585,13 +5587,12 @@ async function runQueuedAssignment(input: {
             assigneeKind: 'manager',
             assigneeLabel: defaultAssigneeLabel('manager'),
             runtimeState: 'manager-answering',
-            runtimeDetail: 'Manager がレビューで発見した問題を直接修正中…',
-            initialLiveOutput: 'Manager が問題を修正しています…',
+            runtimeDetail: 'Manager が回復修正を直接適用中…',
+            initialLiveOutput: 'Manager が回復修正を適用しています…',
             clearLiveLog: false,
             preserveWorkerSessionId: true,
           });
         } else {
-          // retry-worker
           const runRetryWorkerTurn = (sessionId: string | null) =>
             runTurn({
               prompt: buildWorkerRetryPrompt({
@@ -5607,8 +5608,8 @@ async function runQueuedAssignment(input: {
               assigneeKind: 'worker',
               assigneeLabel: assignment.assigneeLabel,
               runtimeState: 'worker-running',
-              runtimeDetail: 'Worker がレビュー指摘の修正を実行中…',
-              initialLiveOutput: 'Worker がレビュー指摘を修正しています…',
+              runtimeDetail: 'Worker が回復修正を実行中…',
+              initialLiveOutput: 'Worker が回復修正を進めています…',
               clearLiveLog: false,
               preserveWorkerSessionId: false,
             });
@@ -5636,10 +5637,9 @@ async function runQueuedAssignment(input: {
           await readSession(dir)
         ).activeAssignments.some((current) => current.id === assignment.id);
         if (!stillTrackedAfterFix) {
-          return;
+          return false;
         }
 
-        // Parse fix result — if fix itself produced no usable output, loop
         const fixParsedReply = parseManagerReplyPayload(fixResult.parsed.text);
         if (fixResult.code !== 0 || !fixParsedReply) {
           recoveryErrorContext =
@@ -5655,7 +5655,6 @@ async function runQueuedAssignment(input: {
           continue;
         }
 
-        // Re-review the fix
         const fixWorkerResult = parseManagerWorkerResultPayload(
           fixResult.parsed.text
         ) ?? {
@@ -5697,8 +5696,8 @@ async function runQueuedAssignment(input: {
           assigneeKind: 'manager',
           assigneeLabel: defaultAssigneeLabel('manager'),
           runtimeState: 'manager-answering',
-          runtimeDetail: 'Manager が修正結果をレビュー中…',
-          initialLiveOutput: 'Manager が修正結果を確認しています…',
+          runtimeDetail: 'Manager が回復修正の結果をレビュー中…',
+          initialLiveOutput: 'Manager が回復修正の結果を確認しています…',
           clearLiveLog: false,
           preserveWorkerSessionId: true,
         });
@@ -5707,7 +5706,7 @@ async function runQueuedAssignment(input: {
           await readSession(dir)
         ).activeAssignments.some((current) => current.id === assignment.id);
         if (!stillTrackedAfterReReview) {
-          return;
+          return false;
         }
 
         const reReviewParsed = parseManagerReplyPayload(
@@ -5742,14 +5741,12 @@ async function runQueuedAssignment(input: {
             deliveryReadinessDetail = null;
             deliveryAheadCommitCount = 0;
           }
-          // Recovery succeeded — update reply for the success path
           currentParsedReply = reReviewParsed;
           currentFallbackReply = reReviewFallback;
           approved = true;
-          break;
+          return true;
         }
 
-        // Not approved yet — update error context and loop
         if (reReviewParsed?.status === 'needs-reply') {
           recoveryErrorContext = `Re-review returned needs-reply:\n${reReviewParsed.reply}`;
         } else if (reReviewResult.code !== 0) {
@@ -5765,45 +5762,81 @@ async function runQueuedAssignment(input: {
         }
       }
 
-      // Exhausted all recovery attempts — escalate
-      if (!approved) {
-        const exhaustedMsg = `[Manager] ${MAX_RECOVERY_ATTEMPTS} 回の回復試行で解決できませんでした。ユーザーの確認が必要です。\n\n最終エラー:\n${recoveryErrorContext}`;
-        try {
-          await addMessage(
-            resolvedDir,
-            thread.id,
-            exhaustedMsg,
-            'ai',
-            'needs-reply'
-          );
-        } catch {
-          /* thread may have been deleted */
-        }
-        await updateQueueLocked(dir, (queue) =>
-          queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
-        );
-        await clearWorkerLiveOutput(
+      if (input.preservePausedWorktreeOnFailure) {
+        await preservePausedWorktreeForThread(
           resolvedDir,
           thread.id,
-          assignment.assigneeKind,
-          assignment.assigneeLabel,
-          {
-            workerAgentId: assignment.id,
-            runtimeState: null,
-            runtimeDetail: null,
-            workerWriteScopes: assignment.writeScopes,
-            workerBlockedByThreadIds: [],
-            supersededByThreadId: null,
-          }
+          assignment
         );
-        await removeAssignment(dir, assignment.id);
+      }
+      const exhaustedMsg = `[Manager] ${MAX_RECOVERY_ATTEMPTS} 回の自動回復試行で解決できませんでした。ユーザーの確認が必要です。\n\n最終エラー:\n${recoveryErrorContext}`;
+      try {
+        await addMessage(
+          resolvedDir,
+          thread.id,
+          exhaustedMsg,
+          'ai',
+          'needs-reply'
+        );
+      } catch {
+        /* thread may have been deleted */
+      }
+      await updateQueueLocked(dir, (queue) =>
+        queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
+      );
+      await clearWorkerLiveOutput(
+        resolvedDir,
+        thread.id,
+        assignment.assigneeKind,
+        assignment.assigneeLabel,
+        {
+          workerAgentId: assignment.id,
+          runtimeState: null,
+          runtimeDetail: null,
+          workerWriteScopes: assignment.writeScopes,
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+        }
+      );
+      await removeAssignment(dir, assignment.id);
+      if (!input.preservePausedWorktreeOnFailure) {
         await cleanupWorktreeBestEffort({
           targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
           worktreePath: assignment.worktreePath,
           branchName: assignment.worktreeBranch,
           context: `Exhausted recovery cleanup for ${assignment.id}`,
         });
-        void processNextQueued(dir, resolvedDir);
+      }
+      void processNextQueued(dir, resolvedDir);
+      return false;
+    };
+
+    if (!approved && reviewStepAttempted) {
+      let recoveryErrorContext: string;
+      if (deliveryReadinessDetail) {
+        recoveryErrorContext = `Delivery readiness check failed:\n${deliveryReadinessDetail}`;
+      } else if (finalResult.code !== 0) {
+        recoveryErrorContext = `Review exited with code ${finalResult.code ?? '?'}.${formatRuntimeFailureSuffix(
+          {
+            stdout: finalResult.stdout,
+            stderr: finalResult.stderr,
+            maxLength: 500,
+          }
+        )}`;
+      } else if (currentParsedReply?.status === 'needs-reply') {
+        recoveryErrorContext = `Review returned needs-reply:\n${currentParsedReply.reply}`;
+      } else {
+        recoveryErrorContext =
+          'The review reply could not be parsed as valid Manager JSON.';
+      }
+
+      approved = await attemptAutomaticRecovery({
+        initialErrorContext: recoveryErrorContext,
+        recoverySubject: 'レビュー失敗',
+        preservePausedWorktreeOnFailure: false,
+        resetQueueProcessedOnRestart: false,
+      });
+      if (!approved) {
         return;
       }
     }
@@ -5878,171 +5911,154 @@ async function runQueuedAssignment(input: {
           )
         );
 
-        try {
-          const deliveryTargetBranch =
-            threadMeta?.managedBaseBranch?.trim() || null;
-          let deliverResult;
+        const deliveryTargetBranch =
+          threadMeta?.managedBaseBranch?.trim() || null;
+        while (true) {
           try {
-            deliverResult = await deliverManagerWorktree({
-              worktreePath: assignment.worktreePath,
-              targetBranch: deliveryTargetBranch,
-            });
-          } catch (deliveryError) {
-            if (isMwtDeliverConflictError(deliveryError)) {
-              const conflictFiles = await listRebaseConflictFiles(
-                assignment.worktreePath
-              );
-              await appendWorkerLiveOutput({
-                dir: resolvedDir,
-                threadId: thread.id,
-                text:
-                  conflictFiles.length > 0
-                    ? `rebase コンフリクト検出（${conflictFiles.length} ファイル）。Manager が task worktree 上で解消を試みます…`
-                    : 'rebase コンフリクトを検出しました。Manager が task worktree 上で解消を試みます…',
-                kind: 'status',
-                assigneeKind: 'manager',
-                assigneeLabel: defaultAssigneeLabel('manager'),
-                workerSessionId,
-                workerAgentId: assignment.id,
-                runtimeState: 'manager-answering',
-                runtimeDetail: 'rebase コンフリクト解消中…',
-                workerWriteScopes: assignment.writeScopes,
-              });
-              const conflictResolution = await resolveRebaseConflictAndContinue(
-                {
-                  dir,
-                  taskWorktreePath: assignment.worktreePath,
-                  thread,
-                  currentUserRequest: promptContent,
-                  managedVerifyCommand:
-                    threadMeta?.managedVerifyCommand ?? null,
-                }
-              );
-              if (!conflictResolution.success) {
-                throw new Error(
-                  `managed worktree deliver conflict could not be resolved: ${conflictResolution.detail}`
-                );
-              }
+            let deliverResult;
+            try {
               deliverResult = await deliverManagerWorktree({
                 worktreePath: assignment.worktreePath,
                 targetBranch: deliveryTargetBranch,
-                resume: true,
               });
-            } else {
-              throw deliveryError;
+            } catch (deliveryError) {
+              if (isMwtDeliverConflictError(deliveryError)) {
+                const conflictFiles = await listRebaseConflictFiles(
+                  assignment.worktreePath
+                );
+                await appendWorkerLiveOutput({
+                  dir: resolvedDir,
+                  threadId: thread.id,
+                  text:
+                    conflictFiles.length > 0
+                      ? `rebase コンフリクト検出（${conflictFiles.length} ファイル）。Manager が task worktree 上で解消を試みます…`
+                      : 'rebase コンフリクトを検出しました。Manager が task worktree 上で解消を試みます…',
+                  kind: 'status',
+                  assigneeKind: 'manager',
+                  assigneeLabel: defaultAssigneeLabel('manager'),
+                  workerSessionId,
+                  workerAgentId: assignment.id,
+                  runtimeState: 'manager-answering',
+                  runtimeDetail: 'rebase コンフリクト解消中…',
+                  workerWriteScopes: assignment.writeScopes,
+                });
+                const conflictResolution =
+                  await resolveRebaseConflictAndContinue({
+                    dir,
+                    taskWorktreePath: assignment.worktreePath,
+                    thread,
+                    currentUserRequest: promptContent,
+                    managedVerifyCommand:
+                      threadMeta?.managedVerifyCommand ?? null,
+                  });
+                if (!conflictResolution.success) {
+                  throw new Error(
+                    `managed worktree deliver conflict could not be resolved: ${conflictResolution.detail}`
+                  );
+                }
+                deliverResult = await deliverManagerWorktree({
+                  worktreePath: assignment.worktreePath,
+                  targetBranch: deliveryTargetBranch,
+                  resume: true,
+                });
+              } else {
+                throw deliveryError;
+              }
             }
-          }
 
-          await appendWorkerLiveOutput({
-            dir: resolvedDir,
-            threadId: thread.id,
-            text: 'deliver 完了。必要な release / publish を続けて実行しています…',
-            kind: 'status',
-            assigneeKind: 'manager',
-            assigneeLabel: defaultAssigneeLabel('manager'),
-            workerSessionId,
-            workerAgentId: assignment.id,
-            runtimeState: 'manager-answering',
-            runtimeDetail: 'release / publish の最終確認中…',
-            workerWriteScopes: assignment.writeScopes,
-          });
+            await appendWorkerLiveOutput({
+              dir: resolvedDir,
+              threadId: thread.id,
+              text: 'deliver 完了。必要な release / publish を続けて実行しています…',
+              kind: 'status',
+              assigneeKind: 'manager',
+              assigneeLabel: defaultAssigneeLabel('manager'),
+              workerSessionId,
+              workerAgentId: assignment.id,
+              runtimeState: 'manager-answering',
+              runtimeDetail: 'release / publish の最終確認中…',
+              workerWriteScopes: assignment.writeScopes,
+            });
 
-          const releaseResult = await runPostMergeDeliveryChain({
-            targetRepoRoot,
-          });
-          if (!releaseResult.success) {
-            await preservePausedWorktreeForThread(
-              resolvedDir,
-              thread.id,
-              assignment
-            );
-            const errMsg = `[Manager] deliver と push は完了しましたが、release / publish の完了前に停止しました: ${releaseResult.detail}`;
-            try {
-              await addMessage(
+            const releaseResult = await runPostMergeDeliveryChain({
+              targetRepoRoot,
+            });
+            if (!releaseResult.success) {
+              await preservePausedWorktreeForThread(
                 resolvedDir,
                 thread.id,
-                errMsg,
-                'ai',
-                'needs-reply'
+                assignment
               );
-            } catch {
-              /* thread may have been deleted */
-            }
-            await updateQueueLocked(dir, (queue) =>
-              queue.filter(
-                (entry) => !assignment.queueEntryIds.includes(entry.id)
-              )
-            );
-            await clearWorkerLiveOutput(
-              resolvedDir,
-              thread.id,
-              assignment.assigneeKind,
-              assignment.assigneeLabel,
-              {
-                workerAgentId: assignment.id,
-                runtimeState: null,
-                runtimeDetail: null,
-                workerWriteScopes: assignment.writeScopes,
-                workerBlockedByThreadIds: [],
-                supersededByThreadId: null,
+              const errMsg = `[Manager] deliver と push は完了しましたが、release / publish の完了前に停止しました: ${releaseResult.detail}`;
+              try {
+                await addMessage(
+                  resolvedDir,
+                  thread.id,
+                  errMsg,
+                  'ai',
+                  'needs-reply'
+                );
+              } catch {
+                /* thread may have been deleted */
               }
-            );
-            await removeAssignment(dir, assignment.id);
-            void processNextQueued(dir, resolvedDir);
-            return;
-          }
-
-          await cleanupWorktreeBestEffort({
-            targetRepoRoot,
-            worktreePath: assignment.worktreePath,
-            branchName: assignment.worktreeBranch,
-            context: `Post-deliver manager worktree cleanup for ${assignment.id}`,
-          });
-          deliveryReadinessDetail =
-            deliveryReadinessDetail ??
-            `Delivered ${deliverResult.worktreeId} to ${deliverResult.targetBranch}.`;
-        } catch (deliveryError) {
-          await preservePausedWorktreeForThread(
-            resolvedDir,
-            thread.id,
-            assignment
-          );
-          const errMsg = `[Manager] managed task worktree の deliver に失敗しました: ${describeMwtError(
-            deliveryError
-          )}`;
-          try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              errMsg,
-              'ai',
-              'needs-reply'
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
-          await updateQueueLocked(dir, (queue) =>
-            queue.filter(
-              (entry) => !assignment.queueEntryIds.includes(entry.id)
-            )
-          );
-          await clearWorkerLiveOutput(
-            resolvedDir,
-            thread.id,
-            assignment.assigneeKind,
-            assignment.assigneeLabel,
-            {
-              workerAgentId: assignment.id,
-              runtimeState: null,
-              runtimeDetail: null,
-              workerWriteScopes: assignment.writeScopes,
-              workerBlockedByThreadIds: [],
-              supersededByThreadId: null,
+              await updateQueueLocked(dir, (queue) =>
+                queue.filter(
+                  (entry) => !assignment.queueEntryIds.includes(entry.id)
+                )
+              );
+              await clearWorkerLiveOutput(
+                resolvedDir,
+                thread.id,
+                assignment.assigneeKind,
+                assignment.assigneeLabel,
+                {
+                  workerAgentId: assignment.id,
+                  runtimeState: null,
+                  runtimeDetail: null,
+                  workerWriteScopes: assignment.writeScopes,
+                  workerBlockedByThreadIds: [],
+                  supersededByThreadId: null,
+                }
+              );
+              await removeAssignment(dir, assignment.id);
+              void processNextQueued(dir, resolvedDir);
+              return;
             }
-          );
-          await removeAssignment(dir, assignment.id);
-          void processNextQueued(dir, resolvedDir);
-          return;
+
+            await cleanupWorktreeBestEffort({
+              targetRepoRoot,
+              worktreePath: assignment.worktreePath,
+              branchName: assignment.worktreeBranch,
+              context: `Post-deliver manager worktree cleanup for ${assignment.id}`,
+            });
+            deliveryReadinessDetail =
+              deliveryReadinessDetail ??
+              `Delivered ${deliverResult.worktreeId} to ${deliverResult.targetBranch}.`;
+            break;
+          } catch (deliveryError) {
+            approved = await attemptAutomaticRecovery({
+              initialErrorContext: `Deliver failed:\n${describeMwtError(deliveryError)}`,
+              recoverySubject: 'deliver 失敗',
+              preservePausedWorktreeOnFailure: true,
+              resetQueueProcessedOnRestart: true,
+            });
+            if (!approved) {
+              return;
+            }
+            await appendWorkerLiveOutput({
+              dir: resolvedDir,
+              threadId: thread.id,
+              text: '回復修正が完了したため、deliver を再試行しています…',
+              kind: 'status',
+              assigneeKind: 'manager',
+              assigneeLabel: defaultAssigneeLabel('manager'),
+              workerSessionId,
+              workerAgentId: assignment.id,
+              runtimeState: 'manager-answering',
+              runtimeDetail: 'deliver を再試行中…',
+              workerWriteScopes: assignment.writeScopes,
+            });
+          }
         }
       }
 

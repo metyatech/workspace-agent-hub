@@ -4235,10 +4235,14 @@ describe('manager backend codex integration', () => {
     );
   });
 
-  it('does not mark a worker task complete when push fails after merge', async () => {
+  it('preserves the paused worktree when automatic deliver recovery escalates', async () => {
     const workerProc = makeProc(8401);
     const reviewProc = makeProc(8402);
-    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    const recoveryProc = makeProc(8403);
+    spawnMock
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc)
+      .mockReturnValueOnce(recoveryProc);
     vi.mocked(createManagerWorktree).mockResolvedValueOnce({
       worktreePath: 'C:\\temp\\workspace-agent-hub-mgr-assign_thread-push-fail',
       branchName: 'mgr/assign_thread-push-fail/preview000',
@@ -4268,6 +4272,12 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"review done"}',
     });
 
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(recoveryProc, {
+      sessionId: 'manager-recovery-thread-push-fail',
+      text: '{"decision":"escalate","reason":"remote rejected requires human action","instructions":null}',
+    });
+
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
       const session = await readSession(tempDir);
@@ -4284,8 +4294,110 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-push-fail');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('deliver');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      '自動回復できませんでした'
+    );
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-push-fail']?.pausedWorktreePath).toBe(
+      'C:\\temp\\workspace-agent-hub-mgr-assign_thread-push-fail'
+    );
+    expect(meta['thread-push-fail']?.pausedWorktreeBranch).toBe(
+      'mgr/assign_thread-push-fail/preview000'
+    );
+  });
+
+  it('retries deliver automatically after a recovery fix succeeds', async () => {
+    const workerProc = makeProc(8461);
+    const reviewProc = makeProc(8462);
+    const recoveryDecisionProc = makeProc(8463);
+    const recoveryFixProc = makeProc(8464);
+    const recoveryReviewProc = makeProc(8465);
+    spawnMock
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc)
+      .mockReturnValueOnce(recoveryDecisionProc)
+      .mockReturnValueOnce(recoveryFixProc)
+      .mockReturnValueOnce(recoveryReviewProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-deliver-recovery',
+      branchName: 'mgr/assign_thread-deliver-recovery/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(validateWorktreeReadyForMerge)
+      .mockResolvedValueOnce({
+        ready: true,
+        detail: 'mock delivery ready',
+        aheadCommitCount: 1,
+        mergeSourceRef: 'worker-commit-sha',
+      })
+      .mockResolvedValueOnce({
+        ready: true,
+        detail: 'mock delivery ready after recovery',
+        aheadCommitCount: 1,
+        mergeSourceRef: 'worker-commit-sha-recovered',
+      });
+    vi.mocked(deliverManagerWorktree)
+      .mockRejectedValueOnce(
+        new Error(
+          'Verification failed during deliver: listen EADDRINUSE: address already in use :::3101'
+        )
+      )
+      .mockResolvedValueOnce({
+        worktreeId: 'assign_thread-deliver-recovery',
+        targetBranch: 'main',
+        pushedCommit: 'mock-recovered-commit',
+        seedSyncedTo: 'mock-seed-sync',
+      });
+
+    await sendToBuiltinManager(tempDir, 'thread-deliver-recovery', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-deliver-recovery',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-deliver-recovery',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(recoveryDecisionProc, {
+      sessionId: 'manager-recovery-thread-deliver-recovery',
+      text: '{"decision":"fix-self","reason":"deliver verify is recoverable","instructions":"Fix the deliver verify failure, rerun verification, and leave the task worktree ready for delivery."}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(recoveryFixProc, {
+      sessionId: 'manager-recovery-fix-thread-deliver-recovery',
+      text: '{"status":"review","reply":"manager fixed the deliver issue","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 5);
+    completeCodexTurn(recoveryReviewProc, {
+      sessionId: 'manager-rereview-thread-deliver-recovery',
+      text: '{"status":"review","reply":"review done after recovery"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-deliver-recovery');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'review done after recovery'
+    );
   });
 
   it('skips integration merge and push when the approved worktree has no deliverable commits', async () => {

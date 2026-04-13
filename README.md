@@ -575,7 +575,10 @@ Continue` recovery path. That action stashes the tracked seed changes with a
   seed checkout, and then continues any required release/publish chain.
   Deliver starts automatically only after Manager review approves a write task
   for an existing repository, and that final post-rebase verify step can still
-  fail even when the worker's own branch-level verify already passed.
+  fail even when the worker's own branch-level verify already passed. When
+  that happens, Manager now attempts bounded automatic recovery in the same
+  task worktree before asking the user, and only preserves that worktree as a
+  paused recovery worktree if automatic recovery is exhausted.
 - The native Manager page now updates over a pushed live snapshot stream instead
   of periodic client polling, and the bottom of the open work-item
   conversation now shows a growing live worker log while a result is still
