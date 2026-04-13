@@ -2416,6 +2416,35 @@
             <div id="body-user-reply-needed" class="section-body"></div>
           </section>
 
+          <section class="card section-card" id="sec-stalled">
+            <div class="section-header">
+              <button
+                class="section-toggle"
+                type="button"
+                data-section-key="stalled"
+                aria-expanded="false"
+                aria-controls="body-stalled"
+              >
+                <span class="section-header-copy">
+                  <span class="section-dot" style="background: #ef4444"></span>
+                  <span class="section-title">処理状態要確認</span>
+                  <span id="count-stalled" class="section-count"></span>
+                </span>
+                <span id="chevron-stalled" class="section-chevron">▲</span>
+              </button>
+              <div class="section-header-actions">
+                <button
+                  id="sort-stalled"
+                  class="btn btn-ghost section-sort-button"
+                  type="button"
+                  data-sort-control="stalled"
+                  style="width: auto"
+                ></button>
+              </div>
+            </div>
+            <div id="body-stalled" class="section-body"></div>
+          </section>
+
           <section
             class="card section-card"
             id="sec-ai-finished-awaiting-user-confirmation"

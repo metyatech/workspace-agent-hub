@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@metyatech/managed-worktree-system": "^2.1.1",
-    "@metyatech/thread-inbox": "^0.4.2",
+    "@metyatech/thread-inbox": "^0.4.5",
     "commander": "^14.0.3",
     "marked": "^17.0.5",
     "qrcode": "^1.5.4"

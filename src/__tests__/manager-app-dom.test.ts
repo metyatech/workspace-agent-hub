@@ -1802,6 +1802,60 @@ describe('manager-app DOM auth state matrix', () => {
     expect(chips).toContain('AI の順番待ち 1');
   });
 
+  it('shows stranded manager topics under attention-needed instead of the queued lane', async () => {
+    const validToken = 'stalled-thread-token';
+    const stalledThread = makeThreadView(
+      'thread-stalled',
+      '取り残された task',
+      {
+        status: 'waiting',
+        uiState: 'stalled',
+        previewText: '[user] 続きの返答をください',
+        lastSender: 'user',
+      }
+    );
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [stalledThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+        pendingCount: 0,
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('処理状態の確認が必要な作業項目があります');
+    expect(
+      document.querySelector<HTMLElement>('#activity-detail')!.textContent
+    ).toContain('「処理状態要確認」の一覧を開いて');
+    expect(
+      document
+        .querySelector<HTMLElement>('#sec-stalled')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(
+      document
+        .querySelector<HTMLElement>('#sec-queued')!
+        .classList.contains('hidden')
+    ).toBe(true);
+    const chips = Array.from(
+      document.querySelectorAll<HTMLElement>('.activity-chip')
+    ).map((element) => element.textContent ?? '');
+    expect(chips).toContain('状態要確認 1');
+  });
+
   it('defaults human-facing lists to oldest-first and AI lists to newest-first', async () => {
     const validToken = 'section-sort-defaults-token';
     const threads = [

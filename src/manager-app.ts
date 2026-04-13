@@ -32,6 +32,7 @@ interface Msg {
 type ManagerUiState =
   | 'routing-confirmation-needed'
   | 'user-reply-needed'
+  | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
   | 'ai-working'
@@ -346,6 +347,7 @@ const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
   'user-reply-needed',
+  'stalled',
   'ai-finished-awaiting-user-confirmation',
   'queued',
   'ai-working',
@@ -364,6 +366,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
 > = {
   'routing-confirmation-needed': 'oldest-first',
   'user-reply-needed': 'oldest-first',
+  stalled: 'oldest-first',
   'ai-finished-awaiting-user-confirmation': 'oldest-first',
   queued: 'newest-first',
   'ai-working': 'newest-first',
@@ -375,6 +378,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
 const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
   'routing-confirmation-needed': '振り分けの確認が必要です',
   'user-reply-needed': 'あなたの返信が必要です',
+  stalled: '処理状態の確認が必要です',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ちです',
   queued: 'AI の順番待ち',
   'ai-working': 'AI が作業中です',
@@ -390,6 +394,7 @@ const STATE_PRIORITY_RANK = Object.fromEntries(
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
   'user-reply-needed': 'あなたの返信待ち',
+  stalled: '処理状態要確認',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: 'AI の順番待ち',
   'ai-working': 'AI作業中',
@@ -407,6 +412,11 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     bg: 'rgba(120, 53, 15, 0.82)',
     color: '#fde68a',
     border: 'rgba(245, 158, 11, 0.42)',
+  },
+  stalled: {
+    bg: 'rgba(127, 29, 29, 0.82)',
+    color: '#fecaca',
+    border: 'rgba(248, 113, 113, 0.32)',
   },
   'ai-finished-awaiting-user-confirmation': {
     bg: 'rgba(76, 29, 149, 0.82)',
@@ -1758,6 +1768,9 @@ function describeThreadState(thread: ThreadView): string | null {
   if (thread.uiState === 'user-reply-needed') {
     return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
   }
+  if (thread.uiState === 'stalled') {
+    return 'この件は現在キューにも実行中にも見当たりません。前回の処理状態が途切れた可能性があるため、内容を開いて再送するか完了扱いかを決めてください。';
+  }
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
@@ -1782,6 +1795,9 @@ function threadNextActionText(thread: ThreadView): string {
   }
   if (thread.uiState === 'user-reply-needed') {
     return '必要な確認に返すと、そのまま続きへ戻せます。';
+  }
+  if (thread.uiState === 'stalled') {
+    return 'この件を開いて状況を確認し、必要なら同じ依頼を再送してください。';
   }
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return '内容を見て、続きがあればそのまま送り、終わりなら完了にします。';
@@ -3529,6 +3545,7 @@ class ManagerApp {
         'routing-confirmation-needed'
       ),
       'user-reply-needed': new ThreadSectionController('user-reply-needed'),
+      stalled: new ThreadSectionController('stalled'),
       'ai-finished-awaiting-user-confirmation': new ThreadSectionController(
         'ai-finished-awaiting-user-confirmation'
       ),
@@ -5954,6 +5971,8 @@ class ManagerApp {
       primary.textContent = '振り分け確認が必要な作業項目があります';
     } else if (counts['user-reply-needed'] > 0) {
       primary.textContent = 'あなたの返信待ちがあります';
+    } else if (counts['stalled'] > 0) {
+      primary.textContent = '処理状態の確認が必要な作業項目があります';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       primary.textContent = 'AI から返答が来ています';
     } else if (counts['queued'] > 0) {
@@ -5990,6 +6009,21 @@ class ManagerApp {
         : pendingCount > 0
           ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると対応する一覧に出ます。`
           : 'いまの作業項目を実行中です。返答できる状態になると対応する一覧に出ます。';
+    } else if (counts['routing-confirmation-needed'] > 0) {
+      detail.textContent =
+        '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';
+    } else if (counts['user-reply-needed'] > 0) {
+      detail.textContent =
+        '「あなたの返信が必要です」の一覧を上から順に開けば、いま返した方がいい作業項目から見られます。';
+    } else if (counts['stalled'] > 0) {
+      detail.textContent =
+        '「処理状態要確認」の一覧を開いて、必要なら再送し、不要なら完了にしてください。';
+    } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
+      detail.textContent =
+        'AI が返答済みです。「あなたの確認待ちです」の一覧から順に開いてください。';
+    } else if (counts['queued'] > 0) {
+      detail.textContent =
+        'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';
     } else if (running) {
       detail.textContent =
         pendingCount > 0
@@ -5998,18 +6032,6 @@ class ManagerApp {
     } else if (configured) {
       detail.textContent =
         'まだ始まっていません。上の「いま依頼を送る」から送ると自動で動きます。';
-    } else if (counts['routing-confirmation-needed'] > 0) {
-      detail.textContent =
-        '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';
-    } else if (counts['user-reply-needed'] > 0) {
-      detail.textContent =
-        '「あなたの返信が必要です」の一覧を上から順に開けば、いま返した方がいい作業項目から見られます。';
-    } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
-      detail.textContent =
-        'AI が返答済みです。「あなたの確認待ちです」の一覧から順に開いてください。';
-    } else if (counts['queued'] > 0) {
-      detail.textContent =
-        'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';
     } else {
       detail.textContent =
         '送った内容は作業項目ごとに分かれて、ここで今の状況が見えるようになります。';
@@ -6030,6 +6052,11 @@ class ManagerApp {
         key: 'user-reply-needed',
         label: '返信待ち',
         value: counts['user-reply-needed'],
+      },
+      {
+        key: 'stalled',
+        label: '状態要確認',
+        value: counts['stalled'],
       },
       {
         key: 'ai-finished-awaiting-user-confirmation',

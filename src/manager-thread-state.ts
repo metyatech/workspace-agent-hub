@@ -22,6 +22,7 @@ export const MANAGER_THREAD_META_FILE =
 export type ManagerUiState =
   | 'routing-confirmation-needed'
   | 'user-reply-needed'
+  | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
   | 'ai-working'
@@ -505,6 +506,7 @@ function deriveUiState(input: {
     if (lastSender(input.thread) === 'ai') {
       return 'ai-finished-awaiting-user-confirmation';
     }
+    return 'stalled';
   }
 
   if (input.thread.status === 'active') {
@@ -527,11 +529,12 @@ function compareByPriority(
   const priority: Record<ManagerUiState, number> = {
     'routing-confirmation-needed': 0,
     'user-reply-needed': 1,
-    'ai-finished-awaiting-user-confirmation': 2,
-    queued: 3,
-    'ai-working': 4,
-    'cancelled-as-superseded': 5,
-    done: 6,
+    stalled: 2,
+    'ai-finished-awaiting-user-confirmation': 3,
+    queued: 4,
+    'ai-working': 5,
+    'cancelled-as-superseded': 6,
+    done: 7,
   };
 
   const leftPriority = priority[left.uiState];

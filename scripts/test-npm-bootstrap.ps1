@@ -11,7 +11,7 @@ try {
 {
   "name": "fixture",
   "dependencies": {
-    "@metyatech/thread-inbox": "^0.4.2",
+    "@metyatech/thread-inbox": "^0.4.5",
     "commander": "^14.0.3",
     "qrcode": "^1.5.4"
   },
@@ -140,7 +140,7 @@ switch (`$RemainingArguments[0]) {
 {
   "name": "fixture-lock",
   "dependencies": {
-    "@metyatech/thread-inbox": "^0.4.2",
+    "@metyatech/thread-inbox": "^0.4.5",
     "commander": "^14.0.3"
   },
   "devDependencies": {
