@@ -132,11 +132,32 @@ vi.mock('../manager-mwt.js', () => ({
   describeMwtError: vi
     .fn()
     .mockImplementation((error: unknown) =>
-      error instanceof Error ? error.message : String(error)
+      error instanceof Error
+        ? error.message
+        : typeof (error as { message?: unknown })?.message === 'string'
+          ? (error as { message: string }).message
+          : String(error)
     ),
   dropManagerWorktree: vi.fn().mockResolvedValue(false),
   isManagerManagedWorktreePath: vi.fn().mockResolvedValue(true),
   isManagedWorktreeRepository: vi.fn().mockResolvedValue(true),
+  isMwtSeedTrackedDirtyError: vi
+    .fn()
+    .mockImplementation(
+      (error: unknown) =>
+        (error as { id?: unknown })?.id === 'seed_tracked_dirty'
+    ),
+  listMwtChangedFiles: vi
+    .fn()
+    .mockImplementation((error: unknown) =>
+      Array.isArray(
+        (error as { details?: { changedFiles?: unknown } })?.details
+          ?.changedFiles
+      )
+        ? (error as { details: { changedFiles: string[] } }).details
+            .changedFiles
+        : []
+    ),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
 }));
 
@@ -158,6 +179,7 @@ import {
   parseCodexProgressLine,
   parseCodexOutput,
   pickThreadUserMessage,
+  preserveSeedRecoveryAndContinue,
   processNextQueued,
   readQueue,
   readSession,
@@ -181,6 +203,7 @@ import {
 } from '../manager-thread-state.js';
 import {
   createIntegrationWorktree,
+  execGit,
   mergeWorktreeToMain,
   prepareNewRepoWorkspace,
   pushWithRetry,
@@ -4393,6 +4416,101 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       "The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account."
     );
+  });
+
+  it('records a recoverable dirty-seed state when managed worktree creation is blocked by tracked changes', async () => {
+    vi.mocked(createManagerWorktree).mockRejectedValueOnce({
+      id: 'seed_tracked_dirty',
+      message: 'Seed worktree has tracked changes and cannot proceed.',
+      details: {
+        changedFiles: ['README.md', 'src/manager-backend.ts'],
+      },
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-dirty-seed', 'message');
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return Boolean(meta['thread-dirty-seed']?.seedRecoveryPending);
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    const queue = await readQueue(tempDir);
+    const session = await readSession(tempDir);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(queue).toHaveLength(1);
+    expect(session.status).toBe('idle');
+    expect(meta['thread-dirty-seed']).toMatchObject({
+      seedRecoveryPending: true,
+      seedRecoveryRepoRoot: tempDir,
+      seedRecoveryRepoLabel: tempDir.split(/[/\\]/).at(-1),
+      seedRecoveryChangedFiles: ['README.md', 'src/manager-backend.ts'],
+      workerRuntimeState: 'manager-recovery',
+    });
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-dirty-seed');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('退避して続行');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
+  });
+
+  it('stashes tracked seed changes, clears recovery state, and requeues the thread', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-preserve': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md', 'src/manager-backend.ts'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    vi.mocked(execGit)
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: ' M README.md\nM  src/manager-backend.ts',
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: 'Saved working directory and index state',
+        stderr: '',
+      })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout:
+          'abc1234567890\tstash@{0}\tOn main: workspace-agent-hub manager preserve thread-preserve 2026-04-13T00:00:00.000Z',
+        stderr: '',
+      });
+
+    const result = await preserveSeedRecoveryAndContinue({
+      dir: tempDir,
+      threadId: 'thread-preserve',
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+
+    expect(result).toMatchObject({
+      preserved: true,
+      repoRoot: tempDir,
+      repoLabel: 'workspace-agent-hub',
+      changedFiles: ['README.md', 'src/manager-backend.ts'],
+      stashRef: 'stash@{0}',
+    });
+    expect(meta['thread-preserve']?.seedRecoveryPending).toBeUndefined();
+    expect(meta['thread-preserve']?.workerRuntimeState).toBe(
+      'manager-recovery'
+    );
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-preserve');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('active');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('stash@{0}');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
   });
 
   it('logs worktree cleanup failures instead of swallowing them silently', async () => {

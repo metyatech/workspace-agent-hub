@@ -36,6 +36,34 @@ export function isMwtDeliverConflictError(error: unknown): boolean {
   return looksLikeMwtError(error) && error.id === 'deliver_rebase_conflict';
 }
 
+export function isMwtSeedTrackedDirtyError(error: unknown): boolean {
+  return looksLikeMwtError(error) && error.id === 'seed_tracked_dirty';
+}
+
+export function listMwtChangedFiles(error: unknown): string[] {
+  if (
+    !looksLikeMwtError(error) ||
+    !error.details ||
+    typeof error.details !== 'object'
+  ) {
+    return [];
+  }
+
+  const changedFiles = (error.details as { changedFiles?: unknown })
+    .changedFiles;
+  if (!Array.isArray(changedFiles)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      changedFiles
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter(Boolean)
+    )
+  );
+}
+
 export function describeMwtError(error: unknown): string {
   if (!looksLikeMwtError(error)) {
     return String(error);

@@ -91,6 +91,8 @@ import {
   dropManagerWorktree,
   isManagerManagedWorktreePath,
   isManagedWorktreeRepository,
+  isMwtSeedTrackedDirtyError,
+  listMwtChangedFiles,
   isMwtDeliverConflictError,
 } from './manager-mwt.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
@@ -3700,6 +3702,32 @@ interface PausedWorktreeSnapshot {
   targetRepoRoot: string;
 }
 
+interface LatestStashEntry {
+  commit: string;
+  ref: string;
+  summary: string;
+}
+
+export interface PreserveSeedRecoveryResult {
+  preserved: boolean;
+  repoRoot: string;
+  repoLabel: string | null;
+  changedFiles: string[];
+  stashRef: string | null;
+  stashSummary: string | null;
+}
+
+function clearSeedRecoveryStateFromMeta(
+  meta: ManagerThreadMeta
+): ManagerThreadMeta {
+  const next = { ...meta };
+  delete next.seedRecoveryPending;
+  delete next.seedRecoveryRepoRoot;
+  delete next.seedRecoveryRepoLabel;
+  delete next.seedRecoveryChangedFiles;
+  return next;
+}
+
 async function preservePausedWorktreeForThread(
   dir: string,
   threadId: string,
@@ -3736,6 +3764,256 @@ async function clearPausedWorktreeForThread(
     delete next.pausedTargetRepoRoot;
     return next;
   });
+}
+
+async function clearSeedRecoveryState(
+  dir: string,
+  threadId: string
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    if (!current) {
+      return null;
+    }
+    return clearSeedRecoveryStateFromMeta(current);
+  });
+}
+
+function parseTrackedStatusPaths(stdout: string): string[] {
+  return Array.from(
+    new Set(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trimEnd())
+        .flatMap((line) => {
+          if (!line || line.length < 4) {
+            return [];
+          }
+          const pathText = line.slice(3).trim();
+          if (!pathText) {
+            return [];
+          }
+          const renamedPath = pathText.includes(' -> ')
+            ? (pathText.split(' -> ').at(-1) ?? pathText)
+            : pathText;
+          return [renamedPath.trim()];
+        })
+        .filter(Boolean)
+    )
+  );
+}
+
+async function listTrackedSeedChanges(
+  targetRepoRoot: string
+): Promise<string[]> {
+  const statusResult = await execGit(targetRepoRoot, [
+    'status',
+    '--porcelain',
+    '--untracked-files=no',
+  ]);
+  if (statusResult.code !== 0) {
+    throw new Error(
+      statusResult.stderr ||
+        statusResult.stdout ||
+        'git status --porcelain --untracked-files=no failed'
+    );
+  }
+  return parseTrackedStatusPaths(statusResult.stdout);
+}
+
+async function readLatestStashEntry(
+  targetRepoRoot: string
+): Promise<LatestStashEntry | null> {
+  const result = await execGit(targetRepoRoot, [
+    'stash',
+    'list',
+    '-1',
+    '--format=%H%x09%gd%x09%gs',
+  ]);
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr || result.stdout || 'git stash list -1 failed'
+    );
+  }
+  const line = result.stdout.trim();
+  if (!line) {
+    return null;
+  }
+  const [commit = '', ref = '', summary = ''] = line.split('\t');
+  if (!commit.trim() || !ref.trim()) {
+    return null;
+  }
+  return {
+    commit: commit.trim(),
+    ref: ref.trim(),
+    summary: summary.trim(),
+  };
+}
+
+function buildSeedRecoveryStashMessage(threadId: string): string {
+  return `workspace-agent-hub manager preserve ${threadId} ${new Date().toISOString()}`;
+}
+
+async function stashTrackedSeedChanges(input: {
+  targetRepoRoot: string;
+  threadId: string;
+}): Promise<PreserveSeedRecoveryResult> {
+  const repoRoot = resolvePath(input.targetRepoRoot);
+  const changedFiles = await listTrackedSeedChanges(repoRoot);
+  if (changedFiles.length === 0) {
+    return {
+      preserved: false,
+      repoRoot,
+      repoLabel: basename(repoRoot),
+      changedFiles: [],
+      stashRef: null,
+      stashSummary: null,
+    };
+  }
+
+  const stashMessage = buildSeedRecoveryStashMessage(input.threadId);
+  const beforeStash = await readLatestStashEntry(repoRoot);
+  const stashResult = await execGit(repoRoot, [
+    'stash',
+    'push',
+    '--message',
+    stashMessage,
+  ]);
+  if (stashResult.code !== 0) {
+    throw new Error(
+      stashResult.stderr || stashResult.stdout || 'git stash push failed'
+    );
+  }
+
+  const remainingFiles = await listTrackedSeedChanges(repoRoot);
+  if (remainingFiles.length > 0) {
+    throw new Error(
+      `git stash push did not clean the seed worktree. Remaining tracked files: ${remainingFiles.join(', ')}`
+    );
+  }
+
+  const afterStash = await readLatestStashEntry(repoRoot);
+  const createdNewStash = afterStash?.commit !== beforeStash?.commit;
+  return {
+    preserved: createdNewStash,
+    repoRoot,
+    repoLabel: basename(repoRoot),
+    changedFiles,
+    stashRef: createdNewStash ? (afterStash?.ref ?? null) : null,
+    stashSummary: createdNewStash ? (afterStash?.summary ?? null) : null,
+  };
+}
+
+function summarizeRecoveryFiles(files: string[], maxItems = 6): string | null {
+  if (files.length === 0) {
+    return null;
+  }
+  const visible = files.slice(0, maxItems).map((filePath) => `- ${filePath}`);
+  const remaining = files.length - visible.length;
+  if (remaining > 0) {
+    visible.push(`- 他 ${remaining} 件`);
+  }
+  return visible.join('\n');
+}
+
+function buildSeedRecoveryPendingMessage(input: {
+  repoLabel: string | null;
+  changedFiles: string[];
+  errorDetail: string;
+}): string {
+  const changedFilesSummary = summarizeRecoveryFiles(input.changedFiles);
+  return [
+    `[Manager] Worker 隔離環境の作成に失敗しました: ${input.errorDetail}`,
+    '対象 repo の seed worktree に tracked changes があるため、この依頼を安全に開始できませんでした。',
+    'Manager UI の「退避して続行」で tracked changes を stash に一時退避すると、この依頼をそのまま再開できます。',
+    input.repoLabel ? `対象 repo: ${input.repoLabel}` : '',
+    changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildSeedRecoveryResumeMessage(
+  input: PreserveSeedRecoveryResult
+): string {
+  const changedFilesSummary = summarizeRecoveryFiles(input.changedFiles);
+  if (!input.preserved) {
+    return [
+      '[Manager] seed worktree はすでに clean でした。この依頼を再開します。',
+      input.repoLabel ? `対象 repo: ${input.repoLabel}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return [
+    '[Manager] seed の tracked changes を一時退避し、この依頼を再開します。',
+    input.repoLabel ? `対象 repo: ${input.repoLabel}` : '',
+    input.stashRef ? `stash: ${input.stashRef}` : '',
+    changedFilesSummary
+      ? `退避した tracked files:\n${changedFilesSummary}`
+      : '',
+    '帰宅後は stash 内容を確認し、必要なら別 branch / worktree に戻してください。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function preserveSeedRecoveryAndContinue(input: {
+  dir: string;
+  threadId: string;
+}): Promise<PreserveSeedRecoveryResult> {
+  const resolvedDir = resolvePath(input.dir);
+  const thread = await getThread(resolvedDir, input.threadId);
+  if (!thread) {
+    throw new Error('Thread not found');
+  }
+
+  const meta = await readManagerThreadMeta(resolvedDir);
+  const threadMeta = meta[input.threadId] ?? null;
+  const repoRoot = threadMeta?.seedRecoveryRepoRoot?.trim();
+  if (!threadMeta?.seedRecoveryPending || !repoRoot) {
+    throw new Error(
+      'No pending seed recovery action is available for this thread.'
+    );
+  }
+
+  const preserveResult = await stashTrackedSeedChanges({
+    targetRepoRoot: repoRoot,
+    threadId: input.threadId,
+  });
+  const repoLabel =
+    threadMeta.seedRecoveryRepoLabel?.trim() ||
+    threadMeta.managedRepoLabel?.trim() ||
+    basename(preserveResult.repoRoot);
+  const nextResult: PreserveSeedRecoveryResult = {
+    ...preserveResult,
+    repoLabel,
+  };
+
+  await clearSeedRecoveryState(resolvedDir, input.threadId);
+  await setWorkerRuntimeState({
+    dir: resolvedDir,
+    threadId: input.threadId,
+    assigneeKind: 'manager',
+    assigneeLabel: defaultAssigneeLabel('manager'),
+    workerAgentId: null,
+    runtimeState: 'manager-recovery',
+    runtimeDetail:
+      'Manager が seed の tracked changes を退避し、再開を準備しています。',
+    workerWriteScopes: threadMeta.workerWriteScopes ?? [],
+    workerBlockedByThreadIds: [],
+    supersededByThreadId: null,
+    clearWorkerLiveLog: true,
+  });
+  await addMessage(
+    resolvedDir,
+    input.threadId,
+    buildSeedRecoveryResumeMessage(nextResult),
+    'ai',
+    'active'
+  );
+  void processNextQueued(input.dir, resolvedDir);
+  return nextResult;
 }
 
 async function withRoutingLock<T>(
@@ -6451,6 +6729,7 @@ export async function processNextQueued(
                 assignment.worktreePath = wt.worktreePath;
                 assignment.worktreeBranch = wt.branchName;
                 assignment.targetRepoRoot = wt.targetRepoRoot;
+                await clearSeedRecoveryState(resolvedDir, thread.id);
               } else {
                 const errMsg =
                   '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できません。seed リポジトリで `mwt init` を実行してから再開してください。';
@@ -6629,6 +6908,55 @@ export async function processNextQueued(
             await setManagerRuntimePause(dir, wtErr.message);
             return;
           }
+          if (isMwtSeedTrackedDirtyError(wtErr)) {
+            const repoLabel =
+              resolvedManagedRepo?.label ??
+              inferredRepoContext?.label ??
+              threadMeta?.managedRepoLabel ??
+              basename(targetRepo);
+            const changedFiles = listMwtChangedFiles(wtErr);
+            await updateManagerThreadMeta(
+              resolvedDir,
+              thread.id,
+              (current) => ({
+                ...(current ?? {}),
+                seedRecoveryPending: true,
+                seedRecoveryRepoRoot: targetRepo,
+                seedRecoveryRepoLabel: repoLabel,
+                seedRecoveryChangedFiles: changedFiles,
+              })
+            );
+            await setWorkerRuntimeState({
+              dir: resolvedDir,
+              threadId: thread.id,
+              assigneeKind: 'manager',
+              assigneeLabel: defaultAssigneeLabel('manager'),
+              workerAgentId: null,
+              runtimeState: 'manager-recovery',
+              runtimeDetail:
+                '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。',
+              workerWriteScopes: assignmentWriteScopes,
+              workerBlockedByThreadIds: [],
+              supersededByThreadId: null,
+              clearWorkerLiveLog: true,
+            });
+            try {
+              await addMessage(
+                resolvedDir,
+                thread.id,
+                buildSeedRecoveryPendingMessage({
+                  repoLabel,
+                  changedFiles,
+                  errorDetail: describeMwtError(wtErr),
+                }),
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
+            continue;
+          }
           const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
           try {
             await addMessage(
@@ -6645,48 +6973,50 @@ export async function processNextQueued(
         }
       }
 
-      await updateManagerThreadMeta(resolvedDir, next.threadId, (current) => ({
-        ...current,
-        managedRepoId:
-          assignmentTargetKind === 'existing-repo'
-            ? (resolvedManagedRepo?.id ?? current?.managedRepoId ?? null)
-            : null,
-        managedRepoLabel:
-          assignmentTargetKind === 'new-repo'
-            ? assignmentNewRepoName
-            : (resolvedManagedRepo?.label ??
-              inferredRepoContext?.label ??
-              current?.managedRepoLabel ??
-              null),
-        managedRepoRoot:
-          assignmentTargetKind === 'new-repo'
-            ? (assignment.targetRepoRoot ?? null)
-            : (resolvedManagedRepo?.repoRoot ??
-              inferredRepoContext?.repoRoot ??
-              current?.managedRepoRoot ??
-              null),
-        repoTargetKind: assignmentTargetKind,
-        newRepoName:
-          assignmentTargetKind === 'new-repo' ? assignmentNewRepoName : null,
-        newRepoRoot:
-          assignmentTargetKind === 'new-repo'
-            ? (assignment.targetRepoRoot ?? null)
-            : null,
-        managedBaseBranch:
-          assignmentTargetKind === 'new-repo'
-            ? 'main'
-            : (resolvedManagedRepo?.defaultBranch ??
-              current?.managedBaseBranch ??
-              null),
-        managedVerifyCommand:
-          assignmentTargetKind === 'existing-repo'
-            ? (resolvedManagedRepo?.verifyCommand ??
-              current?.managedVerifyCommand ??
-              null)
-            : null,
-        requestedWorkerRuntime: explicitRequestedWorkerRuntime,
-        requestedRunMode,
-      }));
+      await updateManagerThreadMeta(resolvedDir, next.threadId, (current) =>
+        clearSeedRecoveryStateFromMeta({
+          ...(current ?? {}),
+          managedRepoId:
+            assignmentTargetKind === 'existing-repo'
+              ? (resolvedManagedRepo?.id ?? current?.managedRepoId ?? null)
+              : null,
+          managedRepoLabel:
+            assignmentTargetKind === 'new-repo'
+              ? assignmentNewRepoName
+              : (resolvedManagedRepo?.label ??
+                inferredRepoContext?.label ??
+                current?.managedRepoLabel ??
+                null),
+          managedRepoRoot:
+            assignmentTargetKind === 'new-repo'
+              ? (assignment.targetRepoRoot ?? null)
+              : (resolvedManagedRepo?.repoRoot ??
+                inferredRepoContext?.repoRoot ??
+                current?.managedRepoRoot ??
+                null),
+          repoTargetKind: assignmentTargetKind,
+          newRepoName:
+            assignmentTargetKind === 'new-repo' ? assignmentNewRepoName : null,
+          newRepoRoot:
+            assignmentTargetKind === 'new-repo'
+              ? (assignment.targetRepoRoot ?? null)
+              : null,
+          managedBaseBranch:
+            assignmentTargetKind === 'new-repo'
+              ? 'main'
+              : (resolvedManagedRepo?.defaultBranch ??
+                current?.managedBaseBranch ??
+                null),
+          managedVerifyCommand:
+            assignmentTargetKind === 'existing-repo'
+              ? (resolvedManagedRepo?.verifyCommand ??
+                current?.managedVerifyCommand ??
+                null)
+              : null,
+          requestedWorkerRuntime: explicitRequestedWorkerRuntime,
+          requestedRunMode,
+        })
+      );
 
       await reserveAssignment({
         dir,

@@ -77,6 +77,10 @@ export interface ManagerThreadMeta {
   workerLiveLog?: ManagerWorkerLiveEntry[] | null;
   workerLiveOutput?: string | null;
   workerLiveAt?: string | null;
+  seedRecoveryPending?: boolean;
+  seedRecoveryRepoRoot?: string | null;
+  seedRecoveryRepoLabel?: string | null;
+  seedRecoveryChangedFiles?: string[] | null;
   consecutiveFailures?: number;
   nextRetryAfter?: string | null;
 }
@@ -115,6 +119,10 @@ export interface ManagerThreadView extends Thread {
   workerLiveLog: ManagerWorkerLiveEntry[];
   workerLiveOutput: string | null;
   workerLiveAt: string | null;
+  seedRecoveryPending: boolean;
+  seedRecoveryRepoRoot: string | null;
+  seedRecoveryRepoLabel: string | null;
+  seedRecoveryChangedFiles: string[];
 }
 
 type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
@@ -678,6 +686,16 @@ export function deriveManagerThreadViews(input: {
             : null,
         workerLiveAt:
           typeof meta?.workerLiveAt === 'string' ? meta.workerLiveAt : null,
+        seedRecoveryPending: Boolean(meta?.seedRecoveryPending),
+        seedRecoveryRepoRoot: normalizeManagedRepoText(
+          meta?.seedRecoveryRepoRoot
+        ),
+        seedRecoveryRepoLabel: normalizeManagedRepoText(
+          meta?.seedRecoveryRepoLabel
+        ),
+        seedRecoveryChangedFiles: normalizeDerivedFromThreadIds(
+          meta?.seedRecoveryChangedFiles
+        ),
       } satisfies ManagerThreadView,
     ];
   });

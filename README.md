@@ -479,6 +479,12 @@ Important behavior:
   default `repo-wt-*` task naming and Manager creates explicit `repo-mgr-*`
   task worktrees and `mgr/*` branches through the same managed-worktree
   boundary.
+- When an existing-repo write task is blocked because that seed checkout has
+  tracked changes, the Manager thread detail now exposes a `Preserve &
+Continue` recovery path. That action stashes the tracked seed changes with a
+  named entry, leaves a thread-visible record of the stash reference, and then
+  requeues the same work item so smartphone-only follow-up is possible without
+  first deciding whether to commit or discard the local edits.
 - Because Manager now reuses `mwt` sibling task worktrees, repository-relative
   filesystem topology stays intact, so local overlays such as `.env*.local`
   keep the same relative-path semantics without content rewriting heuristics.

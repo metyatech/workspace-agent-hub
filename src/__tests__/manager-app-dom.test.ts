@@ -77,6 +77,10 @@ function makeThreadView(
     workerLiveLog: [],
     workerLiveOutput: null,
     workerLiveAt: null,
+    seedRecoveryPending: false,
+    seedRecoveryRepoRoot: null,
+    seedRecoveryRepoLabel: null,
+    seedRecoveryChangedFiles: [],
     ...overrides,
   };
 }
@@ -2079,6 +2083,159 @@ describe('manager-app DOM auth state matrix', () => {
     expect(bubbles.at(-1)).toBe('最後に読んで判断するメッセージ');
     expect(actions.previousElementSibling).toBe(msgArea);
     expect(button.textContent).toBe('この件は完了');
+  });
+
+  it('renders a preserve-and-continue action for dirty-seed recovery and refreshes after success', async () => {
+    const validToken = 'preserve-seed-recovery-token';
+    let preserveCallCount = 0;
+    let threads = [
+      makeThreadView('thread-seed-recovery', 'seed 回復', {
+        status: 'needs-reply',
+        uiState: 'queued',
+        previewText: '[ai] seed の tracked changes を退避すると続行できます',
+        lastSender: 'ai',
+        queueDepth: 1,
+        assigneeKind: 'manager',
+        assigneeLabel: 'Manager gpt-5.4 (xhigh)',
+        workerRuntimeState: 'manager-recovery',
+        workerRuntimeDetail:
+          '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。',
+        seedRecoveryPending: true,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md', 'src/manager-backend.ts'],
+      }),
+    ];
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify(threads), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads,
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        if (
+          isRoute(url, '/threads/thread-seed-recovery/preserve-and-continue')
+        ) {
+          preserveCallCount += 1;
+          threads = [
+            makeThreadView('thread-seed-recovery', 'seed 回復', {
+              status: 'active',
+              uiState: 'queued',
+              previewText:
+                '[ai] seed の tracked changes を一時退避し、この依頼を再開します',
+              lastSender: 'ai',
+              queueDepth: 1,
+              assigneeKind: 'manager',
+              assigneeLabel: 'Manager gpt-5.4 (xhigh)',
+              workerRuntimeState: 'manager-recovery',
+              workerRuntimeDetail:
+                'Manager が seed の tracked changes を退避し、再開を準備しています。',
+              messages: [
+                {
+                  sender: 'ai',
+                  content:
+                    '[Manager] seed の tracked changes を一時退避し、この依頼を再開します。\nstash: stash@{0}',
+                  at: '2026-03-21T00:00:30.000Z',
+                },
+              ],
+            }),
+          ];
+          return new Response(
+            JSON.stringify({
+              preserved: true,
+              repoRoot: 'D:\\ghws\\workspace-agent-hub',
+              repoLabel: 'workspace-agent-hub',
+              changedFiles: ['README.md', 'src/manager-backend.ts'],
+              stashRef: 'stash@{0}',
+              stashSummary: 'On main: stash message',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(3);
+
+    const detail = document.querySelector<HTMLElement>('#thread-detail')!;
+    expect(detail.textContent).toContain('退避して続行');
+    expect(detail.textContent).toContain('README.md');
+    expect(detail.textContent).toContain('src/manager-backend.ts');
+
+    const buttons = Array.from(
+      detail.querySelectorAll<HTMLButtonElement>('.detail-actions button')
+    );
+    expect(buttons[0]?.textContent).toBe('退避して続行');
+    expect(buttons[1]?.textContent).toBe('この件は完了');
+
+    buttons[0]!.click();
+    await flushAsync(6);
+
+    expect(preserveCallCount).toBe(1);
+    const refreshedButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.detail-actions button')
+    );
+    expect(refreshedButtons[0]?.textContent).toBe('この件は完了');
+    expect(
+      document.querySelector<HTMLElement>('#thread-detail')!.textContent
+    ).toContain('stash@{0}');
   });
 
   it('opens a topic with the message area scrolled to the latest message even when layout settles one tick later', async () => {

@@ -110,6 +110,10 @@ interface ThreadView {
   workerLiveLog: WorkerLiveEntry[];
   workerLiveOutput: string | null;
   workerLiveAt: string | null;
+  seedRecoveryPending: boolean;
+  seedRecoveryRepoRoot: string | null;
+  seedRecoveryRepoLabel: string | null;
+  seedRecoveryChangedFiles: string[];
   queueOrder?: number | null;
   queuePriority?: string | null;
 }
@@ -1712,6 +1716,12 @@ function makeFeedbackStateBadge(
 }
 
 function describeThreadState(thread: ThreadView): string | null {
+  if (thread.seedRecoveryPending) {
+    return (
+      thread.workerRuntimeDetail ??
+      '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。'
+    );
+  }
   if (thread.workerRuntimeState === 'cancelled-as-superseded') {
     return (
       thread.workerRuntimeDetail ??
@@ -1764,6 +1774,9 @@ function describeThreadState(thread: ThreadView): string | null {
 }
 
 function threadNextActionText(thread: ThreadView): string {
+  if (thread.seedRecoveryPending) {
+    return '下の「退避して続行」で seed の tracked changes を一時退避すると、この依頼を再開できます。';
+  }
   if (thread.routingConfirmationNeeded) {
     return 'この件の扱い方だけ先に確認して返します。';
   }
@@ -1786,6 +1799,13 @@ function threadNextActionText(thread: ThreadView): string {
     return '必要なら開き直して続けられます。';
   }
   return 'この件を開けば、必要な情報と次の操作をその場で確認できます。';
+}
+
+function summarizeSeedRecoveryFiles(files: string[], maxItems = 6): string[] {
+  if (files.length <= maxItems) {
+    return files;
+  }
+  return [...files.slice(0, maxItems), `他 ${files.length - maxItems} 件`];
 }
 
 function threadMetaChipTexts(
@@ -3101,17 +3121,23 @@ class DetailController {
 
     const previousThreadId = this.#currentThreadId;
     const pendingAction = this.#app.pendingThreadAction(thread.id);
+    const pendingSeedRecovery = this.#app.pendingSeedRecoveryAction(thread.id);
     const nextSignature = JSON.stringify({
       id: thread.id,
       title: thread.title,
       uiState: thread.uiState,
       pendingAction: pendingAction ?? '',
+      pendingSeedRecovery,
       updatedAt: thread.updatedAt ?? '',
       queueDepth: thread.queueDepth,
       assigneeLabel: thread.assigneeLabel ?? '',
       workerAgentId: thread.workerAgentId ?? '',
       workerRuntimeState: thread.workerRuntimeState ?? '',
       workerRuntimeDetail: thread.workerRuntimeDetail ?? '',
+      seedRecoveryPending: thread.seedRecoveryPending,
+      seedRecoveryRepoLabel: thread.seedRecoveryRepoLabel ?? '',
+      seedRecoveryRepoRoot: thread.seedRecoveryRepoRoot ?? '',
+      seedRecoveryChangedFiles: thread.seedRecoveryChangedFiles,
       workerWriteScopes: thread.workerWriteScopes,
       workerBlockedByThreadIds: thread.workerBlockedByThreadIds,
       supersededByThreadId: thread.supersededByThreadId ?? '',
@@ -3317,6 +3343,62 @@ class DetailController {
       body.appendChild(related);
     }
 
+    if (thread.seedRecoveryPending) {
+      const recovery = document.createElement('section');
+      recovery.className = 'detail-related';
+
+      const heading = document.createElement('div');
+      heading.className = 'detail-related-heading';
+      heading.textContent = '退避して続行';
+      recovery.appendChild(heading);
+
+      const summary = document.createElement('div');
+      summary.className = 'detail-note';
+      summary.textContent =
+        'この依頼だけ、対象 repo の seed worktree に tracked changes があるため止まっています。ここで一時退避すると同じ queue をそのまま再開できます。';
+      recovery.appendChild(summary);
+
+      const repoGroup = document.createElement('div');
+      repoGroup.className = 'detail-related-group';
+      const repoLabel = document.createElement('div');
+      repoLabel.className = 'detail-related-label';
+      repoLabel.textContent = '対象 repo';
+      repoGroup.appendChild(repoLabel);
+      const repoValue = document.createElement('div');
+      repoValue.className = 'detail-related-item';
+      repoValue.textContent =
+        thread.seedRecoveryRepoLabel ||
+        thread.managedRepoLabel ||
+        thread.seedRecoveryRepoRoot ||
+        'repo 情報を取得できませんでした。';
+      repoGroup.appendChild(repoValue);
+      recovery.appendChild(repoGroup);
+
+      if (thread.seedRecoveryChangedFiles.length > 0) {
+        const filesGroup = document.createElement('div');
+        filesGroup.className = 'detail-related-group';
+        const filesLabel = document.createElement('div');
+        filesLabel.className = 'detail-related-label';
+        filesLabel.textContent = 'tracked files';
+        filesGroup.appendChild(filesLabel);
+
+        const filesList = document.createElement('div');
+        filesList.className = 'detail-related-list';
+        for (const filePath of summarizeSeedRecoveryFiles(
+          thread.seedRecoveryChangedFiles
+        )) {
+          const fileItem = document.createElement('div');
+          fileItem.className = 'detail-related-item';
+          fileItem.textContent = filePath;
+          filesList.appendChild(fileItem);
+        }
+        filesGroup.appendChild(filesList);
+        recovery.appendChild(filesGroup);
+      }
+
+      body.appendChild(recovery);
+    }
+
     const msgArea = document.createElement('div');
     msgArea.className = 'msg-area';
     const detailMessages = messagesForDetail(thread, threadTitlesById);
@@ -3335,6 +3417,20 @@ class DetailController {
 
     const actions = document.createElement('div');
     actions.className = 'detail-actions';
+
+    if (thread.seedRecoveryPending) {
+      const preserveButton = document.createElement('button');
+      preserveButton.style.width = 'auto';
+      preserveButton.className = 'btn';
+      preserveButton.textContent = pendingSeedRecovery
+        ? '退避して続行しています…'
+        : '退避して続行';
+      preserveButton.disabled = pendingSeedRecovery;
+      preserveButton.addEventListener('click', () => {
+        void this.#app.preserveSeedRecoveryAndContinue(thread.id);
+      });
+      actions.appendChild(preserveButton);
+    }
 
     const statusButton = document.createElement('button');
     statusButton.style.width = 'auto';
@@ -3424,6 +3520,7 @@ class ManagerApp {
   #liveIssue: ManagerLiveIssue | null = null;
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
+  #pendingSeedRecoveryThreads = new Set<string>();
   #sortOrders = buildManagerSortOrders();
 
   constructor() {
@@ -3872,6 +3969,29 @@ class ManagerApp {
       return;
     }
     this.#clearThreadMutation(threadId);
+  }
+
+  async preserveSeedRecoveryAndContinue(threadId: string): Promise<void> {
+    if (this.#pendingSeedRecoveryThreads.has(threadId)) {
+      return;
+    }
+    this.#pendingSeedRecoveryThreads.add(threadId);
+    this.#renderAll();
+    try {
+      const response = await this.apiFetch(
+        `/api/threads/${threadId}/preserve-and-continue`,
+        {
+          method: 'POST',
+        }
+      );
+      if (!response || !response.ok) {
+        return;
+      }
+    } finally {
+      this.#pendingSeedRecoveryThreads.delete(threadId);
+      this.#renderAll();
+      void this.loadAll();
+    }
   }
 
   async apiFetch(
@@ -4479,6 +4599,10 @@ class ManagerApp {
 
   pendingThreadAction(threadId: string): ThreadMutationAction | null {
     return this.#pendingThreadMutations.get(threadId)?.action ?? null;
+  }
+
+  pendingSeedRecoveryAction(threadId: string): boolean {
+    return this.#pendingSeedRecoveryThreads.has(threadId);
   }
 
   #findThread(threadId: string | null): ThreadView | null {

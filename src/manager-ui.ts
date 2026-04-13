@@ -15,6 +15,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   getBuiltinManagerStatus,
+  preserveSeedRecoveryAndContinue,
   readQueue,
   readSession,
   sendGlobalToBuiltinManager,
@@ -517,6 +518,28 @@ export async function handleManagerUiRequest(input: {
     );
     notifyManagerUpdate(input.workspaceRoot);
     sendJson(input.res, reopenedThread);
+    return true;
+  }
+
+  const preserveMatch = localPath.match(
+    /^\/api\/threads\/([^/]+)\/preserve-and-continue$/
+  );
+  if (preserveMatch && input.method === 'POST') {
+    try {
+      const result = await preserveSeedRecoveryAndContinue({
+        dir: input.workspaceRoot,
+        threadId: preserveMatch[1],
+      });
+      notifyManagerUpdate(input.workspaceRoot);
+      sendJson(input.res, result);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to preserve seed state';
+      const status = message === 'Thread not found' ? 404 : 400;
+      sendError(input.res, message, status);
+    }
     return true;
   }
 
