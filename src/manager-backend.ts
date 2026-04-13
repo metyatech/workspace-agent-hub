@@ -321,6 +321,7 @@ export interface ManagerActiveAssignment {
   worktreeBranch: string | null;
   targetRepoRoot: string | null;
   workingDirectory: string | null;
+  pendingOnboardingCommit?: string | null;
 }
 
 export type ManagerHealth = 'ok' | 'error' | 'paused';
@@ -712,6 +713,11 @@ function normalizeActiveAssignment(
       typeof record['targetRepoRoot'] === 'string' && record['targetRepoRoot']
         ? record['targetRepoRoot']
         : null,
+    pendingOnboardingCommit:
+      typeof record['pendingOnboardingCommit'] === 'string' &&
+      record['pendingOnboardingCommit']
+        ? record['pendingOnboardingCommit']
+        : null,
   } satisfies ManagerActiveAssignment;
 }
 
@@ -765,6 +771,7 @@ function normalizeManagerSession(
             worktreePath: null,
             worktreeBranch: null,
             targetRepoRoot: null,
+            pendingOnboardingCommit: null,
           },
         ]
       : [];
@@ -5959,7 +5966,8 @@ async function runQueuedAssignment(input: {
       const shouldDeliverWorktreeChanges =
         !!assignment.worktreePath &&
         !!assignment.worktreeBranch &&
-        deliveryAheadCommitCount > 0;
+        (deliveryAheadCommitCount > 0 ||
+          !!assignment.pendingOnboardingCommit?.trim());
 
       if (
         assignment.worktreePath &&
@@ -6828,6 +6836,7 @@ export async function processNextQueued(
         worktreePath: null,
         worktreeBranch: null,
         targetRepoRoot: null,
+        pendingOnboardingCommit: null,
       };
 
       // Create isolated worktree for worker assignments.
@@ -6912,11 +6921,13 @@ export async function processNextQueued(
                       null,
                   });
                 if (autoInitResult.initialized) {
+                  assignment.pendingOnboardingCommit =
+                    autoInitResult.onboardingCommit?.trim() || null;
                   try {
                     await addMessage(
                       resolvedDir,
                       thread.id,
-                      `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。`,
+                      `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。\n\n${autoInitResult.detail}`,
                       'ai',
                       'active'
                     );

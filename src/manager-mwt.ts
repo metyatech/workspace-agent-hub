@@ -1,4 +1,5 @@
 import { resolve as resolvePath } from 'node:path';
+import { rm } from 'node:fs/promises';
 import {
   createTaskWorktree,
   deliverTaskWorktree,
@@ -36,6 +37,7 @@ export interface ManagerMwtAutoInitResult {
   defaultBranch: string | null;
   remoteName: string | null;
   changedFiles: string[];
+  onboardingCommit: string | null;
 }
 
 function looksLikeMwtError(
@@ -84,6 +86,9 @@ function mwtErrorId(error: unknown): string | null {
 
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const MWT_OUTPUT_PREVIEW_LIMIT = 4_000;
+const MWT_CONFIG_PATH = '.mwt/config.toml';
+const MWT_MARKER_PATH = '.mwt-worktree.json';
+const AUTO_INIT_COMMIT_MESSAGE = 'chore: initialize managed-worktree-system';
 
 function normalizeMwtOutput(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(ANSI_ESCAPE_PATTERN, '').trim();
@@ -162,6 +167,116 @@ function parseOriginHeadBranch(stdout: string): string | null {
   return branch || null;
 }
 
+function summarizeGitFailure(
+  label: string,
+  result: { stdout: string; stderr: string; code: number | null }
+): string {
+  const detail =
+    result.stderr.trim() ||
+    result.stdout.trim() ||
+    `${label} exited with code ${result.code ?? '?'}.`;
+  return `${label} failed: ${detail}`;
+}
+
+function parseStatusPath(line: string): string {
+  const raw = line.slice(3).trim();
+  if (raw.includes(' -> ')) {
+    return raw.split(' -> ').at(-1)?.trim() ?? raw;
+  }
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
+async function rollbackManagerAutoInit(targetRepoRoot: string): Promise<void> {
+  await execGit(targetRepoRoot, ['reset', '--', MWT_CONFIG_PATH]).catch(
+    () => {}
+  );
+  await rm(resolvePath(targetRepoRoot, '.mwt'), {
+    recursive: true,
+    force: true,
+  }).catch(() => {});
+  await rm(resolvePath(targetRepoRoot, MWT_MARKER_PATH), {
+    force: true,
+  }).catch(() => {});
+}
+
+async function commitAutoInitializedRepositoryPolicy(
+  targetRepoRoot: string
+): Promise<{
+  commit: string;
+  changedFiles: string[];
+}> {
+  const statusResult = await execGit(targetRepoRoot, [
+    'status',
+    '--porcelain',
+    '--untracked-files=all',
+  ]);
+  if (statusResult.code !== 0) {
+    throw new Error(
+      summarizeGitFailure(
+        'git status --porcelain --untracked-files=all',
+        statusResult
+      )
+    );
+  }
+
+  const changedFiles = statusResult.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map(parseStatusPath);
+  const uniqueChangedFiles = Array.from(new Set(changedFiles));
+
+  if (
+    uniqueChangedFiles.length !== 1 ||
+    uniqueChangedFiles[0] !== MWT_CONFIG_PATH
+  ) {
+    const detail = uniqueChangedFiles.length
+      ? uniqueChangedFiles.join(', ')
+      : '(none)';
+    throw new Error(
+      `Automatic mwt onboarding commit expected only ${MWT_CONFIG_PATH}, but found: ${detail}`
+    );
+  }
+
+  const addResult = await execGit(targetRepoRoot, [
+    'add',
+    '--',
+    MWT_CONFIG_PATH,
+  ]);
+  if (addResult.code !== 0) {
+    throw new Error(
+      summarizeGitFailure(`git add -- ${MWT_CONFIG_PATH}`, addResult)
+    );
+  }
+
+  const commitResult = await execGit(targetRepoRoot, [
+    'commit',
+    '-m',
+    AUTO_INIT_COMMIT_MESSAGE,
+  ]);
+  if (commitResult.code !== 0) {
+    throw new Error(
+      summarizeGitFailure(
+        `git commit -m "${AUTO_INIT_COMMIT_MESSAGE}"`,
+        commitResult
+      )
+    );
+  }
+
+  const headResult = await execGit(targetRepoRoot, ['rev-parse', 'HEAD']);
+  if (headResult.code !== 0 || !headResult.stdout.trim()) {
+    throw new Error(summarizeGitFailure('git rev-parse HEAD', headResult));
+  }
+
+  return {
+    commit: headResult.stdout.trim(),
+    changedFiles: uniqueChangedFiles,
+  };
+}
+
 async function detectOriginDefaultBranch(
   targetRepoRoot: string
 ): Promise<string | null> {
@@ -206,6 +321,7 @@ export async function maybeAutoInitializeManagerRepository(input: {
       defaultBranch: null,
       remoteName,
       changedFiles: [],
+      onboardingCommit: null,
     };
   }
 
@@ -218,6 +334,7 @@ export async function maybeAutoInitializeManagerRepository(input: {
       defaultBranch,
       remoteName: null,
       changedFiles: [],
+      onboardingCommit: null,
     };
   }
 
@@ -234,21 +351,43 @@ export async function maybeAutoInitializeManagerRepository(input: {
       defaultBranch,
       remoteName,
       changedFiles: listMwtChangedFiles(error),
+      onboardingCommit: null,
     };
   }
 
-  await initializeRepository(targetRepoRoot, {
-    base: defaultBranch,
-    remote: remoteName,
-  });
-  return {
-    initialized: true,
-    reasonId: null,
-    detail: `managed-worktree-system を自動初期化しました (base: ${defaultBranch}, remote: ${remoteName})。`,
-    defaultBranch,
-    remoteName,
-    changedFiles: [],
-  };
+  try {
+    await initializeRepository(targetRepoRoot, {
+      base: defaultBranch,
+      remote: remoteName,
+    });
+
+    const onboarding =
+      await commitAutoInitializedRepositoryPolicy(targetRepoRoot);
+    return {
+      initialized: true,
+      reasonId: null,
+      detail:
+        `managed-worktree-system を自動初期化し、${MWT_CONFIG_PATH} を onboarding commit として記録しました ` +
+        `(base: ${defaultBranch}, remote: ${remoteName}, commit: ${onboarding.commit.slice(0, 8)})。`,
+      defaultBranch,
+      remoteName,
+      changedFiles: onboarding.changedFiles,
+      onboardingCommit: onboarding.commit,
+    };
+  } catch (error) {
+    await rollbackManagerAutoInit(targetRepoRoot).catch(() => {});
+    return {
+      initialized: false,
+      reasonId: 'auto_init_commit_failed',
+      detail:
+        `managed-worktree-system の自動初期化後に ${MWT_CONFIG_PATH} の onboarding commit を作れませんでした。\n\n` +
+        (error instanceof Error ? error.message : String(error)),
+      defaultBranch,
+      remoteName,
+      changedFiles: [MWT_CONFIG_PATH],
+      onboardingCommit: null,
+    };
+  }
 }
 
 export async function createManagerWorktree(input: {

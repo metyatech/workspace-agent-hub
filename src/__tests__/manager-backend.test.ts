@@ -165,6 +165,7 @@ vi.mock('../manager-mwt.js', () => ({
     defaultBranch: null,
     remoteName: 'origin',
     changedFiles: [],
+    onboardingCommit: null,
   }),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
 }));
@@ -490,6 +491,7 @@ beforeEach(async () => {
     defaultBranch: null,
     remoteName: 'origin',
     changedFiles: [],
+    onboardingCommit: null,
   });
   vi.mocked(createManagerWorktree).mockReset();
   vi.mocked(createManagerWorktree).mockResolvedValue({
@@ -2071,10 +2073,12 @@ describe('manager backend codex integration', () => {
     vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
       initialized: true,
       reasonId: null,
-      detail: 'managed-worktree-system を自動初期化しました。',
+      detail:
+        'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
       defaultBranch: 'main',
       remoteName: 'origin',
-      changedFiles: [],
+      changedFiles: ['.mwt/config.toml'],
+      onboardingCommit: 'auto-init-commit',
     });
     await writeManagerThreadMeta(tempDir, {
       'thread-auto-init': {
@@ -2146,6 +2150,7 @@ describe('manager backend codex integration', () => {
       defaultBranch: 'main',
       remoteName: 'origin',
       changedFiles: ['README.md'],
+      onboardingCommit: null,
     });
     await writeManagerThreadMeta(tempDir, {
       'thread-init-blocked': {
@@ -4563,6 +4568,75 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-noop-delivery');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('no-op review done');
+  });
+
+  it('delivers the onboarding commit after safe auto-init even when the worker adds no repo changes', async () => {
+    const workerProc = makeProc(8461);
+    const reviewProc = makeProc(8462);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
+    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
+      initialized: true,
+      reasonId: null,
+      detail:
+        'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
+      defaultBranch: 'main',
+      remoteName: 'origin',
+      changedFiles: ['.mwt/config.toml'],
+      onboardingCommit: 'auto-init-commit',
+    });
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-auto-init-noop',
+      branchName: 'mgr/assign_thread-auto-init-noop/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(validateWorktreeReadyForMerge).mockResolvedValueOnce({
+      ready: true,
+      detail: 'Ready to merge; no repository changes need to be delivered.',
+      aheadCommitCount: 0,
+      mergeSourceRef: null,
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-auto-init-noop': {
+        managedBaseBranch: 'main',
+      },
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-auto-init-noop', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-auto-init-noop',
+      text: '{"status":"review","reply":"no files changed","changedFiles":[],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-auto-init-noop',
+      text: '{"status":"review","reply":"no-op review done"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(validateWorktreeReadyForMerge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith({
+      targetRepoRoot: tempDir,
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-auto-init-noop',
+      branchName: 'mgr/assign_thread-auto-init-noop/preview000',
+    });
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-auto-init-noop');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('onboarding commit');
+    expect(addMessageMock.mock.calls.at(-1)?.[2]).toContain(
+      'no-op review done'
+    );
   });
 
   it('runs the post-merge delivery chain before posting a successful review result', async () => {

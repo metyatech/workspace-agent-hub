@@ -89,6 +89,8 @@ sync:
   task_start:
     - inspect discovered workspace repos when targeting an existing repo
     - require the seed repo to be initialized with managed-worktree-system
+    - if Manager safely auto-initializes `mwt`, record `.mwt/config.toml` in an
+      onboarding commit before starting tracked task work
     - create a managed task branch + isolated task worktree for existing-repo
       write runs
     - launch worker runtime

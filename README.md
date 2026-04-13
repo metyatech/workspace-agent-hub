@@ -484,8 +484,10 @@ Important behavior:
   before blocking. The automatic path is intentionally conservative: it only
   proceeds when the repo is the primary clean seed checkout and Manager can
   determine the standard `origin`/default-branch configuration without user
-  judgment. Otherwise Manager stops with a concrete `needs-reply` message that
-  explains why auto-init was skipped.
+  judgment. When that safe path runs, Manager also records `.mwt/config.toml`
+  as an onboarding commit immediately so the seed checkout does not keep an
+  untracked `.mwt/` residue. Otherwise Manager stops with a concrete
+  `needs-reply` message that explains why auto-init was skipped.
 - When an existing-repo write task is blocked because that seed checkout has
   tracked changes, the Manager thread detail now exposes a `Preserve &
 Continue` recovery path. That action stashes the tracked seed changes with a
