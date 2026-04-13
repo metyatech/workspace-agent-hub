@@ -33,6 +33,14 @@ $scriptAssertions = @(
             [regex]::Escape(". (Join-Path `$PSScriptRoot 'build-command.ps1')"),
             'Invoke-WithRepoMutationLock -RepoRoot \$repoRoot'
         )
+    },
+    @{
+        Path = Join-Path $PSScriptRoot 'typecheck.ps1'
+        RequiredPatterns = @(
+            [regex]::Escape(". (Join-Path `$PSScriptRoot 'npm-bootstrap.ps1')"),
+            'Invoke-NpmDependencySurfaceRepair -RepoRoot \$repoRoot',
+            [regex]::Escape("& `$tscPath '--noEmit'")
+        )
     }
 )
 

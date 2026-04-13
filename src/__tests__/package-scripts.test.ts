@@ -19,7 +19,9 @@ describe('package scripts', () => {
     expect(scripts.build).toBe(
       'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-package.ps1'
     );
-    expect(scripts.typecheck).toBe('npm exec tsc -- --noEmit');
+    expect(scripts.typecheck).toBe(
+      'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/typecheck.ps1'
+    );
     expect(scripts['pretest:e2e']).toBe(
       'npm run build && npm exec playwright install chromium'
     );
