@@ -4,10 +4,13 @@ import {
   deliverTaskWorktree,
   doctorRepository,
   dropTaskWorktree,
+  initializeRepository,
   listWorktrees,
   loadConfig,
   loadMarker,
+  planInitializeRepository,
 } from '@metyatech/managed-worktree-system';
+import { execGit } from './manager-worktree.js';
 
 const MANAGER_TASK_PATH_TEMPLATE =
   '{{ seed_parent }}/{{ repo }}-mgr-{{ slug }}-{{ shortid }}';
@@ -24,6 +27,15 @@ export interface ManagerMwtDeliveryResult {
   targetBranch: string;
   pushedCommit: string;
   seedSyncedTo: string;
+}
+
+export interface ManagerMwtAutoInitResult {
+  initialized: boolean;
+  reasonId: string | null;
+  detail: string;
+  defaultBranch: string | null;
+  remoteName: string | null;
+  changedFiles: string[];
 }
 
 function looksLikeMwtError(
@@ -64,6 +76,12 @@ export function listMwtChangedFiles(error: unknown): string[] {
   );
 }
 
+function mwtErrorId(error: unknown): string | null {
+  return looksLikeMwtError(error) && typeof error.id === 'string'
+    ? error.id
+    : null;
+}
+
 export function describeMwtError(error: unknown): string {
   if (!looksLikeMwtError(error)) {
     return String(error);
@@ -91,6 +109,105 @@ export async function isManagedWorktreeRepository(
   } catch {
     return false;
   }
+}
+
+function parseOriginHeadBranch(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  const prefix = 'refs/remotes/origin/';
+  if (!trimmed.startsWith(prefix)) {
+    return null;
+  }
+  const branch = trimmed.slice(prefix.length).trim();
+  return branch || null;
+}
+
+async function detectOriginDefaultBranch(
+  targetRepoRoot: string
+): Promise<string | null> {
+  const result = await execGit(targetRepoRoot, [
+    'symbolic-ref',
+    'refs/remotes/origin/HEAD',
+  ]);
+  if (result.code !== 0) {
+    return null;
+  }
+  return parseOriginHeadBranch(result.stdout);
+}
+
+async function hasGitRemote(
+  targetRepoRoot: string,
+  remoteName: string
+): Promise<boolean> {
+  const result = await execGit(targetRepoRoot, [
+    'remote',
+    'get-url',
+    remoteName,
+  ]);
+  return result.code === 0 && Boolean(result.stdout.trim());
+}
+
+export async function maybeAutoInitializeManagerRepository(input: {
+  targetRepoRoot: string;
+  defaultBranch?: string | null;
+}): Promise<ManagerMwtAutoInitResult> {
+  const targetRepoRoot = resolvePath(input.targetRepoRoot);
+  const remoteName = 'origin';
+  const defaultBranch =
+    input.defaultBranch?.trim() ||
+    (await detectOriginDefaultBranch(targetRepoRoot));
+
+  if (!defaultBranch) {
+    return {
+      initialized: false,
+      reasonId: 'missing_default_branch',
+      detail:
+        'Manager が自動初期化に必要な default branch を確定できませんでした。repo 登録の default branch を設定するか、seed で `mwt init --base <branch> --remote origin` を実行してください。',
+      defaultBranch: null,
+      remoteName,
+      changedFiles: [],
+    };
+  }
+
+  if (!(await hasGitRemote(targetRepoRoot, remoteName))) {
+    return {
+      initialized: false,
+      reasonId: 'missing_origin_remote',
+      detail:
+        'Manager の自動初期化は標準の `origin` remote がある既存 repo に限定しています。`origin` がないため、自動初期化は行いませんでした。',
+      defaultBranch,
+      remoteName: null,
+      changedFiles: [],
+    };
+  }
+
+  try {
+    await planInitializeRepository(targetRepoRoot, {
+      base: defaultBranch,
+      remote: remoteName,
+    });
+  } catch (error) {
+    return {
+      initialized: false,
+      reasonId: mwtErrorId(error),
+      detail: describeMwtError(error),
+      defaultBranch,
+      remoteName,
+      changedFiles: listMwtChangedFiles(error),
+    };
+  }
+
+  await initializeRepository(targetRepoRoot, {
+    base: defaultBranch,
+    remote: remoteName,
+  });
+  return {
+    initialized: true,
+    reasonId: null,
+    detail: `managed-worktree-system を自動初期化しました (base: ${defaultBranch}, remote: ${remoteName})。`,
+    defaultBranch,
+    remoteName,
+    changedFiles: [],
+  };
 }
 
 export async function createManagerWorktree(input: {

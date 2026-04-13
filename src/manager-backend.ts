@@ -93,6 +93,7 @@ import {
   isManagedWorktreeRepository,
   isMwtSeedTrackedDirtyError,
   listMwtChangedFiles,
+  maybeAutoInitializeManagerRepository,
   isMwtDeliverConflictError,
 } from './manager-mwt.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
@@ -3958,6 +3959,30 @@ function buildSeedRecoveryResumeMessage(
     .join('\n');
 }
 
+function buildAutoMwtInitBlockedMessage(input: {
+  detail: string;
+  defaultBranch: string | null;
+  remoteName: string | null;
+  changedFiles: string[];
+}): string {
+  const changedFilesSummary = summarizeRecoveryFiles(input.changedFiles);
+  const suggestedCommand =
+    input.defaultBranch && input.remoteName
+      ? `mwt init --base ${input.defaultBranch} --remote ${input.remoteName}`
+      : input.defaultBranch
+        ? `mwt init --base ${input.defaultBranch} --remote origin`
+        : 'mwt init --base <branch> --remote origin';
+  return [
+    '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できませんでした。',
+    '安全に自動初期化できる条件だけ試しましたが、この repo は条件を満たしていなかったため停止しました。',
+    input.detail,
+    changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
+    `seed リポジトリで \`${suggestedCommand}\` を実行してから再開してください。`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export async function preserveSeedRecoveryAndContinue(input: {
   dir: string;
   threadId: string;
@@ -6721,52 +6746,80 @@ export async function processNextQueued(
               await clearPausedWorktreeForThread(resolvedDir, thread.id);
             } else {
               await clearPausedWorktreeForThread(resolvedDir, thread.id);
-              if (await isManagedWorktreeRepository(targetRepo)) {
-                const wt = await createManagerWorktree({
-                  targetRepoRoot: targetRepo,
-                  assignmentId: assignment.id,
-                });
-                assignment.worktreePath = wt.worktreePath;
-                assignment.worktreeBranch = wt.branchName;
-                assignment.targetRepoRoot = wt.targetRepoRoot;
-                await clearSeedRecoveryState(resolvedDir, thread.id);
-              } else {
-                const errMsg =
-                  '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できません。seed リポジトリで `mwt init` を実行してから再開してください。';
-                try {
-                  await addMessage(
+              const managedRepoReady =
+                await isManagedWorktreeRepository(targetRepo);
+              if (!managedRepoReady) {
+                const autoInitResult =
+                  await maybeAutoInitializeManagerRepository({
+                    targetRepoRoot: targetRepo,
+                    defaultBranch:
+                      resolvedManagedRepo?.defaultBranch ??
+                      threadMeta?.managedBaseBranch ??
+                      null,
+                  });
+                if (autoInitResult.initialized) {
+                  try {
+                    await addMessage(
+                      resolvedDir,
+                      thread.id,
+                      `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。`,
+                      'ai',
+                      'active'
+                    );
+                  } catch {
+                    /* thread may have been deleted */
+                  }
+                } else {
+                  const errMsg = buildAutoMwtInitBlockedMessage({
+                    detail: autoInitResult.detail,
+                    defaultBranch: autoInitResult.defaultBranch,
+                    remoteName: autoInitResult.remoteName,
+                    changedFiles: autoInitResult.changedFiles,
+                  });
+                  try {
+                    await addMessage(
+                      resolvedDir,
+                      thread.id,
+                      errMsg,
+                      'ai',
+                      'needs-reply'
+                    );
+                  } catch {
+                    /* thread may have been deleted */
+                  }
+                  await updateQueueLocked(dir, (queue) =>
+                    queue.filter(
+                      (entry) => !assignment.queueEntryIds.includes(entry.id)
+                    )
+                  );
+                  await clearWorkerLiveOutput(
                     resolvedDir,
                     thread.id,
-                    errMsg,
-                    'ai',
-                    'needs-reply'
+                    assignment.assigneeKind,
+                    assignment.assigneeLabel,
+                    {
+                      workerAgentId: assignment.id,
+                      runtimeState: null,
+                      runtimeDetail: null,
+                      workerWriteScopes: assignment.writeScopes,
+                      workerBlockedByThreadIds: [],
+                      supersededByThreadId: null,
+                    }
                   );
-                } catch {
-                  /* thread may have been deleted */
+                  await removeAssignment(dir, assignment.id);
+                  void processNextQueued(dir, resolvedDir);
+                  return;
                 }
-                await updateQueueLocked(dir, (queue) =>
-                  queue.filter(
-                    (entry) => !assignment.queueEntryIds.includes(entry.id)
-                  )
-                );
-                await clearWorkerLiveOutput(
-                  resolvedDir,
-                  thread.id,
-                  assignment.assigneeKind,
-                  assignment.assigneeLabel,
-                  {
-                    workerAgentId: assignment.id,
-                    runtimeState: null,
-                    runtimeDetail: null,
-                    workerWriteScopes: assignment.writeScopes,
-                    workerBlockedByThreadIds: [],
-                    supersededByThreadId: null,
-                  }
-                );
-                await removeAssignment(dir, assignment.id);
-                void processNextQueued(dir, resolvedDir);
-                return;
               }
+
+              const wt = await createManagerWorktree({
+                targetRepoRoot: targetRepo,
+                assignmentId: assignment.id,
+              });
+              assignment.worktreePath = wt.worktreePath;
+              assignment.worktreeBranch = wt.branchName;
+              assignment.targetRepoRoot = wt.targetRepoRoot;
+              await clearSeedRecoveryState(resolvedDir, thread.id);
             }
           }
 

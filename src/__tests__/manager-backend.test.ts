@@ -158,6 +158,14 @@ vi.mock('../manager-mwt.js', () => ({
             .changedFiles
         : []
     ),
+  maybeAutoInitializeManagerRepository: vi.fn().mockResolvedValue({
+    initialized: false,
+    reasonId: 'missing_default_branch',
+    detail: 'mock auto init skipped',
+    defaultBranch: null,
+    remoteName: 'origin',
+    changedFiles: [],
+  }),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
 }));
 
@@ -219,6 +227,7 @@ import {
   dropManagerWorktree,
   isManagedWorktreeRepository,
   isMwtDeliverConflictError,
+  maybeAutoInitializeManagerRepository,
 } from '../manager-mwt.js';
 
 interface FakeProc extends EventEmitter {
@@ -313,6 +322,17 @@ async function waitFor(
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error('Timed out waiting for condition.');
+}
+
+async function waitForManagerIdle(
+  dir: string,
+  timeoutMs = 10000
+): Promise<void> {
+  await waitFor(async () => {
+    const queue = await readQueue(dir);
+    const session = await readSession(dir);
+    return queue.length === 0 && session.status === 'idle';
+  }, timeoutMs);
 }
 
 function spawnedCommandLine(callIndex: number): string {
@@ -461,6 +481,15 @@ beforeEach(async () => {
   });
   vi.mocked(isManagedWorktreeRepository).mockReset();
   vi.mocked(isManagedWorktreeRepository).mockResolvedValue(true);
+  vi.mocked(maybeAutoInitializeManagerRepository).mockReset();
+  vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValue({
+    initialized: false,
+    reasonId: 'missing_default_branch',
+    detail: 'mock auto init skipped',
+    defaultBranch: null,
+    remoteName: 'origin',
+    changedFiles: [],
+  });
   vi.mocked(createManagerWorktree).mockReset();
   vi.mocked(createManagerWorktree).mockResolvedValue({
     worktreePath: defaultManagerWorktree,
@@ -1121,10 +1150,7 @@ describe('manager backend codex integration', () => {
     });
     await secondSend;
 
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    await waitForManagerIdle(tempDir);
 
     const session = await readSession(tempDir);
     expect(session.routingSessionId).toBe('routing-thread-1');
@@ -1204,10 +1230,7 @@ describe('manager backend codex integration', () => {
     });
 
     await sendPromise;
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    await waitForManagerIdle(tempDir);
 
     const session = await readSession(tempDir);
     expect(session.routingSessionId).toBe('routing-thread-recovered');
@@ -1948,10 +1971,7 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"idle reply"}',
     });
 
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    await waitForManagerIdle(tempDir);
 
     expect(addMessageMock).toHaveBeenCalledTimes(1);
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-idle');
@@ -2033,10 +2053,138 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"repo inferred"}',
     });
 
+    await waitForManagerIdle(tempDir);
+  });
+
+  it('auto-initializes mwt safely before creating a manager worktree for an existing repo', async () => {
+    const dispatchProc = makeProc(6117);
+    const workerProc = makeProc(6118);
+    const reviewProc = makeProc(6119);
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
+    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
+      initialized: true,
+      reasonId: null,
+      detail: 'managed-worktree-system を自動初期化しました。',
+      defaultBranch: 'main',
+      remoteName: 'origin',
+      changedFiles: [],
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-auto-init': {
+        managedBaseBranch: 'main',
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-auto-init',
+      'これを直してください',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-auto-init',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(
+      () =>
+        vi.mocked(maybeAutoInitializeManagerRepository).mock.calls.length === 1
+    );
+    expect(
+      vi.mocked(maybeAutoInitializeManagerRepository).mock.calls[0]?.[0]
+    ).toMatchObject({
+      targetRepoRoot: tempDir,
+      defaultBranch: 'main',
+    });
+    await waitFor(
+      () => vi.mocked(createManagerWorktree).mock.calls.length === 1
+    );
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-auto-init',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-auto-init',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
     await waitFor(async () => {
       const queue = await readQueue(tempDir);
-      return queue.length === 0;
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
     });
+
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-auto-init');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('自動初期化');
+    expect(addMessageMock.mock.calls.at(-1)?.[2]).toContain('review done');
+  });
+
+  it('surfaces a needs-reply when auto mwt init is skipped because the repo is not clean', async () => {
+    const dispatchProc = makeProc(6120);
+    spawnMock.mockReturnValueOnce(dispatchProc);
+    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
+    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
+      initialized: false,
+      reasonId: 'init_requires_clean_repo',
+      detail:
+        'Repository must be clean before init unless --force is supplied.',
+      defaultBranch: 'main',
+      remoteName: 'origin',
+      changedFiles: ['README.md'],
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-init-blocked': {
+        managedBaseBranch: 'main',
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-init-blocked',
+      'これを直してください',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-init-blocked',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-init-blocked');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      '安全に自動初期化できる条件だけ試しました'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'mwt init --base main --remote origin'
+    );
   });
 
   it('asks for a concrete repo instead of dispatching a worker when an existing-repo write task is ambiguous', async () => {
@@ -2280,10 +2428,7 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"new repo done"}',
     });
 
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    await waitForManagerIdle(tempDir);
 
     const meta = await readManagerThreadMeta(tempDir);
     expect(meta['thread-new-repo']).toMatchObject({
@@ -2355,10 +2500,7 @@ describe('manager backend codex integration', () => {
       text: '{"status":"review","reply":"working dir done"}',
     });
 
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      return queue.length === 0;
-    });
+    await waitForManagerIdle(tempDir);
   });
 
   it('returns the missing workingDirectory error to manager for reconsideration before starting the worker', async () => {

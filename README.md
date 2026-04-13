@@ -479,6 +479,13 @@ Important behavior:
   default `repo-wt-*` task naming and Manager creates explicit `repo-mgr-*`
   task worktrees and `mgr/*` branches through the same managed-worktree
   boundary.
+- If an existing-repo write task targets a repository that is not initialized
+  for `mwt` yet, Manager now attempts a safe one-time automatic `mwt init`
+  before blocking. The automatic path is intentionally conservative: it only
+  proceeds when the repo is the primary clean seed checkout and Manager can
+  determine the standard `origin`/default-branch configuration without user
+  judgment. Otherwise Manager stops with a concrete `needs-reply` message that
+  explains why auto-init was skipped.
 - When an existing-repo write task is blocked because that seed checkout has
   tracked changes, the Manager thread detail now exposes a `Preserve &
 Continue` recovery path. That action stashes the tracked seed changes with a
