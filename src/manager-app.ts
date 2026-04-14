@@ -35,6 +35,7 @@ type ManagerUiState =
   | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
+  | 'ai-starting'
   | 'ai-working'
   | 'cancelled-as-superseded'
   | 'done';
@@ -354,6 +355,7 @@ const STATE_ORDER: ManagerUiState[] = [
   'stalled',
   'ai-finished-awaiting-user-confirmation',
   'queued',
+  'ai-starting',
   'ai-working',
   'cancelled-as-superseded',
   'done',
@@ -373,6 +375,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
   stalled: 'oldest-first',
   'ai-finished-awaiting-user-confirmation': 'oldest-first',
   queued: 'newest-first',
+  'ai-starting': 'newest-first',
   'ai-working': 'newest-first',
   'cancelled-as-superseded': 'newest-first',
   done: 'newest-first',
@@ -385,6 +388,7 @@ const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
   stalled: '処理状態の確認が必要です',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ちです',
   queued: 'AI の順番待ち',
+  'ai-starting': 'AI が開始中です',
   'ai-working': 'AI が作業中です',
   'cancelled-as-superseded': '置き換えで停止',
   done: '完了',
@@ -401,6 +405,7 @@ const STATE_LABELS: Record<ManagerUiState, string> = {
   stalled: '処理状態要確認',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
   queued: 'AI の順番待ち',
+  'ai-starting': 'AI開始中',
   'ai-working': 'AI作業中',
   'cancelled-as-superseded': '置き換えで停止',
   done: '完了',
@@ -431,6 +436,11 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     bg: 'rgba(8, 47, 73, 0.84)',
     color: '#bae6fd',
     border: 'rgba(56, 189, 248, 0.34)',
+  },
+  'ai-starting': {
+    bg: 'rgba(30, 64, 175, 0.84)',
+    color: '#dbeafe',
+    border: 'rgba(96, 165, 250, 0.34)',
   },
   'ai-working': {
     bg: 'rgba(20, 83, 45, 0.84)',
@@ -1781,6 +1791,9 @@ function describeThreadState(thread: ThreadView): string | null {
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
   }
+  if (thread.uiState === 'ai-starting') {
+    return 'いま AI がこの作業項目の起動や再開を始めています。処理が走り出すと自動で作業中へ移ります。';
+  }
   if (thread.uiState === 'ai-working') {
     return 'いま AI がこの作業項目を実行中です。結果が返ると自動で上の優先度へ移動します。';
   }
@@ -1814,6 +1827,9 @@ function threadNextActionText(thread: ThreadView): string {
   }
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return '内容を見て、続きがあればそのまま送り、終わりなら完了にします。';
+  }
+  if (thread.uiState === 'ai-starting') {
+    return 'いま起動や再開を始めています。少し待つと作業中になります。';
   }
   if (thread.uiState === 'ai-working') {
     return 'いまは結果待ちです。急ぎならこの件を開いて追加指示を送れます。';
@@ -1997,6 +2013,14 @@ function managerStatusBusy(status: ManagerStatusPayload | null): boolean {
   return status.detail?.includes('処理中') ?? false;
 }
 
+function managerStatusStarting(status: ManagerStatusPayload | null): boolean {
+  return status?.detail?.includes('処理開始中') ?? false;
+}
+
+function threadIsBusy(thread: ThreadView | null | undefined): boolean {
+  return thread?.uiState === 'ai-working' || thread?.uiState === 'ai-starting';
+}
+
 function managerStatusProblem(
   status: ManagerStatusPayload | null
 ): 'error' | 'paused' | null {
@@ -2176,7 +2200,7 @@ function rowPreviewText(
   threadTitlesById: Map<string, string>
 ): string {
   const activity = describeLiveActivity(thread, threadTitlesById);
-  if (thread.uiState === 'ai-working' && activity?.headline) {
+  if (threadIsBusy(thread) && activity?.headline) {
     return `${activity.actorLabel}: ${activity.headline}`;
   }
   return (
@@ -2301,7 +2325,11 @@ function currentBusyThread(
       threads.find((thread) => thread.id === status.currentThreadId) ?? null
     );
   }
-  return threads.find((thread) => thread.uiState === 'ai-working') ?? null;
+  return (
+    threads.find((thread) => thread.uiState === 'ai-starting') ??
+    threads.find((thread) => thread.uiState === 'ai-working') ??
+    null
+  );
 }
 
 function currentBusySummary(
@@ -2359,11 +2387,9 @@ function composerActionLabel(
   openThread: ThreadView | null
 ): string {
   if (openThread && thread.id === openThread.id) {
-    return thread.uiState === 'ai-working'
-      ? 'この会話へ追加指示を送る'
-      : 'この会話へ送る';
+    return threadIsBusy(thread) ? 'この会話へ追加指示を送る' : 'この会話へ送る';
   }
-  return thread.uiState === 'ai-working'
+  return threadIsBusy(thread)
     ? 'この会話をメンションして追加指示を送る'
     : 'この会話をメンションして送る';
 }
@@ -2372,7 +2398,7 @@ function composerSendButtonLabel(thread: ThreadView | null): string {
   if (!thread) {
     return '送る';
   }
-  return thread.uiState === 'ai-working' ? '追加指示を送る' : '送る';
+  return threadIsBusy(thread) ? '追加指示を送る' : '送る';
 }
 
 function composerTargetPillLabel(
@@ -2385,11 +2411,11 @@ function composerTargetPillLabel(
       : '送信先: 全体（AI が振り分けます）';
   }
   if (openThread && thread.id === openThread.id) {
-    return thread.uiState === 'ai-working'
+    return threadIsBusy(thread)
       ? '送信先: この会話（追加指示）'
       : '送信先: この会話';
   }
-  return thread.uiState === 'ai-working'
+  return threadIsBusy(thread)
     ? `送信先: @${thread.title}（続きなら追加指示）`
     : `送信先: @${thread.title}`;
 }
@@ -3563,6 +3589,7 @@ class ManagerApp {
         'ai-finished-awaiting-user-confirmation'
       ),
       queued: new ThreadSectionController('queued'),
+      'ai-starting': new ThreadSectionController('ai-starting'),
       'ai-working': new ThreadSectionController('ai-working'),
       'cancelled-as-superseded': new ThreadSectionController(
         'cancelled-as-superseded'
@@ -4174,6 +4201,7 @@ class ManagerApp {
 
     if (payload.running) {
       const busy = managerStatusBusy(payload);
+      const starting = managerStatusStarting(payload);
       const problem = managerStatusProblem(payload);
       if (dot) {
         dot.style.background =
@@ -4201,8 +4229,12 @@ class ManagerApp {
               ? 'Manager Codex の利用上限で停止中です'
               : busy
                 ? payload.currentThreadTitle
-                  ? `AI が「${payload.currentThreadTitle}」を処理中です`
-                  : 'AI が作業中です'
+                  ? starting
+                    ? `AI が「${payload.currentThreadTitle}」を開始中です`
+                    : `AI が「${payload.currentThreadTitle}」を処理中です`
+                  : starting
+                    ? 'AI が作業開始中です'
+                    : 'AI が作業中です'
                 : '待機中です';
         const queueTail = busySummary
           ? ` — ${busySummary}`
@@ -5877,10 +5909,10 @@ class ManagerApp {
     }
     setHint(
       openThread && thread.id === openThread.id
-        ? thread.uiState === 'ai-working'
+        ? threadIsBusy(thread)
           ? 'この会話へ追加指示を送ります。別件は右のボタンで切り替えます。'
           : ''
-        : thread.uiState === 'ai-working'
+        : threadIsBusy(thread)
           ? 'この会話の続きならここに入り、別件なら AI が別の作業項目へ分けます。'
           : 'この会話の続きならここに入り、別件なら AI が分けて進めます。'
     );
@@ -5917,7 +5949,7 @@ class ManagerApp {
       steps[1].textContent =
         '2. Manager が続きの作業か、新しい作業項目か、確認待ちかを内部で整理する';
       steps[2].textContent =
-        '3. 一覧で「AI の順番待ち」「AI作業中」「あなたの確認待ち」を追い、必要な作業項目だけ開いて返す';
+        '3. 一覧で「AI の順番待ち」「AI開始中」「AI作業中」「あなたの確認待ち」を追い、必要な作業項目だけ開いて返す';
     }
   }
 
@@ -5953,6 +5985,7 @@ class ManagerApp {
     ) as Record<ManagerUiState, number>;
 
     const busy = managerStatusBusy(this.#managerStatus);
+    const starting = managerStatusStarting(this.#managerStatus);
     const problem = managerStatusProblem(this.#managerStatus);
     const running = this.#managerStatus?.running ?? false;
     const configured = this.#managerStatus?.configured ?? false;
@@ -5978,8 +6011,12 @@ class ManagerApp {
       primary.textContent = 'Manager Codex の利用上限で停止中です';
     } else if (busy) {
       primary.textContent = currentThreadTitle
-        ? `AI が「${currentThreadTitle}」を進めています`
-        : 'AI が作業や振り分けを進めています';
+        ? starting
+          ? `AI が「${currentThreadTitle}」の開始を進めています`
+          : `AI が「${currentThreadTitle}」を進めています`
+        : starting
+          ? 'AI が作業開始を進めています'
+          : 'AI が作業や振り分けを進めています';
     } else if (counts['routing-confirmation-needed'] > 0) {
       primary.textContent = '振り分け確認が必要な作業項目があります';
     } else if (counts['user-reply-needed'] > 0) {
@@ -5988,6 +6025,8 @@ class ManagerApp {
       primary.textContent = '処理状態の確認が必要な作業項目があります';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       primary.textContent = 'AI から返答が来ています';
+    } else if (counts['ai-starting'] > 0) {
+      primary.textContent = 'AI が作業開始を進めています';
     } else if (counts['queued'] > 0) {
       primary.textContent = 'AI の順番待ちがあります';
     } else if (counts['ai-working'] > 0) {
@@ -6011,7 +6050,9 @@ class ManagerApp {
     } else if (busy) {
       detail.textContent = busyActivity?.headline
         ? [
-            `いまは ${busyActivity.actorLabel} が「${busyActivity.headline}」を進めています。`,
+            starting
+              ? `いまは ${busyActivity.actorLabel} が「${busyActivity.headline}」の起動や再開を進めています。`
+              : `いまは ${busyActivity.actorLabel} が「${busyActivity.headline}」を進めています。`,
             busyActivity.updatedLabel ? `${busyActivity.updatedLabel}。` : '',
             pendingCount > 0
               ? `この作業項目が終わると、残り ${pendingCount} 件を順番に進めます。`
@@ -6019,9 +6060,13 @@ class ManagerApp {
           ]
             .filter(Boolean)
             .join(' ')
-        : pendingCount > 0
-          ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると対応する一覧に出ます。`
-          : 'いまの作業項目を実行中です。返答できる状態になると対応する一覧に出ます。';
+        : starting
+          ? pendingCount > 0
+            ? `いまの作業項目の起動や再開を進めています。終わると、残り ${pendingCount} 件を順番に進めます。`
+            : 'いまの作業項目の起動や再開を進めています。返答できる状態になると対応する一覧に出ます。'
+          : pendingCount > 0
+            ? `いまの作業項目が終わると、残り ${pendingCount} 件を順番に進めます。結果が返ると対応する一覧に出ます。`
+            : 'いまの作業項目を実行中です。返答できる状態になると対応する一覧に出ます。';
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';
@@ -6034,6 +6079,9 @@ class ManagerApp {
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
         'AI が返答済みです。「あなたの確認待ちです」の一覧から順に開いてください。';
+    } else if (counts['ai-starting'] > 0) {
+      detail.textContent =
+        'いま AI が起動や再開を進めています。すぐに「AI作業中」へ移るので、そのまま待てます。';
     } else if (counts['queued'] > 0) {
       detail.textContent =
         'いま人が返すものはありません。AI の順番待ちとしてそのまま進みます。';
@@ -6080,6 +6128,11 @@ class ManagerApp {
         key: 'queued',
         label: 'AI の順番待ち',
         value: counts['queued'],
+      },
+      {
+        key: 'ai-starting',
+        label: 'AI開始中',
+        value: counts['ai-starting'],
       },
       {
         key: 'ai-working',

@@ -25,6 +25,7 @@ export type ManagerUiState =
   | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
   | 'queued'
+  | 'ai-starting'
   | 'ai-working'
   | 'cancelled-as-superseded'
   | 'done';
@@ -251,14 +252,19 @@ export async function reconcileManagerThreadMeta(input: {
     seenThreadIds.add(thread.id);
     const currentMeta = current[thread.id] ?? null;
     const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
+    const isStarting = input.session.dispatchingThreadId === thread.id;
     const isWorking = activeThreadIds.has(thread.id);
     const managerOwned =
-      queueDepth > 0 || isWorking || managerThreadMetaHasContent(currentMeta);
+      queueDepth > 0 ||
+      isStarting ||
+      isWorking ||
+      managerThreadMetaHasContent(currentMeta);
     if (!managerOwned) {
       continue;
     }
 
     const cleanedMeta =
+      isStarting ||
       isWorking ||
       pendingThreadIds.has(thread.id) ||
       !hasManagerRuntimeFootprint(currentMeta)
@@ -268,6 +274,7 @@ export async function reconcileManagerThreadMeta(input: {
       thread,
       meta: cleanedMeta,
       queueDepth,
+      isStarting,
       isWorking,
     });
     const nextMeta: ManagerThreadMeta = {
@@ -417,6 +424,7 @@ function normalizeCanonicalUiState(value: unknown): ManagerUiState | null {
     value === 'stalled' ||
     value === 'ai-finished-awaiting-user-confirmation' ||
     value === 'queued' ||
+    value === 'ai-starting' ||
     value === 'ai-working' ||
     value === 'cancelled-as-superseded' ||
     value === 'done'
@@ -540,6 +548,7 @@ function deriveCanonicalStateInfo(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
   queueDepth: number;
+  isStarting: boolean;
   isWorking: boolean;
 }): {
   uiState: ManagerUiState;
@@ -555,6 +564,8 @@ function deriveCanonicalStateInfo(input: {
     uiState = 'cancelled-as-superseded';
   } else if (input.isWorking) {
     uiState = 'ai-working';
+  } else if (input.isStarting) {
+    uiState = 'ai-starting';
   } else if (input.queueDepth > 0) {
     uiState = 'queued';
   } else if (input.thread.status === 'needs-reply') {
@@ -564,10 +575,11 @@ function deriveCanonicalStateInfo(input: {
   } else if (input.thread.status === 'waiting') {
     if (
       input.queueDepth > 0 ||
+      input.isStarting ||
       input.isWorking ||
       hasManagerRuntimeFootprint(input.meta)
     ) {
-      uiState = 'queued';
+      uiState = input.isStarting ? 'ai-starting' : 'queued';
     } else if (lastSender(input.thread) === 'ai') {
       uiState = 'ai-finished-awaiting-user-confirmation';
     } else {
@@ -619,10 +631,12 @@ function shouldIncludeInManagerThreadViews(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
   queueDepth: number;
+  isStarting: boolean;
   isWorking: boolean;
 }): boolean {
   const managerOwned =
     input.queueDepth > 0 ||
+    input.isStarting ||
     input.isWorking ||
     managerThreadMetaHasContent(input.meta);
   if (!managerOwned) {
@@ -632,7 +646,7 @@ function shouldIncludeInManagerThreadViews(input: {
   if (input.thread.status !== 'waiting') {
     return true;
   }
-  if (input.queueDepth > 0 || input.isWorking) {
+  if (input.queueDepth > 0 || input.isStarting || input.isWorking) {
     return true;
   }
   if (
@@ -648,6 +662,7 @@ function deriveUiState(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
   queueDepth: number;
+  isStarting: boolean;
   isWorking: boolean;
 }): ManagerUiState {
   const canonical = normalizeCanonicalUiState(input.meta?.canonicalState);
@@ -667,9 +682,10 @@ function compareByPriority(
     stalled: 2,
     'ai-finished-awaiting-user-confirmation': 3,
     queued: 4,
-    'ai-working': 5,
-    'cancelled-as-superseded': 6,
-    done: 7,
+    'ai-starting': 5,
+    'ai-working': 6,
+    'cancelled-as-superseded': 7,
+    done: 8,
   };
 
   const leftPriority = priority[left.uiState];
@@ -745,6 +761,7 @@ export function deriveManagerThreadViews(input: {
   const views = input.threads.flatMap((thread) => {
     const meta = input.meta[thread.id] ?? null;
     const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
+    const isStarting = input.session.dispatchingThreadId === thread.id;
     const isWorking = (input.session.activeAssignments ?? []).some(
       (assignment) => assignment.threadId === thread.id
     );
@@ -753,6 +770,7 @@ export function deriveManagerThreadViews(input: {
         thread,
         meta,
         queueDepth,
+        isStarting,
         isWorking,
       })
     ) {
@@ -762,6 +780,7 @@ export function deriveManagerThreadViews(input: {
       thread,
       meta,
       queueDepth,
+      isStarting,
       isWorking,
     });
 

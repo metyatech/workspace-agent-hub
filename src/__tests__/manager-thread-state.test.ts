@@ -164,6 +164,64 @@ describe('manager thread state derivation', () => {
     expect(views[1]?.uiState).toBe('ai-working');
   });
 
+  it('shows a dispatching queued thread as ai-starting instead of queued', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-starting',
+          title: 'README 調査',
+          status: 'waiting',
+          updatedAt: '2026-04-14T02:00:00.000Z',
+          createdAt: '2026-04-14T02:00:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'README を確認してください',
+              at: '2026-04-14T02:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: null,
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-14T02:00:00.000Z',
+        lastMessageAt: '2026-04-14T02:00:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+        dispatchingThreadId: 'thread-starting',
+        dispatchingQueueEntryIds: ['queue-starting'],
+        dispatchingAssigneeKind: 'worker',
+        dispatchingAssigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+        dispatchingDetail: '担当 worker agent の起動や再開を準備しています。',
+        dispatchingStartedAt: '2026-04-14T02:00:01.000Z',
+      },
+      queue: [
+        {
+          id: 'queue-starting',
+          threadId: 'thread-starting',
+          content: 'README を確認してください',
+          createdAt: '2026-04-14T02:00:01.000Z',
+          processed: false,
+          priority: 'normal',
+        },
+      ],
+      meta: {},
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('ai-starting');
+  });
+
   it('treats an in-flight needs-reply thread as ai-working while the assignment is still active', () => {
     const views = deriveManagerThreadViews({
       threads: [

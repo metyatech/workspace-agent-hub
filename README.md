@@ -451,6 +451,9 @@ Important behavior:
 - The Manager page now surfaces a prominent live status summary so it is easy
   to tell whether AI is actively processing, idle, or waiting on the user, and
   how many tasks currently sit in each urgency bucket.
+- When Manager has already picked a task and is starting or resuming the worker,
+  that work item now appears as `AI開始中` instead of staying mislabelled under
+  `AI の順番待ち`.
 - Empty Manager sections now start collapsed automatically and reopen
   themselves when matching work items arrive, so buckets with nothing in them
   stop taking space while still surfacing new arrivals immediately.
@@ -558,7 +561,8 @@ Continue` recovery path. That action stashes the tracked seed changes with a
   newly routed work item; the current task stays open unless the user
   explicitly opens a routing-result chip.
 - The inbox is ordered by urgency: routing confirmation, user reply needed, AI
-  finished awaiting user confirmation, queued, AI working, then done.
+  finished awaiting user confirmation, queued, AI starting, AI working, then
+  done.
 - Inside the queued bucket, the default is still arrival order, but explicit
   priority requests jump ahead of ordinary work, question-only items jump ahead
   of ordinary work after that, and ties inside each lane stay FIFO.

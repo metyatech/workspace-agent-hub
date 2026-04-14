@@ -301,6 +301,13 @@ export interface ManagerSession {
   lastPauseAt: string | null;
   /** Active manager/worker assignments currently running for queued work items. */
   activeAssignments: ManagerActiveAssignment[];
+  /** Canonical transient runtime state while a queued item is being started/resumed. */
+  dispatchingThreadId?: string | null;
+  dispatchingQueueEntryIds?: string[] | null;
+  dispatchingAssigneeKind?: 'manager' | 'worker' | null;
+  dispatchingAssigneeLabel?: string | null;
+  dispatchingDetail?: string | null;
+  dispatchingStartedAt?: string | null;
 }
 
 export interface ManagerActiveAssignment {
@@ -485,6 +492,12 @@ function makeDefaultSession(dir: string): ManagerSession {
     lastPauseMessage: null,
     lastPauseAt: null,
     activeAssignments: [],
+    dispatchingThreadId: null,
+    dispatchingQueueEntryIds: [],
+    dispatchingAssigneeKind: null,
+    dispatchingAssigneeLabel: null,
+    dispatchingDetail: null,
+    dispatchingStartedAt: null,
   };
 }
 
@@ -787,6 +800,24 @@ function normalizeManagerSession(
         ? 'busy'
         : 'idle';
   const firstAssignment = activeAssignments[0] ?? null;
+  const dispatchingThreadId = normalizeOptionalText(
+    session.dispatchingThreadId
+  );
+  const dispatchingQueueEntryIds = normalizeStringArray(
+    session.dispatchingQueueEntryIds
+  );
+  const dispatchingAssigneeKind =
+    session.dispatchingAssigneeKind === 'manager' ||
+    session.dispatchingAssigneeKind === 'worker'
+      ? session.dispatchingAssigneeKind
+      : null;
+  const dispatchingAssigneeLabel = normalizeOptionalText(
+    session.dispatchingAssigneeLabel
+  );
+  const dispatchingDetail = normalizeOptionalText(session.dispatchingDetail);
+  const dispatchingStartedAt = normalizeOptionalText(
+    session.dispatchingStartedAt
+  );
 
   return {
     ...base,
@@ -795,6 +826,12 @@ function normalizeManagerSession(
     pid: firstAssignment?.pid ?? null,
     currentQueueId: firstAssignment?.queueEntryIds[0] ?? null,
     activeAssignments,
+    dispatchingThreadId,
+    dispatchingQueueEntryIds,
+    dispatchingAssigneeKind,
+    dispatchingAssigneeLabel,
+    dispatchingDetail,
+    dispatchingStartedAt,
   };
 }
 
@@ -1205,20 +1242,50 @@ function replaceSessionAssignments(
   };
 }
 
+function clearDispatchingSessionState(session: ManagerSession): ManagerSession {
+  if (
+    !session.dispatchingThreadId &&
+    (session.dispatchingQueueEntryIds?.length ?? 0) === 0 &&
+    !session.dispatchingAssigneeKind &&
+    !session.dispatchingAssigneeLabel &&
+    !session.dispatchingDetail &&
+    !session.dispatchingStartedAt
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    dispatchingThreadId: null,
+    dispatchingQueueEntryIds: [],
+    dispatchingAssigneeKind: null,
+    dispatchingAssigneeLabel: null,
+    dispatchingDetail: null,
+    dispatchingStartedAt: null,
+  };
+}
+
 async function reconcileActiveAssignments(
   dir: string
 ): Promise<ManagerSession> {
+  const resolvedDir = resolvePath(dir);
   const droppedAssignments: ManagerActiveAssignment[] = [];
   let survivingAssignments: ManagerActiveAssignment[] = [];
   const nextSession = await updateSession(dir, async (session) => {
     if (session.activeAssignments.length === 0) {
       survivingAssignments = [];
+      const clearedSession = !inFlight.has(resolvedDir)
+        ? clearDispatchingSessionState(session)
+        : session;
       // Clear any stale error from a previous assignment that has already
       // been cleaned up — the error is no longer relevant.
-      if (session.lastErrorMessage !== null) {
-        return { ...session, lastErrorMessage: null, lastErrorAt: null };
+      if (clearedSession.lastErrorMessage !== null) {
+        return {
+          ...clearedSession,
+          lastErrorMessage: null,
+          lastErrorAt: null,
+        };
       }
-      return session;
+      return clearedSession;
     }
 
     const queue = await readQueue(dir);
@@ -4856,7 +4923,7 @@ async function reserveAssignment(input: {
       (assignment) => assignment.id !== input.assignment.id
     );
     return {
-      ...session,
+      ...clearDispatchingSessionState(session),
       activeAssignments: [...withoutSameAssignment, input.assignment],
       lastMessageAt: new Date().toISOString(),
       priorityStreak: input.priorityStreak,
@@ -4866,6 +4933,29 @@ async function reserveAssignment(input: {
       lastPauseAt: null,
     };
   });
+}
+
+async function setDispatchingAssignment(input: {
+  dir: string;
+  threadId: string;
+  queueEntryIds: string[];
+  assigneeKind: 'manager' | 'worker';
+  assigneeLabel: string;
+  detail: string;
+}): Promise<void> {
+  await updateSession(input.dir, (session) => ({
+    ...session,
+    dispatchingThreadId: input.threadId,
+    dispatchingQueueEntryIds: [...input.queueEntryIds],
+    dispatchingAssigneeKind: input.assigneeKind,
+    dispatchingAssigneeLabel: input.assigneeLabel,
+    dispatchingDetail: input.detail,
+    dispatchingStartedAt: new Date().toISOString(),
+    lastErrorMessage: null,
+    lastErrorAt: null,
+    lastPauseMessage: null,
+    lastPauseAt: null,
+  }));
 }
 
 async function removeAssignment(
@@ -5248,6 +5338,14 @@ function defaultAssigneeLabel(
   return kind === 'manager'
     ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
     : workerRuntimeAssigneeLabel(runtime, process.env, selection);
+}
+
+function buildDispatchingDetail(input: {
+  assigneeKind: 'manager' | 'worker';
+}): string {
+  return input.assigneeKind === 'manager'
+    ? 'Manager がこの作業項目の応答開始を準備しています。'
+    : '担当 worker agent の起動や再開を準備しています。';
 }
 
 function normalizeSupportedWorkerRuntimes(
@@ -6894,6 +6992,22 @@ export async function processNextQueued(
         continue;
       }
 
+      await setDispatchingAssignment({
+        dir,
+        threadId: next.threadId,
+        queueEntryIds: batchIds,
+        assigneeKind: dispatch.assignee,
+        assigneeLabel: defaultAssigneeLabel(
+          dispatch.assignee,
+          explicitRequestedWorkerRuntime ??
+            resolvedManagedRepo?.preferredWorkerRuntime ??
+            'codex'
+        ),
+        detail: buildDispatchingDetail({
+          assigneeKind: dispatch.assignee,
+        }),
+      });
+
       const automaticWorkerRuntimes = runtimeConstraintCandidates({
         supportedRuntimes: resolvedManagedRepo?.supportedWorkerRuntimes,
         preferredWorkerRuntime: resolvedManagedRepo?.preferredWorkerRuntime,
@@ -7454,6 +7568,9 @@ export async function processNextQueued(
     }
     scheduleRecoveryRetry(dir, resolvedDir);
   } finally {
+    await updateSession(dir, (session) =>
+      clearDispatchingSessionState(session)
+    );
     const shouldRerun = rerunRequested.has(resolvedDir);
     clearProcessNextQueuedReservation(resolvedDir);
     if (!hadInternalError) {
@@ -7922,8 +8039,12 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   let session = await reconcileActiveAssignments(dir);
   const queue = await readQueue(dir);
   const activeQueueIds = queueEntryIdSet(session.activeAssignments);
+  const dispatchingQueueIds = new Set(session.dispatchingQueueEntryIds ?? []);
   const pending = queue.filter(
-    (entry) => !entry.processed && !activeQueueIds.has(entry.id)
+    (entry) =>
+      !entry.processed &&
+      !activeQueueIds.has(entry.id) &&
+      !dispatchingQueueIds.has(entry.id)
   ).length;
   const currentAssignment = session.activeAssignments[0] ?? null;
   const currentThread =
@@ -7947,6 +8068,27 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       currentQueueId: currentAssignment?.queueEntryIds[0] ?? null,
       currentThreadId: currentAssignment?.threadId ?? null,
       currentThreadTitle: currentThread?.title ?? null,
+      errorMessage: null,
+      errorAt: null,
+    };
+  }
+
+  if (session.dispatchingThreadId) {
+    const dispatchingThread = await getThread(dir, session.dispatchingThreadId);
+    const dispatchingLabel =
+      dispatchingThread?.title ?? session.dispatchingThreadId;
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'ok',
+      detail: dispatchingLabel
+        ? `処理開始中 (${dispatchingLabel})`
+        : '処理開始中',
+      pendingCount: pending,
+      currentQueueId: session.dispatchingQueueEntryIds?.[0] ?? null,
+      currentThreadId: session.dispatchingThreadId,
+      currentThreadTitle: dispatchingThread?.title ?? null,
       errorMessage: null,
       errorAt: null,
     };

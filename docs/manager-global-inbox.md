@@ -186,11 +186,13 @@ separate AI completion from user closure.
    - User still needs to review the result
 4. `queued`
    - Accepted but not started by AI yet
-5. `ai-working`
+5. `ai-starting`
+   - Manager has already claimed the work and is starting or resuming AI
+6. `ai-working`
    - AI is actively processing
-6. `cancelled-as-superseded`
+7. `cancelled-as-superseded`
    - a newer descendant work item replaced an older still-running descendant
-7. `done`
+8. `done`
    - Explicitly closed by the user, or closed from a clear natural-language
      approval such as `その件OK`
 
@@ -200,13 +202,15 @@ separate AI completion from user closure.
 2. `user-reply-needed`
 3. `ai-finished-awaiting-user-confirmation`
 4. `queued`
-5. `ai-working`
-6. `cancelled-as-superseded`
-7. `done` (hidden by default, shown only on demand)
+5. `ai-starting`
+6. `ai-working`
+7. `cancelled-as-superseded`
+8. `done` (hidden by default, shown only on demand)
 
 `ai-finished-awaiting-user-confirmation` is only for cases where AI has already
 produced something the human can now inspect. Intake acknowledgements or
-"started working" updates belong in `ai-working` until a real result is ready.
+"starting work" updates belong in `ai-starting`, and active execution belongs in
+`ai-working`, until a real result is ready.
 `cancelled-as-superseded` stays visible long enough to explain why an older
 worker stopped, rather than disappearing without context.
 
@@ -214,8 +218,8 @@ Each visible list can flip between `oldest-first` and `newest-first`.
 
 - `routing-confirmation-needed`, `user-reply-needed`, and
   `ai-finished-awaiting-user-confirmation` default to `oldest-first`
-- `queued`, `ai-working`, `cancelled-as-superseded`, and `done` default to
-  `newest-first`
+- `queued`, `ai-starting`, `ai-working`, `cancelled-as-superseded`, and `done`
+  default to `newest-first`
 - Empty sections should start collapsed and automatically reopen when matching
   work items appear, so new actionable items surface without leaving empty
   buckets expanded.

@@ -176,6 +176,10 @@ the UI, replay any already-produced AI reply that failed to persist, and only
 then auto-requeue a dropped user-last waiting topic when the restart is safe
 and bounded.
 
+Likewise, once the Manager has already claimed a queued topic and is starting
+or resuming its runtime, the UI should expose a distinct `ai-starting` state
+instead of continuing to label that topic as merely `queued`.
+
 ### 4. Hand off to the merge lane
 
 When an existing-repo write run finishes and passes its run-level verification:

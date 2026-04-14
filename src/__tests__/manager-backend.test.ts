@@ -2950,6 +2950,47 @@ describe('manager backend codex integration', () => {
     expect(status.errorAt).toBeNull();
   });
 
+  it('reports a dispatching queued item as processing-starting and excludes it from pending count', async () => {
+    await writeQueue(tempDir, [
+      {
+        id: 'q_starting',
+        threadId: 'thread-starting',
+        content: 'start this task',
+        createdAt: new Date(Date.now() - 30_000).toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+      {
+        id: 'q_waiting',
+        threadId: 'thread-waiting',
+        content: 'wait after that',
+        createdAt: new Date(Date.now() - 10_000).toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      dispatchingThreadId: 'thread-starting',
+      dispatchingQueueEntryIds: ['q_starting'],
+      dispatchingAssigneeKind: 'worker',
+      dispatchingAssigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+      dispatchingDetail: '担当 worker agent の起動や再開を準備しています。',
+      dispatchingStartedAt: new Date().toISOString(),
+    });
+    markProcessNextQueuedInFlightForTests(tempDir);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('ok');
+    expect(status.detail).toBe('処理開始中 (Thread thread-starting)');
+    expect(status.currentQueueId).toBe('q_starting');
+    expect(status.currentThreadId).toBe('thread-starting');
+    expect(status.currentThreadTitle).toBe('Thread thread-starting');
+    expect(status.pendingCount).toBe(1);
+  });
+
   it('serializes concurrent session mutations so one assignment update does not drop another', async () => {
     const session = await readSession(tempDir);
     await writeSession(tempDir, {

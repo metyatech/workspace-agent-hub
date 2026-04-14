@@ -1802,6 +1802,49 @@ describe('manager-app DOM auth state matrix', () => {
     expect(chips).toContain('AI の順番待ち 1');
   });
 
+  it('shows a dispatching thread as AI-starting instead of queued in the activity summary', async () => {
+    const validToken = 'starting-thread-token';
+    const startingThread = makeThreadView('thread-starting', '開始中の task', {
+      status: 'waiting',
+      uiState: 'ai-starting',
+      lastSender: 'user',
+      previewText: '[user] 起動してください',
+      queueDepth: 1,
+      assigneeKind: 'worker',
+      assigneeLabel: 'Codex',
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [startingThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理開始中 (開始中の task)',
+        pendingCount: 0,
+        currentQueueId: 'q_starting',
+        currentThreadId: 'thread-starting',
+        currentThreadTitle: '開始中の task',
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('AI が「開始中の task」の開始を進めています');
+    const chips = Array.from(
+      document.querySelectorAll<HTMLElement>('.activity-chip')
+    ).map((element) => element.textContent ?? '');
+    expect(chips).toContain('AI開始中 1');
+  });
+
   it('shows stranded manager topics under attention-needed instead of the queued lane', async () => {
     const validToken = 'stalled-thread-token';
     const stalledThread = makeThreadView(
