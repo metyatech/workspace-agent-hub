@@ -92,6 +92,7 @@ import {
   dropManagerWorktree,
   isManagerManagedWorktreePath,
   isManagedWorktreeRepository,
+  isMwtDeliverRemoteAdvanceError,
   isMwtSeedTrackedDirtyError,
   listMwtChangedFiles,
   maybeAutoInitializeManagerRepository,
@@ -5606,6 +5607,29 @@ async function runQueuedAssignment(input: {
       latestReplyContextUserAt
     );
   };
+  const describeRecoveryDecisionFailure = (result: {
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    parsed: { text: string; sessionId: string | null };
+  }): string => {
+    if (result.code !== 0) {
+      return `Recovery decision turn exited with code ${result.code ?? '?'}.${formatRuntimeFailureSuffix(
+        {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          maxLength: 500,
+        }
+      )}`;
+    }
+
+    const parseableDetail =
+      extractRuntimeFailureDetail(result.parsed.text, 500) ??
+      result.parsed.text.trim().slice(0, 500);
+    return parseableDetail
+      ? `Recovery decision reply could not be parsed as valid Manager JSON.\n${parseableDetail}`
+      : 'Recovery decision reply could not be parsed as valid Manager JSON.';
+  };
 
   const runTurn = async (turn: {
     prompt: string;
@@ -5980,9 +6004,12 @@ async function runQueuedAssignment(input: {
               assignment
             );
           }
+          const recoveryDecisionFailureDetail = !decision
+            ? describeRecoveryDecisionFailure(recoveryDecisionResult)
+            : null;
           const escalateMsg = decision?.reason
             ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
-            : `[Manager] 回復判断を解釈できませんでした。\n\n元のエラー:\n${recoveryErrorContext}`;
+            : `[Manager] 自動回復判断に失敗しました。\n理由: ${recoveryDecisionFailureDetail ?? 'Recovery decision reply could not be parsed.'}\n\n元のエラー:\n${recoveryErrorContext}`;
           if (!(await currentReplyWasSuperseded())) {
             try {
               await addMessage(
@@ -6442,6 +6469,8 @@ async function runQueuedAssignment(input: {
 
         const deliveryTargetBranch =
           threadMeta?.managedBaseBranch?.trim() || null;
+        const MAX_DELIVER_REMOTE_ADVANCE_RETRIES = 3;
+        let deliverRemoteAdvanceRetries = 0;
         while (true) {
           try {
             let deliverResult;
@@ -6494,6 +6523,26 @@ async function runQueuedAssignment(input: {
                   targetBranch: deliveryTargetBranch,
                   resume: true,
                 });
+              } else if (
+                isMwtDeliverRemoteAdvanceError(deliveryError) &&
+                deliverRemoteAdvanceRetries < MAX_DELIVER_REMOTE_ADVANCE_RETRIES
+              ) {
+                deliverRemoteAdvanceRetries += 1;
+                await appendWorkerLiveOutput({
+                  dir: resolvedDir,
+                  threadId: thread.id,
+                  text: `target branch が deliver 中に進んだため、最新 ${deliveryTargetBranch ?? 'target branch'} へ追従して deliver を再試行します（${deliverRemoteAdvanceRetries}/${MAX_DELIVER_REMOTE_ADVANCE_RETRIES}）…`,
+                  kind: 'status',
+                  assigneeKind: 'manager',
+                  assigneeLabel: defaultAssigneeLabel('manager'),
+                  workerSessionId,
+                  workerAgentId: assignment.id,
+                  runtimeState: 'manager-answering',
+                  runtimeDetail:
+                    'target branch 先行を検出したため deliver を再試行中…',
+                  workerWriteScopes: assignment.writeScopes,
+                });
+                continue;
               } else {
                 throw deliveryError;
               }

@@ -50,6 +50,36 @@ export function isMwtDeliverConflictError(error: unknown): boolean {
   return looksLikeMwtError(error) && error.id === 'deliver_rebase_conflict';
 }
 
+export function isMwtDeliverRemoteAdvanceError(error: unknown): boolean {
+  const detail = looksLikeMwtError(error)
+    ? [
+        typeof error.message === 'string' ? error.message : '',
+        typeof (error.details as { stderr?: unknown } | undefined)?.stderr ===
+        'string'
+          ? ((error.details as { stderr?: string }).stderr ?? '')
+          : '',
+        typeof (error.details as { stdout?: unknown } | undefined)?.stdout ===
+        'string'
+          ? ((error.details as { stdout?: string }).stdout ?? '')
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : String(error);
+
+  return (
+    /non-fast-forward/i.test(detail) ||
+    /failed to push some refs/i.test(detail) ||
+    /\[rejected\]/i.test(detail) ||
+    /fetch first/i.test(detail) ||
+    /pushed branch tip is behind/i.test(detail)
+  );
+}
+
 export function isMwtSeedTrackedDirtyError(error: unknown): boolean {
   return looksLikeMwtError(error) && error.id === 'seed_tracked_dirty';
 }

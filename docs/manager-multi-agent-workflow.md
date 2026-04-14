@@ -196,10 +196,14 @@ duplicate no-op. A worker can pass branch-local verification and still fail
 here after rebasing onto the latest target branch or when the repo's runtime
 environment is not clean. Manager should surface the concrete verify failure
 detail, attempt bounded automatic recovery in the same task worktree, and
-pause for human input only if that recovery loop is exhausted. The preserved
-task worktree in that terminal state is the paused worktree: it keeps the
-branch/worktree pair alive so a later retry can continue from the exact failed
-integration state instead of starting from scratch.
+pause for human input only if that recovery loop is exhausted. If the target
+branch advances between rebase and push, Manager should retry `mwt deliver`
+deterministically before escalating. If the recovery router itself fails,
+Manager should surface that real recovery runtime failure instead of a generic
+parse error. The preserved task worktree in that terminal state is the paused
+worktree: it keeps the branch/worktree pair alive so a later retry can
+continue from the exact failed integration state instead of starting from
+scratch.
 
 The human should see one queue per existing repo, not one global delivery pile.
 

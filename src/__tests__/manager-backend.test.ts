@@ -168,6 +168,7 @@ vi.mock('../manager-mwt.js', () => ({
     onboardingCommit: null,
   }),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
+  isMwtDeliverRemoteAdvanceError: vi.fn().mockReturnValue(false),
 }));
 
 import {
@@ -229,6 +230,7 @@ import {
   isManagerManagedWorktreePath,
   isManagedWorktreeRepository,
   isMwtDeliverConflictError,
+  isMwtDeliverRemoteAdvanceError,
   maybeAutoInitializeManagerRepository,
 } from '../manager-mwt.js';
 
@@ -512,6 +514,8 @@ beforeEach(async () => {
   vi.mocked(dropManagerWorktree).mockResolvedValue(false);
   vi.mocked(isMwtDeliverConflictError).mockReset();
   vi.mocked(isMwtDeliverConflictError).mockReturnValue(false);
+  vi.mocked(isMwtDeliverRemoteAdvanceError).mockReset();
+  vi.mocked(isMwtDeliverRemoteAdvanceError).mockReturnValue(false);
   vi.mocked(createIntegrationWorktree).mockReset();
   vi.mocked(createIntegrationWorktree).mockResolvedValue({
     worktreePath: 'C:\\temp\\wah-merge-default',
@@ -4684,6 +4688,61 @@ describe('manager backend codex integration', () => {
     );
   });
 
+  it('retries deliver immediately when the target branch advanced during push', async () => {
+    const workerProc = makeProc(8421);
+    const reviewProc = makeProc(8422);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-deliver-retry',
+      branchName: 'mgr/assign_thread-deliver-retry/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(deliverManagerWorktree)
+      .mockRejectedValueOnce(
+        new Error(
+          'Push failed during deliver: [rejected] HEAD -> main (non-fast-forward)'
+        )
+      )
+      .mockResolvedValueOnce({
+        worktreeId: 'assign_thread-deliver-retry',
+        targetBranch: 'main',
+        pushedCommit: 'mock-retried-commit',
+        seedSyncedTo: 'mock-retried-seed-sync',
+      });
+    vi.mocked(isMwtDeliverRemoteAdvanceError).mockReturnValue(true);
+
+    await sendToBuiltinManager(tempDir, 'thread-deliver-retry', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-deliver-retry-worker',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-deliver-retry',
+      text: '{"status":"review","reply":"review done after deterministic retry"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runPostMergeDeliveryChain)).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-deliver-retry');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'review done after deterministic retry'
+    );
+  });
+
   it('retries deliver automatically after a recovery fix succeeds', async () => {
     const workerProc = makeProc(8461);
     const reviewProc = makeProc(8462);
@@ -4775,6 +4834,76 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'review done after recovery'
     );
+  });
+
+  it('preserves the actual recovery runtime cause when the recovery decision turn fails', async () => {
+    const workerProc = makeProc(8471);
+    const reviewProc = makeProc(8472);
+    const recoveryDecisionProc = makeProc(8473);
+    spawnMock
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc)
+      .mockReturnValueOnce(recoveryDecisionProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-recovery-runtime-fail',
+      branchName: 'mgr/assign_thread-recovery-runtime-fail/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(deliverManagerWorktree).mockRejectedValueOnce(
+      new Error('Push failed during deliver: remote rejected')
+    );
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-recovery-runtime-fail',
+      'message'
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-recovery-runtime-fail-worker',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-recovery-runtime-fail',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    recoveryDecisionProc.stderr.emit(
+      'data',
+      Buffer.from('Error: Recovery router crashed while planning next action\n')
+    );
+    completeCodexTurn(recoveryDecisionProc, {
+      sessionId: 'manager-recovery-thread-recovery-runtime-fail',
+      text: 'not-json',
+      code: 1,
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-recovery-runtime-fail'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      '自動回復判断に失敗しました'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Recovery decision turn exited with code 1'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Recovery router crashed while planning next action'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
   });
 
   it('skips integration merge and push when the approved worktree has no deliverable commits', async () => {
