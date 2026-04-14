@@ -32,15 +32,6 @@ if (
     $SocketName = $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME.Trim()
 }
 
-$startupOnAttachScriptWindowsPath = Join-Path $PSScriptRoot 'wsl-startup-on-attach.sh'
-if (-not (Test-Path -Path $startupOnAttachScriptWindowsPath)) {
-    throw "Missing helper script: $startupOnAttachScriptWindowsPath"
-}
-$sessionLivePipeScriptWindowsPath = Join-Path $PSScriptRoot 'wsl-session-live-pipe.sh'
-if (-not (Test-Path -Path $sessionLivePipeScriptWindowsPath)) {
-    throw "Missing helper script: $sessionLivePipeScriptWindowsPath"
-}
-
 $sessionLiveRootWindowsPath = if (
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
@@ -48,6 +39,15 @@ $sessionLiveRootWindowsPath = if (
     [IO.Path]::GetFullPath($env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim())
 } else {
     Join-Path $env:USERPROFILE 'agent-handoff\session-live'
+}
+
+$helperCacheRootWindowsPath = if (
+    $env:LOCALAPPDATA -and
+    $env:LOCALAPPDATA.Trim()
+) {
+    Join-Path $env:LOCALAPPDATA 'workspace-agent-hub\wsl-helpers'
+} else {
+    Join-Path ([System.IO.Path]::GetTempPath()) 'workspace-agent-hub-wsl-helpers'
 }
 
 function ConvertTo-QuotedArgumentString {
@@ -88,6 +88,39 @@ function Ensure-WindowsUtf8File {
         [System.IO.File]::WriteAllText($Path, '', [System.Text.UTF8Encoding]::new($false))
     }
 }
+
+function Publish-StableHelperCopy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path -Path $SourcePath)) {
+        throw "Missing helper script: $SourcePath"
+    }
+
+    $sourceBytes = [System.IO.File]::ReadAllBytes($SourcePath)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash($sourceBytes)
+    } finally {
+        $sha256.Dispose()
+    }
+    $hashText = [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    [void][System.IO.Directory]::CreateDirectory($helperCacheRootWindowsPath)
+    $destinationFileName = '{0}-{1}{2}' -f
+        [System.IO.Path]::GetFileNameWithoutExtension($SourcePath),
+        $hashText,
+        [System.IO.Path]::GetExtension($SourcePath)
+    $destinationPath = Join-Path $helperCacheRootWindowsPath $destinationFileName
+    if (-not [System.IO.File]::Exists($destinationPath)) {
+        [System.IO.File]::WriteAllBytes($destinationPath, $sourceBytes)
+    }
+    return [System.IO.Path]::GetFullPath($destinationPath)
+}
+
+$startupOnAttachScriptWindowsPath = Publish-StableHelperCopy -SourcePath (Join-Path $PSScriptRoot 'wsl-startup-on-attach.sh')
+$sessionLivePipeScriptWindowsPath = Publish-StableHelperCopy -SourcePath (Join-Path $PSScriptRoot 'wsl-session-live-pipe.sh')
 
 function Invoke-WslCommand {
     param(

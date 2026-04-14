@@ -131,6 +131,37 @@ function Get-WslHomeDirectory {
     return $homePath
 }
 
+function Convert-WindowsPathToWslPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowsPath
+    )
+
+    $normalizedPath = $WindowsPath -replace '\\', '/'
+    $result = @(& wsl.exe -d Ubuntu -- wslpath -a -u $normalizedPath)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Expected to convert '$WindowsPath' to a WSL path."
+    }
+
+    return (($result | Out-String).Trim())
+}
+
+function Get-LivePipeCommands {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetSessionName
+    )
+
+    $commands = @(
+        & wsl.exe -d Ubuntu -- env "TARGET_SESSION_NAME=$TargetSessionName" bash -lc 'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep wsl-session-live-pipe.sh | grep -v grep || true'
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Expected to inspect live-pipe helper processes for '$TargetSessionName'."
+    }
+
+    return @($commands | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
+}
+
 try {
     if (Test-Path -Path $liveTranscriptPath) {
         [IO.File]::Delete($liveTranscriptPath)
@@ -206,6 +237,16 @@ try {
     }
     if ($liveTranscript -notmatch 'live-bridge-pass') {
         throw "Expected the authoritative transcript log to capture tmux pane output. Got: $liveTranscript"
+    }
+
+    $livePipeCommands = @(Get-LivePipeCommands -TargetSessionName $sessionName)
+    if ($livePipeCommands.Count -eq 0) {
+        throw 'Expected an active session-live pipe helper process after ensure.'
+    }
+    $scriptsDirectoryWslPath = Convert-WindowsPathToWslPath -WindowsPath $PSScriptRoot
+    $livePipeText = ($livePipeCommands | Out-String)
+    if ($livePipeText -match [regex]::Escape($scriptsDirectoryWslPath)) {
+        throw "Expected session-live helper processes to use a stable helper path outside the worktree scripts directory. Got: $livePipeText"
     }
 
     [void](Invoke-TmuxScript -Arguments @(
