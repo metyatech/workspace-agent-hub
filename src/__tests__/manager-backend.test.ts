@@ -2199,6 +2199,104 @@ describe('manager backend codex integration', () => {
     );
   });
 
+  it('canonicalizes a stale linked-worktree repo root back to the primary repo before auto-init checks', async () => {
+    const dispatchProc = makeProc(61205);
+    const repoRoot = join(tempDir, 'repo-seed');
+    const worktreeRoot = join(tempDir, 'repo-seed-wt-task');
+    spawnMock.mockReturnValueOnce(dispatchProc);
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
+    await mkdir(worktreeRoot, { recursive: true });
+    await writeFile(
+      join(worktreeRoot, '.git'),
+      'gitdir: D:/fake/repo-seed/.git/worktrees/repo-seed-wt-task\n',
+      'utf8'
+    );
+    vi.mocked(execGit).mockImplementation(
+      async (cwd: string, args: string[]) => {
+        if (
+          args[0] === 'worktree' &&
+          args[1] === 'list' &&
+          args[2] === '--porcelain'
+        ) {
+          return {
+            stdout: `worktree ${repoRoot}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${worktreeRoot}\nHEAD def456\nbranch refs/heads/wt/test\n`,
+            stderr: '',
+            code: 0,
+          };
+        }
+        if (
+          args[0] === 'symbolic-ref' &&
+          args[1] === '--short' &&
+          args[2] === 'refs/remotes/origin/HEAD'
+        ) {
+          return { stdout: 'origin/main', stderr: '', code: 0 };
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+          return {
+            stdout: cwd === repoRoot ? 'main' : 'wt/test',
+            stderr: '',
+            code: 0,
+          };
+        }
+        if (args[0] === 'remote' && args[1] === 'get-url') {
+          return {
+            stdout: 'https://github.com/metyatech/repo-seed.git',
+            stderr: '',
+            code: 0,
+          };
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      }
+    );
+    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
+    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
+      initialized: false,
+      reasonId: 'linked_worktree_requires_seed',
+      detail:
+        'mwt init requires the primary non-bare repository checkout, not a linked worktree or redirected Git dir.',
+      defaultBranch: 'main',
+      remoteName: 'origin',
+      changedFiles: [],
+      onboardingCommit: null,
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-linked-worktree-root': {
+        managedRepoRoot: worktreeRoot,
+        managedBaseBranch: 'main',
+        repoTargetKind: 'existing-repo',
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-linked-worktree-root',
+      'これを直してください',
+      {
+        dispatchMode: 'manager-evaluate',
+        requestedRunMode: 'write',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-linked-worktree-root',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['repo-seed/src/index.ts'],
+      }),
+    });
+
+    await waitFor(
+      () =>
+        vi.mocked(maybeAutoInitializeManagerRepository).mock.calls.length === 1
+    );
+    expect(
+      vi.mocked(maybeAutoInitializeManagerRepository).mock.calls[0]?.[0]
+    ).toMatchObject({
+      targetRepoRoot: repoRoot,
+      defaultBranch: 'main',
+    });
+  });
+
   it('reuses a saved paused manager worktree on the next retry instead of creating a new one', async () => {
     const workerProc = makeProc(6121);
     const reviewProc = makeProc(6122);

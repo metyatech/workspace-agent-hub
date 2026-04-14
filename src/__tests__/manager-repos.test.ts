@@ -24,6 +24,24 @@ async function initGitRepo(repoRoot: string): Promise<void> {
   await writeFile(join(repoRoot, 'README.md'), '# temp\n', 'utf8');
 }
 
+async function initGitRepoWithCommit(repoRoot: string): Promise<void> {
+  await initGitRepo(repoRoot);
+  const addResult = await execGit(repoRoot, ['add', 'README.md']);
+  expect(addResult.code).toBe(0);
+  const commitResult = await execGit(repoRoot, [
+    '-c',
+    'user.name=Test User',
+    '-c',
+    'user.email=test@example.com',
+    'commit',
+    '-m',
+    'seed',
+  ]);
+  expect(commitResult.code).toBe(0);
+  const branchResult = await execGit(repoRoot, ['branch', '-M', 'main']);
+  expect(branchResult.code).toBe(0);
+}
+
 afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
@@ -75,6 +93,34 @@ describe('manager-repos', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('dedupes linked worktree directories and canonicalizes them back to the primary repo root', async () => {
+    const workspaceRoot = await createTempDir(
+      'wah-manager-repos-linked-worktree-'
+    );
+    const repoRoot = join(workspaceRoot, 'repo-seed');
+    const worktreeRoot = join(workspaceRoot, 'repo-seed-wt-task');
+    await mkdir(repoRoot, { recursive: true });
+    await initGitRepoWithCommit(repoRoot);
+
+    const addWorktreeResult = await execGit(repoRoot, [
+      'worktree',
+      'add',
+      worktreeRoot,
+      '-b',
+      'wt/test-linked-worktree',
+    ]);
+    expect(addWorktreeResult.code).toBe(0);
+
+    const repos = await readManagedRepos(workspaceRoot);
+
+    expect(repos.map((repo) => repo.repoRoot)).toEqual([repoRoot]);
+
+    const found = await findManagedRepoByRoot(workspaceRoot, worktreeRoot);
+
+    expect(found?.repoRoot).toBe(repoRoot);
+    expect(found?.label).toBe('repo-seed');
   });
 
   it('normalizes a new repo name into a workspace-local repo root', async () => {

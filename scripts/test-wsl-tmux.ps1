@@ -153,7 +153,7 @@ function Get-LivePipeCommands {
     )
 
     $commands = @(
-        & wsl.exe -d Ubuntu -- env "TARGET_SESSION_NAME=$TargetSessionName" bash -lc 'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep wsl-session-live-pipe.sh | grep -v grep || true'
+        & wsl.exe -d Ubuntu -- env "TARGET_SESSION_NAME=$TargetSessionName" bash -lc 'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep -F "wsl-session-live-pipe" | grep -v grep || true'
     )
     if ($LASTEXITCODE -ne 0) {
         throw "Expected to inspect live-pipe helper processes for '$TargetSessionName'."

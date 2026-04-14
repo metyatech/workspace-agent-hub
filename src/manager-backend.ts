@@ -2413,6 +2413,14 @@ function repoWriteScopeForWorkspace(
   return !scope || scope.startsWith('..') ? resolvePath(repoRoot) : scope;
 }
 
+function isPrimaryGitCheckoutRoot(repoRoot: string): boolean {
+  try {
+    return statSync(join(resolvePath(repoRoot), '.git')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function buildRepoTargetClarificationReply(
   reason: string
 ): ManagerDispatchPayload {
@@ -2509,7 +2517,7 @@ function listWorkspaceRepoCandidates(
         continue;
       }
       const candidateRoot = findGitRoot(join(workspaceRoot, entry.name));
-      if (!candidateRoot) {
+      if (!candidateRoot || !isPrimaryGitCheckoutRoot(candidateRoot)) {
         continue;
       }
       const normalizedRoot = resolvePath(candidateRoot);
@@ -2550,7 +2558,7 @@ function inferRepoContextFromThread(input: {
   const repoNameTokens = contextText.match(/[a-z0-9][a-z0-9._-]*/g) ?? [];
   for (const token of repoNameTokens) {
     const repoRoot = resolvePath(input.resolvedDir, token);
-    if (!existsSync(join(repoRoot, '.git'))) {
+    if (!isPrimaryGitCheckoutRoot(repoRoot)) {
       continue;
     }
     tokenMatches.set(repoRoot.toLowerCase(), {
@@ -5231,12 +5239,20 @@ async function decideDispatchForBatch(input: {
     resolvedDir: input.resolvedDir,
     relatedActiveAssignments: input.relatedActiveAssignments,
     repoTargetKind: threadTargetKind,
-    managedRepoLabel: input.threadMeta?.managedRepoLabel ?? null,
-    managedRepoRoot: input.threadMeta?.managedRepoRoot ?? null,
+    managedRepoLabel:
+      currentManagedRepo?.label ?? input.threadMeta?.managedRepoLabel ?? null,
+    managedRepoRoot:
+      currentManagedRepo?.repoRoot ?? input.threadMeta?.managedRepoRoot ?? null,
     newRepoName: threadNewRepoName,
     newRepoRoot: threadNewRepoRoot,
-    managedBaseBranch: input.threadMeta?.managedBaseBranch ?? null,
-    managedVerifyCommand: input.threadMeta?.managedVerifyCommand ?? null,
+    managedBaseBranch:
+      currentManagedRepo?.defaultBranch ??
+      input.threadMeta?.managedBaseBranch ??
+      null,
+    managedVerifyCommand:
+      currentManagedRepo?.verifyCommand ??
+      input.threadMeta?.managedVerifyCommand ??
+      null,
     requestedRunMode: effectiveRequestedRunMode,
     inferredRepoLabel: inferredRepo?.label ?? null,
     inferredRepoRoot: inferredRepo?.repoRoot ?? null,

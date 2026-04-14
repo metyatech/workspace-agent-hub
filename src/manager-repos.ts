@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { basename, join, relative, resolve as resolvePath } from 'node:path';
 import { execGit, findGitRoot } from './manager-worktree.js';
@@ -128,17 +128,64 @@ async function detectDefaultBranch(repoRoot: string): Promise<string> {
   return 'main';
 }
 
+function isPrimaryGitCheckoutRoot(repoRoot: string): boolean {
+  try {
+    return statSync(join(resolvePath(repoRoot), '.git')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function parseGitWorktreeList(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => resolvePath(line.slice('worktree '.length).trim()))
+    .filter(Boolean);
+}
+
+async function resolveManagedRepoRoot(
+  candidatePath: string
+): Promise<string | null> {
+  const gitRoot = findGitRoot(candidatePath);
+  if (!gitRoot) {
+    return null;
+  }
+
+  const normalizedRoot = resolvePath(gitRoot);
+  if (isPrimaryGitCheckoutRoot(normalizedRoot)) {
+    return normalizedRoot;
+  }
+
+  const worktreeList = await execGit(normalizedRoot, [
+    'worktree',
+    'list',
+    '--porcelain',
+  ]).catch(() => null);
+  if (worktreeList?.code !== 0) {
+    return null;
+  }
+
+  for (const worktreePath of parseGitWorktreeList(worktreeList.stdout)) {
+    if (isPrimaryGitCheckoutRoot(worktreePath)) {
+      return resolvePath(worktreePath);
+    }
+  }
+
+  return null;
+}
+
 async function listWorkspaceRepoRoots(
   workspaceRoot: string
 ): Promise<string[]> {
   const normalizedWorkspaceRoot = resolvePath(workspaceRoot);
   const roots = new Map<string, string>();
 
-  const addRoot = (candidateRoot: string | null): void => {
-    if (!candidateRoot) {
+  const addRoot = async (candidatePath: string): Promise<void> => {
+    const normalizedRoot = await resolveManagedRepoRoot(candidatePath);
+    if (!normalizedRoot) {
       return;
     }
-    const normalizedRoot = resolvePath(candidateRoot);
     const rel = relative(normalizedWorkspaceRoot, normalizedRoot);
     if (rel.startsWith('..')) {
       return;
@@ -146,13 +193,8 @@ async function listWorkspaceRepoRoots(
     roots.set(normalizedRoot.toLowerCase(), normalizedRoot);
   };
 
-  const workspaceGitRoot = findGitRoot(normalizedWorkspaceRoot);
-  if (
-    workspaceGitRoot &&
-    resolvePath(workspaceGitRoot).toLowerCase() ===
-      normalizedWorkspaceRoot.toLowerCase()
-  ) {
-    addRoot(workspaceGitRoot);
+  if (isPrimaryGitCheckoutRoot(normalizedWorkspaceRoot)) {
+    await addRoot(normalizedWorkspaceRoot);
   }
 
   let entries;
@@ -166,7 +208,7 @@ async function listWorkspaceRepoRoots(
     if (!entry.isDirectory()) {
       continue;
     }
-    addRoot(findGitRoot(join(normalizedWorkspaceRoot, entry.name)));
+    await addRoot(join(normalizedWorkspaceRoot, entry.name));
   }
 
   return [...roots.values()].sort((left, right) =>
@@ -232,7 +274,9 @@ export async function findManagedRepoByRoot(
   dir: string,
   repoRoot: string
 ): Promise<ManagedRepoConfig | null> {
-  const normalizedRoot = resolvePath(repoRoot).toLowerCase();
+  const normalizedRoot = resolvePath(
+    (await resolveManagedRepoRoot(repoRoot)) ?? repoRoot
+  ).toLowerCase();
   const repos = await readManagedRepos(dir);
   return (
     repos.find(
