@@ -248,7 +248,7 @@ function isPathWithinWslWorktree(
   return panePath === worktreePath || panePath.startsWith(`${worktreePath}/`);
 }
 
-async function releaseTaskOwnedWslTmuxLocks(
+export async function releaseTaskOwnedWslTmuxLocks(
   worktreePath: string
 ): Promise<void> {
   if (process.platform !== 'win32' || !existsSync(worktreePath)) {

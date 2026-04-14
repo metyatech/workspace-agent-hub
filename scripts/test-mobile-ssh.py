@@ -428,6 +428,10 @@ def kill_tmux_session(session_name: str) -> None:
 
 
 def parse_session_index(output: str, title: str, folder: str | None = None) -> str:
+    normalized_title = normalize_wrapped_terminal_text(title)
+    normalized_folder = (
+        normalize_wrapped_terminal_text(f"folder={folder}") if folder else None
+    )
     lines = output.splitlines()
     for line in lines:
         plain_line = strip_ansi(line)
@@ -436,6 +440,19 @@ def parse_session_index(output: str, title: str, folder: str | None = None) -> s
         if folder and f"folder={folder}" not in plain_line:
             continue
         match = re.search(r"\[(\d+)\]", plain_line)
+        if match:
+            return match.group(1)
+
+    normalized_output = normalize_wrapped_terminal_text(output)
+    parts = re.split(r"(\[\d+\])", normalized_output)
+    for index in range(1, len(parts), 2):
+        marker = parts[index]
+        block = parts[index + 1] if index + 1 < len(parts) else ""
+        if normalized_title not in block:
+            continue
+        if normalized_folder and normalized_folder not in block:
+            continue
+        match = re.fullmatch(r"\[(\d+)\]", marker)
         if match:
             return match.group(1)
     raise RuntimeError(f"Unable to find a session index for title={title!r} folder={folder!r}.\nOutput:\n{output}")
@@ -503,7 +520,7 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
         if ssh.process.poll() is None:
             disconnect_ssh(ssh)
 
-    launcher_session = launcher_wait_for_display_title(session_title, 5)
+    launcher_session = launcher_wait_for_display_title(session_title, 15)
 
     session_name = str(launcher_session.get("Name", ""))
     if not session_name:

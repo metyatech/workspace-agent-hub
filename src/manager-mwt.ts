@@ -11,7 +11,7 @@ import {
   loadMarker,
   planInitializeRepository,
 } from '@metyatech/managed-worktree-system';
-import { execGit } from './manager-worktree.js';
+import { execGit, releaseTaskOwnedWslTmuxLocks } from './manager-worktree.js';
 
 const MANAGER_TASK_PATH_TEMPLATE =
   '{{ seed_parent }}/{{ repo }}-mgr-{{ slug }}-{{ shortid }}';
@@ -458,6 +458,7 @@ export async function dropManagerWorktree(input: {
     return false;
   }
 
+  await releaseTaskOwnedWslTmuxLocks(worktreePath).catch(() => {});
   await dropTaskWorktree(worktreePath, {
     force: true,
     deleteBranch: true,
@@ -498,6 +499,7 @@ export async function cleanupOrphanedManagerWorktrees(input: {
     if (!marker || marker.kind !== 'task' || marker.createdBy !== 'manager') {
       continue;
     }
+    await releaseTaskOwnedWslTmuxLocks(candidatePath).catch(() => {});
     await dropTaskWorktree(candidatePath, {
       force: true,
       deleteBranch: true,

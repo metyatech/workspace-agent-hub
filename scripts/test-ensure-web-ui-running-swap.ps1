@@ -372,19 +372,73 @@ function Stop-ProcessesForStatePath {
         [string]$TargetStatePath
     )
 
-    $escapedStatePath = [regex]::Escape($TargetStatePath)
-    $processes = Get-CimInstance Win32_Process | Where-Object {
-        $_.CommandLine -and
-        $_.CommandLine -match $escapedStatePath
+    Stop-ProcessesForCommandLinePattern -CommandLinePattern $TargetStatePath
+}
+
+function Stop-ProcessTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    $childProcesses = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId")
+    foreach ($childProcess in $childProcesses) {
+        Stop-ProcessTree -ProcessId ([int]$childProcess.ProcessId)
     }
-    foreach ($processInfo in $processes) {
-        try {
-            Stop-Process -Id ([int]$processInfo.ProcessId) -Force -ErrorAction Stop
-        } catch {
-        }
+
+    try {
+        Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+    } catch {
+    }
+    try {
+        Wait-Process -Id $ProcessId -Timeout 5 -ErrorAction Stop
+    } catch {
     }
 }
 
+function Stop-ProcessesForCommandLinePattern {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandLinePattern
+    )
+
+    $escapedPattern = [regex]::Escape($CommandLinePattern)
+    $processes = Get-CimInstance Win32_Process | Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine -match $escapedPattern
+    }
+    foreach ($processInfo in $processes) {
+        Stop-ProcessTree -ProcessId ([int]$processInfo.ProcessId)
+    }
+}
+
+function Remove-TestDirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDirectory,
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (-not [IO.Directory]::Exists($TargetDirectory)) {
+            return
+        }
+        try {
+            [IO.Directory]::Delete($TargetDirectory, $true)
+        } catch {
+        }
+        if (-not [IO.Directory]::Exists($TargetDirectory)) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Expected temporary swap test directory to be deleted: $TargetDirectory"
+}
+
+$firstRun = $null
+$replacementRun = $null
 try {
     (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(1)
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
@@ -444,6 +498,19 @@ try {
         (Get-Item -LiteralPath $frontDoorSourcePath).LastWriteTimeUtc = $originalFrontDoorSourceWriteTimeUtc
     }
 
+    foreach ($processInfo in @($firstRun, $replacementRun)) {
+        if ($null -eq $processInfo) {
+            continue
+        }
+        if ($processInfo.PSObject.Properties.Match('Process').Count -eq 0 -or -not $processInfo.Process) {
+            continue
+        }
+        try {
+            Stop-ProcessTree -ProcessId ([int]$processInfo.Process.Id)
+        } catch {
+        }
+    }
+
     if (Test-Path -Path $statePath) {
         try {
             $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
@@ -466,6 +533,7 @@ try {
         }
     }
     Stop-ProcessesForStatePath -TargetStatePath $statePath
+    Stop-ProcessesForCommandLinePattern -CommandLinePattern $mockCliPath
 
     if ($null -eq $originalCliPath) {
         [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $null, 'Process')
@@ -480,10 +548,7 @@ try {
     }
 
     if ([IO.Directory]::Exists($testDirectory)) {
-        try {
-            [IO.Directory]::Delete($testDirectory, $true)
-        } catch {
-        }
+        Remove-TestDirectoryWithRetry -TargetDirectory $testDirectory
     }
 }
 
