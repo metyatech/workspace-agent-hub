@@ -1704,6 +1704,103 @@ function findLatestAiMessage(
   return null;
 }
 
+function trailingUserMessages(
+  thread: Thread
+): Array<Thread['messages'][number]> {
+  const messages: Array<Thread['messages'][number]> = [];
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index];
+    if (!message || message.sender !== 'user') {
+      break;
+    }
+    messages.push(message);
+  }
+  return messages.reverse();
+}
+
+function mergeThreadMessageContent(
+  messages: Array<Thread['messages'][number]>
+): string {
+  return messages
+    .map((message) => message.content)
+    .filter((content) => typeof content === 'string' && content.trim())
+    .join('\n\n');
+}
+
+async function readLatestThreadPromptSnapshot(input: {
+  dir: string;
+  threadId: string;
+  fallbackThread: Thread;
+  fallbackPromptContent: string;
+  fallbackPromptAt: string | null;
+}): Promise<{
+  thread: Thread;
+  promptThread: Thread;
+  promptContent: string;
+  latestUserMessageAt: string | null;
+}> {
+  let latestThread = input.fallbackThread;
+  try {
+    const currentThread = await getThread(input.dir, input.threadId);
+    if (currentThread) {
+      latestThread = currentThread;
+    }
+  } catch {
+    /* thread may have been deleted; keep the original snapshot */
+  }
+
+  const trailingMessages = trailingUserMessages(latestThread);
+  const latestThreadUserAt =
+    trailingMessages.at(-1)?.at ?? lastUserMessage(latestThread)?.at ?? null;
+  const latestThreadUserAtMs = parseMessageTimestamp(latestThreadUserAt);
+  const fallbackPromptAtMs = parseMessageTimestamp(input.fallbackPromptAt);
+  const useThreadPrompt =
+    latestThreadUserAtMs !== null &&
+    (fallbackPromptAtMs === null || latestThreadUserAtMs >= fallbackPromptAtMs);
+  const promptContent = useThreadPrompt
+    ? mergeThreadMessageContent(trailingMessages).trim() ||
+      input.fallbackPromptContent
+    : input.fallbackPromptContent;
+  return {
+    thread: latestThread,
+    promptThread: stripTrailingUserMessagesFromThread(latestThread),
+    promptContent,
+    latestUserMessageAt: useThreadPrompt
+      ? latestThreadUserAt
+      : input.fallbackPromptAt,
+  };
+}
+
+function hasUserMessageAfter(thread: Thread, sinceAt: string | null): boolean {
+  const sinceMs = parseMessageTimestamp(sinceAt);
+  if (sinceMs === null) {
+    return false;
+  }
+  return thread.messages.some((message) => {
+    if (message.sender !== 'user') {
+      return false;
+    }
+    const messageAt = parseMessageTimestamp(message.at);
+    return messageAt !== null && messageAt > sinceMs;
+  });
+}
+
+function latestTimestampValue(
+  values: Array<string | null | undefined>
+): string | null {
+  let latestValue: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const valueMs = parseMessageTimestamp(value);
+    if (valueMs === null || valueMs < latestMs) {
+      continue;
+    }
+    latestMs = valueMs;
+    latestValue = value ?? null;
+  }
+  return latestValue;
+}
+
 function normalizeVerificationPath(path: string): string {
   return path
     .replace(/\\/g, '/')
@@ -5466,6 +5563,11 @@ async function runQueuedAssignment(input: {
   const targetRepoRoot = assignment.targetRepoRoot ?? resolvedDir;
   const promptContent = mergeQueuedEntryContent(entries);
   const promptThread = stripTrailingUserMessagesFromThread(thread);
+  const promptContentAt = latestTimestampValue([
+    ...entries.map((entry) => entry.createdAt),
+    lastUserMessage(thread)?.at ?? null,
+  ]);
+  let latestReplyContextUserAt = promptContentAt;
   const workerRuntime = assignment.workerRuntime;
   const workerModel = assignment.workerModel;
   const workerEffort = assignment.workerEffort;
@@ -5489,6 +5591,21 @@ async function runQueuedAssignment(input: {
     workerEffort
   );
   const imagePaths = queueEntriesImagePaths(entries);
+  const readCurrentPromptSnapshot = async () =>
+    readLatestThreadPromptSnapshot({
+      dir: resolvedDir,
+      threadId: thread.id,
+      fallbackThread: thread,
+      fallbackPromptContent: promptContent,
+      fallbackPromptAt: promptContentAt,
+    });
+  const currentReplyWasSuperseded = async () => {
+    const latestPromptSnapshot = await readCurrentPromptSnapshot();
+    return hasUserMessageAfter(
+      latestPromptSnapshot.thread,
+      latestReplyContextUserAt
+    );
+  };
 
   const runTurn = async (turn: {
     prompt: string;
@@ -5727,10 +5844,12 @@ async function runQueuedAssignment(input: {
         workerRepoRoot,
         workerResult.changedFiles
       );
+      const reviewPromptSnapshot = await readCurrentPromptSnapshot();
+      latestReplyContextUserAt = reviewPromptSnapshot.latestUserMessageAt;
       finalResult = await runTurn({
         prompt: buildManagerReviewPrompt({
-          thread: promptThread,
-          currentUserRequest: promptContent,
+          thread: reviewPromptSnapshot.thread,
+          currentUserRequest: reviewPromptSnapshot.promptContent,
           workerResult,
           resolvedDir,
           workingDirectory: assignment.workingDirectory,
@@ -5829,9 +5948,11 @@ async function runQueuedAssignment(input: {
           return false;
         }
 
+        const recoveryPromptSnapshot = await readCurrentPromptSnapshot();
+        latestReplyContextUserAt = recoveryPromptSnapshot.latestUserMessageAt;
         const recoveryDecisionResult = await runTurn({
           prompt: buildManagerRecoveryPrompt({
-            thread: promptThread,
+            thread: recoveryPromptSnapshot.thread,
             errorContext: recoveryErrorContext,
             resolvedDir,
             workingDirectory: assignment.workingDirectory,
@@ -5862,16 +5983,18 @@ async function runQueuedAssignment(input: {
           const escalateMsg = decision?.reason
             ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
             : `[Manager] 回復判断を解釈できませんでした。\n\n元のエラー:\n${recoveryErrorContext}`;
-          try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              escalateMsg,
-              'ai',
-              'needs-reply'
-            );
-          } catch {
-            /* thread may have been deleted */
+          if (!(await currentReplyWasSuperseded())) {
+            try {
+              await addMessage(
+                resolvedDir,
+                thread.id,
+                escalateMsg,
+                'ai',
+                'needs-reply'
+              );
+            } catch {
+              /* thread may have been deleted */
+            }
           }
           await updateQueueLocked(dir, (queue) =>
             queue.filter(
@@ -5972,11 +6095,14 @@ async function runQueuedAssignment(input: {
 
         let fixResult;
         if (decision.decision === 'fix-self') {
+          const recoveryFixPromptSnapshot = await readCurrentPromptSnapshot();
+          latestReplyContextUserAt =
+            recoveryFixPromptSnapshot.latestUserMessageAt;
           fixResult = await runTurn({
             prompt: buildManagerRecoveryFixPrompt({
               instructions: decision.instructions ?? recoveryErrorContext,
-              thread: promptThread,
-              currentUserRequest: promptContent,
+              thread: recoveryFixPromptSnapshot.thread,
+              currentUserRequest: recoveryFixPromptSnapshot.promptContent,
               resolvedDir,
               workingDirectory: assignment.workingDirectory,
               worktreePath: assignment.worktreePath,
@@ -5993,11 +6119,13 @@ async function runQueuedAssignment(input: {
             preserveWorkerSessionId: true,
           });
         } else {
+          const retryPromptSnapshot = await readCurrentPromptSnapshot();
+          latestReplyContextUserAt = retryPromptSnapshot.latestUserMessageAt;
           const runRetryWorkerTurn = (sessionId: string | null) =>
             runTurn({
               prompt: buildWorkerRetryPrompt({
                 instructions: decision.instructions ?? recoveryErrorContext,
-                thread: promptThread,
+                thread: retryPromptSnapshot.thread,
                 resolvedDir,
                 workingDirectory: assignment.workingDirectory,
                 worktreePath: assignment.worktreePath,
@@ -6079,10 +6207,12 @@ async function runQueuedAssignment(input: {
           workerRepoRoot,
           fixWorkerResult.changedFiles
         );
+        const reReviewPromptSnapshot = await readCurrentPromptSnapshot();
+        latestReplyContextUserAt = reReviewPromptSnapshot.latestUserMessageAt;
         const reReviewResult = await runTurn({
           prompt: buildManagerReviewPrompt({
-            thread: promptThread,
-            currentUserRequest: promptContent,
+            thread: reReviewPromptSnapshot.thread,
+            currentUserRequest: reReviewPromptSnapshot.promptContent,
             workerResult: fixWorkerResult,
             resolvedDir,
             workingDirectory: assignment.workingDirectory,
@@ -6170,12 +6300,14 @@ async function runQueuedAssignment(input: {
         );
       }
       const exhaustedMsg = `[Manager] ${MAX_RECOVERY_ATTEMPTS} 回の自動回復試行で解決できませんでした。ユーザーの確認が必要です。\n\n最終エラー:\n${recoveryErrorContext}`;
-      await addAiMessageOrPersistPending({
-        dir: resolvedDir,
-        threadId: thread.id,
-        content: exhaustedMsg,
-        status: 'needs-reply',
-      });
+      if (!(await currentReplyWasSuperseded())) {
+        await addAiMessageOrPersistPending({
+          dir: resolvedDir,
+          threadId: thread.id,
+          content: exhaustedMsg,
+          status: 'needs-reply',
+        });
+      }
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
@@ -6339,12 +6471,16 @@ async function runQueuedAssignment(input: {
                   runtimeDetail: 'rebase コンフリクト解消中…',
                   workerWriteScopes: assignment.writeScopes,
                 });
+                const conflictPromptSnapshot =
+                  await readCurrentPromptSnapshot();
+                latestReplyContextUserAt =
+                  conflictPromptSnapshot.latestUserMessageAt;
                 const conflictResolution =
                   await resolveRebaseConflictAndContinue({
                     dir,
                     taskWorktreePath: assignment.worktreePath,
-                    thread,
-                    currentUserRequest: promptContent,
+                    thread: conflictPromptSnapshot.thread,
+                    currentUserRequest: conflictPromptSnapshot.promptContent,
                     managedVerifyCommand:
                       threadMeta?.managedVerifyCommand ?? null,
                   });
@@ -6387,12 +6523,14 @@ async function runQueuedAssignment(input: {
                 assignment
               );
               const errMsg = `[Manager] deliver と push は完了しましたが、release / publish の完了前に停止しました: ${releaseResult.detail}`;
-              await addAiMessageOrPersistPending({
-                dir: resolvedDir,
-                threadId: thread.id,
-                content: errMsg,
-                status: 'needs-reply',
-              });
+              if (!(await currentReplyWasSuperseded())) {
+                await addAiMessageOrPersistPending({
+                  dir: resolvedDir,
+                  threadId: thread.id,
+                  content: errMsg,
+                  status: 'needs-reply',
+                });
+              }
               await updateQueueLocked(dir, (queue) =>
                 queue.filter(
                   (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -6458,12 +6596,14 @@ async function runQueuedAssignment(input: {
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
-      await addAiMessageOrPersistPending({
-        dir: resolvedDir,
-        threadId: thread.id,
-        content: currentParsedReply?.reply ?? currentFallbackReply ?? '',
-        status: currentParsedReply?.status ?? MANAGER_REPLY_STATUS,
-      });
+      if (!(await currentReplyWasSuperseded())) {
+        await addAiMessageOrPersistPending({
+          dir: resolvedDir,
+          threadId: thread.id,
+          content: currentParsedReply?.reply ?? currentFallbackReply ?? '',
+          status: currentParsedReply?.status ?? MANAGER_REPLY_STATUS,
+        });
+      }
       if (assignment.assigneeKind === 'manager') {
         workerSessionId = nextWorkerSessionId;
         await writeWorkerSessionId(
@@ -6917,16 +7057,33 @@ export async function processNextQueued(
         threadMeta?.requestedRunMode ??
         null;
       if (isImmediateManagerDispatchReply(dispatch)) {
-        try {
-          await addMessage(
-            resolvedDir,
-            next.threadId,
-            dispatch.reply,
-            'ai',
-            dispatch.status
-          );
-        } catch {
-          /* thread may have been deleted */
+        const latestDispatchPromptSnapshot =
+          await readLatestThreadPromptSnapshot({
+            dir: resolvedDir,
+            threadId: next.threadId,
+            fallbackThread: thread,
+            fallbackPromptContent: mergeQueuedEntryContent(nextEntries),
+            fallbackPromptAt: latestTimestampValue(
+              nextEntries.map((entry) => entry.createdAt)
+            ),
+          });
+        if (
+          !hasUserMessageAfter(
+            latestDispatchPromptSnapshot.thread,
+            lastUserMessage(thread)?.at ?? null
+          )
+        ) {
+          try {
+            await addMessage(
+              resolvedDir,
+              next.threadId,
+              dispatch.reply,
+              'ai',
+              dispatch.status
+            );
+          } catch {
+            /* thread may have been deleted */
+          }
         }
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))

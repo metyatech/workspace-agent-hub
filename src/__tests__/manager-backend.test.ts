@@ -417,13 +417,13 @@ beforeEach(async () => {
     id: threadId,
     title: `Thread ${threadId}`,
     status: 'active',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: '2026-04-14T00:00:00.000Z',
+    updatedAt: '2026-04-14T00:00:00.000Z',
     messages: [
       {
         sender: 'user',
         content: `Existing context for ${threadId}`,
-        at: new Date().toISOString(),
+        at: '2026-04-14T00:00:00.000Z',
       },
     ],
   }));
@@ -2762,29 +2762,32 @@ describe('manager backend codex integration', () => {
     const workerProc = makeProc(6151);
     const reviewProc = makeProc(6152);
     spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    const firstAt = '2026-04-14T00:00:01.000Z';
+    const secondAt = '2026-04-14T00:00:02.000Z';
+    const thirdAt = '2026-04-14T00:00:03.000Z';
 
     getThreadMock.mockImplementation(
       async (_dir: string, threadId: string) => ({
         id: threadId,
         title: `Thread ${threadId}`,
         status: 'active',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: firstAt,
+        updatedAt: thirdAt,
         messages: [
           {
             sender: 'user',
             content: `Existing context for ${threadId}`,
-            at: new Date().toISOString(),
+            at: firstAt,
           },
           {
             sender: 'user',
             content: 'first pending message',
-            at: new Date().toISOString(),
+            at: secondAt,
           },
           {
             sender: 'user',
             content: 'second pending message',
-            at: new Date().toISOString(),
+            at: thirdAt,
           },
         ],
       })
@@ -4168,6 +4171,223 @@ describe('manager backend codex integration', () => {
       const session = await readSession(tempDir);
       return queue.length === 0 && session.status === 'idle';
     });
+  });
+
+  it('refreshes the manager review prompt with the latest same-topic user follow-up that arrived while the worker was running', async () => {
+    const workerProc = makeProc(7211);
+    const reviewProc = makeProc(7212);
+    queueSpawnResults(workerProc, reviewProc);
+    const initialAt = new Date(Date.now() - 2000).toISOString();
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-review-refresh',
+        title: 'Review refresh thread',
+        status: 'active',
+        createdAt: initialAt,
+        updatedAt: initialAt,
+        messages: [
+          {
+            sender: 'user',
+            content: '最初の依頼です',
+            at: initialAt,
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      return thread ? JSON.parse(JSON.stringify(thread)) : null;
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-review-refresh',
+      '最初の依頼です',
+      {
+        dispatchMode: 'direct-worker',
+        requestedRunMode: 'write',
+        writeScopes: ['src/manager-backend.ts'],
+        targetRepoRoot: tempDir,
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    const followUpAt = new Date(Date.now() + 60000).toISOString();
+    threads[0]!.messages.push({
+      sender: 'user',
+      content: '途中で追加した最新質問です',
+      at: followUpAt,
+    });
+    threads[0]!.updatedAt = followUpAt;
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-review-refresh',
+      text: JSON.stringify({
+        status: 'review',
+        reply: 'worker done',
+        changedFiles: ['src/manager-backend.ts'],
+        verificationSummary: 'npm run verify PASS',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(reviewProc.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('途中で追加した最新質問です')
+    );
+
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-refresh',
+      text: '{"status":"review","reply":"最新質問に答えます"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+  });
+
+  it('suppresses a stale review reply when a newer same-topic user message arrives after review starts', async () => {
+    const firstWorkerProc = makeProc(7213);
+    const firstReviewProc = makeProc(7214);
+    const secondWorkerProc = makeProc(7215);
+    const secondReviewProc = makeProc(7216);
+    queueSpawnResults(
+      firstWorkerProc,
+      firstReviewProc,
+      secondWorkerProc,
+      secondReviewProc
+    );
+    const initialAt = new Date(Date.now() - 2000).toISOString();
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-stale-review-reply',
+        title: 'Stale review reply thread',
+        status: 'active',
+        createdAt: initialAt,
+        updatedAt: initialAt,
+        messages: [
+          {
+            sender: 'user',
+            content: '最初の依頼です',
+            at: initialAt,
+          },
+        ],
+      },
+    ];
+    const appendUserMessage = (content: string, at: string) => {
+      threads[0]!.messages.push({
+        sender: 'user',
+        content,
+        at,
+      });
+      threads[0]!.updatedAt = at;
+    };
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      return thread ? JSON.parse(JSON.stringify(thread)) : null;
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-stale-review-reply',
+      '最初の依頼です',
+      {
+        dispatchMode: 'direct-worker',
+        requestedRunMode: 'write',
+        writeScopes: ['src/manager-backend.ts'],
+        targetRepoRoot: tempDir,
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(firstWorkerProc, {
+      sessionId: 'codex-thread-stale-review',
+      text: JSON.stringify({
+        status: 'review',
+        reply: 'worker done',
+        changedFiles: ['src/manager-backend.ts'],
+        verificationSummary: 'npm run verify PASS',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+
+    const followUpAt = new Date(Date.now() + 60000).toISOString();
+    appendUserMessage(
+      'あと、今の結果はどのデータで渡されていますか？',
+      followUpAt
+    );
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-stale-review-reply',
+      'あと、今の結果はどのデータで渡されていますか？',
+      {
+        dispatchMode: 'direct-worker',
+        requestedRunMode: 'write',
+        writeScopes: ['src/manager-backend.ts'],
+        targetRepoRoot: tempDir,
+      }
+    );
+
+    completeCodexTurn(firstReviewProc, {
+      sessionId: 'manager-review-stale-review',
+      text: '{"status":"review","reply":"古いレビュー結果"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    expect(addMessageMock.mock.calls.map((call) => call[2])).not.toContain(
+      '古いレビュー結果'
+    );
+
+    completeCodexTurn(secondWorkerProc, {
+      sessionId: 'codex-thread-stale-review-follow-up',
+      text: JSON.stringify({
+        status: 'review',
+        reply: 'follow-up worker done',
+        changedFiles: ['src/manager-backend.ts'],
+        verificationSummary: 'npm run verify PASS',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    completeCodexTurn(secondReviewProc, {
+      sessionId: 'manager-review-stale-review-follow-up',
+      text: '{"status":"review","reply":"最新質問への回答です"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    expect(addMessageMock.mock.calls.map((call) => call[2])).toContain(
+      '最新質問への回答です'
+    );
+    expect(addMessageMock.mock.calls.map((call) => call[2])).not.toContain(
+      '古いレビュー結果'
+    );
   });
 
   it('retries once with a fresh worker session after an invalid resume failure', async () => {
