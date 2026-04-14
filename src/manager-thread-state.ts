@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
-import type { Thread } from '@metyatech/thread-inbox';
+import type { Thread, ThreadStatus } from '@metyatech/thread-inbox';
 import type { QueueEntry, ManagerSession } from './manager-backend.js';
 import { writeFileAtomically } from './atomic-file.js';
 import {
@@ -44,6 +44,8 @@ export interface ManagerWorkerLiveEntry {
 
 export interface ManagerThreadMeta {
   managerOwned?: boolean;
+  canonicalState?: ManagerUiState | null;
+  canonicalStateReason?: string | null;
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
   derivedFromThreadIds?: string[] | null;
@@ -82,12 +84,22 @@ export interface ManagerThreadMeta {
   seedRecoveryRepoRoot?: string | null;
   seedRecoveryRepoLabel?: string | null;
   seedRecoveryChangedFiles?: string[] | null;
+  pendingReplyStatus?: Extract<
+    ThreadStatus,
+    'active' | 'review' | 'needs-reply'
+  > | null;
+  pendingReplyContent?: string | null;
+  pendingReplyAt?: string | null;
+  strandedAutoResumeCount?: number;
+  strandedAutoResumeLastUserAt?: string | null;
+  strandedAutoResumeLastAttemptAt?: string | null;
   consecutiveFailures?: number;
   nextRetryAfter?: string | null;
 }
 
 export interface ManagerThreadView extends Thread {
   uiState: ManagerUiState;
+  canonicalStateReason: string | null;
   previewText: string;
   lastSender: 'ai' | 'user' | null;
   hiddenByDefault: boolean;
@@ -124,6 +136,9 @@ export interface ManagerThreadView extends Thread {
   seedRecoveryRepoRoot: string | null;
   seedRecoveryRepoLabel: string | null;
   seedRecoveryChangedFiles: string[];
+  pendingReplyAt: string | null;
+  strandedAutoResumeCount: number;
+  strandedAutoResumeLastAttemptAt: string | null;
 }
 
 type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
@@ -201,6 +216,7 @@ export async function writeManagerThreadMeta(
 
 export async function reconcileManagerThreadMeta(input: {
   dir: string;
+  threads: Thread[];
   session: ManagerSession;
   queue: QueueEntry[];
   meta?: ManagerThreadMetaMap;
@@ -216,27 +232,78 @@ export async function reconcileManagerThreadMeta(input: {
       .filter((entry) => !entry.processed)
       .map((entry) => entry.threadId)
   );
+  const pendingQueueDepth = new Map<string, number>();
+  for (const entry of input.queue) {
+    if (entry.processed) {
+      continue;
+    }
+    pendingQueueDepth.set(
+      entry.threadId,
+      (pendingQueueDepth.get(entry.threadId) ?? 0) + 1
+    );
+  }
 
+  const next: ManagerThreadMetaMap = {};
+  const seenThreadIds = new Set<string>();
   let changed = false;
-  const nextEntries = Object.entries(current).flatMap(([threadId, meta]) => {
-    if (
-      activeThreadIds.has(threadId) ||
-      pendingThreadIds.has(threadId) ||
-      !hasManagerRuntimeFootprint(meta)
-    ) {
-      return [[threadId, meta] as const];
+
+  for (const thread of input.threads) {
+    seenThreadIds.add(thread.id);
+    const currentMeta = current[thread.id] ?? null;
+    const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
+    const isWorking = activeThreadIds.has(thread.id);
+    const managerOwned =
+      queueDepth > 0 || isWorking || managerThreadMetaHasContent(currentMeta);
+    if (!managerOwned) {
+      continue;
     }
 
-    changed = true;
-    const cleaned = stripManagerRuntimeStatePreservingContinuity(meta);
-    return cleaned ? [[threadId, cleaned] as const] : [];
-  });
+    const cleanedMeta =
+      isWorking ||
+      pendingThreadIds.has(thread.id) ||
+      !hasManagerRuntimeFootprint(currentMeta)
+        ? currentMeta
+        : stripManagerRuntimeStatePreservingContinuity(currentMeta);
+    const canonical = deriveCanonicalStateInfo({
+      thread,
+      meta: cleanedMeta,
+      queueDepth,
+      isWorking,
+    });
+    const nextMeta: ManagerThreadMeta = {
+      ...(cleanedMeta ?? {}),
+      canonicalState: canonical.uiState,
+      canonicalStateReason: canonical.reason,
+    };
+    next[thread.id] = nextMeta;
 
-  if (!changed) {
+    if (JSON.stringify(nextMeta) !== JSON.stringify(currentMeta ?? {})) {
+      changed = true;
+    }
+  }
+
+  for (const [threadId, meta] of Object.entries(current)) {
+    if (seenThreadIds.has(threadId)) {
+      continue;
+    }
+    const cleaned = clearCanonicalThreadState(
+      stripManagerRuntimeStatePreservingContinuity(meta) ?? meta
+    );
+    if (managerThreadMetaHasContent(cleaned)) {
+      next[threadId] = cleaned;
+    }
+    if (
+      JSON.stringify(cleaned) !== JSON.stringify(meta) ||
+      !managerThreadMetaHasContent(cleaned)
+    ) {
+      changed = true;
+    }
+  }
+
+  if (!changed && Object.keys(next).length === Object.keys(current).length) {
     return current;
   }
 
-  const next = Object.fromEntries(nextEntries);
   await writeManagerThreadMeta(input.dir, next);
   return next;
 }
@@ -270,6 +337,16 @@ export async function clearManagerThreadMeta(
 function lastSender(thread: Thread): 'ai' | 'user' | null {
   const lastMessage = thread.messages.at(-1);
   return lastMessage?.sender ?? null;
+}
+
+function lastUserMessage(thread: Thread): Thread['messages'][number] | null {
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index];
+    if (message?.sender === 'user') {
+      return message;
+    }
+  }
+  return null;
 }
 
 function previewText(thread: Thread): string {
@@ -332,6 +409,27 @@ function normalizeRequestedWorkerRuntime(
 
 function normalizeRequestedRunMode(value: unknown): ManagerRunMode | null {
   return value === 'read-only' || value === 'write' ? value : null;
+}
+
+function normalizeCanonicalUiState(value: unknown): ManagerUiState | null {
+  return value === 'routing-confirmation-needed' ||
+    value === 'user-reply-needed' ||
+    value === 'stalled' ||
+    value === 'ai-finished-awaiting-user-confirmation' ||
+    value === 'queued' ||
+    value === 'ai-working' ||
+    value === 'cancelled-as-superseded' ||
+    value === 'done'
+    ? value
+    : null;
+}
+
+function normalizePendingReplyStatus(
+  value: unknown
+): Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'> | null {
+  return value === 'active' || value === 'review' || value === 'needs-reply'
+    ? value
+    : null;
 }
 
 function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
@@ -407,6 +505,91 @@ function hasManagerRuntimeFootprint(meta: ManagerThreadMeta | null): boolean {
   ].some((value) => managerMetaValueHasContent(value));
 }
 
+function clearCanonicalThreadState(meta: ManagerThreadMeta): ManagerThreadMeta {
+  const next = { ...meta };
+  delete next.canonicalState;
+  delete next.canonicalStateReason;
+  return next;
+}
+
+function staleReason(input: {
+  thread: Thread;
+  meta: ManagerThreadMeta | null;
+}): string {
+  if (
+    typeof input.meta?.pendingReplyContent === 'string' &&
+    input.meta.pendingReplyContent.trim() &&
+    normalizePendingReplyStatus(input.meta.pendingReplyStatus)
+  ) {
+    return 'AI の返答は準備できていますが、thread への保存に失敗したため自動回復を待っています。';
+  }
+
+  const lastUser = lastUserMessage(input.thread);
+  const autoResumedForCurrentTurn =
+    Boolean(lastUser?.at) &&
+    input.meta?.strandedAutoResumeLastUserAt === lastUser?.at &&
+    (input.meta?.strandedAutoResumeCount ?? 0) > 0;
+  if (autoResumedForCurrentTurn) {
+    return '前回の user 依頼を自動で再開しましたが、まだ正常状態へ戻っていません。必要なら内容を確認して再送してください。';
+  }
+
+  return 'Manager が処理すべき user 依頼でしたが、現在はキューにも実行中にも存在しない取り残し状態です。';
+}
+
+function deriveCanonicalStateInfo(input: {
+  thread: Thread;
+  meta: ManagerThreadMeta | null;
+  queueDepth: number;
+  isWorking: boolean;
+}): {
+  uiState: ManagerUiState;
+  reason: string | null;
+} {
+  let uiState: ManagerUiState;
+
+  if (input.thread.status === 'resolved') {
+    uiState = 'done';
+  } else if (input.meta?.routingConfirmationNeeded) {
+    uiState = 'routing-confirmation-needed';
+  } else if (input.meta?.workerRuntimeState === 'cancelled-as-superseded') {
+    uiState = 'cancelled-as-superseded';
+  } else if (input.isWorking) {
+    uiState = 'ai-working';
+  } else if (input.queueDepth > 0) {
+    uiState = 'queued';
+  } else if (input.thread.status === 'needs-reply') {
+    uiState = 'user-reply-needed';
+  } else if (input.thread.status === 'review') {
+    uiState = 'ai-finished-awaiting-user-confirmation';
+  } else if (input.thread.status === 'waiting') {
+    if (
+      input.queueDepth > 0 ||
+      input.isWorking ||
+      hasManagerRuntimeFootprint(input.meta)
+    ) {
+      uiState = 'queued';
+    } else if (lastSender(input.thread) === 'ai') {
+      uiState = 'ai-finished-awaiting-user-confirmation';
+    } else {
+      uiState = 'stalled';
+    }
+  } else if (input.thread.status === 'active') {
+    uiState =
+      lastSender(input.thread) === 'ai'
+        ? 'ai-finished-awaiting-user-confirmation'
+        : 'queued';
+  } else if (lastSender(input.thread) === 'ai') {
+    uiState = 'ai-finished-awaiting-user-confirmation';
+  } else {
+    uiState = 'queued';
+  }
+
+  return {
+    uiState,
+    reason: uiState === 'stalled' ? staleReason(input) : null,
+  };
+}
+
 export function stripManagerRuntimeStatePreservingContinuity(
   meta: ManagerThreadMeta | null
 ): ManagerThreadMeta | null {
@@ -467,59 +650,11 @@ function deriveUiState(input: {
   queueDepth: number;
   isWorking: boolean;
 }): ManagerUiState {
-  if (input.thread.status === 'resolved') {
-    return 'done';
+  const canonical = normalizeCanonicalUiState(input.meta?.canonicalState);
+  if (canonical) {
+    return canonical;
   }
-
-  if (input.meta?.routingConfirmationNeeded) {
-    return 'routing-confirmation-needed';
-  }
-
-  if (input.meta?.workerRuntimeState === 'cancelled-as-superseded') {
-    return 'cancelled-as-superseded';
-  }
-
-  if (input.isWorking) {
-    return 'ai-working';
-  }
-
-  if (input.queueDepth > 0) {
-    return 'queued';
-  }
-
-  if (input.thread.status === 'needs-reply') {
-    return 'user-reply-needed';
-  }
-
-  if (input.thread.status === 'review') {
-    return 'ai-finished-awaiting-user-confirmation';
-  }
-
-  if (input.thread.status === 'waiting') {
-    if (
-      input.queueDepth > 0 ||
-      input.isWorking ||
-      hasManagerRuntimeFootprint(input.meta)
-    ) {
-      return 'queued';
-    }
-    if (lastSender(input.thread) === 'ai') {
-      return 'ai-finished-awaiting-user-confirmation';
-    }
-    return 'stalled';
-  }
-
-  if (input.thread.status === 'active') {
-    return lastSender(input.thread) === 'ai'
-      ? 'ai-finished-awaiting-user-confirmation'
-      : 'queued';
-  }
-
-  if (lastSender(input.thread) === 'ai') {
-    return 'ai-finished-awaiting-user-confirmation';
-  }
-
-  return 'queued';
+  return deriveCanonicalStateInfo(input).uiState;
 }
 
 function compareByPriority(
@@ -634,6 +769,10 @@ export function deriveManagerThreadViews(input: {
       {
         ...thread,
         uiState,
+        canonicalStateReason:
+          typeof meta?.canonicalStateReason === 'string'
+            ? meta.canonicalStateReason.trim() || null
+            : null,
         previewText: previewText(thread),
         lastSender: lastSender(thread),
         hiddenByDefault: uiState === 'done',
@@ -699,6 +838,19 @@ export function deriveManagerThreadViews(input: {
         seedRecoveryChangedFiles: normalizeDerivedFromThreadIds(
           meta?.seedRecoveryChangedFiles
         ),
+        pendingReplyAt:
+          typeof meta?.pendingReplyAt === 'string'
+            ? meta.pendingReplyAt.trim() || null
+            : null,
+        strandedAutoResumeCount:
+          typeof meta?.strandedAutoResumeCount === 'number' &&
+          Number.isFinite(meta.strandedAutoResumeCount)
+            ? meta.strandedAutoResumeCount
+            : 0,
+        strandedAutoResumeLastAttemptAt:
+          typeof meta?.strandedAutoResumeLastAttemptAt === 'string'
+            ? meta.strandedAutoResumeLastAttemptAt.trim() || null
+            : null,
       } satisfies ManagerThreadView,
     ];
   });

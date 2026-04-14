@@ -459,6 +459,11 @@ Important behavior:
   first, while AI-only buckets default to newest-first. In `AI の順番待ち`,
   that toggle changes only the visible display order; the actual dispatch queue
   still follows the backend priority/FIFO rules.
+- If a Manager-owned topic loses its queue/runtime linkage, the UI no longer
+  mislabels it as `AI の順番待ち`. Manager now records a canonical stranded
+  state for that topic, shows it in the separate attention-needed lane, replays
+  any already-produced AI reply that failed to persist back to `thread-inbox`,
+  and safely auto-requeues a dropped user-last waiting topic once.
 - Opening a work item now moves into a dedicated conversation screen with the
   message history in chat order and the newest message at the bottom, scrolls
   that conversation to the latest message when the work item opens, and lets the

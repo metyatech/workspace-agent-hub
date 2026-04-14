@@ -48,6 +48,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  reconcileManagerThreadMeta,
   stripManagerRuntimeStatePreservingContinuity,
   type ManagerThreadMeta,
   type ManagerWorkerLiveEntry,
@@ -4100,6 +4101,190 @@ function buildPausedWorktreeResumeBlockedMessage(input: {
     .join('\n');
 }
 
+function clearPendingReplyStateFromMeta(
+  meta: ManagerThreadMeta
+): ManagerThreadMeta {
+  const next = { ...meta };
+  delete next.pendingReplyStatus;
+  delete next.pendingReplyContent;
+  delete next.pendingReplyAt;
+  return next;
+}
+
+function lastUserMessage(thread: Thread): Thread['messages'][number] | null {
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    const message = thread.messages[index];
+    if (message?.sender === 'user') {
+      return message;
+    }
+  }
+  return null;
+}
+
+async function addAiMessageOrPersistPending(input: {
+  dir: string;
+  threadId: string;
+  content: string;
+  status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
+}): Promise<boolean> {
+  try {
+    await addMessage(
+      input.dir,
+      input.threadId,
+      input.content,
+      'ai',
+      input.status
+    );
+    await updateManagerThreadMeta(input.dir, input.threadId, (current) =>
+      current ? clearPendingReplyStateFromMeta(current) : current
+    );
+    return true;
+  } catch {
+    await updateManagerThreadMeta(input.dir, input.threadId, (current) => ({
+      ...(current ?? {}),
+      pendingReplyStatus: input.status,
+      pendingReplyContent: input.content,
+      pendingReplyAt: new Date().toISOString(),
+    }));
+    return false;
+  }
+}
+
+async function enqueueThreadRecoveryReplay(input: {
+  dir: string;
+  thread: Thread;
+}): Promise<boolean> {
+  const resolvedDir = resolvePath(input.dir);
+  const lastUser = lastUserMessage(input.thread);
+  if (!lastUser?.content?.trim()) {
+    return false;
+  }
+
+  let shouldEnqueue = false;
+  await clearThreadRoutingStatePreservingContinuity(
+    resolvedDir,
+    input.thread.id
+  );
+  await updateManagerThreadMeta(resolvedDir, input.thread.id, (current) => {
+    const previousAttemptCount =
+      current?.strandedAutoResumeLastUserAt === lastUser.at
+        ? (current?.strandedAutoResumeCount ?? 0)
+        : 0;
+    shouldEnqueue = previousAttemptCount === 0;
+    return {
+      ...(current ?? {}),
+      strandedAutoResumeCount: previousAttemptCount + 1,
+      strandedAutoResumeLastUserAt: lastUser.at,
+      strandedAutoResumeLastAttemptAt: new Date().toISOString(),
+    };
+  });
+  if (!shouldEnqueue) {
+    return false;
+  }
+
+  await enqueueMessage(resolvedDir, input.thread.id, lastUser.content, {
+    dispatchMode: 'manager-evaluate',
+    requestedRunMode: inferRequestedRunModeFromContent(lastUser.content),
+  });
+  return true;
+}
+
+async function recoverCanonicalThreadState(dir: string): Promise<{
+  replayedReply: boolean;
+  requeuedThread: boolean;
+}> {
+  const resolvedDir = resolvePath(dir);
+  const [threads, session, queue, rawMeta] = await Promise.all([
+    listThreads(resolvedDir),
+    readSession(resolvedDir),
+    readQueue(resolvedDir),
+    readManagerThreadMeta(resolvedDir),
+  ]);
+  const meta = await reconcileManagerThreadMeta({
+    dir: resolvedDir,
+    threads,
+    session,
+    queue,
+    meta: rawMeta,
+  });
+
+  let replayedReply = false;
+  let requeuedThread = false;
+  const activeThreadIds = new Set(
+    (session.activeAssignments ?? []).map((assignment) => assignment.threadId)
+  );
+  const pendingQueueDepth = new Map<string, number>();
+  for (const entry of queue) {
+    if (entry.processed) {
+      continue;
+    }
+    pendingQueueDepth.set(
+      entry.threadId,
+      (pendingQueueDepth.get(entry.threadId) ?? 0) + 1
+    );
+  }
+
+  for (const thread of threads) {
+    const threadMeta = meta[thread.id] ?? null;
+    if (threadMeta?.canonicalState !== 'stalled') {
+      continue;
+    }
+
+    if (
+      typeof threadMeta.pendingReplyContent === 'string' &&
+      threadMeta.pendingReplyContent.trim() &&
+      (threadMeta.pendingReplyStatus === 'active' ||
+        threadMeta.pendingReplyStatus === 'review' ||
+        threadMeta.pendingReplyStatus === 'needs-reply')
+    ) {
+      const delivered = await addAiMessageOrPersistPending({
+        dir: resolvedDir,
+        threadId: thread.id,
+        content: threadMeta.pendingReplyContent,
+        status: threadMeta.pendingReplyStatus,
+      });
+      replayedReply = replayedReply || delivered;
+      continue;
+    }
+
+    const queueDepth = pendingQueueDepth.get(thread.id) ?? 0;
+    const isWorking = activeThreadIds.has(thread.id);
+    const lastUser = lastUserMessage(thread);
+    const autoResumeAlreadyAttempted =
+      Boolean(lastUser?.at) &&
+      threadMeta?.strandedAutoResumeLastUserAt === lastUser?.at &&
+      (threadMeta?.strandedAutoResumeCount ?? 0) > 0;
+
+    if (
+      thread.status === 'waiting' &&
+      thread.messages.at(-1)?.sender === 'user' &&
+      queueDepth === 0 &&
+      !isWorking &&
+      !threadMeta?.routingConfirmationNeeded &&
+      !threadMeta?.seedRecoveryPending &&
+      !autoResumeAlreadyAttempted
+    ) {
+      const enqueued = await enqueueThreadRecoveryReplay({
+        dir: resolvedDir,
+        thread,
+      });
+      requeuedThread = requeuedThread || enqueued;
+    }
+  }
+
+  if (replayedReply || requeuedThread) {
+    await reconcileManagerThreadMeta({
+      dir: resolvedDir,
+      threads: await listThreads(resolvedDir),
+      session: await readSession(resolvedDir),
+      queue: await readQueue(resolvedDir),
+      meta: await readManagerThreadMeta(resolvedDir),
+    });
+  }
+
+  return { replayedReply, requeuedThread };
+}
+
 export async function preserveSeedRecoveryAndContinue(input: {
   dir: string;
   threadId: string;
@@ -5887,17 +6072,12 @@ async function runQueuedAssignment(input: {
         );
       }
       const exhaustedMsg = `[Manager] ${MAX_RECOVERY_ATTEMPTS} 回の自動回復試行で解決できませんでした。ユーザーの確認が必要です。\n\n最終エラー:\n${recoveryErrorContext}`;
-      try {
-        await addMessage(
-          resolvedDir,
-          thread.id,
-          exhaustedMsg,
-          'ai',
-          'needs-reply'
-        );
-      } catch {
-        /* thread may have been deleted */
-      }
+      await addAiMessageOrPersistPending({
+        dir: resolvedDir,
+        threadId: thread.id,
+        content: exhaustedMsg,
+        status: 'needs-reply',
+      });
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
@@ -5924,6 +6104,7 @@ async function runQueuedAssignment(input: {
           context: `Exhausted recovery cleanup for ${assignment.id}`,
         });
       }
+      void recoverCanonicalThreadState(dir).catch(() => {});
       void processNextQueued(dir, resolvedDir);
       return false;
     };
@@ -6108,17 +6289,12 @@ async function runQueuedAssignment(input: {
                 assignment
               );
               const errMsg = `[Manager] deliver と push は完了しましたが、release / publish の完了前に停止しました: ${releaseResult.detail}`;
-              try {
-                await addMessage(
-                  resolvedDir,
-                  thread.id,
-                  errMsg,
-                  'ai',
-                  'needs-reply'
-                );
-              } catch {
-                /* thread may have been deleted */
-              }
+              await addAiMessageOrPersistPending({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: errMsg,
+                status: 'needs-reply',
+              });
               await updateQueueLocked(dir, (queue) =>
                 queue.filter(
                   (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -6139,6 +6315,7 @@ async function runQueuedAssignment(input: {
                 }
               );
               await removeAssignment(dir, assignment.id);
+              void recoverCanonicalThreadState(dir).catch(() => {});
               void processNextQueued(dir, resolvedDir);
               return;
             }
@@ -6183,17 +6360,12 @@ async function runQueuedAssignment(input: {
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
-      try {
-        await addMessage(
-          resolvedDir,
-          thread.id,
-          currentParsedReply?.reply ?? currentFallbackReply ?? '',
-          'ai',
-          currentParsedReply?.status ?? MANAGER_REPLY_STATUS
-        );
-      } catch {
-        /* thread may have been deleted */
-      }
+      await addAiMessageOrPersistPending({
+        dir: resolvedDir,
+        threadId: thread.id,
+        content: currentParsedReply?.reply ?? currentFallbackReply ?? '',
+        status: currentParsedReply?.status ?? MANAGER_REPLY_STATUS,
+      });
       if (assignment.assigneeKind === 'manager') {
         workerSessionId = nextWorkerSessionId;
         await writeWorkerSessionId(
@@ -6221,6 +6393,7 @@ async function runQueuedAssignment(input: {
       );
       await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
       await removeAssignment(dir, assignment.id);
+      void recoverCanonicalThreadState(dir).catch(() => {});
       void processNextQueued(dir, resolvedDir);
       return;
     }
@@ -6238,11 +6411,12 @@ async function runQueuedAssignment(input: {
               stderr: finalResult.stderr,
             }
           )}`;
-    try {
-      await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
-    } catch {
-      /* thread may have been deleted */
-    }
+    await addAiMessageOrPersistPending({
+      dir: resolvedDir,
+      threadId: thread.id,
+      content: errMsg,
+      status: 'needs-reply',
+    });
     await setManagerRuntimeError(dir, errMsg);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
@@ -6279,6 +6453,7 @@ async function runQueuedAssignment(input: {
       branchName: assignment.worktreeBranch,
       context: `Failed turn cleanup for ${assignment.id}`,
     });
+    void recoverCanonicalThreadState(dir).catch(() => {});
     void processNextQueued(dir, resolvedDir);
   } catch (error) {
     const stillTracked = (await readSession(dir)).activeAssignments.some(
@@ -6314,11 +6489,12 @@ async function runQueuedAssignment(input: {
       (error as NodeJS.ErrnoException).code === 'ENOENT'
         ? `[Manager error] ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'} CLI not found in PATH. Install the required runtime CLI to use the built-in manager backend.`
         : `[Manager error] Failed to start ${assignment.assigneeKind === 'worker' ? assignment.assigneeLabel : 'Manager Codex'}: ${error instanceof Error ? error.message : String(error)}`;
-    try {
-      await addMessage(resolvedDir, thread.id, errMsg, 'ai', 'needs-reply');
-    } catch {
-      /* thread may have been deleted */
-    }
+    await addAiMessageOrPersistPending({
+      dir: resolvedDir,
+      threadId: thread.id,
+      content: errMsg,
+      status: 'needs-reply',
+    });
     await setManagerRuntimeError(dir, errMsg);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
@@ -6345,6 +6521,7 @@ async function runQueuedAssignment(input: {
       branchName: assignment.worktreeBranch,
       context: `Unhandled runQueuedAssignment failure cleanup for ${assignment.id}`,
     });
+    void recoverCanonicalThreadState(dir).catch(() => {});
     void processNextQueued(dir, resolvedDir);
   }
 }
@@ -7723,6 +7900,7 @@ export async function sendThreadFollowUpToBuiltinManager(
  */
 export async function eagerReconcile(dir: string): Promise<void> {
   await reconcileActiveAssignments(dir);
+  await recoverCanonicalThreadState(dir);
   await processNextQueued(dir, resolvePath(dir));
 }
 
@@ -7890,6 +8068,7 @@ export async function startBuiltinManager(
     }));
   }
   await clearManagerRuntimePause(dir);
+  await recoverCanonicalThreadState(dir);
   void processNextQueued(dir, resolvePath(dir));
   return { started: true, detail: 'ビルトインマネージャーを起動しました' };
 }

@@ -5021,5 +5021,188 @@ describe('manager backend codex integration', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(addMessageMock).toHaveBeenCalledTimes(1);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-write-fail']?.pendingReplyStatus).toBe('review');
+    expect(meta['thread-write-fail']?.pendingReplyContent).toContain(
+      'reply that cannot be stored'
+    );
+    expect(meta['thread-write-fail']?.pendingReplyAt).toEqual(
+      expect.any(String)
+    );
+  });
+
+  it('replays a persisted pending AI reply on startup and clears the recovery marker', async () => {
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-pending-recovery',
+        title: '保存失敗した reply',
+        status: 'waiting',
+        createdAt: '2026-04-14T00:00:00.000Z',
+        updatedAt: '2026-04-14T00:00:03.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '前回の結果を教えて',
+            at: '2026-04-14T00:00:03.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      return thread ? JSON.parse(JSON.stringify(thread)) : null;
+    });
+    addMessageMock.mockImplementation(
+      async (
+        _dir: string,
+        threadId: string,
+        content: string,
+        sender: 'ai' | 'user',
+        status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved'
+      ) => {
+        const thread = threads.find((entry) => entry.id === threadId);
+        if (!thread) {
+          throw new Error(`missing thread ${threadId}`);
+        }
+        thread.messages.push({
+          sender,
+          content,
+          at: '2026-04-14T00:00:05.000Z',
+        });
+        thread.status = status;
+        thread.updatedAt = '2026-04-14T00:00:05.000Z';
+      }
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-pending-recovery': {
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        pendingReplyStatus: 'review',
+        pendingReplyContent: '保存待ちの review 結果',
+        pendingReplyAt: '2026-04-14T00:00:04.000Z',
+        canonicalState: 'stalled',
+        canonicalStateReason:
+          'AI の返答は準備できていますが、thread への保存に失敗したため自動回復を待っています。',
+      },
+    });
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return !meta['thread-pending-recovery']?.pendingReplyContent;
+    });
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(addMessageMock).toHaveBeenCalledWith(
+      tempDir,
+      'thread-pending-recovery',
+      '保存待ちの review 結果',
+      'ai',
+      'review'
+    );
+    expect(
+      meta['thread-pending-recovery']?.pendingReplyContent
+    ).toBeUndefined();
+    expect(meta['thread-pending-recovery']?.pendingReplyStatus).toBeUndefined();
+    expect(meta['thread-pending-recovery']?.pendingReplyAt).toBeUndefined();
+    expect(meta['thread-pending-recovery']?.canonicalState).toBe(
+      'ai-finished-awaiting-user-confirmation'
+    );
+    expect(threads[0]?.status).toBe('review');
+    expect(threads[0]?.messages.at(-1)?.sender).toBe('ai');
+  });
+
+  it('auto-requeues a stranded waiting thread once on startup without duplicating thread messages', async () => {
+    markProcessNextQueuedInFlightForTests(tempDir);
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-stranded-waiting',
+        title: '取り残された依頼',
+        status: 'waiting',
+        createdAt: '2026-04-14T00:00:00.000Z',
+        updatedAt: '2026-04-14T00:00:10.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'この修正の続きをお願いします',
+            at: '2026-04-14T00:00:10.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-stranded-waiting': {
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: tempDir,
+        requestedRunMode: 'write',
+      },
+    });
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      return (
+        queue.filter(
+          (entry) =>
+            !entry.processed && entry.threadId === 'thread-stranded-waiting'
+        ).length === 1
+      );
+    });
+
+    let queue = await readQueue(tempDir);
+    let meta = await readManagerThreadMeta(tempDir);
+    expect(
+      queue.filter(
+        (entry) =>
+          !entry.processed && entry.threadId === 'thread-stranded-waiting'
+      )
+    ).toHaveLength(1);
+    expect(addMessageMock).not.toHaveBeenCalled();
+    expect(meta['thread-stranded-waiting']?.strandedAutoResumeCount).toBe(1);
+    expect(meta['thread-stranded-waiting']?.canonicalState).toBe('queued');
+    expect(meta['thread-stranded-waiting']?.canonicalStateReason).toBeNull();
+
+    await startBuiltinManager(tempDir);
+
+    queue = await readQueue(tempDir);
+    meta = await readManagerThreadMeta(tempDir);
+    expect(
+      queue.filter(
+        (entry) =>
+          !entry.processed && entry.threadId === 'thread-stranded-waiting'
+      )
+    ).toHaveLength(1);
+    expect(meta['thread-stranded-waiting']?.strandedAutoResumeCount).toBe(1);
   });
 });

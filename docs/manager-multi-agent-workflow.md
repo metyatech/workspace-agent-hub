@@ -169,6 +169,13 @@ The run detail should answer these questions immediately:
 The human should not need to open raw terminal transcripts to learn basic run
 state.
 
+If a Manager-owned topic ever loses its live queue/runtime linkage, the system
+should not keep calling that state `queued`. The Manager should persist a
+canonical stranded state for the topic, expose that stranded reason directly in
+the UI, replay any already-produced AI reply that failed to persist, and only
+then auto-requeue a dropped user-last waiting topic when the restart is safe
+and bounded.
+
 ### 4. Hand off to the merge lane
 
 When an existing-repo write run finishes and passes its run-level verification:

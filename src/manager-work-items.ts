@@ -20,6 +20,7 @@ export async function readManagerWorkItems(
   ]);
   const meta = await reconcileManagerThreadMeta({
     dir: workspaceRoot,
+    threads,
     session,
     queue,
     meta: rawMeta,

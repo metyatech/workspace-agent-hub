@@ -81,6 +81,7 @@ interface ThreadView {
   messages: Msg[];
   updatedAt?: string;
   uiState: ManagerUiState;
+  canonicalStateReason: string | null;
   previewText: string;
   lastSender: 'ai' | 'user' | null;
   hiddenByDefault: boolean;
@@ -115,6 +116,9 @@ interface ThreadView {
   seedRecoveryRepoRoot: string | null;
   seedRecoveryRepoLabel: string | null;
   seedRecoveryChangedFiles: string[];
+  pendingReplyAt: string | null;
+  strandedAutoResumeCount: number;
+  strandedAutoResumeLastAttemptAt: string | null;
   queueOrder?: number | null;
   queuePriority?: string | null;
 }
@@ -1769,7 +1773,10 @@ function describeThreadState(thread: ThreadView): string | null {
     return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
   }
   if (thread.uiState === 'stalled') {
-    return 'この件は現在キューにも実行中にも見当たりません。前回の処理状態が途切れた可能性があるため、内容を開いて再送するか完了扱いかを決めてください。';
+    return (
+      thread.canonicalStateReason ??
+      'この件は現在キューにも実行中にも見当たりません。前回の処理状態が途切れた可能性があります。'
+    );
   }
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return 'AI の中では一区切りついています。内容を確認して、追加があればそのまま送り、終わりなら完了にしてください。';
@@ -1797,7 +1804,13 @@ function threadNextActionText(thread: ThreadView): string {
     return '必要な確認に返すと、そのまま続きへ戻せます。';
   }
   if (thread.uiState === 'stalled') {
-    return 'この件を開いて状況を確認し、必要なら同じ依頼を再送してください。';
+    if (thread.pendingReplyAt) {
+      return '保存に失敗した AI 返信の回復を試みます。直らない場合だけ再送してください。';
+    }
+    if (thread.strandedAutoResumeCount > 0) {
+      return 'この件は自動再開を一度試しました。まだ止まっている場合は同じ依頼を再送してください。';
+    }
+    return 'この件は安全な条件なら自動で再開します。残り続ける場合は内容を確認して再送してください。';
   }
   if (thread.uiState === 'ai-finished-awaiting-user-confirmation') {
     return '内容を見て、続きがあればそのまま送り、終わりなら完了にします。';

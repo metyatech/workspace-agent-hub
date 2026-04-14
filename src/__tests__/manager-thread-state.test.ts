@@ -711,6 +711,148 @@ describe('manager thread state derivation', () => {
     expect(views[0]?.uiState).toBe('stalled');
   });
 
+  it('persists canonical stalled state and reason for stranded waiting topics', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'wah-thread-state-'));
+    try {
+      await writeManagerThreadMeta(tempDir, {
+        'thread-stalled': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          requestedWorkerRuntime: 'codex',
+        },
+      });
+
+      const threads = [
+        {
+          id: 'thread-stalled',
+          title: '取り残し topic',
+          status: 'waiting' as const,
+          updatedAt: '2026-04-14T00:00:05.000Z',
+          createdAt: '2026-04-14T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user' as const,
+              content: 'この続きも処理してほしい',
+              at: '2026-04-14T00:00:05.000Z',
+            },
+          ],
+        },
+      ];
+      const session = {
+        workspaceKey: 'workspace',
+        status: 'idle' as const,
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-14T00:00:00.000Z',
+        lastMessageAt: '2026-04-14T00:00:05.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      };
+
+      const reconciled = await reconcileManagerThreadMeta({
+        dir: tempDir,
+        threads,
+        session,
+        queue: [],
+      });
+      const views = deriveManagerThreadViews({
+        threads,
+        session,
+        queue: [],
+        meta: reconciled,
+      });
+
+      expect(reconciled['thread-stalled']?.canonicalState).toBe('stalled');
+      expect(reconciled['thread-stalled']?.canonicalStateReason).toContain(
+        '取り残し状態'
+      );
+      expect(views[0]?.uiState).toBe('stalled');
+      expect(views[0]?.canonicalStateReason).toContain('取り残し状態');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces pending AI reply recovery metadata as stalled detail', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'wah-thread-state-'));
+    try {
+      await writeManagerThreadMeta(tempDir, {
+        'thread-pending-reply': {
+          managedRepoId: 'workspace-agent-hub',
+          managedRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+          pendingReplyStatus: 'review',
+          pendingReplyContent: '保存待ちの review reply',
+          pendingReplyAt: '2026-04-14T00:00:08.000Z',
+        },
+      });
+
+      const threads = [
+        {
+          id: 'thread-pending-reply',
+          title: '保存失敗 topic',
+          status: 'waiting' as const,
+          updatedAt: '2026-04-14T00:00:08.000Z',
+          createdAt: '2026-04-14T00:00:00.000Z',
+          messages: [
+            {
+              sender: 'user' as const,
+              content: 'review 結果をください',
+              at: '2026-04-14T00:00:08.000Z',
+            },
+          ],
+        },
+      ];
+      const session = {
+        workspaceKey: 'workspace',
+        status: 'idle' as const,
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-14T00:00:00.000Z',
+        lastMessageAt: '2026-04-14T00:00:08.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      };
+
+      const reconciled = await reconcileManagerThreadMeta({
+        dir: tempDir,
+        threads,
+        session,
+        queue: [],
+      });
+      const views = deriveManagerThreadViews({
+        threads,
+        session,
+        queue: [],
+        meta: reconciled,
+      });
+
+      expect(reconciled['thread-pending-reply']?.canonicalState).toBe(
+        'stalled'
+      );
+      expect(
+        reconciled['thread-pending-reply']?.canonicalStateReason
+      ).toContain('thread への保存に失敗');
+      expect(views[0]?.pendingReplyAt).toBe('2026-04-14T00:00:08.000Z');
+      expect(views[0]?.canonicalStateReason).toContain('thread への保存に失敗');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('excludes non-manager threads even when their statuses would otherwise map into manager buckets', () => {
     const views = deriveManagerThreadViews({
       threads: [
@@ -825,6 +967,7 @@ describe('manager thread state derivation', () => {
 
       const reconciled = await reconcileManagerThreadMeta({
         dir: tempDir,
+        threads: [],
         session: {
           workspaceKey: 'workspace',
           status: 'idle',

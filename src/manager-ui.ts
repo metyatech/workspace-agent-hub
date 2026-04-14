@@ -187,6 +187,7 @@ async function buildManagerLiveSnapshot(
   ]);
   const meta = await reconcileManagerThreadMeta({
     dir: workspaceRoot,
+    threads,
     session,
     queue,
     meta: rawMeta,
@@ -326,6 +327,7 @@ export async function handleManagerUiRequest(input: {
     ]);
     const meta = await reconcileManagerThreadMeta({
       dir: input.workspaceRoot,
+      threads,
       session,
       queue,
       meta: rawMeta,
