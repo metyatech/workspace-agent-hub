@@ -38,7 +38,7 @@
     "web-ui": "node dist/cli.js web-ui"
   },
   "dependencies": {
-    "@metyatech/managed-worktree-system": "^2.2.4",
+    "@metyatech/managed-worktree-system": "^2.2.5",
     "@metyatech/thread-inbox": "^0.4.5",
     "commander": "^14.0.3",
     "marked": "^17.0.5",
