@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -291,5 +291,40 @@ describe('manager mwt cleanup', () => {
     expect(
       releaseTaskOwnedWslTmuxLocksMock.mock.invocationCallOrder[0]
     ).toBeLessThan(dropTaskWorktreeMock.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('removes fully orphaned empty manager sibling directories', async () => {
+    const parentDir = await mkdtemp(join(tmpdir(), 'wah-manager-parent-'));
+    const repoRoot = join(parentDir, 'example-repo');
+    const orphanDir = join(parentDir, 'example-repo-mgr-stale-deadbeef');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(orphanDir, { recursive: true });
+
+    await cleanupOrphanedManagerWorktrees({
+      targetRepoRoot: repoRoot,
+      activeWorktreePaths: [],
+    });
+
+    await expect(readdir(parentDir)).resolves.not.toContain(
+      'example-repo-mgr-stale-deadbeef'
+    );
+  });
+
+  it('keeps non-empty orphan manager sibling directories for manual inspection', async () => {
+    const parentDir = await mkdtemp(join(tmpdir(), 'wah-manager-parent-'));
+    const repoRoot = join(parentDir, 'example-repo');
+    const orphanDir = join(parentDir, 'example-repo-mgr-stale-deadbeef');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(orphanDir, { recursive: true });
+    await writeFile(join(orphanDir, 'keep.txt'), 'still in use\n', 'utf8');
+
+    await cleanupOrphanedManagerWorktrees({
+      targetRepoRoot: repoRoot,
+      activeWorktreePaths: [],
+    });
+
+    await expect(readdir(parentDir)).resolves.toContain(
+      'example-repo-mgr-stale-deadbeef'
+    );
   });
 });

@@ -486,7 +486,10 @@ Important behavior:
   canonical seed checkout with `mwt init`, after which manual work keeps the
   default `repo-wt-*` task naming and Manager creates explicit `repo-mgr-*`
   task worktrees and `mgr/*` branches through the same managed-worktree
-  boundary.
+  boundary. Startup cleanup also runs `mwt doctor --fix --deep` and removes
+  any fully orphaned empty `repo-mgr-*` sibling directories that are no longer
+  present in Git or the `mwt` registry, so stale Manager residue does not keep
+  blocking later isolated-write retries.
 - If an existing-repo write task targets a repository that is not initialized
   for `mwt` yet, Manager now attempts a safe one-time automatic `mwt init`
   before blocking. The automatic path is intentionally conservative: it only

@@ -1,5 +1,5 @@
-import { resolve as resolvePath } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { readdir, rm } from 'node:fs/promises';
 import {
   createTaskWorktree,
   deliverTaskWorktree,
@@ -488,6 +488,12 @@ export async function cleanupOrphanedManagerWorktrees(input: {
     input.activeWorktreePaths.map((worktreePath) => resolvePath(worktreePath))
   );
   const items = await listWorktrees(targetRepoRoot, { kind: 'task' });
+  const livePaths = new Set(items.map((item) => resolvePath(item.path)));
+  await cleanupOrphanedEmptyManagerSiblingDirs({
+    targetRepoRoot,
+    activePaths,
+    livePaths,
+  });
   for (const item of items) {
     const candidatePath = resolvePath(item.path);
     if (activePaths.has(candidatePath)) {
@@ -502,6 +508,45 @@ export async function cleanupOrphanedManagerWorktrees(input: {
       force: true,
       deleteBranch: true,
       forceBranchDelete: true,
+    }).catch(() => {});
+  }
+}
+
+async function cleanupOrphanedEmptyManagerSiblingDirs(input: {
+  targetRepoRoot: string;
+  activePaths: Set<string>;
+  livePaths: Set<string>;
+}): Promise<void> {
+  const parentDir = dirname(input.targetRepoRoot);
+  const prefix = `${basename(input.targetRepoRoot)}-mgr-`;
+  const entries = await readdir(parentDir, { withFileTypes: true }).catch(
+    () => []
+  );
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) {
+      continue;
+    }
+
+    const candidatePath = resolvePath(join(parentDir, entry.name));
+    if (
+      candidatePath === input.targetRepoRoot ||
+      input.activePaths.has(candidatePath) ||
+      input.livePaths.has(candidatePath)
+    ) {
+      continue;
+    }
+
+    const childEntries = await readdir(candidatePath, {
+      withFileTypes: true,
+    }).catch(() => null);
+    if (!childEntries || childEntries.length > 0) {
+      continue;
+    }
+
+    await rm(candidatePath, {
+      recursive: true,
+      force: true,
     }).catch(() => {});
   }
 }
