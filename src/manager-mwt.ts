@@ -238,26 +238,35 @@ async function commitAutoInitializedRepositoryPolicy(
   commit: string;
   changedFiles: string[];
 }> {
-  const statusResult = await execGit(targetRepoRoot, [
-    'status',
-    '--porcelain',
-    '--untracked-files=all',
+  const addResult = await execGit(targetRepoRoot, [
+    'add',
+    '-f',
+    '--',
+    MWT_CONFIG_PATH,
   ]);
-  if (statusResult.code !== 0) {
+  if (addResult.code !== 0) {
     throw new Error(
-      summarizeGitFailure(
-        'git status --porcelain --untracked-files=all',
-        statusResult
-      )
+      summarizeGitFailure(`git add -f -- ${MWT_CONFIG_PATH}`, addResult)
     );
   }
 
-  const changedFiles = statusResult.stdout
+  const stagedResult = await execGit(targetRepoRoot, [
+    'diff',
+    '--cached',
+    '--name-only',
+  ]);
+  if (stagedResult.code !== 0) {
+    throw new Error(
+      summarizeGitFailure('git diff --cached --name-only', stagedResult)
+    );
+  }
+
+  const stagedFiles = stagedResult.stdout
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map(parseStatusPath);
-  const uniqueChangedFiles = Array.from(new Set(changedFiles));
+    .map((line) => line.trim());
+  const uniqueChangedFiles = Array.from(new Set(stagedFiles));
 
   if (
     uniqueChangedFiles.length !== 1 ||
@@ -268,17 +277,6 @@ async function commitAutoInitializedRepositoryPolicy(
       : '(none)';
     throw new Error(
       `Automatic mwt onboarding commit expected only ${MWT_CONFIG_PATH}, but found: ${detail}`
-    );
-  }
-
-  const addResult = await execGit(targetRepoRoot, [
-    'add',
-    '--',
-    MWT_CONFIG_PATH,
-  ]);
-  if (addResult.code !== 0) {
-    throw new Error(
-      summarizeGitFailure(`git add -- ${MWT_CONFIG_PATH}`, addResult)
     );
   }
 

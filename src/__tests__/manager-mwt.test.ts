@@ -113,12 +113,12 @@ describe('maybeAutoInitializeManagerRepository', () => {
         code: 0,
       })
       .mockResolvedValueOnce({
-        stdout: '?? .mwt/config.toml',
+        stdout: '',
         stderr: '',
         code: 0,
       })
       .mockResolvedValueOnce({
-        stdout: '',
+        stdout: '.mwt/config.toml',
         stderr: '',
         code: 0,
       })
@@ -147,8 +147,14 @@ describe('maybeAutoInitializeManagerRepository', () => {
     });
     expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
       'add',
+      '-f',
       '--',
       '.mwt/config.toml',
+    ]);
+    expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
+      'diff',
+      '--cached',
+      '--name-only',
     ]);
     expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
       'commit',
@@ -165,6 +171,57 @@ describe('maybeAutoInitializeManagerRepository', () => {
     });
     expect(result.detail).toContain('.mwt/config.toml');
     expect(result.detail).toContain('abc12345');
+  });
+
+  it('force-adds .mwt/config.toml even when git status would not show it because the path is ignored', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'wah-manager-mwt-ignored-'));
+    execGitMock
+      .mockResolvedValueOnce({
+        stdout: 'refs/remotes/origin/main',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'https://github.com/metyatech/example.git',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: '.mwt/config.toml',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: '[main def67890] chore: initialize managed-worktree-system',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'def6789012345',
+        stderr: '',
+        code: 0,
+      });
+
+    const result = await maybeAutoInitializeManagerRepository({
+      targetRepoRoot: repoRoot,
+    });
+
+    expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
+      'add',
+      '-f',
+      '--',
+      '.mwt/config.toml',
+    ]);
+    expect(result).toMatchObject({
+      initialized: true,
+      changedFiles: ['.mwt/config.toml'],
+      onboardingCommit: 'def6789012345',
+    });
   });
 });
 
