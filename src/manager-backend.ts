@@ -3675,6 +3675,7 @@ const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
 const recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
 const recoveryRetryAttempts = new Map<string, number>();
+const staleSeedRecoveryMonitors = new Map<string, NodeJS.Timeout>();
 const MAX_RERUN_DEPTH = 5;
 const MAX_INTERNAL_ERROR_RETRY_MS = 30_000;
 const STALE_QUEUE_RUNNER_MS = 2 * 60 * 1000;
@@ -3685,6 +3686,13 @@ function managerInternalErrorRetryMs(): number {
   return parseEnvDurationMs(
     'WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS',
     2_000
+  );
+}
+
+function managerStaleSeedRecoveryIntervalMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_MANAGER_STALE_SEED_RECOVERY_INTERVAL_MS',
+    30_000
   );
 }
 
@@ -4058,6 +4066,54 @@ async function clearSeedRecoveryState(
   });
 }
 
+/**
+ * Re-examine every thread whose meta still carries `seedRecoveryPending`
+ * and clear the flag when the target repo seed is in fact already clean.
+ *
+ * Background: when a user (or an out-of-band tool) removes the seed
+ * worktree's tracked changes after the Manager stalled with a
+ * seed_tracked_dirty error, the thread meta is NOT automatically
+ * reconciled. This left stale "退避して続行" prompts visible to the user
+ * and blocked Manager from starting the next assignee even though the
+ * underlying obstacle was gone.
+ *
+ * This function checks the actual filesystem state for each pending
+ * thread and, for those whose seed is now clean, clears the recovery
+ * flags. When at least one thread was cleared the Manager queue runner
+ * is kicked so a blocked task can resume automatically.
+ */
+async function reviewStaleSeedRecoveryForDir(dir: string): Promise<{
+  cleared: number;
+}> {
+  const resolvedDir = resolvePath(dir);
+  const meta = await readManagerThreadMeta(resolvedDir);
+  let cleared = 0;
+  for (const [threadId, threadMeta] of Object.entries(meta)) {
+    if (!threadMeta?.seedRecoveryPending) continue;
+    const repoRoot = threadMeta.seedRecoveryRepoRoot?.trim();
+    if (!repoRoot) continue;
+    let trackedChanges: string[];
+    try {
+      trackedChanges = await listTrackedSeedChanges(repoRoot);
+    } catch (error) {
+      console.warn(
+        `[manager-backend] stale seed-recovery check skipped for thread ${threadId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      continue;
+    }
+    if (trackedChanges.length > 0) continue;
+    await clearSeedRecoveryState(resolvedDir, threadId);
+    cleared += 1;
+    console.warn(
+      `[manager-backend] auto-cleared stale seedRecoveryPending for thread ${threadId} (${repoRoot}): seed is now clean`
+    );
+  }
+  if (cleared > 0) {
+    void processNextQueued(dir, resolvedDir);
+  }
+  return { cleared };
+}
+
 function parseTrackedStatusPaths(stdout: string): string[] {
   return Array.from(
     new Set(
@@ -4367,6 +4423,17 @@ async function recoverCanonicalThreadState(dir: string): Promise<{
   requeuedThread: boolean;
 }> {
   const resolvedDir = resolvePath(dir);
+  // First, reconcile any stale `seedRecoveryPending` flags against the
+  // current seed filesystem state. If a user has already cleared the
+  // seed outside the UI, we should not keep telling them "退避して続行"
+  // and should let Manager resume immediately.
+  try {
+    await reviewStaleSeedRecoveryForDir(resolvedDir);
+  } catch (error) {
+    console.warn(
+      `[manager-backend] reviewStaleSeedRecoveryForDir failed during recoverCanonicalThreadState: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   const [threads, session, queue, rawMeta] = await Promise.all([
     listThreads(resolvedDir),
     readSession(resolvedDir),
@@ -8433,8 +8500,54 @@ export async function startBuiltinManager(
   }
   await clearManagerRuntimePause(dir);
   await recoverCanonicalThreadState(dir);
+  startStaleSeedRecoveryMonitor(dir);
   void processNextQueued(dir, resolvePath(dir));
   return { started: true, detail: 'ビルトインマネージャーを起動しました' };
+}
+
+/**
+ * Periodically re-examines every managed dir whose threads carry a
+ * stale `seedRecoveryPending` flag. Idempotent per dir: if a monitor
+ * is already running we don't start a second one. Timers are unref'd
+ * so they never block process exit.
+ */
+function startStaleSeedRecoveryMonitor(dir: string): void {
+  const resolvedDir = resolvePath(dir);
+  if (staleSeedRecoveryMonitors.has(resolvedDir)) {
+    return;
+  }
+  const intervalMs = managerStaleSeedRecoveryIntervalMs();
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        await reviewStaleSeedRecoveryForDir(resolvedDir);
+      } catch (error) {
+        console.warn(
+          `[manager-backend] periodic stale seed-recovery review failed for ${resolvedDir}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    })();
+  }, intervalMs);
+  timer.unref?.();
+  staleSeedRecoveryMonitors.set(resolvedDir, timer);
+}
+
+/** Test-only helper: stop every stale-seed-recovery monitor. */
+export function resetStaleSeedRecoveryMonitorsForTests(): void {
+  for (const timer of staleSeedRecoveryMonitors.values()) {
+    clearInterval(timer);
+  }
+  staleSeedRecoveryMonitors.clear();
+}
+
+/**
+ * Test-only helper: run a single stale-seed-recovery review pass
+ * against `dir` without waiting for the periodic timer.
+ */
+export async function reviewStaleSeedRecoveryForTests(dir: string): Promise<{
+  cleared: number;
+}> {
+  return reviewStaleSeedRecoveryForDir(dir);
 }
 
 export async function sendToBuiltinManager(

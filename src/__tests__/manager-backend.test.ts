@@ -194,6 +194,7 @@ import {
   readQueue,
   readSession,
   resetProcessNextQueuedStateForTests,
+  reviewStaleSeedRecoveryForTests,
   resolveCodexCommand,
   sendGlobalToBuiltinManager,
   startBuiltinManager,
@@ -5438,6 +5439,121 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('active');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('stash@{0}');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
+  });
+
+  it('auto-clears seedRecoveryPending when the seed is already clean on the filesystem', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-auto-clear': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    // git status --porcelain --untracked-files=no returns empty: seed clean.
+    vi.mocked(execGit).mockResolvedValueOnce({
+      code: 0,
+      stdout: '',
+      stderr: '',
+    });
+
+    const result = await reviewStaleSeedRecoveryForTests(tempDir);
+
+    expect(result.cleared).toBe(1);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-auto-clear']?.seedRecoveryPending).toBeUndefined();
+    expect(meta['thread-auto-clear']?.seedRecoveryRepoRoot).toBeUndefined();
+    expect(meta['thread-auto-clear']?.seedRecoveryChangedFiles).toBeUndefined();
+  });
+
+  it('leaves seedRecoveryPending intact when the seed still has tracked changes', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-still-dirty': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    vi.mocked(execGit).mockResolvedValueOnce({
+      code: 0,
+      stdout: ' M README.md',
+      stderr: '',
+    });
+
+    const result = await reviewStaleSeedRecoveryForTests(tempDir);
+
+    expect(result.cleared).toBe(0);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-still-dirty']?.seedRecoveryPending).toBe(true);
+    expect(meta['thread-still-dirty']?.seedRecoveryRepoRoot).toBe(tempDir);
+  });
+
+  it('clears multiple pending threads in one pass when all targets are clean', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-a': {
+        managerOwned: true,
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        workerWriteScopes: ['src'],
+      },
+      'thread-b': {
+        managerOwned: true,
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    vi.mocked(execGit)
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+
+    const result = await reviewStaleSeedRecoveryForTests(tempDir);
+
+    expect(result.cleared).toBe(2);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-a']?.seedRecoveryPending).toBeUndefined();
+    expect(meta['thread-b']?.seedRecoveryPending).toBeUndefined();
+  });
+
+  it('keeps unrelated threads untouched', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-pending': {
+        managerOwned: true,
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        workerWriteScopes: ['src'],
+      },
+      'thread-other': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    vi.mocked(execGit).mockResolvedValueOnce({
+      code: 0,
+      stdout: '',
+      stderr: '',
+    });
+
+    const result = await reviewStaleSeedRecoveryForTests(tempDir);
+
+    expect(result.cleared).toBe(1);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-other']?.managedRepoLabel).toBe('workspace-agent-hub');
   });
 
   it('logs worktree cleanup failures instead of swallowing them silently', async () => {
