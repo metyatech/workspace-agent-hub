@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Server } from 'node:http';
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -25,6 +25,10 @@ import type {
   SessionTranscript,
   SessionType,
 } from '../types.js';
+import {
+  removeTempDirWithRetries,
+  WINDOWS_SLOW_TEST_TIMEOUT_MS,
+} from './temp-dir-test-helpers.js';
 
 function makeSession(
   name: string,
@@ -257,7 +261,7 @@ afterEach(async () => {
   }
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
-    await rm(dir, { recursive: true, force: true });
+    await removeTempDirWithRetries(dir);
   }
 });
 
@@ -1139,91 +1143,95 @@ describe('native manager page', () => {
     expect(threads.some((t) => t.id === thread.id)).toBe(true);
   });
 
-  it('preserves dirty seed changes through the native manager API', async () => {
-    const workspaceRoot = await createTempWorkspace();
-    const repoRoot = join(workspaceRoot, 'repo-managed');
-    await initGitRepo(repoRoot);
-    expect(
-      (await execGit(repoRoot, ['config', 'user.email', 'test@example.com']))
-        .code
-    ).toBe(0);
-    expect(
-      (await execGit(repoRoot, ['config', 'user.name', 'Test User'])).code
-    ).toBe(0);
-    expect((await execGit(repoRoot, ['add', 'README.md'])).code).toBe(0);
-    expect(
-      (await execGit(repoRoot, ['commit', '-m', 'initial commit'])).code
-    ).toBe(0);
-    await writeFile(join(repoRoot, 'README.md'), '# repo\nchanged\n', 'utf8');
+  it(
+    'preserves dirty seed changes through the native manager API',
+    async () => {
+      const workspaceRoot = await createTempWorkspace();
+      const repoRoot = join(workspaceRoot, 'repo-managed');
+      await initGitRepo(repoRoot);
+      expect(
+        (await execGit(repoRoot, ['config', 'user.email', 'test@example.com']))
+          .code
+      ).toBe(0);
+      expect(
+        (await execGit(repoRoot, ['config', 'user.name', 'Test User'])).code
+      ).toBe(0);
+      expect((await execGit(repoRoot, ['add', 'README.md'])).code).toBe(0);
+      expect(
+        (await execGit(repoRoot, ['commit', '-m', 'initial commit'])).code
+      ).toBe(0);
+      await writeFile(join(repoRoot, 'README.md'), '# repo\nchanged\n', 'utf8');
 
-    const { server, port } = await createWebUiServer({
-      bridge: new FakeBridge(workspaceRoot),
-      host: '127.0.0.1',
-      port: 0,
-      authToken: 'secret-token',
-      openBrowser: false,
-    });
-    activeServer = server;
+      const { server, port } = await createWebUiServer({
+        bridge: new FakeBridge(workspaceRoot),
+        host: '127.0.0.1',
+        port: 0,
+        authToken: 'secret-token',
+        openBrowser: false,
+      });
+      activeServer = server;
 
-    const headers = {
-      'X-Workspace-Agent-Hub-Token': 'secret-token',
-      'Content-Type': 'application/json',
-    };
-    const createRes = await fetch(
-      `http://127.0.0.1:${port}/manager/api/threads`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ title: 'Dirty seed recovery' }),
-      }
-    );
-    expect(createRes.status).toBe(201);
-    const thread = (await createRes.json()) as { id: string };
+      const headers = {
+        'X-Workspace-Agent-Hub-Token': 'secret-token',
+        'Content-Type': 'application/json',
+      };
+      const createRes = await fetch(
+        `http://127.0.0.1:${port}/manager/api/threads`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ title: 'Dirty seed recovery' }),
+        }
+      );
+      expect(createRes.status).toBe(201);
+      const thread = (await createRes.json()) as { id: string };
 
-    await writeManagerThreadMeta(workspaceRoot, {
-      [thread.id]: {
-        managerOwned: true,
-        seedRecoveryPending: true,
-        seedRecoveryRepoRoot: repoRoot,
-        seedRecoveryRepoLabel: 'repo-managed',
-        seedRecoveryChangedFiles: ['README.md'],
-      },
-    });
+      await writeManagerThreadMeta(workspaceRoot, {
+        [thread.id]: {
+          managerOwned: true,
+          seedRecoveryPending: true,
+          seedRecoveryRepoRoot: repoRoot,
+          seedRecoveryRepoLabel: 'repo-managed',
+          seedRecoveryChangedFiles: ['README.md'],
+        },
+      });
 
-    const preserveResponse = await fetch(
-      `http://127.0.0.1:${port}/manager/api/threads/${thread.id}/preserve-and-continue`,
-      {
-        method: 'POST',
-        headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
-      }
-    );
-    expect(preserveResponse.status).toBe(200);
-    await expect(preserveResponse.json()).resolves.toMatchObject({
-      preserved: true,
-      repoRoot,
-      repoLabel: 'repo-managed',
-      changedFiles: ['README.md'],
-    });
+      const preserveResponse = await fetch(
+        `http://127.0.0.1:${port}/manager/api/threads/${thread.id}/preserve-and-continue`,
+        {
+          method: 'POST',
+          headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+        }
+      );
+      expect(preserveResponse.status).toBe(200);
+      await expect(preserveResponse.json()).resolves.toMatchObject({
+        preserved: true,
+        repoRoot,
+        repoLabel: 'repo-managed',
+        changedFiles: ['README.md'],
+      });
 
-    const statusResult = await execGit(repoRoot, [
-      'status',
-      '--porcelain',
-      '--untracked-files=no',
-    ]);
-    expect(statusResult.code).toBe(0);
-    expect(statusResult.stdout.trim()).toBe('');
+      const statusResult = await execGit(repoRoot, [
+        'status',
+        '--porcelain',
+        '--untracked-files=no',
+      ]);
+      expect(statusResult.code).toBe(0);
+      expect(statusResult.stdout.trim()).toBe('');
 
-    const stashListResult = await execGit(repoRoot, [
-      'stash',
-      'list',
-      '-1',
-      '--format=%gs',
-    ]);
-    expect(stashListResult.code).toBe(0);
-    expect(stashListResult.stdout).toContain(
-      `workspace-agent-hub manager preserve ${thread.id}`
-    );
-  });
+      const stashListResult = await execGit(repoRoot, [
+        'stash',
+        'list',
+        '-1',
+        '--format=%gs',
+      ]);
+      expect(stashListResult.code).toBe(0);
+      expect(stashListResult.stdout).toContain(
+        `workspace-agent-hub manager preserve ${thread.id}`
+      );
+    },
+    WINDOWS_SLOW_TEST_TIMEOUT_MS
+  );
 
   it('returns tasks from the native manager API', async () => {
     const workspaceRoot = await createTempWorkspace();

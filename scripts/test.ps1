@@ -8,6 +8,7 @@ $testSessionLiveDirPath = Join-Path $testStateRoot 'session-live'
 $testTmuxSocketName = 'workspace-agent-hub-suite-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. (Join-Path $PSScriptRoot 'process-cleanup.ps1')
 
 function Convert-WindowsPathToWslPath {
     param(
@@ -22,15 +23,6 @@ function Convert-WindowsPathToWslPath {
     }
 
     return (($output | Out-String).Trim())
-}
-
-function Get-PowerShellPath {
-    $pwsh = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
-    if ($pwsh) {
-        return $pwsh.Source
-    }
-
-    return (Get-Command 'powershell.exe' -ErrorAction Stop).Source
 }
 
 function Get-NpmCommandPath {
@@ -113,10 +105,19 @@ function Start-TestLaneProcess {
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     [void]$process.Start()
+    $watchdogProcess = $null
+    try {
+        $watchdogProcess = Start-ParentProcessWatchdog -ParentPid $PID -ChildProcess $process
+    } catch {
+        Stop-ManagedProcessTree -Process $process
+        $process.Dispose()
+        throw
+    }
 
     return [pscustomobject]@{
         Name = $Name
         Process = $process
+        WatchdogProcess = $watchdogProcess
         StdOutTask = $process.StandardOutput.ReadToEndAsync()
         StdErrTask = $process.StandardError.ReadToEndAsync()
     }
@@ -163,8 +164,7 @@ function Stop-TestLaneProcesses {
     foreach ($processInfo in @($ProcessInfos)) {
         try {
             if ($processInfo.Process -and -not $processInfo.Process.HasExited) {
-                $processInfo.Process.Kill()
-                $processInfo.Process.WaitForExit()
+                Stop-ManagedProcessTree -Process $processInfo.Process
             }
         } catch {
         }
@@ -172,6 +172,8 @@ function Stop-TestLaneProcesses {
         if ($processInfo.Process) {
             $processInfo.Process.Dispose()
         }
+
+        Stop-ManagedWatchdogProcess -Process $processInfo.WatchdogProcess
     }
 }
 
@@ -258,7 +260,7 @@ try {
         $laneProcesses = @(
             (Start-TestLaneProcess `
                 -Name 'wsl-foundation-lane' `
-                -FilePath (Get-PowerShellPath) `
+                -FilePath (Get-PowerShellPathForCleanup) `
                 -ArgumentList @(
                     '-NoProfile',
                     '-ExecutionPolicy',
@@ -273,7 +275,7 @@ try {
                 }),
             (Start-TestLaneProcess `
                 -Name 'mobile-primary-lane' `
-                -FilePath (Get-PowerShellPath) `
+                -FilePath (Get-PowerShellPathForCleanup) `
                 -ArgumentList @(
                     '-NoProfile',
                     '-ExecutionPolicy',
@@ -288,7 +290,7 @@ try {
                 }),
             (Start-TestLaneProcess `
                 -Name 'session-bridge-lane' `
-                -FilePath (Get-PowerShellPath) `
+                -FilePath (Get-PowerShellPathForCleanup) `
                 -ArgumentList @(
                     '-NoProfile',
                     '-ExecutionPolicy',
@@ -352,14 +354,15 @@ if (($npmBootstrapOutput | Out-String).Trim() -notmatch 'PASS') {
     $postProcesses = @()
     try {
         $postProcesses = @(
-            (Start-TestLaneProcess -Name 'cli-json-output' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-cli-json-output.ps1'))),
-            (Start-TestLaneProcess -Name 'build-package-lock' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-build-package-lock.ps1'))),
-            (Start-TestLaneProcess -Name 'wrapper-failure' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1'))),
-            (Start-TestLaneProcess -Name 'shortcut-install' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1'))),
-            (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1'))),
-            (Start-TestLaneProcess -Name 'ensure-build-detection' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-ensure-web-ui-build-detection.ps1'))),
-            (Start-TestLaneProcess -Name 'startup-npm-bootstrap-wiring' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-startup-npm-bootstrap-wiring.ps1'))),
-            (Start-TestLaneProcess -Name 'session-catalog-retry' -FilePath (Get-PowerShellPath) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-session-catalog-retry.ps1')))
+            (Start-TestLaneProcess -Name 'cli-json-output' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-cli-json-output.ps1'))),
+            (Start-TestLaneProcess -Name 'build-package-lock' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-build-package-lock.ps1'))),
+            (Start-TestLaneProcess -Name 'wrapper-failure' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-start-web-ui-wrapper-failure.ps1'))),
+            (Start-TestLaneProcess -Name 'shortcut-install' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-install-web-ui-shortcuts.ps1'))),
+            (Start-TestLaneProcess -Name 'phone-ready-watchdog' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-keep-web-ui-phone-ready.ps1'))),
+            (Start-TestLaneProcess -Name 'ensure-build-detection' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-ensure-web-ui-build-detection.ps1'))),
+            (Start-TestLaneProcess -Name 'startup-npm-bootstrap-wiring' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-startup-npm-bootstrap-wiring.ps1'))),
+            (Start-TestLaneProcess -Name 'process-watchdog' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-process-watchdog.ps1'))),
+            (Start-TestLaneProcess -Name 'session-catalog-retry' -FilePath (Get-PowerShellPathForCleanup) -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'test-session-catalog-retry.ps1')))
         )
         Wait-TestLaneProcesses -ProcessInfos $postProcesses
     } finally {

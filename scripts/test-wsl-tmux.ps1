@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 $tmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
 $codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
+. (Join-Path $PSScriptRoot 'process-cleanup.ps1')
 $socketName = 'workspace-agent-hub-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $sessionLabel = 'isolated-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $sessionName = "shell-$sessionLabel"
@@ -46,6 +47,67 @@ function ConvertTo-ScriptParameters {
     }
 
     return $scriptParameters
+}
+
+function Invoke-WslProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [switch]$AllowNonZeroExit,
+        [int]$TimeoutMs = 15000
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'wsl.exe'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $Arguments) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-ProcessCleanupArgumentString -ArgumentList $Arguments
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMs)) {
+            Stop-ManagedProcessTree -Process $process
+            $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+            $stderrText = $stderrTask.GetAwaiter().GetResult()
+            $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+            if ($detail) {
+                throw "wsl.exe timed out after $TimeoutMs ms. Args: $($Arguments -join ' ') $detail"
+            }
+            throw "wsl.exe timed out after $TimeoutMs ms. Args: $($Arguments -join ' ')"
+        }
+
+        $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+        $stderrText = $stderrTask.GetAwaiter().GetResult()
+        if (-not $AllowNonZeroExit -and $process.ExitCode -ne 0) {
+            $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+            if ($detail) {
+                throw "wsl.exe failed with exit code $($process.ExitCode). Args: $($Arguments -join ' ') $detail"
+            }
+            throw "wsl.exe failed with exit code $($process.ExitCode). Args: $($Arguments -join ' ')"
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = $stdoutText
+            Stderr = $stderrText
+        }
+    } finally {
+        $process.Dispose()
+    }
 }
 
 function Invoke-TmuxScript {
@@ -118,12 +180,11 @@ function Get-WslHomeDirectory {
         [string]$Distro
     )
 
-    $homeOutput = @(& wsl.exe -d $Distro -- bash -lc 'printf ''%s\n'' "$HOME"')
-    if ($LASTEXITCODE -ne 0) {
-        throw "Expected to resolve the WSL home directory for distro '$Distro'."
-    }
-
-    $homePath = (($homeOutput | Out-String).Trim()).TrimEnd('/')
+    $homeOutput = Invoke-WslProcess -Arguments @(
+        '-d', $Distro, '--',
+        'bash', '-lc', 'printf ''%s\n'' "$HOME"'
+    )
+    $homePath = $homeOutput.Stdout.Trim().TrimEnd('/')
     if (-not $homePath) {
         throw "Expected the WSL home directory for distro '$Distro' to be non-empty."
     }
@@ -138,12 +199,11 @@ function Convert-WindowsPathToWslPath {
     )
 
     $normalizedPath = $WindowsPath -replace '\\', '/'
-    $result = @(& wsl.exe -d Ubuntu -- wslpath -a -u $normalizedPath)
-    if ($LASTEXITCODE -ne 0) {
-        throw "Expected to convert '$WindowsPath' to a WSL path."
-    }
-
-    return (($result | Out-String).Trim())
+    $result = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'wslpath', '-a', '-u', $normalizedPath
+    )
+    return $result.Stdout.Trim()
 }
 
 function Get-LivePipeCommands {
@@ -152,14 +212,16 @@ function Get-LivePipeCommands {
         [string]$TargetSessionName
     )
 
-    $commands = @(
-        & wsl.exe -d Ubuntu -- env "TARGET_SESSION_NAME=$TargetSessionName" bash -lc 'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep -F "wsl-session-live-pipe" | grep -v grep || true'
+    $commands = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'env',
+        "TARGET_SESSION_NAME=$TargetSessionName",
+        'bash',
+        '-lc',
+        'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep -F "wsl-session-live-pipe" | grep -v grep || true'
     )
-    if ($LASTEXITCODE -ne 0) {
-        throw "Expected to inspect live-pipe helper processes for '$TargetSessionName'."
-    }
 
-    return @($commands | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
+    return @($commands.Stdout -split "`r?`n" | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
 }
 
 try {
@@ -225,10 +287,11 @@ try {
         throw "Expected exists to report true after ensure. Got: $existsAfterEnsure"
     }
 
-    [void](@(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' send-keys -t '$sessionName' -l 'echo live-bridge-pass' && tmux -L '$socketName' send-keys -t '$sessionName' Enter"))
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Expected to send output into the isolated tmux session.'
-    }
+    [void](Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'bash', '-lc',
+        "tmux -L '$socketName' send-keys -t '$sessionName' -l 'echo live-bridge-pass' && tmux -L '$socketName' send-keys -t '$sessionName' Enter"
+    ))
     Start-Sleep -Milliseconds 700
     $liveTranscript = if (Test-Path -Path $liveTranscriptPath) {
         Get-Content -Path $liveTranscriptPath -Raw -Encoding utf8
@@ -268,11 +331,12 @@ try {
     ))
 
     Start-Sleep -Milliseconds 700
-    $paneOutput = @(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' capture-pane -pt '$sessionName' -S -40")
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Expected to capture the isolated tmux pane after startup-command test.'
-    }
-    $paneText = ($paneOutput | Out-String)
+    $paneOutput = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'bash', '-lc',
+        "tmux -L '$socketName' capture-pane -pt '$sessionName' -S -40"
+    )
+    $paneText = $paneOutput.Stdout
     $wslHomeDirectory = Get-WslHomeDirectory -Distro 'Ubuntu'
     $expectedCodexPath = [regex]::Escape("$wslHomeDirectory/.local/bin/codex")
     if ($paneText -notmatch $expectedCodexPath) {
@@ -292,20 +356,32 @@ try {
     ))
 
     Start-Sleep -Milliseconds 1200
-    $attachedCount = @(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' display-message -p -t '$sessionName' '#{session_attached}'")
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Expected to query tmux attached-client count after attach-hidden.'
-    }
-    if ([int]($attachedCount | Select-Object -Last 1) -lt 1) {
-        throw "Expected attach-hidden to create at least one attached tmux client. Got: $($attachedCount | Out-String)"
+    $attachedCount = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'bash', '-lc',
+        "tmux -L '$socketName' display-message -p -t '$sessionName' '#{session_attached}'"
+    )
+    $attachedCountValue = (
+        $attachedCount.Stdout -split "`r?`n" |
+            Where-Object { $_.Trim() } |
+            Select-Object -Last 1
+    ).Trim()
+    if ([int]$attachedCountValue -lt 1) {
+        throw "Expected attach-hidden to create at least one attached tmux client. Got: $($attachedCount.Stdout)"
     }
 
-    $windowSize = @(& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' display-message -p -t '$sessionName' '#{window_width}x#{window_height}'")
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Expected to query tmux window size after attach-hidden.'
-    }
-    if (($windowSize | Select-Object -Last 1) -ne '120x40') {
-        throw "Expected attach-hidden to pin tmux size to 120x40. Got: $($windowSize | Out-String)"
+    $windowSize = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'bash', '-lc',
+        "tmux -L '$socketName' display-message -p -t '$sessionName' '#{window_width}x#{window_height}'"
+    )
+    $windowSizeValue = (
+        $windowSize.Stdout -split "`r?`n" |
+            Where-Object { $_.Trim() } |
+            Select-Object -Last 1
+    ).Trim()
+    if ($windowSizeValue -ne '120x40') {
+        throw "Expected attach-hidden to pin tmux size to 120x40. Got: $($windowSize.Stdout)"
     }
 
     $sourceAuthPath = Join-Path $env:TEMP ("workspace-agent-hub-codex-auth-source-" + [guid]::NewGuid().ToString('N') + '.json')
@@ -323,12 +399,13 @@ try {
             throw "Expected first Codex auth sync to copy the source file. Got: $($firstSync | ConvertTo-Json -Depth 4)"
         }
 
-        $firstTargetContent = @(& wsl.exe -d Ubuntu -- bash -lc "cat '$targetAuthPath'")
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Expected to read the synchronized Codex auth file from WSL.'
-        }
-        if ((($firstTargetContent | Out-String).Trim()) -ne '{"refresh_token":"fresh-token"}') {
-            throw "Expected synchronized Codex auth file to match the Windows source content. Got: $($firstTargetContent | Out-String)"
+        $firstTargetContent = Invoke-WslProcess -Arguments @(
+            '-d', 'Ubuntu', '--',
+            'bash', '-lc',
+            "cat '$targetAuthPath'"
+        )
+        if ($firstTargetContent.Stdout.Trim() -ne '{"refresh_token":"fresh-token"}') {
+            throw "Expected synchronized Codex auth file to match the Windows source content. Got: $($firstTargetContent.Stdout)"
         }
 
         $secondSync = Invoke-SyncCodexAuthJson -Arguments @(
@@ -344,7 +421,11 @@ try {
         if (Test-Path -Path $sourceAuthPath) {
             [IO.File]::Delete($sourceAuthPath)
         }
-        [void](& wsl.exe -d Ubuntu -- bash -lc "rm -f '$targetAuthPath'")
+        [void](Invoke-WslProcess -Arguments @(
+            '-d', 'Ubuntu', '--',
+            'bash', '-lc',
+            "rm -f '$targetAuthPath'"
+        ) -AllowNonZeroExit)
     }
 
     [void](Invoke-TmuxScript -Arguments @(
@@ -370,8 +451,12 @@ try {
         '-SocketName', $socketName
     ))
 
-    [void](& wsl.exe -d Ubuntu -- bash -lc "tmux -L '$socketName' list-sessions >/dev/null 2>&1")
-    if ($LASTEXITCODE -eq 0) {
+    $postKillServer = Invoke-WslProcess -Arguments @(
+        '-d', 'Ubuntu', '--',
+        'bash', '-lc',
+        "tmux -L '$socketName' list-sessions >/dev/null 2>&1"
+    ) -AllowNonZeroExit
+    if ($postKillServer.ExitCode -eq 0) {
         throw 'Expected kill-server to remove the isolated tmux server entirely.'
     }
 

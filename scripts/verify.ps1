@@ -4,30 +4,26 @@ $lintScriptPath = Join-Path $PSScriptRoot 'lint.ps1'
 $testScriptPath = Join-Path $PSScriptRoot 'test.ps1'
 $buildScriptPath = Join-Path $PSScriptRoot 'build.ps1'
 $launcherScriptPath = Join-Path $PSScriptRoot 'agent-session-launcher.ps1'
+$processCleanupScriptPath = Join-Path $PSScriptRoot 'process-cleanup.ps1'
+$processWatchdogScriptPath = Join-Path $PSScriptRoot 'process-watchdog.ps1'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('workspace-agent-hub-verify-' + [guid]::NewGuid().ToString('N'))
 
 . (Join-Path $PSScriptRoot 'npm-bootstrap.ps1')
+. $processCleanupScriptPath
 
 foreach ($scriptPath in @(
     $lintScriptPath,
     $testScriptPath,
     $buildScriptPath,
-    $launcherScriptPath
+    $launcherScriptPath,
+    $processCleanupScriptPath,
+    $processWatchdogScriptPath
 )) {
     if (-not (Test-Path -Path $scriptPath)) {
         throw "Missing script: $scriptPath"
     }
-}
-
-function Get-PowerShellPath {
-    $pwsh = Get-Command 'pwsh.exe' -ErrorAction SilentlyContinue
-    if ($pwsh) {
-        return $pwsh.Source
-    }
-
-    return (Get-Command 'powershell.exe' -ErrorAction Stop).Source
 }
 
 function ConvertTo-QuotedArgumentString {
@@ -65,7 +61,7 @@ function Invoke-VerifyScript {
     $stdoutPath = Join-Path $tempRoot ($Name + '.stdout.log')
     $stderrPath = Join-Path $tempRoot ($Name + '.stderr.log')
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = Get-PowerShellPath
+    $startInfo.FileName = Get-PowerShellPathForCleanup
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -90,8 +86,10 @@ function Invoke-VerifyScript {
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $watchdogProcess = $null
     try {
         [void]$process.Start()
+        $watchdogProcess = Start-ParentProcessWatchdog -ParentPid $PID -ChildProcess $process
 
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -113,6 +111,8 @@ function Invoke-VerifyScript {
 
         throw "$Name failed with exit code $($process.ExitCode)."
     } finally {
+        Stop-ManagedProcessTree -Process $process
+        Stop-ManagedWatchdogProcess -Process $watchdogProcess
         $process.Dispose()
     }
 }

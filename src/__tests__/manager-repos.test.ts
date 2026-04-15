@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execGit } from '../manager-worktree.js';
@@ -9,6 +9,10 @@ import {
   resolveNewRepoRoot,
   validateNewRepoName,
 } from '../manager-repos.js';
+import {
+  removeTempDirWithRetries,
+  WINDOWS_SLOW_TEST_TIMEOUT_MS,
+} from './temp-dir-test-helpers.js';
 
 const tempDirs: string[] = [];
 
@@ -45,7 +49,7 @@ async function initGitRepoWithCommit(repoRoot: string): Promise<void> {
 afterEach(async () => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
-    await rm(dir, { recursive: true, force: true });
+    await removeTempDirWithRetries(dir);
   }
 });
 
@@ -95,33 +99,37 @@ describe('manager-repos', () => {
     }
   });
 
-  it('dedupes linked worktree directories and canonicalizes them back to the primary repo root', async () => {
-    const workspaceRoot = await createTempDir(
-      'wah-manager-repos-linked-worktree-'
-    );
-    const repoRoot = join(workspaceRoot, 'repo-seed');
-    const worktreeRoot = join(workspaceRoot, 'repo-seed-wt-task');
-    await mkdir(repoRoot, { recursive: true });
-    await initGitRepoWithCommit(repoRoot);
+  it(
+    'dedupes linked worktree directories and canonicalizes them back to the primary repo root',
+    async () => {
+      const workspaceRoot = await createTempDir(
+        'wah-manager-repos-linked-worktree-'
+      );
+      const repoRoot = join(workspaceRoot, 'repo-seed');
+      const worktreeRoot = join(workspaceRoot, 'repo-seed-wt-task');
+      await mkdir(repoRoot, { recursive: true });
+      await initGitRepoWithCommit(repoRoot);
 
-    const addWorktreeResult = await execGit(repoRoot, [
-      'worktree',
-      'add',
-      worktreeRoot,
-      '-b',
-      'wt/test-linked-worktree',
-    ]);
-    expect(addWorktreeResult.code).toBe(0);
+      const addWorktreeResult = await execGit(repoRoot, [
+        'worktree',
+        'add',
+        worktreeRoot,
+        '-b',
+        'wt/test-linked-worktree',
+      ]);
+      expect(addWorktreeResult.code).toBe(0);
 
-    const repos = await readManagedRepos(workspaceRoot);
+      const repos = await readManagedRepos(workspaceRoot);
 
-    expect(repos.map((repo) => repo.repoRoot)).toEqual([repoRoot]);
+      expect(repos.map((repo) => repo.repoRoot)).toEqual([repoRoot]);
 
-    const found = await findManagedRepoByRoot(workspaceRoot, worktreeRoot);
+      const found = await findManagedRepoByRoot(workspaceRoot, worktreeRoot);
 
-    expect(found?.repoRoot).toBe(repoRoot);
-    expect(found?.label).toBe('repo-seed');
-  });
+      expect(found?.repoRoot).toBe(repoRoot);
+      expect(found?.label).toBe('repo-seed');
+    },
+    WINDOWS_SLOW_TEST_TIMEOUT_MS
+  );
 
   it('normalizes a new repo name into a workspace-local repo root', async () => {
     const workspaceRoot = await createTempDir('wah-manager-new-repo-root-');

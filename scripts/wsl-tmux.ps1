@@ -128,7 +128,8 @@ function Invoke-WslCommand {
         [string[]]$Arguments,
         [switch]$AllowNonZeroExit,
         [int]$Retries = 0,
-        [int]$RetryDelayMilliseconds = 200
+        [int]$RetryDelayMilliseconds = 200,
+        [int]$TimeoutMs = 15000
     )
 
     $attempt = 0
@@ -151,11 +152,44 @@ function Invoke-WslCommand {
 
         $process = [System.Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
-        [void]$process.Start()
-        $stdoutText = $process.StandardOutput.ReadToEnd()
-        $stderrText = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        $exitCode = $process.ExitCode
+        try {
+            [void]$process.Start()
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $completed = $process.WaitForExit($TimeoutMs)
+            if (-not $completed) {
+                try {
+                    $process.Kill($true)
+                } catch {
+                    try {
+                        & taskkill /PID $process.Id /T /F | Out-Null
+                    } catch {
+                    }
+                }
+                try {
+                    $process.WaitForExit()
+                } catch {
+                }
+                $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+                $stderrText = $stderrTask.GetAwaiter().GetResult()
+                if ($attempt -ge $Retries) {
+                    $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+                    if ($detail) {
+                        throw "wsl.exe timed out after $TimeoutMs ms. Args: $($Arguments -join ' ') $detail"
+                    }
+                    throw "wsl.exe timed out after $TimeoutMs ms. Args: $($Arguments -join ' ')"
+                }
+                Start-Sleep -Milliseconds $RetryDelayMilliseconds
+                $attempt += 1
+                continue
+            }
+
+            $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+            $stderrText = $stderrTask.GetAwaiter().GetResult()
+            $exitCode = $process.ExitCode
+        } finally {
+            $process.Dispose()
+        }
         if ($AllowNonZeroExit -or $exitCode -eq 0) {
             return $exitCode
         }
