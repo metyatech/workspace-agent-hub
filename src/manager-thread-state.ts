@@ -10,6 +10,7 @@ import {
 } from './manager-queue-priority.js';
 import { summarizeManagerMessage } from './manager-message.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
+import { withSerializedKeyLock } from './promise-lock.js';
 import type {
   ManagerRunMode,
   ManagerTargetKind,
@@ -154,22 +155,7 @@ async function withMetaWriteLock<T>(
   dir: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const key = resolvePath(dir);
-  const previous = metaWriteLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const gate = new Promise<void>((resolvePromise) => {
-    release = resolvePromise;
-  });
-  metaWriteLocks.set(key, gate);
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (metaWriteLocks.get(key) === gate) {
-      metaWriteLocks.delete(key);
-    }
-  }
+  return withSerializedKeyLock(metaWriteLocks, resolvePath(dir), fn);
 }
 
 async function readManagerThreadMetaFile(

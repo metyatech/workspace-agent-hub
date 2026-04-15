@@ -74,6 +74,7 @@ import {
   type ManagerQueuePriority,
 } from './manager-queue-priority.js';
 import { notifyManagerUpdate } from './manager-live-updates.js';
+import { withSerializedKeyLock } from './promise-lock.js';
 import {
   prepareNewRepoWorkspace,
   removeWorktree,
@@ -843,21 +844,7 @@ function normalizeManagerSession(
 const _writeLocks = new Map<string, Promise<void>>();
 
 async function withWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = _writeLocks.get(key) ?? Promise.resolve();
-  let done!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    done = resolve;
-  });
-  _writeLocks.set(key, gate);
-  // Wait for any in-flight operation on this key to finish before running fn.
-  await prev;
-  try {
-    return await fn();
-  } finally {
-    done();
-    // Remove map entry only if no newer waiter has replaced it.
-    if (_writeLocks.get(key) === gate) _writeLocks.delete(key);
-  }
+  return withSerializedKeyLock(_writeLocks, key, fn);
 }
 
 /**
@@ -4621,21 +4608,7 @@ async function withRoutingLock<T>(
   resolvedDir: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const previous = routingLocks.get(resolvedDir) ?? Promise.resolve();
-  let release!: () => void;
-  const gate = new Promise<void>((resolvePromise) => {
-    release = resolvePromise;
-  });
-  routingLocks.set(resolvedDir, gate);
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (routingLocks.get(resolvedDir) === gate) {
-      routingLocks.delete(resolvedDir);
-    }
-  }
+  return withSerializedKeyLock(routingLocks, resolvedDir, fn);
 }
 
 async function ensureThreadReadyForUserMessage(

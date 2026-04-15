@@ -24,6 +24,7 @@ import {
   writeFile,
 } from 'fs/promises';
 import { dirname, join, relative, resolve as resolvePath, sep } from 'path';
+import { withSerializedKeyLock } from './promise-lock.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,22 +101,7 @@ async function withMergeLock<T>(
   targetRepoRoot: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const key = resolvePath(targetRepoRoot);
-  const previous = _mergeLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  _mergeLocks.set(key, gate);
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (_mergeLocks.get(key) === gate) {
-      _mergeLocks.delete(key);
-    }
-  }
+  return withSerializedKeyLock(_mergeLocks, resolvePath(targetRepoRoot), fn);
 }
 
 // ---------------------------------------------------------------------------
