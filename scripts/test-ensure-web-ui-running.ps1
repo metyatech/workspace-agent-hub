@@ -90,6 +90,42 @@ function Start-EnsureProcess {
     }
 }
 
+function Start-MockWebUiProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CliPath,
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$RunName,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDirectory
+    )
+
+    $stdoutPath = Join-Path $TargetDirectory "$RunName.stdout.log"
+    $stderrPath = Join-Path $TargetDirectory "$RunName.stderr.log"
+    $process = Start-Process -FilePath (Get-Command 'node.exe' -ErrorAction Stop).Source -ArgumentList @(
+        $CliPath,
+        '--fixed-port',
+        '--host',
+        '0.0.0.0',
+        '--port',
+        [string]$PortNumber,
+        '--auth-token',
+        'none',
+        '--workspace-root',
+        $WorkspaceRoot
+    ) -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+
+    return [pscustomobject]@{
+        Process = $process
+        StdOutPath = $stdoutPath
+        StdErrPath = $stderrPath
+    }
+}
+
 function Wait-ForLaunchMetadata {
     param(
         [Parameter(Mandatory = $true)]
@@ -202,17 +238,45 @@ function Wait-ForApiReady {
     throw 'Expected the ensured web UI to answer API requests.'
 }
 
+function Wait-ForPortClosed {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber,
+        [int]$TimeoutMilliseconds = 15000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        try {
+            $client = [Net.Sockets.TcpClient]::new()
+            $task = $client.ConnectAsync('127.0.0.1', $PortNumber)
+            if ($task.Wait(250)) {
+                $client.Dispose()
+            } else {
+                $client.Dispose()
+                return
+            }
+        } catch {
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Expected port $PortNumber to close."
+}
+
 $testDirectory = Join-Path $env:TEMP ('workspace-agent-hub-open-web-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $testDirectory -Force)
 $currentPackageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $currentWorkspaceRoot = Split-Path -Parent $currentPackageRoot
 $statePath = Join-Path $testDirectory 'state.json'
-$mockCliPath = Join-Path $testDirectory 'mock-web-ui.mjs'
+$mockCliPath = Join-Path $testDirectory 'workspace-agent-hub-mock-web-ui.mjs'
 $port = Get-FreeTcpPort
 $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
 $originalPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
 $originalCliPath = $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH
+$competingInstance = $null
 
 $mockCliContent = @'
 import http from "node:http";
@@ -221,10 +285,13 @@ const args = process.argv.slice(2);
 let host = "127.0.0.1";
 let port = 3360;
 let authToken = "auto";
+let fixedPort = false;
 
 for (let index = 0; index < args.length; index += 1) {
   const current = args[index];
-  if (current === "--host") {
+  if (current === "--fixed-port") {
+    fixedPort = true;
+  } else if (current === "--host") {
     host = args[index + 1] ?? host;
     index += 1;
   } else if (current === "--port") {
@@ -275,7 +342,7 @@ function tryListen(targetPort) {
     });
 
     server.once("error", (error) => {
-      if (error && error.code === "EADDRINUSE") {
+      if (error && error.code === "EADDRINUSE" && !fixedPort) {
         resolve(tryListen(targetPort + 1));
         return;
       }
@@ -309,6 +376,9 @@ console.log(
 try {
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_CLI_PATH', $mockCliPath, 'Process')
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL', 'https://desktop-dr5v76c.tail5a2d2d.ts.net', 'Process')
+    $competingInstance = Start-MockWebUiProcess -CliPath $mockCliPath -PortNumber $port -WorkspaceRoot $currentWorkspaceRoot -RunName 'competing' -TargetDirectory $testDirectory
+    $competingProcessId = [int]$competingInstance.Process.Id
+    Wait-ForApiReady -PortNumber $port -Token ''
     $firstRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'first' -TargetDirectory $testDirectory
     $first = Wait-ForLaunchMetadata -ProcessInfo $firstRun
     Wait-ForProcessSuccess -ProcessInfo $firstRun
@@ -329,6 +399,19 @@ try {
     $firstPort = ([Uri][string]$first.ListenUrl).Port
     $firstFrontDoorPort = ([Uri][string]$first.FrontDoorListenUrl).Port
     Wait-ForApiReady -PortNumber $firstPort -Token ''
+    if ([int]$first.ProcessId -eq $competingProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 not to adopt the competing preferred-port Hub process as the managed runtime.'
+    }
+    $preferredPortListeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($preferredPortListeners -contains $competingProcessId) {
+        throw 'Expected ensure-web-ui-running.ps1 to remove the competing preferred-port Hub listener after the managed runtime became ready.'
+    }
+    if (
+        $preferredPortListeners.Count -gt 0 -and
+        ($preferredPortListeners | Where-Object { $_ -ne [int]$first.ProcessId }).Count -gt 0
+    ) {
+        throw 'Expected any remaining preferred-port listener to belong only to the managed runtime.'
+    }
     if ([string]$first.PreferredConnectUrlSource -eq 'tailscale-serve') {
         $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
@@ -474,6 +557,16 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 
     $testPassed = $true
 } finally {
+    if ($competingInstance -and -not $competingInstance.Process.HasExited) {
+        try {
+            Stop-Process -Id $competingInstance.Process.Id -Force -ErrorAction Stop
+        } catch {
+        }
+        try {
+            Wait-Process -Id $competingInstance.Process.Id -Timeout 5 -ErrorAction Stop
+        } catch {
+        }
+    }
     if (Test-Path -Path $statePath) {
         $state = Get-Content -Path $statePath -Raw -Encoding utf8 | ConvertFrom-Json
         foreach ($propertyName in @('ProcessId', 'FrontDoorProcessId')) {

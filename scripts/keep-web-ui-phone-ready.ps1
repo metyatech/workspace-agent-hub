@@ -142,6 +142,33 @@ function Get-StateString {
     return ([string]$State.$PropertyName).Trim()
 }
 
+function Get-StateAccessCodeValue {
+    param(
+        $State
+    )
+
+    if (-not $State) {
+        return $null
+    }
+
+    if (
+        $State.PSObject.Properties.Match('AuthDisabled').Count -gt 0 -and
+        [bool]$State.AuthDisabled
+    ) {
+        return $null
+    }
+
+    if (
+        $State.PSObject.Properties.Match('AccessCode').Count -gt 0 -and
+        $null -ne $State.AccessCode -and
+        [string]$State.AccessCode -ne ''
+    ) {
+        return [string]$State.AccessCode
+    }
+
+    return $null
+}
+
 function Resolve-NormalizedPath {
     param(
         [string]$PathText
@@ -152,6 +179,101 @@ function Resolve-NormalizedPath {
     }
 
     return [IO.Path]::GetFullPath($PathText.Trim())
+}
+
+function Get-ProcessCommandLine {
+    param(
+        [int]$ProcessId
+    )
+
+    if ($ProcessId -le 0) {
+        return ''
+    }
+
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if ($process -and $process.CommandLine) {
+            return ([string]$process.CommandLine).Trim()
+        }
+    } catch {
+    }
+
+    return ''
+}
+
+function Test-WebUiReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ListenUrl,
+        [string]$AccessCode = ''
+    )
+
+    try {
+        $headers = @{}
+        if ($AccessCode) {
+            $headers['X-Workspace-Agent-Hub-Token'] = $AccessCode
+        }
+        $response = Invoke-WebRequest -Uri ($ListenUrl.TrimEnd('/') + '/api/sessions?includeArchived=true') -Method Get -Headers $headers -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
+function Test-CompetingPreferredPortHub {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetStatePath,
+        [Parameter(Mandatory = $true)]
+        [int]$PreferredPort
+    )
+
+    if ($PreferredPort -le 0) {
+        return $false
+    }
+
+    $state = Read-State -TargetStatePath $TargetStatePath
+    $excludeProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($propertyName in @('ProcessId', 'FrontDoorProcessId')) {
+        if (
+            $state -and
+            $state.PSObject.Properties.Match($propertyName).Count -gt 0 -and
+            $state.$propertyName
+        ) {
+            [void]$excludeProcessIds.Add([int]$state.$propertyName)
+        }
+    }
+
+    try {
+        $listeners = Get-NetTCPConnection -LocalPort $PreferredPort -State Listen -ErrorAction Stop
+    } catch {
+        return $false
+    }
+
+    $accessCode = Get-StateAccessCodeValue -State $state
+    $listenUrl = "http://127.0.0.1:$PreferredPort"
+    foreach ($listener in $listeners) {
+        if (-not $listener.OwningProcess) {
+            continue
+        }
+        $processId = [int]$listener.OwningProcess
+        if ($processId -le 0 -or $excludeProcessIds.Contains($processId)) {
+            continue
+        }
+        if (Test-WebUiReady -ListenUrl $listenUrl -AccessCode $accessCode) {
+            return $true
+        }
+        $commandLine = Get-ProcessCommandLine -ProcessId $processId
+        if (
+            $commandLine -and
+            $commandLine -match '(?i)workspace-agent-hub' -and
+            $commandLine -notmatch '(?i)web-ui-front-door'
+        ) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Get-TailscaleServeProxyTarget {
@@ -423,14 +545,16 @@ try {
             $managerBusy = Test-ManagerHasActiveAssignment -TargetStatePath $resolvedStatePath
             $frontDoorHealthy = Test-FrontDoorHealthy -TargetStatePath $resolvedStatePath
             $tailscaleServeHealthy = Test-TailscaleServeTargetsFrontDoor -TargetStatePath $resolvedStatePath
-            if ($managerBusy -and $frontDoorHealthy -and $tailscaleServeHealthy) {
+            $competingPreferredPortHub = Test-CompetingPreferredPortHub -TargetStatePath $resolvedStatePath -PreferredPort $Port
+            if ($managerBusy -and $frontDoorHealthy -and $tailscaleServeHealthy -and -not $competingPreferredPortHub) {
                 Write-WatchdogLog -LogPath $watchdogLogPath -Message 'Skipping ensure-web-ui-running.ps1 because Manager still has an active assignment.'
             } else {
                 if ($managerBusy) {
                     Write-WatchdogLog -LogPath $watchdogLogPath -Message (
-                        'Manager still has an active assignment, but ingress needs reconciliation. frontDoorHealthy={0}; tailscaleServeHealthy={1}' -f
+                        'Manager still has an active assignment, but ingress needs reconciliation. frontDoorHealthy={0}; tailscaleServeHealthy={1}; competingPreferredPortHub={2}' -f
                         $frontDoorHealthy,
-                        $tailscaleServeHealthy
+                        $tailscaleServeHealthy,
+                        $competingPreferredPortHub
                     )
                 }
                 $arguments = @{

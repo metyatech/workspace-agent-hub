@@ -100,6 +100,19 @@ function Start-MockFrontDoorServer {
         -Body '{"ok":true}')
 }
 
+function Start-MockHubSessionsServer {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PortNumber
+    )
+
+    return (Start-MockHttpServer `
+        -PortNumber $PortNumber `
+        -Path '/api/sessions?includeArchived=true' `
+        -StatusCode 200 `
+        -Body '[]')
+}
+
 $mockEnsureContent = @'
 param(
     [int]$Port = 3360,
@@ -242,9 +255,15 @@ $previousExpectedWorkspaceRoot = $env:WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT
 $testPassed = $false
 $firstProcess = $null
 $managerStatusJob = $null
+$directPromoteManagerJob = $null
+$directPromoteFrontDoorJob = $null
 $staleServeManagerJob = $null
 $frontDoorHealthyJob = $null
 $frontDoorStaleServeJob = $null
+$duplicateManagerJob = $null
+$duplicateFrontDoorJob = $null
+$competingHubJob = $null
+$idleWatchdogPort = Get-FreeTcpPort
 
 try {
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_EXPECT_WORKSPACE_ROOT', $currentWorkspaceRoot, 'Process')
@@ -269,6 +288,7 @@ https://agent-hub.example.ts.net (tailnet only)
 "@
     $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $activeCounterPath
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $activeStatePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -303,6 +323,7 @@ https://agent-hub.example.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:$directPromoteFrontDoorPort
 "@
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $directPromoteStatePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -312,6 +333,41 @@ https://agent-hub.example.ts.net (tailnet only)
     $directPromoteCount = [int]((Get-Content -Path $directPromoteCounterPath -Raw -Encoding utf8).Trim())
     if ($directPromoteCount -ne 1) {
         throw "Expected watchdog to rerun ensure-web-ui-running.ps1 when direct mode can be promoted to the matching Tailscale Serve front door. Got $directPromoteCount."
+    }
+
+    $duplicatePort = Get-FreeTcpPort
+    $duplicateStatePath = Join-Path $tempRoot 'duplicate-state\hub.json'
+    $duplicateCounterPath = Join-Path $tempRoot 'duplicate-counter.txt'
+    $duplicateStatusPort = Get-FreeTcpPort
+    $duplicateFrontDoorPort = Get-FreeTcpPort
+    $duplicateManagerJob = Start-MockManagerStatusServer -PortNumber $duplicateStatusPort -StatusJson '{"running":true,"configured":true,"builtinBackend":true,"currentQueueId":"q_duplicate_watchdog"}'
+    $duplicateFrontDoorJob = Start-MockFrontDoorServer -PortNumber $duplicateFrontDoorPort -StatusCode 200
+    $competingHubJob = Start-MockHubSessionsServer -PortNumber $duplicatePort
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $duplicateStatePath)) | Out-Null
+    [pscustomobject]@{
+        ListenUrl = "http://127.0.0.1:$duplicateStatusPort/"
+        FrontDoorListenUrl = "http://127.0.0.1:$duplicateFrontDoorPort/"
+        PreferredConnectUrlSource = 'tailscale-serve'
+        AuthDisabled = $true
+        RequestedPhoneReady = $true
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $duplicateStatePath -Encoding utf8
+
+    $env:WORKSPACE_AGENT_HUB_TEST_COUNTER_PATH = $duplicateCounterPath
+    $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @"
+https://agent-hub.example.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:$duplicateFrontDoorPort
+"@
+    & $scriptPath `
+        -Port $duplicatePort `
+        -EnsureScriptPath $mockEnsurePath `
+        -StatePath $duplicateStatePath `
+        -WorkspaceRoot $currentWorkspaceRoot `
+        -IntervalSeconds 1 `
+        -MaxIterations 1
+
+    $duplicateCount = [int]((Get-Content -Path $duplicateCounterPath -Raw -Encoding utf8).Trim())
+    if ($duplicateCount -ne 1) {
+        throw "Expected watchdog to rerun ensure-web-ui-running.ps1 when a competing Hub still occupies the preferred port. Got $duplicateCount."
     }
 
     $staleServeStatePath = Join-Path $tempRoot 'stale-serve-state\hub.json'
@@ -335,6 +391,7 @@ https://agent-hub.example.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:57921
 '@
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $staleServeStatePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -350,6 +407,7 @@ https://agent-hub.example.ts.net (tailnet only)
     [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT', $null, 'Process')
 
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -369,6 +427,8 @@ https://agent-hub.example.ts.net (tailnet only)
             'Bypass',
             '-File',
             $scriptPath,
+            '-Port',
+            [string]$idleWatchdogPort,
             '-EnsureScriptPath',
             $mockEnsurePath,
             '-StatePath',
@@ -400,6 +460,7 @@ https://agent-hub.example.ts.net (tailnet only)
     }
 
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -423,6 +484,7 @@ https://agent-hub.example.ts.net (tailnet only)
 
     $fastRecoveryStopwatch = [Diagnostics.Stopwatch]::StartNew()
     & $scriptPath `
+        -Port $idleWatchdogPort `
         -EnsureScriptPath $mockEnsurePath `
         -StatePath $statePath `
         -WorkspaceRoot $currentWorkspaceRoot `
@@ -496,7 +558,7 @@ https://agent-hub.example.ts.net (tailnet only)
         }
     }
 
-    foreach ($job in @($directPromoteManagerJob, $directPromoteFrontDoorJob, $staleServeManagerJob, $frontDoorHealthyJob, $frontDoorStaleServeJob)) {
+    foreach ($job in @($directPromoteManagerJob, $directPromoteFrontDoorJob, $duplicateManagerJob, $duplicateFrontDoorJob, $competingHubJob, $staleServeManagerJob, $frontDoorHealthyJob, $frontDoorStaleServeJob)) {
         if (-not $job) {
             continue
         }

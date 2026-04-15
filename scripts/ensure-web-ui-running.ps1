@@ -591,6 +591,186 @@ function Get-ListenerProcessId {
     return $null
 }
 
+function Get-ProcessCommandLine {
+    param(
+        [int]$ProcessId
+    )
+
+    if ($ProcessId -le 0) {
+        return ''
+    }
+
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if ($process -and $process.CommandLine) {
+            return ([string]$process.CommandLine).Trim()
+        }
+    } catch {
+    }
+
+    return ''
+}
+
+function Test-CompetingWorkspaceAgentHubListener {
+    param(
+        [int]$ProcessId,
+        [string]$ListenUrl,
+        [string]$Token
+    )
+
+    if ($ProcessId -le 0 -or -not $ListenUrl) {
+        return $false
+    }
+
+    if (Test-WebUiReady -ListenUrl $ListenUrl -Token $Token) {
+        return $true
+    }
+
+    $commandLine = Get-ProcessCommandLine -ProcessId $ProcessId
+    if (-not $commandLine) {
+        return $false
+    }
+
+    return (
+        $commandLine -match '(?i)workspace-agent-hub' -and
+        $commandLine -notmatch '(?i)web-ui-front-door'
+    )
+}
+
+function Get-CompetingPreferredPortProcessIds {
+    param(
+        [int]$PreferredPort,
+        [string]$Token,
+        [int[]]$ExcludeProcessIds = @()
+    )
+
+    $candidateProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+    if ($PreferredPort -le 0) {
+        return @()
+    }
+
+    try {
+        $listeners = Get-NetTCPConnection -LocalPort $PreferredPort -State Listen -ErrorAction Stop
+    } catch {
+        return @()
+    }
+
+    $preferredListenUrl = "http://127.0.0.1:$PreferredPort"
+    foreach ($listener in $listeners) {
+        if (-not $listener.OwningProcess) {
+            continue
+        }
+        $processId = [int]$listener.OwningProcess
+        if ($processId -le 0 -or $ExcludeProcessIds -contains $processId) {
+            continue
+        }
+        if (
+            Test-CompetingWorkspaceAgentHubListener `
+                -ProcessId $processId `
+                -ListenUrl $preferredListenUrl `
+                -Token $Token
+        ) {
+            [void]$candidateProcessIds.Add($processId)
+        }
+    }
+
+    $result = @()
+    foreach ($candidateProcessId in $candidateProcessIds) {
+        $result += [int]$candidateProcessId
+    }
+
+    return $result
+}
+
+function Stop-ProcessIds {
+    param(
+        [int[]]$ProcessIds = @()
+    )
+
+    foreach ($processId in $ProcessIds) {
+        if ($processId -le 0) {
+            continue
+        }
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            try {
+                Wait-Process -Id $processId -Timeout 10 -ErrorAction Stop
+            } catch {
+            }
+        } catch {
+        }
+    }
+}
+
+function Stop-WebUiViaHttp {
+    param(
+        [string]$ListenUrl,
+        [string]$Token
+    )
+
+    if (-not $ListenUrl) {
+        return $false
+    }
+
+    try {
+        $headers = @{}
+        $effectiveAccessCode = Get-EffectiveAccessCode -TokenOption $Token
+        if ($effectiveAccessCode) {
+            $headers['X-Workspace-Agent-Hub-Token'] = $effectiveAccessCode
+        }
+        $response = Invoke-WebRequest -Uri ($ListenUrl.TrimEnd('/') + '/api/shutdown') -Method Post -Headers $headers -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
+}
+
+function Wait-ForPortClosed {
+    param(
+        [int]$PortNumber,
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        try {
+            $listeners = Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction Stop
+            if (-not $listeners) {
+                return $true
+            }
+        } catch {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $false
+}
+
+function Stop-CompetingPreferredPortHub {
+    param(
+        [int]$PreferredPort,
+        [string]$Token,
+        [int[]]$ExcludeProcessIds = @()
+    )
+
+    $competingProcessIds = @(Get-CompetingPreferredPortProcessIds `
+        -PreferredPort $PreferredPort `
+        -Token $Token `
+        -ExcludeProcessIds $ExcludeProcessIds)
+    if ($competingProcessIds.Count -eq 0) {
+        return
+    }
+
+    $preferredListenUrl = "http://127.0.0.1:$PreferredPort"
+    $shutdownAccepted = Stop-WebUiViaHttp -ListenUrl $preferredListenUrl -Token $Token
+    if ($shutdownAccepted -and (Wait-ForPortClosed -PortNumber $PreferredPort)) {
+        return
+    }
+
+    Stop-ProcessIds -ProcessIds $competingProcessIds
+}
+
 function Get-TailscaleServeProxyTarget {
     param(
         [Parameter(Mandatory = $true)]
@@ -1456,6 +1636,11 @@ if (
         -FallbackProcessId $fallbackProcessId `
         -ExcludeProcessIds @([int]$finalState.ProcessId, [int]$frontDoorInfo.ProcessId)
 }
+
+Stop-CompetingPreferredPortHub `
+    -PreferredPort $Port `
+    -Token $resolvedToken `
+    -ExcludeProcessIds @([int]$finalState.ProcessId, [int]$frontDoorInfo.ProcessId)
 
 if ($OpenBrowser) {
     Start-Process -FilePath ([string]$finalState.BrowserUrl) | Out-Null
