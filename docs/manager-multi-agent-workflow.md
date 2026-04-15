@@ -22,6 +22,8 @@ Already implemented in the current line:
 - Manager-owned deliver, push, seed-sync, and post-delivery follow-through for
   worker results
 - scope-aware worker parallelism and scope-blocked visibility
+- automatic retry of Manager Codex usage-limit pauses after the reported reset
+  time, while preserving the queued work for immediate manual retry
 
 Not yet generalized enough for the target operator experience:
 

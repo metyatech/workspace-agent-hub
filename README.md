@@ -583,8 +583,9 @@ Continue` recovery path. That action stashes the tracked seed changes with a
 - The built-in manager backend uses Codex CLI (`gpt-5.4` with
   `model_reasoning_effort="xhigh"`) as the primary manager runtime. When
   Manager Codex hits a usage limit, Hub surfaces a paused state, leaves queued
-  work pending, and resumes when the user clicks `再開する` in the Manager GUI
-  or starts Manager again after topping up quota.
+  work pending, records an automatic retry time, and resumes the queue after
+  the quota window should have reset. The user can still click `再開する` in
+  the Manager GUI or start Manager again to retry immediately.
 - If a Manager topic is stranded after a Codex worker already emitted a
   structured `task_complete` reply, startup/status recovery scans the Codex
   rollout session log, replays that completed reply into the topic, and removes
@@ -743,6 +744,9 @@ This repository claims the following primary handoff paths.
   Optional override for Manager's Codex rollout recovery scan root. Defaults to
   `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise the user's
   `.codex/sessions` directory.
+- `WORKSPACE_AGENT_HUB_MANAGER_QUOTA_AUTO_RESUME_RETRY_MS`
+  Optional retry delay for Manager Codex usage-limit pauses when the Codex CLI
+  output does not include a concrete reset time. Defaults to 10 minutes.
 - `AI_AGENT_SESSION_NO_ATTACH=1`
   Keeps the mobile menu tests from attaching the current shell to the created
   session.

@@ -6099,7 +6099,7 @@ class ManagerApp {
     } else if (problem === 'paused') {
       detail.textContent = statusErrorMessage
         ? `${statusErrorMessage}${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''} 上の「再開する」で再開できます。`
-        : `Manager Codex の利用上限で停止しています。${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''} 上の「再開する」で再開できます。`;
+        : `Manager Codex の利用上限で停止しています。${pendingCount > 0 ? ` いまはキュー ${pendingCount} 件が止まっています。` : ''} 利用枠が戻る見込み時刻以降に自動再開します。上の「再開する」で今すぐ再試行できます。`;
     } else if (busy) {
       detail.textContent = busyActivity?.headline
         ? [

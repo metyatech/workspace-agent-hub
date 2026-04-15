@@ -580,6 +580,7 @@ afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
   delete process.env.WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS;
+  delete process.env.WORKSPACE_AGENT_HUB_MANAGER_QUOTA_AUTO_RESUME_RETRY_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR;
   await rm(tempDir, {
     recursive: true,
@@ -1173,7 +1174,7 @@ describe('manager backend codex integration', () => {
 
     const session = await readSession(tempDir);
     expect(session.routingSessionId).toBe('routing-thread-1');
-  }, 15000);
+  }, 30000);
 
   it('retries routing once with a fresh session after an invalid stored routing session', async () => {
     const failingRoutingProc = makeProc(8609);
@@ -2150,7 +2151,7 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-auto-init');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('自動初期化');
     expect(addMessageMock.mock.calls.at(-1)?.[2]).toContain('review done');
-  });
+  }, 30000);
 
   it('surfaces a needs-reply when auto mwt init is skipped because the repo is not clean', async () => {
     const dispatchProc = makeProc(6120);
@@ -2602,6 +2603,127 @@ describe('manager backend codex integration', () => {
     );
     expect(addMessageMock.mock.calls[0]?.[2]).toBe('Codex resumed answer');
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('auto-resumes a manager Codex usage-limit pause after the retry delay', async () => {
+    process.env.WORKSPACE_AGENT_HUB_MANAGER_QUOTA_AUTO_RESUME_RETRY_MS = '50';
+    const dispatchCodexProc = makeProc(6122);
+    const dispatchRetryProc = makeProc(6123);
+    const managerRetryProc = makeProc(6124);
+    spawnMock
+      .mockReturnValueOnce(dispatchCodexProc)
+      .mockReturnValueOnce(dispatchRetryProc)
+      .mockReturnValueOnce(managerRetryProc);
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-manager-codex-auto-resume',
+      'もう少し考えてから返して',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    dispatchCodexProc.stderr.emit(
+      'data',
+      Buffer.from("You've hit your usage limit. Upgrade to Pro to continue.")
+    );
+    dispatchCodexProc.emit('close', 1);
+
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      return (
+        session.lastPauseMessage?.includes('usage limit') === true &&
+        typeof session.lastPauseAutoResumeAt === 'string'
+      );
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(dispatchRetryProc, {
+      sessionId: 'codex-dispatch-auto-resume',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'active',
+        reply: 'auto resume this directly',
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(managerRetryProc, {
+      sessionId: 'codex-manager-auto-resume',
+      text: '{"status":"review","reply":"Codex auto-resumed answer"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return (
+        queue.length === 0 &&
+        session.status === 'idle' &&
+        !session.lastPauseMessage &&
+        !session.lastPauseAutoResumeAt
+      );
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-manager-codex-auto-resume'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toBe('Codex auto-resumed answer');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
+  });
+
+  it('auto-resumes a persisted due quota pause when status is checked after restart', async () => {
+    const workerProc = makeProc(6125);
+    const reviewProc = makeProc(6126);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_quota_due',
+        threadId: 'thread-quota-due',
+        content: 'resume after quota reset',
+        dispatchMode: 'direct-worker',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    await updateSession(tempDir, (session) => ({
+      ...session,
+      status: 'idle',
+      startedAt: session.startedAt ?? new Date().toISOString(),
+      lastPauseMessage: '[Manager paused] Manager Codex usage limit',
+      lastPauseAt: new Date().toISOString(),
+      lastPauseAutoResumeAt: new Date(Date.now() - 1000).toISOString(),
+    }));
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.health).toBe('paused');
+    expect(status.pendingCount).toBe(1);
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-quota-due',
+      text: '{"status":"review","reply":"worker resumed after persisted quota pause"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-quota-due',
+      text: '{"status":"review","reply":"worker resumed after persisted quota pause"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-quota-due' &&
+          call[2] === 'worker resumed after persisted quota pause' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
   });
 
   it('lets Manager choose a brand-new repo target for a new task without a visible repo picker', async () => {

@@ -303,6 +303,8 @@ export interface ManagerSession {
   /** Latest manager-runtime pause surfaced to the GUI. */
   lastPauseMessage: string | null;
   lastPauseAt: string | null;
+  /** When a quota pause should be retried automatically. */
+  lastPauseAutoResumeAt?: string | null;
   /** Active manager/worker assignments currently running for queued work items. */
   activeAssignments: ManagerActiveAssignment[];
   /** Canonical transient runtime state while a queued item is being started/resumed. */
@@ -495,6 +497,7 @@ function makeDefaultSession(dir: string): ManagerSession {
     lastErrorAt: null,
     lastPauseMessage: null,
     lastPauseAt: null,
+    lastPauseAutoResumeAt: null,
     activeAssignments: [],
     dispatchingThreadId: null,
     dispatchingQueueEntryIds: [],
@@ -541,6 +544,15 @@ function normalizeWriteScopes(value: unknown): string[] {
 
 function normalizeOptionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeOptionalTimestamp(value: unknown): string | null {
+  const text = normalizeOptionalText(value);
+  if (!text) {
+    return null;
+  }
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 function isPathWithin(baseDir: string, candidatePath: string): boolean {
@@ -836,6 +848,9 @@ function normalizeManagerSession(
     dispatchingAssigneeLabel,
     dispatchingDetail,
     dispatchingStartedAt,
+    lastPauseAutoResumeAt: normalizeOptionalTimestamp(
+      session.lastPauseAutoResumeAt
+    ),
   };
 }
 
@@ -923,23 +938,36 @@ async function setManagerRuntimeError(
 
 async function setManagerRuntimePause(
   dir: string,
-  message: string
+  message: string,
+  autoResumeAt: string | null = null
 ): Promise<void> {
+  const resolvedDir = resolvePath(dir);
+  const normalizedAutoResumeAt = normalizeOptionalTimestamp(autoResumeAt);
   await updateSession(dir, (session) => ({
     ...session,
     lastPauseMessage: message,
     lastPauseAt: new Date().toISOString(),
+    lastPauseAutoResumeAt: normalizedAutoResumeAt,
   }));
+  if (normalizedAutoResumeAt) {
+    scheduleManagerQuotaAutoResume(dir, resolvedDir, normalizedAutoResumeAt);
+  } else {
+    cancelManagerQuotaAutoResumeTimer(resolvedDir);
+  }
 }
 
 async function clearManagerRuntimePause(dir: string): Promise<void> {
+  cancelManagerQuotaAutoResumeTimer(resolvePath(dir));
   await updateSession(dir, (session) =>
-    session.lastPauseMessage === null && session.lastPauseAt === null
+    session.lastPauseMessage === null &&
+    session.lastPauseAt === null &&
+    !session.lastPauseAutoResumeAt
       ? session
       : {
           ...session,
           lastPauseMessage: null,
           lastPauseAt: null,
+          lastPauseAutoResumeAt: null,
         }
   );
 }
@@ -3563,11 +3591,17 @@ async function runCodexTurn(input: {
 
 class ManagerCodexUsageLimitError extends Error {
   readonly combinedOutput: string;
+  readonly autoResumeAt: string | null;
 
-  constructor(message: string, combinedOutput: string) {
+  constructor(
+    message: string,
+    combinedOutput: string,
+    autoResumeAt: string | null
+  ) {
     super(message);
     this.name = 'ManagerCodexUsageLimitError';
     this.combinedOutput = combinedOutput;
+    this.autoResumeAt = autoResumeAt;
   }
 }
 
@@ -3585,7 +3619,69 @@ function buildManagerCodexUsageLimitMessage(output: string): string {
   const detail =
     extractRuntimeFailureDetail(output, 280) ??
     'Manager Codex hit its usage limit.';
-  return `[Manager paused] Manager Codex が usage limit に達したため停止しました。${detail}\n課金が終わったら「再開」を押すか、メッセージ送信で再開してください。`;
+  return `[Manager paused] Manager Codex が usage limit に達したため停止しました。${detail}\n利用枠が戻る見込み時刻以降に自動再開します。すぐ試す場合は「再開」を押すか、メッセージ送信で再開してください。`;
+}
+
+function managerQuotaAutoResumeRetryMs(): number {
+  return parseEnvDurationMs(
+    'WORKSPACE_AGENT_HUB_MANAGER_QUOTA_AUTO_RESUME_RETRY_MS',
+    10 * 60_000
+  );
+}
+
+function parseCodexUsageLimitAutoResumeAt(
+  output: string,
+  now = new Date()
+): string {
+  const relativeMatch = output.match(
+    /try again in\s+(\d+)\s*(second|seconds|minute|minutes|hour|hours)/i
+  );
+  if (relativeMatch) {
+    const amount = Number.parseInt(relativeMatch[1] ?? '', 10);
+    const unit = (relativeMatch[2] ?? '').toLowerCase();
+    if (Number.isFinite(amount) && amount > 0) {
+      const multiplier = unit.startsWith('second')
+        ? 1_000
+        : unit.startsWith('minute')
+          ? 60_000
+          : 60 * 60_000;
+      return new Date(now.getTime() + amount * multiplier).toISOString();
+    }
+  }
+
+  const timeMatch = output.match(
+    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?/i
+  );
+  if (timeMatch) {
+    const rawHour = Number.parseInt(timeMatch[1] ?? '', 10);
+    const minute = Number.parseInt(timeMatch[2] ?? '0', 10);
+    const meridiem = (timeMatch[3] ?? '').toLowerCase().replace(/\./g, '');
+    if (
+      Number.isFinite(rawHour) &&
+      Number.isFinite(minute) &&
+      minute >= 0 &&
+      minute < 60
+    ) {
+      let hour = rawHour;
+      if (meridiem === 'pm' && hour < 12) {
+        hour += 12;
+      } else if (meridiem === 'am' && hour === 12) {
+        hour = 0;
+      }
+      if (hour >= 0 && hour < 24) {
+        const candidate = new Date(now);
+        candidate.setHours(hour, minute, 0, 0);
+        if (candidate.getTime() <= now.getTime() + 1_000) {
+          candidate.setDate(candidate.getDate() + 1);
+        }
+        return candidate.toISOString();
+      }
+    }
+  }
+
+  return new Date(
+    now.getTime() + managerQuotaAutoResumeRetryMs()
+  ).toISOString();
 }
 
 async function runManagerRuntimeTurn(input: {
@@ -3610,7 +3706,8 @@ async function runManagerRuntimeTurn(input: {
   if (codexResult.code !== 0 && isCodexUsageLimitError(combinedOutput)) {
     throw new ManagerCodexUsageLimitError(
       buildManagerCodexUsageLimitMessage(combinedOutput),
-      combinedOutput
+      combinedOutput,
+      parseCodexUsageLimitAutoResumeAt(combinedOutput)
     );
   }
   return {
@@ -3698,9 +3795,11 @@ const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
 const recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
 const recoveryRetryAttempts = new Map<string, number>();
+const quotaAutoResumeTimers = new Map<string, NodeJS.Timeout>();
 const staleSeedRecoveryMonitors = new Map<string, NodeJS.Timeout>();
 const MAX_RERUN_DEPTH = 5;
 const MAX_INTERNAL_ERROR_RETRY_MS = 30_000;
+const MAX_QUOTA_AUTO_RESUME_DELAY_MS = 2_147_483_647;
 const STALE_QUEUE_RUNNER_MS = 2 * 60 * 1000;
 const routingLocks = new Map<string, Promise<void>>();
 const MAX_ROUTING_TOPIC_CANDIDATES = 40;
@@ -3730,6 +3829,109 @@ function cancelRecoveryRetryTimer(resolvedDir: string): void {
 function resetRecoveryRetryState(resolvedDir: string): void {
   cancelRecoveryRetryTimer(resolvedDir);
   recoveryRetryAttempts.delete(resolvedDir);
+}
+
+function cancelManagerQuotaAutoResumeTimer(resolvedDir: string): void {
+  const timer = quotaAutoResumeTimers.get(resolvedDir);
+  if (timer) {
+    clearTimeout(timer);
+    quotaAutoResumeTimers.delete(resolvedDir);
+  }
+}
+
+async function runManagerQuotaAutoResume(
+  dir: string,
+  resolvedDir: string,
+  expectedAutoResumeAt: string
+): Promise<void> {
+  try {
+    const [session, queue] = await Promise.all([
+      readSession(dir),
+      readQueue(dir),
+    ]);
+    if (
+      !session.lastPauseMessage ||
+      session.lastPauseAutoResumeAt !== expectedAutoResumeAt ||
+      !queue.some((entry) => !entry.processed)
+    ) {
+      cancelManagerQuotaAutoResumeTimer(resolvedDir);
+      return;
+    }
+
+    const resumeAtMs = Date.parse(expectedAutoResumeAt);
+    if (Number.isFinite(resumeAtMs) && resumeAtMs > Date.now()) {
+      scheduleManagerQuotaAutoResume(dir, resolvedDir, expectedAutoResumeAt);
+      return;
+    }
+
+    await clearManagerRuntimePause(dir);
+    await reconcileActiveAssignments(dir);
+    await recoverCanonicalThreadState(dir);
+    startStaleSeedRecoveryMonitor(dir);
+    void processNextQueued(dir, resolvedDir);
+  } catch (error) {
+    console.error('[manager-backend] quota auto-resume failed:', error);
+    const nextAutoResumeAt = new Date(
+      Date.now() + managerQuotaAutoResumeRetryMs()
+    ).toISOString();
+    await updateSession(dir, (session) =>
+      session.lastPauseMessage
+        ? {
+            ...session,
+            lastPauseAutoResumeAt: nextAutoResumeAt,
+          }
+        : session
+    ).catch(() => {});
+    scheduleManagerQuotaAutoResume(dir, resolvedDir, nextAutoResumeAt);
+  }
+}
+
+function scheduleManagerQuotaAutoResume(
+  dir: string,
+  resolvedDir: string,
+  autoResumeAt: string
+): void {
+  const resumeAtMs = Date.parse(autoResumeAt);
+  if (!Number.isFinite(resumeAtMs)) {
+    cancelManagerQuotaAutoResumeTimer(resolvedDir);
+    return;
+  }
+
+  cancelManagerQuotaAutoResumeTimer(resolvedDir);
+  const delayMs = Math.min(
+    Math.max(0, resumeAtMs - Date.now()),
+    MAX_QUOTA_AUTO_RESUME_DELAY_MS
+  );
+  const timer = setTimeout(() => {
+    if (quotaAutoResumeTimers.get(resolvedDir) === timer) {
+      quotaAutoResumeTimers.delete(resolvedDir);
+    }
+    void runManagerQuotaAutoResume(dir, resolvedDir, autoResumeAt);
+  }, delayMs);
+  timer.unref?.();
+  quotaAutoResumeTimers.set(resolvedDir, timer);
+}
+
+function ensureManagerQuotaAutoResumeScheduled(
+  dir: string,
+  session: ManagerSession
+): void {
+  const autoResumeAt = normalizeOptionalTimestamp(
+    session.lastPauseAutoResumeAt
+  );
+  if (!session.lastPauseMessage || !autoResumeAt) {
+    return;
+  }
+
+  const resolvedDir = resolvePath(dir);
+  if (Date.parse(autoResumeAt) <= Date.now()) {
+    void runManagerQuotaAutoResume(dir, resolvedDir, autoResumeAt);
+    return;
+  }
+
+  if (!quotaAutoResumeTimers.has(resolvedDir)) {
+    scheduleManagerQuotaAutoResume(dir, resolvedDir, autoResumeAt);
+  }
 }
 
 function clearProcessNextQueuedReservation(resolvedDir: string): void {
@@ -3783,12 +3985,16 @@ export function resetProcessNextQueuedStateForTests(): void {
   for (const timer of recoveryRetryTimers.values()) {
     clearTimeout(timer);
   }
+  for (const timer of quotaAutoResumeTimers.values()) {
+    clearTimeout(timer);
+  }
   inFlight.clear();
   inFlightStartedAt.clear();
   rerunRequested.clear();
   rerunDepth.clear();
   recoveryRetryTimers.clear();
   recoveryRetryAttempts.clear();
+  quotaAutoResumeTimers.clear();
 }
 
 async function runScheduledRecoveryRetry(
@@ -5404,6 +5610,7 @@ async function reserveAssignment(input: {
       lastErrorAt: null,
       lastPauseMessage: null,
       lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
     };
   });
 }
@@ -5428,6 +5635,7 @@ async function setDispatchingAssignment(input: {
     lastErrorAt: null,
     lastPauseMessage: null,
     lastPauseAt: null,
+    lastPauseAutoResumeAt: null,
   }));
 }
 
@@ -7159,7 +7367,7 @@ async function runQueuedAssignment(input: {
       );
       await clearThreadRuntimeStatePreservingContinuity(resolvedDir, thread.id);
       await removeAssignment(dir, assignment.id);
-      await setManagerRuntimePause(dir, error.message);
+      await setManagerRuntimePause(dir, error.message, error.autoResumeAt);
       return;
     }
 
@@ -7978,7 +8186,11 @@ export async function processNextQueued(
                 supersededByThreadId: null,
               }
             );
-            await setManagerRuntimePause(dir, wtErr.message);
+            await setManagerRuntimePause(
+              dir,
+              wtErr.message,
+              wtErr.autoResumeAt
+            );
             return;
           }
           if (isMwtSeedTrackedDirtyError(wtErr)) {
@@ -8108,7 +8320,7 @@ export async function processNextQueued(
     }
   } catch (err) {
     if (err instanceof ManagerCodexUsageLimitError) {
-      await setManagerRuntimePause(dir, err.message);
+      await setManagerRuntimePause(dir, err.message, err.autoResumeAt);
       return;
     }
     hadInternalError = true;
@@ -8302,7 +8514,7 @@ export async function sendGlobalToBuiltinManager(
       });
     } catch (error) {
       if (error instanceof ManagerCodexUsageLimitError) {
-        await setManagerRuntimePause(dir, error.message);
+        await setManagerRuntimePause(dir, error.message, error.autoResumeAt);
         throw new Error(error.message);
       }
       throw error;
@@ -8661,6 +8873,7 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
       }));
     }
     if (latestSession.lastPauseMessage) {
+      ensureManagerQuotaAutoResumeScheduled(dir, latestSession);
       return {
         running: true,
         configured: true,
@@ -8709,6 +8922,7 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   }
 
   if (session.lastPauseMessage) {
+    ensureManagerQuotaAutoResumeScheduled(dir, session);
     return {
       running: true,
       configured: true,

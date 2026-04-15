@@ -958,7 +958,7 @@ describe('manager-app DOM auth state matrix', () => {
         detail: 'Manager Codex の利用上限で停止中です',
         pendingCount: 2,
         errorMessage:
-          '[Manager paused] Manager Codex が usage limit に達したため停止しました。課金が終わったら「再開」を押すか、メッセージ送信で再開してください。',
+          '[Manager paused] Manager Codex が usage limit に達したため停止しました。利用枠が戻る見込み時刻以降に自動再開します。すぐ試す場合は「再開」を押すか、メッセージ送信で再開してください。',
         errorAt: '2026-04-10T04:30:00.000Z',
       },
     };
@@ -1024,7 +1024,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('Manager Codex の利用上限で停止中です');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('上の「再開する」で再開できます。');
+    ).toContain('自動再開します。');
 
     startButton.click();
     await flushAsync(4);
