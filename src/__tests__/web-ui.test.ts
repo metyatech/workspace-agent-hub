@@ -12,6 +12,7 @@ import {
   extractTailscaleServeSetupUrl,
   runCommand,
 } from '../web-ui.js';
+import * as managerBackend from '../manager-backend.js';
 import { execGit } from '../manager-worktree.js';
 import { writeManagerThreadMeta } from '../manager-thread-state.js';
 import * as managerThreadState from '../manager-thread-state.js';
@@ -1042,6 +1043,57 @@ describe('native manager page', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringContaining('Failed to build manager live snapshot'),
     });
+  });
+
+  it('keeps manager status and live bootstrap responsive even if builtin status reconciliation stalls', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    vi.spyOn(managerBackend, 'getBuiltinManagerStatus').mockImplementation(
+      () => new Promise(() => {})
+    );
+
+    const headers = { 'X-Workspace-Agent-Hub-Token': 'secret-token' };
+
+    const statusResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      {
+        headers,
+        signal: AbortSignal.timeout(2000),
+      }
+    );
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      running: false,
+      configured: true,
+      builtinBackend: true,
+    });
+
+    const liveResponse = await fetch(
+      `http://127.0.0.1:${port}/manager/api/live`,
+      {
+        headers,
+        signal: AbortSignal.timeout(2000),
+      }
+    );
+    expect(liveResponse.status).toBe(200);
+    await expect(readNdjsonObjects(liveResponse, 1)).resolves.toEqual([
+      expect.objectContaining({
+        kind: 'snapshot',
+        status: expect.objectContaining({
+          running: false,
+          configured: true,
+          builtinBackend: true,
+        }),
+      }),
+    ]);
   });
 
   it('creates and lists threads through the native manager API', async () => {

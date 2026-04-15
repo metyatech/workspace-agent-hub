@@ -177,13 +177,12 @@ function normalizeManagerPath(pathname: string): string {
 async function buildManagerLiveSnapshot(
   workspaceRoot: string
 ): Promise<ManagerLiveSnapshot> {
-  const [threads, session, queue, rawMeta, tasks, status] = await Promise.all([
+  const [threads, session, queue, rawMeta, tasks] = await Promise.all([
     listThreads(workspaceRoot),
     readSession(workspaceRoot),
     readQueue(workspaceRoot),
     readManagerThreadMeta(workspaceRoot),
     readActiveTasks(workspaceRoot),
-    getBuiltinManagerStatus(workspaceRoot),
   ]);
   const meta = await reconcileManagerThreadMeta({
     dir: workspaceRoot,
@@ -191,6 +190,11 @@ async function buildManagerLiveSnapshot(
     session,
     queue,
     meta: rawMeta,
+  });
+  const status = deriveManagerStatusSnapshot({
+    threads,
+    session,
+    queue,
   });
 
   return {
@@ -205,6 +209,189 @@ async function buildManagerLiveSnapshot(
     tasks,
     status,
   };
+}
+
+function deriveManagerStatusSnapshot(input: {
+  threads: Awaited<ReturnType<typeof listThreads>>;
+  session: Awaited<ReturnType<typeof readSession>>;
+  queue: Awaited<ReturnType<typeof readQueue>>;
+}): Awaited<ReturnType<typeof getBuiltinManagerStatus>> {
+  const activeQueueIds = new Set(
+    input.session.activeAssignments.flatMap(
+      (assignment) => assignment.queueEntryIds
+    )
+  );
+  const dispatchingQueueIds = new Set(
+    input.session.dispatchingQueueEntryIds ?? []
+  );
+  const pending = input.queue.filter(
+    (entry) =>
+      !entry.processed &&
+      !activeQueueIds.has(entry.id) &&
+      !dispatchingQueueIds.has(entry.id)
+  ).length;
+  const currentAssignment = input.session.activeAssignments[0] ?? null;
+  const currentThread =
+    currentAssignment === null
+      ? null
+      : (input.threads.find(
+          (thread) => thread.id === currentAssignment.threadId
+        ) ?? null);
+
+  if (input.session.activeAssignments.length > 0) {
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'ok',
+      detail:
+        input.session.activeAssignments.length === 1
+          ? currentThread
+            ? `処理中 (${currentThread.title})`
+            : '処理中'
+          : `処理中 (${input.session.activeAssignments.length}件)`,
+      pendingCount: pending,
+      currentQueueId: currentAssignment?.queueEntryIds[0] ?? null,
+      currentThreadId: currentAssignment?.threadId ?? null,
+      currentThreadTitle: currentThread?.title ?? null,
+      errorMessage: null,
+      errorAt: null,
+    };
+  }
+
+  if (input.session.dispatchingThreadId) {
+    const dispatchingThread =
+      input.threads.find(
+        (thread) => thread.id === input.session.dispatchingThreadId
+      ) ?? null;
+    const dispatchingLabel =
+      dispatchingThread?.title ?? input.session.dispatchingThreadId;
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'ok',
+      detail: dispatchingLabel
+        ? `処理開始中 (${dispatchingLabel})`
+        : '処理開始中',
+      pendingCount: pending,
+      currentQueueId: input.session.dispatchingQueueEntryIds?.[0] ?? null,
+      currentThreadId: input.session.dispatchingThreadId,
+      currentThreadTitle: dispatchingThread?.title ?? null,
+      errorMessage: null,
+      errorAt: null,
+    };
+  }
+
+  if (pending > 0) {
+    if (input.session.lastPauseMessage) {
+      return {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'paused',
+        detail: 'Manager Codex の利用上限で停止中です',
+        pendingCount: pending,
+        currentQueueId: null,
+        currentThreadId: null,
+        currentThreadTitle: null,
+        errorMessage: input.session.lastPauseMessage,
+        errorAt: input.session.lastPauseAt,
+      };
+    }
+    if (input.session.lastErrorMessage) {
+      return {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        health: 'error',
+        detail: 'AI backend で問題が起きています',
+        pendingCount: pending,
+        currentQueueId: null,
+        currentThreadId: null,
+        currentThreadTitle: null,
+        errorMessage: input.session.lastErrorMessage,
+        errorAt: input.session.lastErrorAt,
+      };
+    }
+  }
+
+  if (input.session.status === 'not-started' && pending === 0) {
+    return {
+      running: false,
+      configured: true,
+      builtinBackend: true,
+      health: 'ok',
+      detail: '未起動 — メッセージ送信で自動起動します',
+      pendingCount: 0,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+      errorMessage: null,
+      errorAt: null,
+    };
+  }
+
+  if (input.session.lastPauseMessage) {
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'paused',
+      detail: 'Manager Codex の利用上限で停止中です',
+      pendingCount: pending,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+      errorMessage: input.session.lastPauseMessage,
+      errorAt: input.session.lastPauseAt,
+    };
+  }
+
+  if (input.session.lastErrorMessage) {
+    return {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      health: 'error',
+      detail: 'AI backend で問題が起きています',
+      pendingCount: pending,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+      errorMessage: input.session.lastErrorMessage,
+      errorAt: input.session.lastErrorAt,
+    };
+  }
+
+  return {
+    running: true,
+    configured: true,
+    builtinBackend: true,
+    health: 'ok',
+    detail: pending > 0 ? `待機中 (キュー: ${pending}件)` : '待機中',
+    pendingCount: pending,
+    currentQueueId: null,
+    currentThreadId: null,
+    currentThreadTitle: null,
+    errorMessage: null,
+    errorAt: null,
+  };
+}
+
+async function readDirectManagerStatus(
+  workspaceRoot: string
+): Promise<ManagerLiveSnapshot['status']> {
+  const [threads, session, queue] = await Promise.all([
+    listThreads(workspaceRoot),
+    readSession(workspaceRoot),
+    readQueue(workspaceRoot),
+  ]);
+  return deriveManagerStatusSnapshot({
+    threads,
+    session,
+    queue,
+  });
 }
 
 function getOrCreateManagerLiveSnapshotCacheEntry(
@@ -573,8 +760,14 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/manager/status' && input.method === 'GET') {
-    const snapshot = await readManagerLiveSnapshot(input.workspaceRoot);
-    sendJson(input.res, snapshot.status);
+    const snapshotCacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(
+      input.workspaceRoot
+    );
+    if (snapshotCacheEntry.snapshot && snapshotCacheEntry.subscriberCount > 0) {
+      sendJson(input.res, snapshotCacheEntry.snapshot.status);
+      return true;
+    }
+    sendJson(input.res, await readDirectManagerStatus(input.workspaceRoot));
     return true;
   }
 
