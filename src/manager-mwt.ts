@@ -108,6 +108,10 @@ export function listMwtChangedFiles(error: unknown): string[] {
   );
 }
 
+export function isMwtDropCwdHoldersError(error: unknown): boolean {
+  return looksLikeMwtError(error) && error.id === 'drop_cwd_holders';
+}
+
 function mwtErrorId(error: unknown): string | null {
   return looksLikeMwtError(error) && typeof error.id === 'string'
     ? error.id
@@ -116,6 +120,11 @@ function mwtErrorId(error: unknown): string | null {
 
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const MWT_OUTPUT_PREVIEW_LIMIT = 4_000;
+const DROP_CWD_RELEASE_RETRY_WAIT_MS = 1_000;
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 const MWT_CONFIG_PATH = '.mwt/config.toml';
 const MWT_MARKER_PATH = '.mwt-worktree.json';
 const AUTO_INIT_COMMIT_MESSAGE = 'chore: initialize managed-worktree-system';
@@ -193,6 +202,33 @@ function formatMwtStructuredDetailItem(value: unknown): string | null {
     : `- ${main}`;
 }
 
+function formatMwtHoldersSection(holders: unknown): string | null {
+  if (!Array.isArray(holders) || holders.length === 0) {
+    return null;
+  }
+  const lines = holders
+    .map((h) => {
+      if (!h || typeof h !== 'object') return null;
+      const holder = h as { pid?: unknown; name?: unknown; cwd?: unknown };
+      const pid =
+        typeof holder.pid === 'number' || typeof holder.pid === 'string'
+          ? String(holder.pid)
+          : '?';
+      const name =
+        typeof holder.name === 'string' && holder.name.trim()
+          ? holder.name.trim()
+          : 'unknown';
+      const cwd =
+        typeof holder.cwd === 'string' && holder.cwd.trim()
+          ? holder.cwd.trim()
+          : '';
+      return cwd ? `- PID ${pid} (${name}): ${cwd}` : `- PID ${pid} (${name})`;
+    })
+    .filter((l): l is string => Boolean(l));
+  if (lines.length === 0) return null;
+  return `CWD holders:\n${lines.join('\n')}`;
+}
+
 function formatMwtStructuredDetailSection(
   label: string,
   value: unknown
@@ -261,11 +297,18 @@ export function describeMwtError(error: unknown): string {
           (error.details as { failures?: unknown }).failures
         )
       : null;
+  const holdersSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtHoldersSection(
+          (error.details as { holders?: unknown }).holders
+        )
+      : null;
   const distinctStdoutSection =
     stdoutSection && stdoutSection !== stderrSection ? stdoutSection : null;
 
   return [
     message,
+    holdersSection,
     appliedActionsSection,
     completedStepsSection,
     failuresSection,
@@ -558,11 +601,26 @@ export async function dropManagerWorktree(input: {
   }
 
   await releaseTaskOwnedWslTmuxLocks(worktreePath).catch(() => {});
-  await dropTaskWorktree(worktreePath, {
-    force: true,
-    deleteBranch: true,
-    forceBranchDelete: true,
-  });
+  try {
+    await dropTaskWorktree(worktreePath, {
+      force: true,
+      deleteBranch: true,
+      forceBranchDelete: true,
+    });
+  } catch (error) {
+    if (!isMwtDropCwdHoldersError(error)) {
+      throw error;
+    }
+    // WSL session processes may still hold the CWD briefly after tmux kill-server.
+    // Release locks once more and wait before a single retry.
+    await releaseTaskOwnedWslTmuxLocks(worktreePath).catch(() => {});
+    await waitMs(DROP_CWD_RELEASE_RETRY_WAIT_MS);
+    await dropTaskWorktree(worktreePath, {
+      force: true,
+      deleteBranch: true,
+      forceBranchDelete: true,
+    });
+  }
   return true;
 }
 

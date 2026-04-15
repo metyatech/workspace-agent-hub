@@ -5227,11 +5227,7 @@ async function cleanupWorktreeBestEffort(input: {
 
   let usedPlainGitCleanup = false;
   try {
-    if (
-      await dropManagerWorktree({
-        worktreePath: input.worktreePath,
-      }).catch(() => false)
-    ) {
+    if (await dropManagerWorktree({ worktreePath: input.worktreePath })) {
       return null;
     }
     usedPlainGitCleanup = true;
@@ -5251,7 +5247,7 @@ async function cleanupWorktreeBestEffort(input: {
     }
     return null;
   } catch (error) {
-    let detail = error instanceof Error ? error.message : String(error);
+    let detail = describeMwtError(error);
     if (usedPlainGitCleanup) {
       const residueDetail = await repairManagerWorktreeResidue({
         targetRepoRoot: input.targetRepoRoot,
