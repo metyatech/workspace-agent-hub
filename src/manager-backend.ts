@@ -113,6 +113,7 @@ import {
 } from './manager-repos.js';
 import {
   buildWorkerRuntimeLaunchSpec,
+  describeWorkerRuntimeCliAvailability,
   parseGenericRuntimeOutput,
   parseGenericRuntimeProgressLine,
   workerRuntimeDefaults,
@@ -7823,6 +7824,41 @@ export async function processNextQueued(
 
       if (dispatch.assignee === 'worker') {
         if (explicitRequestedWorkerRuntime) {
+          const availability = describeWorkerRuntimeCliAvailability(
+            explicitRequestedWorkerRuntime
+          );
+          if (!availability.available) {
+            const assigneeLabel = defaultAssigneeLabel(
+              'worker',
+              explicitRequestedWorkerRuntime
+            );
+            const errMsg = `[Manager error] ${assigneeLabel} CLI not found before worker start. ${availability.detail}\nInstall the required runtime CLI or resend with another worker runtime.`;
+            await clearWorkerLiveOutput(
+              resolvedDir,
+              next.threadId,
+              'worker',
+              assigneeLabel,
+              {
+                workerAgentId: null,
+                runtimeState: null,
+                runtimeDetail: null,
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+              }
+            );
+            await addAiMessageBestEffort({
+              dir: resolvedDir,
+              threadId: next.threadId,
+              content: errMsg,
+              status: 'needs-reply',
+            });
+            await setManagerRuntimeError(dir, errMsg);
+            await updateQueueLocked(dir, (currentQueue) =>
+              currentQueue.filter((entry) => !batchIds.includes(entry.id))
+            );
+            continue;
+          }
           const defaults = workerRuntimeDefaults(
             explicitRequestedWorkerRuntime
           );

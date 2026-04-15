@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { join, posix as posixPath, win32 as win32Path } from 'node:path';
 import type { ManagerWorkerLiveEntry } from './manager-thread-state.js';
 import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
 import { wrapWindowsBatchCommandForSpawn } from './windows-batch-spawn.js';
@@ -107,6 +107,119 @@ function runtimeCommand(
     return platform === 'win32' ? 'copilot.exe' : 'copilot';
   }
   return platform === 'win32' ? 'claude.exe' : 'claude';
+}
+
+function envPathValue(env: NodeJS.ProcessEnv): string {
+  return env.PATH ?? env.Path ?? env.path ?? '';
+}
+
+function pathListDelimiter(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? ';' : ':';
+}
+
+function pathApiForPlatform(platform: NodeJS.Platform) {
+  return platform === 'win32' ? win32Path : posixPath;
+}
+
+function pathHasDirectoryPart(command: string): boolean {
+  return command.includes('/') || command.includes('\\');
+}
+
+function commandPathExists(commandPath: string): boolean {
+  try {
+    return statSync(commandPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function windowsPathExtensions(
+  command: string,
+  env: NodeJS.ProcessEnv
+): string[] {
+  const parsedExtension = win32Path.extname(command);
+  if (parsedExtension) {
+    return [''];
+  }
+  const raw = env.PATHEXT?.trim() || '.COM;.EXE;.BAT;.CMD';
+  const extensions = raw
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return extensions.length > 0 ? extensions : ['.COM', '.EXE', '.BAT', '.CMD'];
+}
+
+function resolveCommandPath(input: {
+  command: string;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+}): string | null {
+  const command = input.command.trim();
+  if (!command) {
+    return null;
+  }
+
+  const pathApi = pathApiForPlatform(input.platform);
+  if (pathApi.isAbsolute(command) || pathHasDirectoryPart(command)) {
+    return commandPathExists(command) ? command : null;
+  }
+
+  const pathEntries = envPathValue(input.env)
+    .split(pathListDelimiter(input.platform))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (pathEntries.length === 0) {
+    return null;
+  }
+
+  for (const pathEntry of pathEntries) {
+    const candidate = pathApi.join(pathEntry, command);
+    if (commandPathExists(candidate)) {
+      return candidate;
+    }
+    if (input.platform === 'win32') {
+      for (const extension of windowsPathExtensions(command, input.env)) {
+        if (!extension) {
+          continue;
+        }
+        const extendedCandidate = `${candidate}${extension}`;
+        if (commandPathExists(extendedCandidate)) {
+          return extendedCandidate;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface WorkerRuntimeCliAvailability {
+  runtime: ManagerWorkerRuntime;
+  command: string;
+  resolvedPath: string | null;
+  available: boolean;
+  detail: string;
+}
+
+export function describeWorkerRuntimeCliAvailability(
+  runtime: ManagerWorkerRuntime,
+  options?: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv }
+): WorkerRuntimeCliAvailability {
+  const platform = options?.platform ?? process.platform;
+  const env = options?.env ?? process.env;
+  const command = runtimeCommand(runtime, { platform, env });
+  const resolvedPath = resolveCommandPath({ command, platform, env });
+  const displayName = runtimeDisplayName(runtime);
+  return {
+    runtime,
+    command,
+    resolvedPath,
+    available: resolvedPath !== null,
+    detail:
+      resolvedPath !== null
+        ? `${displayName} CLI found at ${resolvedPath}.`
+        : `${displayName} CLI command "${command}" was not found in PATH or at the configured override path.`,
+  };
 }
 
 function runtimeModel(

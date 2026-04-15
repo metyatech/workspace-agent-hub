@@ -523,11 +523,13 @@ Continue` recovery path. That action stashes the tracked seed changes with a
 - Automatic worker routing uses three live task classes:
   `codebase-qna` -> SWE Atlas QnA, `test-writing` -> SWE Atlas Test Writing,
   `implementation` -> SWE-Bench Pro public/private. The backend walks the
-  live-ranked candidates from the top, checks the corresponding runtime with
-  `ai-quota`, and launches the first candidate whose runtime still has enough
-  quota headroom. If live ranking or `ai-quota` cannot produce an eligible
-  worker, Manager stops and surfaces a `needs-reply` error instead of silently
-  bypassing that gate with a static fallback.
+  live-ranked candidates from the top, skips runtimes whose CLI is not
+  launchable from the current PATH or configured override, checks the
+  corresponding runtime with `ai-quota`, and launches the first candidate whose
+  runtime still has enough quota headroom. If live ranking, CLI detection, or
+  `ai-quota` cannot produce an eligible worker, Manager stops and surfaces a
+  `needs-reply` error instead of silently bypassing that gate with a static
+  fallback.
 - A repo-level `preferredWorkerRuntime` is treated only as a runtime
   constraint. It limits which worker runtime family can be auto-selected, but
   it does not pin a specific model. Inside that runtime constraint, the actual

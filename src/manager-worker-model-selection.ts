@@ -2,6 +2,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ManagerRunMode, ManagerWorkerRuntime } from './manager-repos.js';
+import { describeWorkerRuntimeCliAvailability } from './manager-worker-runtime.js';
 import { wrapWindowsBatchCommandForSpawn } from './windows-batch-spawn.js';
 
 export type WorkerTaskClass =
@@ -375,16 +376,23 @@ async function fetchScaleCandidates(
   return candidates;
 }
 
-async function readAiQuotaSnapshot(): Promise<AiQuotaSnapshot> {
+async function readAiQuotaSnapshot(options?: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+}): Promise<AiQuotaSnapshot> {
+  const platform = options?.platform ?? process.platform;
+  const env = options?.env ?? process.env;
   const stdout = await new Promise<string>((resolve, reject) => {
     const wrappedCommand = wrapWindowsBatchCommandForSpawn(
-      resolveAiQuotaCommand(),
-      ['--json']
+      resolveAiQuotaCommand(platform, env),
+      ['--json'],
+      { platform, env }
     );
     execFileCb(
       wrappedCommand.command,
       wrappedCommand.args,
       {
+        env,
         windowsHide: true,
         maxBuffer: 1024 * 1024,
         shell: wrappedCommand.shell,
@@ -460,7 +468,11 @@ export async function selectRankedWorkerModel(input: {
   writeScopes: string[];
   runMode: ManagerRunMode | null;
   supportedRuntimes?: ManagerWorkerRuntime[];
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
 }): Promise<WorkerModelSelection> {
+  const platform = input.platform ?? process.platform;
+  const env = input.env ?? process.env;
   const taskClass = classifyWorkerTask(input);
   const supportedRuntimes = new Set(
     (input.supportedRuntimes ?? ['codex', 'claude']).filter(
@@ -478,8 +490,35 @@ export async function selectRankedWorkerModel(input: {
     );
   }
 
-  const quota = await readAiQuotaSnapshot();
+  const unavailableCliNotes: string[] = [];
+  const cliAvailableRuntimes = new Set<WorkerModelCandidate['runtime']>();
   const checkedRuntimes = new Set<WorkerModelCandidate['runtime']>();
+  for (const candidate of rankedCandidates) {
+    if (checkedRuntimes.has(candidate.runtime)) {
+      continue;
+    }
+    checkedRuntimes.add(candidate.runtime);
+    const availability = describeWorkerRuntimeCliAvailability(
+      candidate.runtime,
+      { platform, env }
+    );
+    if (availability.available) {
+      cliAvailableRuntimes.add(candidate.runtime);
+    } else {
+      unavailableCliNotes.push(
+        `${candidate.runtime}:${candidate.model}${candidate.effort ? ` (${candidate.effort})` : ''} -> ${availability.detail}`
+      );
+    }
+  }
+
+  if (cliAvailableRuntimes.size === 0) {
+    throw new Error(
+      `Live-ranked worker candidates were found for ${taskClass}, but none have an installed runtime CLI (${unavailableCliNotes.join(' / ')}).`
+    );
+  }
+
+  const quota = await readAiQuotaSnapshot({ platform, env });
+  checkedRuntimes.clear();
   const quotaNotes: string[] = [];
 
   for (const candidate of rankedCandidates) {
@@ -487,6 +526,9 @@ export async function selectRankedWorkerModel(input: {
       continue;
     }
     checkedRuntimes.add(candidate.runtime);
+    if (!cliAvailableRuntimes.has(candidate.runtime)) {
+      continue;
+    }
     const quotaResult = evaluateRuntimeQuota(quota, candidate.runtime);
     quotaNotes.push(
       `${candidate.runtime}:${candidate.model}${candidate.effort ? ` (${candidate.effort})` : ''} -> ${quotaResult.detail}`
@@ -496,9 +538,21 @@ export async function selectRankedWorkerModel(input: {
         taskClass,
         selected: candidate,
         rankedCandidates,
-        quotaSummary: quotaNotes.join(' / '),
+        quotaSummary: [...unavailableCliNotes, ...quotaNotes].join(' / '),
       };
     }
+  }
+
+  if (quotaNotes.length === 0) {
+    throw new Error(
+      `Live-ranked worker candidates were found for ${taskClass}, but none have an installed runtime CLI (${unavailableCliNotes.join(' / ')}).`
+    );
+  }
+
+  if (unavailableCliNotes.length > 0) {
+    throw new Error(
+      `Live-ranked worker candidates were found for ${taskClass}, but none are currently launchable (${[...unavailableCliNotes, ...quotaNotes].join(' / ')}).`
+    );
   }
 
   throw new Error(

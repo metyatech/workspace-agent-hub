@@ -65,6 +65,20 @@ const mockPages = {
     ]),
 };
 
+function installedRuntimeEnv(
+  installedRuntimes: Array<'codex' | 'claude'> = ['codex', 'claude']
+): NodeJS.ProcessEnv {
+  return {
+    PATH: '',
+    ...(installedRuntimes.includes('codex')
+      ? { CODEX_PATH: process.execPath }
+      : {}),
+    ...(installedRuntimes.includes('claude')
+      ? { CLAUDE_PATH: process.execPath }
+      : {}),
+  };
+}
+
 beforeEach(() => {
   execFileMock.mockReset();
   fetchMock.mockReset();
@@ -164,6 +178,8 @@ describe('manager-worker-model-selection', () => {
       writeScopes: ['src/manager-backend.ts'],
       runMode: 'write',
       supportedRuntimes: ['codex', 'claude'],
+      platform: 'win32',
+      env: installedRuntimeEnv(),
     });
 
     expect(selection.taskClass).toBe('implementation');
@@ -231,10 +247,42 @@ describe('manager-worker-model-selection', () => {
       writeScopes: [],
       runMode: 'read-only',
       supportedRuntimes: ['codex', 'claude'],
+      platform: 'win32',
+      env: installedRuntimeEnv(),
     });
 
     expect(selection.taskClass).toBe('codebase-qna');
     expect(selection.selected.runtime).toBe('claude');
     expect(selection.selected.model).toBe('claude-opus-4-6');
+  });
+
+  it('falls back to the next runtime when the higher-ranked runtime CLI is not installed', async () => {
+    const selection = await selectRankedWorkerModel({
+      content: '既存の不具合を実装で修正してください',
+      writeScopes: ['src/manager-backend.ts'],
+      runMode: 'write',
+      supportedRuntimes: ['codex', 'claude'],
+      platform: 'win32',
+      env: installedRuntimeEnv(['claude']),
+    });
+
+    expect(selection.taskClass).toBe('implementation');
+    expect(selection.selected.runtime).toBe('claude');
+    expect(selection.selected.model).toBe('claude-opus-4-6');
+    expect(selection.quotaSummary).toContain('codex:gpt-5.4 (xhigh)');
+    expect(selection.quotaSummary).toContain('Codex CLI command "codex.cmd"');
+  });
+
+  it('reports a launchability error when no ranked runtime CLI is installed', async () => {
+    await expect(
+      selectRankedWorkerModel({
+        content: '既存の不具合を実装で修正してください',
+        writeScopes: ['src/manager-backend.ts'],
+        runMode: 'write',
+        supportedRuntimes: ['codex', 'claude'],
+        platform: 'win32',
+        env: installedRuntimeEnv([]),
+      })
+    ).rejects.toThrow(/none have an installed runtime CLI/i);
   });
 });
