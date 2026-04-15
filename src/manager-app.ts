@@ -1846,6 +1846,16 @@ function threadNextActionText(thread: ThreadView): string {
   return 'この件を開けば、必要な情報と次の操作をその場で確認できます。';
 }
 
+function threadListNoteText(
+  thread: ThreadView,
+  threadsById: Map<string, ThreadView>
+): string | null {
+  if (thread.uiState === 'stalled') {
+    return describeThreadState(thread);
+  }
+  return describeWorkItemContext(thread, threadsById);
+}
+
 function summarizeSeedRecoveryFiles(files: string[], maxItems = 6): string[] {
   if (files.length <= maxItems) {
     return files;
@@ -1973,11 +1983,15 @@ function makeActivityFocusCard(
 
   const copy = document.createElement('div');
   copy.className = 'activity-focus-card-copy';
-  copy.textContent = threadNextActionText(thread);
+  copy.textContent =
+    thread.uiState === 'stalled'
+      ? (describeThreadState(thread) ?? threadNextActionText(thread))
+      : threadNextActionText(thread);
 
   const meta = document.createElement('div');
   meta.className = 'activity-focus-card-meta';
   meta.textContent = [
+    thread.uiState === 'stalled' ? threadNextActionText(thread) : null,
     rowActivityText(thread, threadTitlesById),
     detailContextSummary(thread, threadsById),
   ]
@@ -2716,7 +2730,7 @@ class ThreadSectionController {
       row.appendChild(activity);
     }
 
-    const noteText = describeWorkItemContext(thread, threadsById);
+    const noteText = threadListNoteText(thread, threadsById);
     if (noteText) {
       const note = document.createElement('div');
       note.className = 'thread-note';
@@ -2824,7 +2838,7 @@ class ThreadSectionController {
     }
 
     let note = row.querySelector<HTMLElement>('[data-row-note]');
-    const noteText = describeWorkItemContext(thread, threadsById);
+    const noteText = threadListNoteText(thread, threadsById);
     if (noteText) {
       if (!note) {
         note = document.createElement('div');
@@ -6057,6 +6071,11 @@ class ManagerApp {
       0,
       3
     );
+    const firstStalledThread =
+      this.allThreads.find((thread) => thread.uiState === 'stalled') ?? null;
+    const firstStalledReason = firstStalledThread
+      ? describeThreadState(firstStalledThread)
+      : null;
 
     if (problem === 'error') {
       primary.textContent = 'AI backend で問題が起きています';
@@ -6127,8 +6146,9 @@ class ManagerApp {
       detail.textContent =
         '「あなたの返信が必要です」の一覧を上から順に開けば、いま返した方がいい作業項目から見られます。';
     } else if (counts['stalled'] > 0) {
-      detail.textContent =
-        '「処理状態要確認」の一覧を開いて、必要なら再送し、不要なら完了にしてください。';
+      detail.textContent = firstStalledReason
+        ? `「${firstStalledThread?.title ?? '処理状態要確認の作業項目'}」は、${firstStalledReason} 一覧を開いて、必要なら再送し、不要なら完了にしてください。`
+        : '「処理状態要確認」の一覧を開いて、必要なら再送し、不要なら完了にしてください。';
     } else if (counts['ai-finished-awaiting-user-confirmation'] > 0) {
       detail.textContent =
         'AI が返答済みです。「あなたの確認待ちです」の一覧から順に開いてください。';

@@ -1853,6 +1853,9 @@ describe('manager-app DOM auth state matrix', () => {
       {
         status: 'waiting',
         uiState: 'stalled',
+        canonicalStateReason:
+          '前回の user 依頼を自動で再開しましたが、まだ正常状態へ戻っていません。',
+        strandedAutoResumeCount: 1,
         previewText: '[user] 続きの返答をください',
         lastSender: 'user',
       }
@@ -1882,7 +1885,7 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('処理状態の確認が必要な作業項目があります');
     expect(
       document.querySelector<HTMLElement>('#activity-detail')!.textContent
-    ).toContain('「処理状態要確認」の一覧を開いて');
+    ).toContain('まだ正常状態へ戻っていません');
     expect(
       document
         .querySelector<HTMLElement>('#sec-stalled')!
@@ -1897,6 +1900,16 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelectorAll<HTMLElement>('.activity-chip')
     ).map((element) => element.textContent ?? '');
     expect(chips).toContain('状態要確認 1');
+    expect(
+      document.querySelector<HTMLElement>('.activity-focus-card-copy')
+        ?.textContent
+    ).toContain('まだ正常状態へ戻っていません');
+    expect(
+      document.querySelector<HTMLElement>('[data-row-note]')?.textContent
+    ).toContain('まだ正常状態へ戻っていません');
+    expect(
+      document.querySelector<HTMLElement>('[data-row-step]')?.textContent
+    ).toContain('同じ依頼を再送してください');
   });
 
   it('defaults human-facing lists to oldest-first and AI lists to newest-first', async () => {
