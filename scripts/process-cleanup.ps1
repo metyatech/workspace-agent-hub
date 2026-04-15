@@ -79,6 +79,74 @@ function Start-ParentProcessWatchdog {
     return $process
 }
 
+function Write-WslTmuxSocketManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [string[]]$SocketNames = @()
+    )
+
+    $resolvedSockets = @(
+        $SocketNames |
+            Where-Object { $_ -and $_.Trim() } |
+            ForEach-Object { $_.Trim() } |
+            Select-Object -Unique
+    )
+
+    $manifestDirectory = Split-Path -Parent $ManifestPath
+    if ($manifestDirectory) {
+        [System.IO.Directory]::CreateDirectory($manifestDirectory) | Out-Null
+    }
+
+    [System.IO.File]::WriteAllText(
+        $ManifestPath,
+        ($resolvedSockets | ConvertTo-Json -Depth 3),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+
+function Start-WslTmuxSocketCleanupWatchdog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+        [int]$ParentPid = $PID,
+        [string]$WatchdogScriptPath = (Join-Path $PSScriptRoot 'wsl-tmux-socket-watchdog.ps1')
+    )
+
+    if (-not (Test-Path -LiteralPath $WatchdogScriptPath)) {
+        throw "Missing WSL tmux socket watchdog script: $WatchdogScriptPath"
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = Get-PowerShellPathForCleanup
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+
+    $argumentList = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        $WatchdogScriptPath,
+        '-ParentPid',
+        [string]$ParentPid,
+        '-ManifestPath',
+        $ManifestPath
+    )
+    if ($startInfo.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($argument in $argumentList) {
+            [void]$startInfo.ArgumentList.Add([string]$argument)
+        }
+    } else {
+        $startInfo.Arguments = ConvertTo-ProcessCleanupArgumentString -ArgumentList $argumentList
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    return $process
+}
+
 function Stop-ManagedProcessTree {
     param(
         [System.Diagnostics.Process]$Process

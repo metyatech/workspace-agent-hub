@@ -4,9 +4,19 @@ $ErrorActionPreference = 'Stop'
 $tmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
 $codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
 . (Join-Path $PSScriptRoot 'process-cleanup.ps1')
-$socketName = 'workspace-agent-hub-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$socketName = if (
+    $env:WORKSPACE_AGENT_HUB_TEST_WSL_TMUX_SOCKET_NAME -and
+    $env:WORKSPACE_AGENT_HUB_TEST_WSL_TMUX_SOCKET_NAME.Trim()
+) {
+    $env:WORKSPACE_AGENT_HUB_TEST_WSL_TMUX_SOCKET_NAME.Trim()
+} else {
+    'workspace-agent-hub-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+}
 $sessionLabel = 'isolated-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $sessionName = "shell-$sessionLabel"
+$watchdogStateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('workspace-agent-hub-wsl-tmux-watchdog-' + [guid]::NewGuid().ToString('N'))
+$tmuxSocketManifestPath = Join-Path $watchdogStateRoot 'tmux-sockets.json'
+$tmuxSocketWatchdog = $null
 $sessionLiveRootPath = if (
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
@@ -17,6 +27,12 @@ $sessionLiveRootPath = if (
 }
 $liveTranscriptPath = Join-Path $sessionLiveRootPath ($sessionName + '.log')
 $liveEventPath = Join-Path $sessionLiveRootPath ($sessionName + '.event')
+
+[System.IO.Directory]::CreateDirectory($watchdogStateRoot) | Out-Null
+Write-WslTmuxSocketManifest -ManifestPath $tmuxSocketManifestPath -SocketNames @(
+    $socketName
+)
+$tmuxSocketWatchdog = Start-WslTmuxSocketCleanupWatchdog -ParentPid $PID -ManifestPath $tmuxSocketManifestPath
 
 function ConvertTo-ScriptParameters {
     param(
@@ -206,19 +222,30 @@ function Convert-WindowsPathToWslPath {
     return $result.Stdout.Trim()
 }
 
+function Convert-ToBashSingleQuotedLiteral {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $singleQuote = [string][char]39
+    $escaped = $Value -replace "'", ($singleQuote + '"' + $singleQuote + '"' + $singleQuote)
+    return ($singleQuote + $escaped + $singleQuote)
+}
+
 function Get-LivePipeCommands {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TargetSessionName
+        [string]$TargetTranscriptPath
     )
 
+    $targetTranscriptPathWsl = Convert-WindowsPathToWslPath -WindowsPath $TargetTranscriptPath
+    $quotedTranscriptPath = Convert-ToBashSingleQuotedLiteral -Value $targetTranscriptPathWsl
     $commands = Invoke-WslProcess -Arguments @(
         '-d', 'Ubuntu', '--',
-        'env',
-        "TARGET_SESSION_NAME=$TargetSessionName",
         'bash',
         '-lc',
-        'ps -eo args | grep -F "$TARGET_SESSION_NAME.log" | grep -F "wsl-session-live-pipe" | grep -v grep || true'
+        "ps -eo args | grep -F $quotedTranscriptPath | grep -F 'wsl-session-live-pipe' | grep -v grep || true"
     )
 
     return @($commands.Stdout -split "`r?`n" | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
@@ -302,7 +329,7 @@ try {
         throw "Expected the authoritative transcript log to capture tmux pane output. Got: $liveTranscript"
     }
 
-    $livePipeCommands = @(Get-LivePipeCommands -TargetSessionName $sessionName)
+    $livePipeCommands = @(Get-LivePipeCommands -TargetTranscriptPath $liveTranscriptPath)
     if ($livePipeCommands.Count -eq 0) {
         throw 'Expected an active session-live pipe helper process after ensure.'
     }
@@ -460,6 +487,18 @@ try {
         throw 'Expected kill-server to remove the isolated tmux server entirely.'
     }
 
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $livePipeCommands = @(Get-LivePipeCommands -TargetTranscriptPath $liveTranscriptPath)
+        if ($livePipeCommands.Count -eq 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($livePipeCommands.Count -ne 0) {
+        throw "Expected kill-server to stop the session-live helper processes. Got: $($livePipeCommands -join '; ')"
+    }
+
     Write-Output 'PASS'
 } finally {
     if (Test-Path -Path $liveTranscriptPath) {
@@ -476,5 +515,17 @@ try {
             '-SocketName', $socketName
         ))
     } catch {
+    }
+    try {
+        [void](Invoke-TmuxScript -Arguments @(
+            '-Action', 'kill-server',
+            '-Distro', 'Ubuntu',
+            '-SocketName', $socketName
+        ))
+    } catch {
+    }
+    Stop-ManagedWatchdogProcess -Process $tmuxSocketWatchdog
+    if (Test-Path -Path $watchdogStateRoot) {
+        [System.IO.Directory]::Delete($watchdogStateRoot, $true)
     }
 }

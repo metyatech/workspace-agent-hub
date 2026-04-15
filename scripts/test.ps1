@@ -217,10 +217,16 @@ Set-Content -Path $testSessionCatalogPath -Value '[]' -Encoding utf8
 $previousSessionCatalogPath = $env:AI_AGENT_SESSION_CATALOG_PATH
 $previousSessionLiveDirPath = $env:AI_AGENT_SESSION_LIVE_DIR_PATH
 $previousTmuxSocketName = $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME
+$tmuxSocketManifestPath = Join-Path $testStateRoot 'tmux-sockets.json'
+$tmuxSocketWatchdog = $null
 
 $env:AI_AGENT_SESSION_CATALOG_PATH = $testSessionCatalogPath
 $env:AI_AGENT_SESSION_LIVE_DIR_PATH = $testSessionLiveDirPath
 $env:AI_AGENT_SESSION_TMUX_SOCKET_NAME = $testTmuxSocketName
+Write-WslTmuxSocketManifest -ManifestPath $tmuxSocketManifestPath -SocketNames @(
+    $testTmuxSocketName
+)
+$tmuxSocketWatchdog = Start-WslTmuxSocketCleanupWatchdog -ParentPid $PID -ManifestPath $tmuxSocketManifestPath
 
 try {
     @(
@@ -246,16 +252,22 @@ try {
     $laneIsolationSockets = @()
     try {
         $wslFoundationIsolation = New-TestIsolationState -Label 'wsl-foundation'
+        $wslTmuxIsolation = New-TestIsolationState -Label 'wsl-tmux'
         $mobilePrimaryIsolation = New-TestIsolationState -Label 'mobile-primary'
         $sessionBridgeIsolation = New-TestIsolationState -Label 'session-bridge'
         $npmUnitIsolation = New-TestIsolationState -Label 'npm-unit'
         $npmE2eIsolation = New-TestIsolationState -Label 'npm-e2e'
         $laneIsolationSockets = @(
             $wslFoundationIsolation.TmuxSocketName,
+            $wslTmuxIsolation.TmuxSocketName,
             $mobilePrimaryIsolation.TmuxSocketName,
             $sessionBridgeIsolation.TmuxSocketName,
             $npmUnitIsolation.TmuxSocketName,
             $npmE2eIsolation.TmuxSocketName
+        )
+        Write-WslTmuxSocketManifest -ManifestPath $tmuxSocketManifestPath -SocketNames @(
+            $testTmuxSocketName
+            $laneIsolationSockets
         )
         $laneProcesses = @(
             (Start-TestLaneProcess `
@@ -272,6 +284,7 @@ try {
                     AI_AGENT_SESSION_CATALOG_PATH = $wslFoundationIsolation.CatalogPath
                     AI_AGENT_SESSION_LIVE_DIR_PATH = $wslFoundationIsolation.LiveDirPath
                     AI_AGENT_SESSION_TMUX_SOCKET_NAME = $wslFoundationIsolation.TmuxSocketName
+                    WORKSPACE_AGENT_HUB_TEST_WSL_TMUX_SOCKET_NAME = $wslTmuxIsolation.TmuxSocketName
                 }),
             (Start-TestLaneProcess `
                 -Name 'mobile-primary-lane' `
@@ -415,6 +428,7 @@ $urls = @(
     Stop-TestTmuxSocketServers -SocketNames @(
         $testTmuxSocketName
     )
+    Stop-ManagedWatchdogProcess -Process $tmuxSocketWatchdog
     foreach ($entry in @(
             @{ Name = 'AI_AGENT_SESSION_CATALOG_PATH'; Value = $previousSessionCatalogPath },
             @{ Name = 'AI_AGENT_SESSION_LIVE_DIR_PATH'; Value = $previousSessionLiveDirPath },
