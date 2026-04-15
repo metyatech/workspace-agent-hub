@@ -194,6 +194,7 @@ import {
   readQueue,
   readSession,
   resetProcessNextQueuedStateForTests,
+  resetStaleSeedRecoveryMonitorsForTests,
   reviewStaleSeedRecoveryForTests,
   resolveCodexCommand,
   sendGlobalToBuiltinManager,
@@ -406,6 +407,7 @@ beforeEach(async () => {
   const defaultManagerWorktree = join(tempDir, 'manager-task-worktree');
   await mkdir(defaultManagerWorktree, { recursive: true });
   resetProcessNextQueuedStateForTests();
+  resetStaleSeedRecoveryMonitorsForTests();
   spawnMock.mockReset();
   execFileMock.mockReset();
   fetchMock.mockReset();
@@ -569,6 +571,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   resetProcessNextQueuedStateForTests();
+  resetStaleSeedRecoveryMonitorsForTests();
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_IDLE_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
@@ -5856,5 +5859,116 @@ describe('manager backend codex integration', () => {
       )
     ).toHaveLength(1);
     expect(meta['thread-stranded-waiting']?.strandedAutoResumeCount).toBe(1);
+  });
+
+  it('preserves a dropped worker worktree and auto-requeues it on the first startup after reconciliation', async () => {
+    markProcessNextQueuedInFlightForTests(tempDir);
+    const pausedWorktreePath = join(tempDir, 'dropped-assignment-worktree');
+    await mkdir(pausedWorktreePath, { recursive: true });
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-dropped-assignment',
+        title: '前回途中で止まった依頼',
+        status: 'waiting',
+        createdAt: '2026-04-14T00:00:00.000Z',
+        updatedAt: '2026-04-14T00:00:10.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '前回の続きから再開してください',
+            at: '2026-04-14T00:00:10.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-dropped-assignment': {
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: tempDir,
+        requestedRunMode: 'write',
+      },
+    });
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      currentQueueId: 'q_dropped_assignment',
+      lastMessageAt: '2026-04-14T00:00:12.000Z',
+      lastProgressAt: '2026-04-14T00:00:12.000Z',
+      activeAssignments: [
+        {
+          id: 'assign-dropped-assignment',
+          threadId: 'thread-dropped-assignment',
+          queueEntryIds: ['q_dropped_assignment'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: pausedWorktreePath,
+          workerRuntime: 'codex',
+          workerModel: 'gpt-5.4',
+          workerEffort: 'xhigh',
+          assigneeLabel: 'Worker Codex gpt-5.4 (xhigh)',
+          writeScopes: ['src/manager-backend.ts'],
+          pid: 999999,
+          startedAt: '2026-04-14T00:00:11.000Z',
+          lastProgressAt: '2026-04-14T00:00:12.000Z',
+          worktreePath: pausedWorktreePath,
+          worktreeBranch: 'mgr/assign-dropped-assignment/preview000',
+          targetRepoRoot: tempDir,
+          pendingOnboardingCommit: null,
+        },
+      ],
+    });
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const latestSession = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        latestSession.activeAssignments.length === 0 &&
+        queue.filter(
+          (entry) =>
+            !entry.processed && entry.threadId === 'thread-dropped-assignment'
+        ).length === 1 &&
+        meta['thread-dropped-assignment']?.pausedWorktreePath ===
+          pausedWorktreePath
+      );
+    });
+
+    const queue = await readQueue(tempDir);
+    const latestSession = await readSession(tempDir);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(latestSession.activeAssignments).toHaveLength(0);
+    expect(
+      queue.filter(
+        (entry) =>
+          !entry.processed && entry.threadId === 'thread-dropped-assignment'
+      )
+    ).toHaveLength(1);
+    expect(meta['thread-dropped-assignment']).toMatchObject({
+      pausedAssignmentId: 'assign-dropped-assignment',
+      pausedWorktreePath,
+      pausedWorktreeBranch: 'mgr/assign-dropped-assignment/preview000',
+      pausedTargetRepoRoot: tempDir,
+      strandedAutoResumeCount: 1,
+      canonicalState: 'queued',
+      canonicalStateReason: null,
+    });
   });
 });

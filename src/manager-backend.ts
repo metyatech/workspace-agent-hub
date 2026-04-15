@@ -1364,14 +1364,37 @@ async function reconcileActiveAssignments(
   const survivingThreadIds = new Set(
     survivingAssignments.map((assignment) => assignment.threadId)
   );
+  const preservedDroppedAssignmentIds = new Set<string>();
+  const preservedWorktreePathsByRepo = new Map<string, string[]>();
   for (const assignment of droppedAssignments) {
-    // Clean up worktree for dropped assignment.
-    await cleanupWorktreeBestEffort({
-      targetRepoRoot: assignment.targetRepoRoot ?? dir,
-      worktreePath: assignment.worktreePath,
-      branchName: assignment.worktreeBranch,
-      context: `Dropped assignment cleanup for ${assignment.id}`,
-    });
+    const preservePausedWorktree =
+      !survivingThreadIds.has(assignment.threadId) &&
+      assignment.assigneeKind === 'worker' &&
+      !!assignment.worktreePath &&
+      !!assignment.worktreeBranch &&
+      !!assignment.targetRepoRoot;
+    if (preservePausedWorktree) {
+      await preservePausedWorktreeForThread(
+        dir,
+        assignment.threadId,
+        assignment
+      );
+      preservedDroppedAssignmentIds.add(assignment.id);
+      const preservedTargetRepoRoot = assignment.targetRepoRoot!;
+      const preservedWorktreePath = assignment.worktreePath!;
+      const repoKey = resolvePath(preservedTargetRepoRoot);
+      preservedWorktreePathsByRepo.set(repoKey, [
+        ...(preservedWorktreePathsByRepo.get(repoKey) ?? []),
+        preservedWorktreePath,
+      ]);
+    } else {
+      await cleanupWorktreeBestEffort({
+        targetRepoRoot: assignment.targetRepoRoot ?? dir,
+        worktreePath: assignment.worktreePath,
+        branchName: assignment.worktreeBranch,
+        context: `Dropped assignment cleanup for ${assignment.id}`,
+      });
+    }
     if (survivingThreadIds.has(assignment.threadId)) {
       continue;
     }
@@ -1392,7 +1415,10 @@ async function reconcileActiveAssignments(
   }
 
   // Clean up orphaned worktrees whose assignment IDs are no longer active.
-  const activeIds = survivingAssignments.map((a) => a.id);
+  const activeIds = [
+    ...survivingAssignments.map((a) => a.id),
+    ...preservedDroppedAssignmentIds,
+  ];
   await cleanupOrphanedWorktrees(dir, activeIds).catch(() => {});
   const activeWorktreePathsByRepo = new Map<string, string[]>();
   for (const assignment of survivingAssignments) {
@@ -1403,6 +1429,14 @@ async function reconcileActiveAssignments(
     const current = activeWorktreePathsByRepo.get(key) ?? [];
     current.push(assignment.worktreePath);
     activeWorktreePathsByRepo.set(key, current);
+  }
+  for (const [
+    targetRepoRoot,
+    preservedWorktreePaths,
+  ] of preservedWorktreePathsByRepo) {
+    const current = activeWorktreePathsByRepo.get(targetRepoRoot) ?? [];
+    current.push(...preservedWorktreePaths);
+    activeWorktreePathsByRepo.set(targetRepoRoot, current);
   }
   for (const assignment of droppedAssignments) {
     if (!assignment.targetRepoRoot) {
@@ -8502,6 +8536,7 @@ export async function startBuiltinManager(
     }));
   }
   await clearManagerRuntimePause(dir);
+  await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
   startStaleSeedRecoveryMonitor(dir);
   void processNextQueued(dir, resolvePath(dir));
