@@ -3007,6 +3007,110 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock).not.toHaveBeenCalled();
   });
 
+  it('drops a duplicate queued entry when the same user turn already has a review reply', async () => {
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title: `Thread ${threadId}`,
+        status: 'review',
+        createdAt: '2026-04-15T00:00:00.000Z',
+        updatedAt: '2026-04-15T00:00:03.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'readonly でも worktree は割り当てられますか？',
+            at: '2026-04-15T00:00:01.000Z',
+          },
+          {
+            sender: 'ai',
+            content: 'readonly でも専用 worktree は割り当てられています。',
+            at: '2026-04-15T00:00:03.000Z',
+          },
+        ],
+      })
+    );
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_duplicate_same_turn',
+        threadId: 'thread-duplicate-same-turn',
+        content: 'readonly でも worktree は割り当てられますか？',
+        createdAt: '2026-04-15T00:00:02.000Z',
+        processed: false,
+        priority: 'question',
+      },
+    ]);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.running).toBe(true);
+    await processNextQueued(tempDir, tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(addMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('does not re-emit recovery messages while a queued thread is waiting for user recovery', async () => {
+    getThreadMock.mockImplementation(
+      async (_dir: string, threadId: string) => ({
+        id: threadId,
+        title: `Thread ${threadId}`,
+        status: 'needs-reply',
+        createdAt: '2026-04-15T00:00:00.000Z',
+        updatedAt: '2026-04-15T00:00:03.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '作業を進めてください',
+            at: '2026-04-15T00:00:01.000Z',
+          },
+          {
+            sender: 'ai',
+            content:
+              '[Manager] Worker 隔離環境の作成に失敗しました: Seed worktree has tracked changes and cannot proceed.',
+            at: '2026-04-15T00:00:03.000Z',
+          },
+        ],
+      })
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-held-recovery': {
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['package.json'],
+      },
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_held_recovery',
+        threadId: 'thread-held-recovery',
+        content: '作業を進めてください',
+        createdAt: '2026-04-15T00:00:02.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const status = await getBuiltinManagerStatus(tempDir);
+    expect(status.running).toBe(true);
+    await processNextQueued(tempDir, tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 1 && session.status === 'idle';
+    });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(addMessageMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the manager status busy while the current worker is still assigned even after a long quiet stretch', async () => {
     await writeQueue(tempDir, [
       {

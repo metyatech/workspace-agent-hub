@@ -4371,6 +4371,44 @@ function lastUserMessage(thread: Thread): Thread['messages'][number] | null {
   return null;
 }
 
+async function writeAiMessageIfLatestDiffers(input: {
+  dir: string;
+  threadId: string;
+  content: string;
+  status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
+}): Promise<'added' | 'duplicate'> {
+  const currentThread = await getThread(input.dir, input.threadId).catch(
+    () => null
+  );
+  const lastMessage = currentThread?.messages.at(-1) ?? null;
+  if (lastMessage?.sender === 'ai' && lastMessage.content === input.content) {
+    return 'duplicate';
+  }
+
+  await addMessage(
+    input.dir,
+    input.threadId,
+    input.content,
+    'ai',
+    input.status
+  );
+  return 'added';
+}
+
+async function addAiMessageBestEffort(input: {
+  dir: string;
+  threadId: string;
+  content: string;
+  status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
+}): Promise<boolean> {
+  try {
+    await writeAiMessageIfLatestDiffers(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function addAiMessageOrPersistPending(input: {
   dir: string;
   threadId: string;
@@ -4378,13 +4416,7 @@ async function addAiMessageOrPersistPending(input: {
   status: Extract<ThreadStatus, 'active' | 'review' | 'needs-reply'>;
 }): Promise<boolean> {
   try {
-    await addMessage(
-      input.dir,
-      input.threadId,
-      input.content,
-      'ai',
-      input.status
-    );
+    await writeAiMessageIfLatestDiffers(input);
     await updateManagerThreadMeta(input.dir, input.threadId, (current) =>
       current ? clearPendingReplyStateFromMeta(current) : current
     );
@@ -4593,13 +4625,12 @@ export async function preserveSeedRecoveryAndContinue(input: {
     supersededByThreadId: null,
     clearWorkerLiveLog: true,
   });
-  await addMessage(
-    resolvedDir,
-    input.threadId,
-    buildSeedRecoveryResumeMessage(nextResult),
-    'ai',
-    'active'
-  );
+  await addAiMessageBestEffort({
+    dir: resolvedDir,
+    threadId: input.threadId,
+    content: buildSeedRecoveryResumeMessage(nextResult),
+    status: 'active',
+  });
   void processNextQueued(input.dir, resolvedDir);
   return nextResult;
 }
@@ -5228,6 +5259,14 @@ function hasSupersedingAiReply(thread: Thread, entries: QueueEntry[]): boolean {
     return false;
   }
 
+  if (
+    thread.status !== 'review' &&
+    thread.status !== 'needs-reply' &&
+    thread.status !== 'resolved'
+  ) {
+    return false;
+  }
+
   const latestCreatedAt = Math.max(
     ...entries
       .map((entry) => parseMessageTimestamp(entry.createdAt))
@@ -5242,21 +5281,36 @@ function hasSupersedingAiReply(thread: Thread, entries: QueueEntry[]): boolean {
     return false;
   }
 
-  const latestUserAfterQueuedAt = Math.max(
-    ...thread.messages
-      .filter((message) => message.sender === 'user')
-      .map((message) => parseMessageTimestamp(message.at))
-      .filter(
-        (value): value is number => value !== null && value > latestCreatedAt
-      ),
-    Number.NEGATIVE_INFINITY
-  );
-  if (!Number.isFinite(latestUserAfterQueuedAt)) {
+  const lastAiAt = parseMessageTimestamp(lastMessage.at);
+  if (lastAiAt === null || lastAiAt < latestCreatedAt) {
     return false;
   }
 
-  const lastAiAt = parseMessageTimestamp(lastMessage.at);
-  return lastAiAt !== null && lastAiAt > latestUserAfterQueuedAt;
+  const latestUserBeforeReplyAt = Math.max(
+    ...thread.messages
+      .filter((message) => message.sender === 'user')
+      .map((message) => parseMessageTimestamp(message.at))
+      .filter((value): value is number => value !== null && value <= lastAiAt),
+    Number.NEGATIVE_INFINITY
+  );
+
+  return Number.isFinite(latestUserBeforeReplyAt);
+}
+
+function shouldHoldQueuedThreadForUserRecovery(
+  thread: Thread,
+  meta: ManagerThreadMeta | null
+): boolean {
+  if (!meta || thread.messages.at(-1)?.sender === 'user') {
+    return false;
+  }
+
+  return Boolean(
+    meta.seedRecoveryPending ||
+    meta.pausedWorktreePath ||
+    meta.pausedWorktreeBranch ||
+    meta.pausedTargetRepoRoot
+  );
 }
 
 async function decideDispatchForBatch(input: {
@@ -5623,17 +5677,12 @@ async function stopSupersededAssignments(input: {
       branchName: assignment.worktreeBranch,
       context: `Superseded assignment cleanup for ${assignment.id}`,
     });
-    try {
-      await addMessage(
-        input.dir,
-        assignment.threadId,
-        `この作業項目は、新しく派生した「${input.supersedingThreadTitle}」の内容で既存成果が置き換わると判断したため、途中の担当 worker を止めました。`,
-        'ai',
-        'active'
-      );
-    } catch {
-      /* thread may have been deleted */
-    }
+    await addAiMessageBestEffort({
+      dir: input.dir,
+      threadId: assignment.threadId,
+      content: `この作業項目は、新しく派生した「${input.supersedingThreadTitle}」の内容で既存成果が置き換わると判断したため、途中の担当 worker を止めました。`,
+      status: 'active',
+    });
   }
 }
 
@@ -6101,17 +6150,12 @@ async function runQueuedAssignment(input: {
             ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
             : `[Manager] 自動回復判断に失敗しました。\n理由: ${recoveryDecisionFailureDetail ?? 'Recovery decision reply could not be parsed.'}\n\n元のエラー:\n${recoveryErrorContext}`;
           if (!(await currentReplyWasSuperseded())) {
-            try {
-              await addMessage(
-                resolvedDir,
-                thread.id,
-                escalateMsg,
-                'ai',
-                'needs-reply'
-              );
-            } catch {
-              /* thread may have been deleted */
-            }
+            await addAiMessageBestEffort({
+              dir: resolvedDir,
+              threadId: thread.id,
+              content: escalateMsg,
+              status: 'needs-reply',
+            });
           }
           await updateQueueLocked(dir, (queue) =>
             queue.filter(
@@ -6156,17 +6200,12 @@ async function runQueuedAssignment(input: {
         }
 
         if (decision.decision === 'restart') {
-          try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              `[Manager] アプローチをリセットして最初からやり直します。\n理由: ${decision.reason}`,
-              'ai',
-              'active'
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
+          await addAiMessageBestEffort({
+            dir: resolvedDir,
+            threadId: thread.id,
+            content: `[Manager] アプローチをリセットして最初からやり直します。\n理由: ${decision.reason}`,
+            status: 'active',
+          });
           if (input.resetQueueProcessedOnRestart) {
             await updateQueueLocked(dir, (queue) =>
               queue.map((entry) =>
@@ -6975,6 +7014,11 @@ export async function processNextQueued(
         continue;
       }
 
+      const threadMeta = meta[next.threadId] ?? null;
+      if (shouldHoldQueuedThreadForUserRecovery(thread, threadMeta)) {
+        continue;
+      }
+
       if (hasSupersedingAiReply(thread, nextEntries)) {
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
@@ -6992,7 +7036,6 @@ export async function processNextQueued(
       const parentLineage = normalizeStringArray(
         meta[next.threadId]?.derivedFromThreadIds
       );
-      const threadMeta = meta[next.threadId] ?? null;
       const relatedDescendants = collectDescendantThreadIds(
         parentLineage,
         childrenIndex
@@ -7212,17 +7255,12 @@ export async function processNextQueued(
             lastUserMessage(thread)?.at ?? null
           )
         ) {
-          try {
-            await addMessage(
-              resolvedDir,
-              next.threadId,
-              dispatch.reply,
-              'ai',
-              dispatch.status
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
+          await addAiMessageBestEffort({
+            dir: resolvedDir,
+            threadId: next.threadId,
+            content: dispatch.reply,
+            status: dispatch.status,
+          });
         }
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
@@ -7362,17 +7400,12 @@ export async function processNextQueued(
                 supersededByThreadId: null,
               }
             );
-            try {
-              await addMessage(
-                resolvedDir,
-                next.threadId,
-                errMsg,
-                'ai',
-                'needs-reply'
-              );
-            } catch {
-              /* thread may have been deleted */
-            }
+            await addAiMessageBestEffort({
+              dir: resolvedDir,
+              threadId: next.threadId,
+              content: errMsg,
+              status: 'needs-reply',
+            });
             if (!quotaBlocked) {
               await setManagerRuntimeError(dir, errMsg);
             }
@@ -7462,17 +7495,12 @@ export async function processNextQueued(
                   pausedWorktreeReuse.reason ??
                   'saved paused worktree metadata could not be validated.',
               });
-              try {
-                await addMessage(
-                  resolvedDir,
-                  thread.id,
-                  errMsg,
-                  'ai',
-                  'needs-reply'
-                );
-              } catch {
-                /* thread may have been deleted */
-              }
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: errMsg,
+                status: 'needs-reply',
+              });
               await updateQueueLocked(dir, (queue) =>
                 queue.filter(
                   (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -7510,17 +7538,12 @@ export async function processNextQueued(
                 if (autoInitResult.initialized) {
                   assignment.pendingOnboardingCommit =
                     autoInitResult.onboardingCommit?.trim() || null;
-                  try {
-                    await addMessage(
-                      resolvedDir,
-                      thread.id,
-                      `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。\n\n${autoInitResult.detail}`,
-                      'ai',
-                      'active'
-                    );
-                  } catch {
-                    /* thread may have been deleted */
-                  }
+                  await addAiMessageBestEffort({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    content: `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。\n\n${autoInitResult.detail}`,
+                    status: 'active',
+                  });
                 } else {
                   const errMsg = buildAutoMwtInitBlockedMessage({
                     detail: autoInitResult.detail,
@@ -7528,17 +7551,12 @@ export async function processNextQueued(
                     remoteName: autoInitResult.remoteName,
                     changedFiles: autoInitResult.changedFiles,
                   });
-                  try {
-                    await addMessage(
-                      resolvedDir,
-                      thread.id,
-                      errMsg,
-                      'ai',
-                      'needs-reply'
-                    );
-                  } catch {
-                    /* thread may have been deleted */
-                  }
+                  await addAiMessageBestEffort({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    content: errMsg,
+                    status: 'needs-reply',
+                  });
                   await updateQueueLocked(dir, (queue) =>
                     queue.filter(
                       (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -7615,17 +7633,12 @@ export async function processNextQueued(
                 recoveryPayload.reply)
             ) {
               if (recoveryPayload.assignee === 'manager') {
-                try {
-                  await addMessage(
-                    resolvedDir,
-                    thread.id,
-                    recoveryPayload.reply!,
-                    'ai',
-                    recoveryPayload.status
-                  );
-                } catch {
-                  /* thread may have been deleted */
-                }
+                await addAiMessageBestEffort({
+                  dir: resolvedDir,
+                  threadId: thread.id,
+                  content: recoveryPayload.reply!,
+                  status: recoveryPayload.status ?? 'needs-reply',
+                });
                 if (assignment.worktreePath && assignment.worktreeBranch) {
                   await removeWorktree({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -7647,17 +7660,12 @@ export async function processNextQueued(
                 assignment.workingDirectory =
                   recoveredResolution.resolvedWorkingDirectory;
               } else {
-                try {
-                  await addMessage(
-                    resolvedDir,
-                    thread.id,
-                    `[Manager] Worker の workingDirectory を確定できませんでした。\n${recoveredResolution.error}`,
-                    'ai',
-                    'needs-reply'
-                  );
-                } catch {
-                  /* thread may have been deleted */
-                }
+                await addAiMessageBestEffort({
+                  dir: resolvedDir,
+                  threadId: thread.id,
+                  content: `[Manager] Worker の workingDirectory を確定できませんでした。\n${recoveredResolution.error}`,
+                  status: 'needs-reply',
+                });
                 if (assignment.worktreePath && assignment.worktreeBranch) {
                   await removeWorktree({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -7668,17 +7676,12 @@ export async function processNextQueued(
                 continue;
               }
             } else {
-              try {
-                await addMessage(
-                  resolvedDir,
-                  thread.id,
-                  `[Manager] Worker の workingDirectory を確定できませんでした。\n${workingDirectoryResolution.error}`,
-                  'ai',
-                  'needs-reply'
-                );
-              } catch {
-                /* thread may have been deleted */
-              }
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: `[Manager] Worker の workingDirectory を確定できませんでした。\n${workingDirectoryResolution.error}`,
+                status: 'needs-reply',
+              });
               if (assignment.worktreePath && assignment.worktreeBranch) {
                 await removeWorktree({
                   targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -7745,38 +7748,28 @@ export async function processNextQueued(
               supersededByThreadId: null,
               clearWorkerLiveLog: true,
             });
-            try {
-              await addMessage(
-                resolvedDir,
-                thread.id,
-                buildSeedRecoveryPendingMessage({
-                  repoLabel,
-                  changedFiles,
-                  errorDetail: describeMwtError(wtErr),
-                }),
-                'ai',
-                'needs-reply'
-              );
-            } catch {
-              /* thread may have been deleted */
-            }
+            await addAiMessageBestEffort({
+              dir: resolvedDir,
+              threadId: thread.id,
+              content: buildSeedRecoveryPendingMessage({
+                repoLabel,
+                changedFiles,
+                errorDetail: describeMwtError(wtErr),
+              }),
+              status: 'needs-reply',
+            });
             continue;
           }
           const errorDetail = describeMwtError(wtErr);
           const errMsg = errorDetail.includes('\n')
             ? `[Manager] Worker 隔離環境の作成に失敗しました。\n${errorDetail}`
             : `[Manager] Worker 隔離環境の作成に失敗しました: ${errorDetail}`;
-          try {
-            await addMessage(
-              resolvedDir,
-              thread.id,
-              errMsg,
-              'ai',
-              'needs-reply'
-            );
-          } catch {
-            /* thread may have been deleted */
-          }
+          await addAiMessageBestEffort({
+            dir: resolvedDir,
+            threadId: thread.id,
+            content: errMsg,
+            status: 'needs-reply',
+          });
           continue;
         }
       }
