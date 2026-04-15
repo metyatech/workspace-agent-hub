@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Server } from 'node:http';
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -14,6 +14,7 @@ import {
 } from '../web-ui.js';
 import { execGit } from '../manager-worktree.js';
 import { writeManagerThreadMeta } from '../manager-thread-state.js';
+import * as managerThreadState from '../manager-thread-state.js';
 import type { SessionBridge } from '../session-bridge.js';
 import type {
   DirectorySuggestion,
@@ -248,6 +249,7 @@ async function readNdjsonObjects(
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (activeServer) {
     await new Promise<void>((resolve) => activeServer!.close(() => resolve()));
     activeServer = null;
@@ -1014,6 +1016,32 @@ describe('native manager page', () => {
     );
 
     await reader?.cancel();
+  });
+
+  it('returns an explicit error instead of hanging when the initial manager live snapshot cannot be built', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    vi.spyOn(
+      managerThreadState,
+      'reconcileManagerThreadMeta'
+    ).mockRejectedValue(new Error('snapshot bootstrap failed'));
+
+    const response = await fetch(`http://127.0.0.1:${port}/manager/api/live`, {
+      headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' },
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('Failed to build manager live snapshot'),
+    });
   });
 
   it('creates and lists threads through the native manager API', async () => {

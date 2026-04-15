@@ -4066,8 +4066,57 @@ class ManagerApp {
     }
   }
 
+  async #loadFallbackSnapshot(reason: ManagerLiveIssueKind): Promise<boolean> {
+    try {
+      const [threadsResponse, tasksResponse, statusResponse] =
+        await Promise.all([
+          this.apiFetch('/api/threads'),
+          this.apiFetch('/api/tasks'),
+          this.apiFetch('/api/manager/status'),
+        ]);
+      if (
+        !threadsResponse ||
+        !tasksResponse ||
+        !statusResponse ||
+        !threadsResponse.ok ||
+        !tasksResponse.ok ||
+        !statusResponse.ok
+      ) {
+        this.#setLiveIssue(reason);
+        return false;
+      }
+
+      const [threads, tasks, status] = await Promise.all([
+        threadsResponse.json() as Promise<ThreadView[]>,
+        tasksResponse.json() as Promise<Task[]>,
+        statusResponse.json() as Promise<ManagerStatusPayload>,
+      ]);
+      this.#applySnapshot({ threads, tasks });
+      this.#applyManagerStatus(status);
+      this.#setLiveIssue(reason);
+      this.#recordDiagnosticEvent('live:fallback-snapshot', reason);
+      return true;
+    } catch (error) {
+      this.#recordDiagnosticEvent(
+        'live:fallback-error',
+        error instanceof Error ? `${reason}: ${error.message}` : reason
+      );
+      this.#setLiveIssue(reason);
+      return false;
+    }
+  }
+
   async loadAll(): Promise<boolean> {
-    const response = await this.apiFetch('/api/live');
+    let response: Response | null = null;
+    try {
+      response = await this.apiFetch('/api/live');
+    } catch (error) {
+      this.#recordDiagnosticEvent(
+        'live:bootstrap-fetch-error',
+        error instanceof Error ? error.message : 'unknown error'
+      );
+      return this.#loadFallbackSnapshot('stream-error');
+    }
     const contentType = response?.headers.get('content-type') ?? '';
     if (
       !response ||
@@ -4075,8 +4124,7 @@ class ManagerApp {
       !response.body ||
       !contentType.includes('application/x-ndjson')
     ) {
-      this.#setLiveIssue('invalid-live-response');
-      return false;
+      return this.#loadFallbackSnapshot('invalid-live-response');
     }
 
     const reader = response.body.getReader();
@@ -4116,8 +4164,13 @@ class ManagerApp {
           return true;
         }
       }
-      this.#setLiveIssue('invalid-live-response');
-      return false;
+      return this.#loadFallbackSnapshot('invalid-live-response');
+    } catch (error) {
+      this.#recordDiagnosticEvent(
+        'live:bootstrap-stream-error',
+        error instanceof Error ? error.message : 'unknown error'
+      );
+      return this.#loadFallbackSnapshot('stream-error');
     } finally {
       void reader.cancel().catch(() => {
         /* ignore */

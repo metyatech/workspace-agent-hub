@@ -4958,6 +4958,73 @@ describe('manager-app live updates', () => {
     ).toBe(true);
   });
 
+  it('falls back to threads/tasks/status when the initial live snapshot bootstrap fails', async () => {
+    const waitingThread = makeThreadView('thread-fallback', '初回ライブ失敗', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      previewText: '[user] 状態を確認してください',
+      queueDepth: 1,
+    });
+    const waitingStatus = {
+      running: true,
+      configured: true,
+      builtinBackend: true,
+      detail: '待機中 (キュー: 1件)',
+      pendingCount: 1,
+      currentQueueId: null,
+      currentThreadId: null,
+      currentThreadTitle: null,
+    };
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (isRoute(url, '/live')) {
+        return new Response(JSON.stringify({ error: 'bootstrap failed' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        });
+      }
+      if (isRoute(url, '/threads')) {
+        return new Response(JSON.stringify([waitingThread]), { status: 200 });
+      }
+      if (isRoute(url, '/tasks')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (isRoute(url, '/manager/status')) {
+        return new Response(JSON.stringify(waitingStatus), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+
+    const document = await loadManagerApp(
+      fetchMock as unknown as typeof fetch,
+      {
+        authRequired: false,
+      }
+    );
+
+    await flushAsync(6);
+
+    expect(
+      document.querySelector<HTMLElement>('#manager-status-text')!.textContent
+    ).toContain('待機中です');
+    expect(
+      document.querySelector<HTMLElement>('#manager-live-pill-label')!
+        .textContent
+    ).toContain('リアルタイム更新が止まっています');
+    expect(
+      fetchMock.mock.calls.some(([input]: [RequestInfo | URL]) =>
+        isRoute(String(input), '/threads')
+      )
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([input]: [RequestInfo | URL]) =>
+        isRoute(String(input), '/manager/status')
+      )
+    ).toBe(true);
+  });
+
   it('keeps the live stream running in no-auth mode and applies pushed snapshots', async () => {
     const waitingThread = makeThreadView('thread-no-auth', '無認証ライブ確認', {
       status: 'waiting',

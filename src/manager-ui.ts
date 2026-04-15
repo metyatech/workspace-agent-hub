@@ -257,6 +257,20 @@ async function readManagerLiveSnapshot(
   return refreshManagerLiveSnapshot(workspaceRoot);
 }
 
+async function readInitialManagerLiveSnapshot(
+  workspaceRoot: string
+): Promise<ManagerLiveSnapshot> {
+  const cacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(workspaceRoot);
+  try {
+    return await refreshManagerLiveSnapshot(workspaceRoot);
+  } catch (error) {
+    if (cacheEntry.snapshot) {
+      return cacheEntry.snapshot;
+    }
+    throw error;
+  }
+}
+
 export function isManagerUiPath(pathname: string): boolean {
   return pathname === '/manager' || pathname.startsWith('/manager/');
 }
@@ -345,6 +359,20 @@ export async function handleManagerUiRequest(input: {
   }
 
   if (localPath === '/api/live' && input.method === 'GET') {
+    let initialSnapshot: ManagerLiveSnapshot;
+    try {
+      initialSnapshot = await readInitialManagerLiveSnapshot(
+        input.workspaceRoot
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? `Failed to build manager live snapshot: ${error.message}`
+          : 'Failed to build manager live snapshot';
+      sendError(input.res, message, 500);
+      return true;
+    }
+
     const snapshotCacheEntry = getOrCreateManagerLiveSnapshotCacheEntry(
       input.workspaceRoot
     );
@@ -356,6 +384,7 @@ export async function handleManagerUiRequest(input: {
       'X-Accel-Buffering': 'no',
     });
     activeSseConnections.add(input.res);
+    input.res.write(JSON.stringify(initialSnapshot) + '\n');
 
     let closed = false;
     let writeChain = Promise.resolve();
@@ -391,8 +420,6 @@ export async function handleManagerUiRequest(input: {
           /* ignore snapshot rebuild failures */
         });
     };
-
-    enqueueSnapshot();
 
     const unsubscribe = subscribeManagerUpdates(input.workspaceRoot, () => {
       enqueueSnapshot();
