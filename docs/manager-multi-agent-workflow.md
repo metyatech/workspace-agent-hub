@@ -172,9 +172,10 @@ state.
 If a Manager-owned topic ever loses its live queue/runtime linkage, the system
 should not keep calling that state `queued`. The Manager should persist a
 canonical stranded state for the topic, expose that stranded reason directly in
-the UI, replay any already-produced AI reply that failed to persist, and only
-then auto-requeue a dropped user-last waiting topic when the restart is safe
-and bounded.
+the UI, replay any already-produced AI reply that failed to persist, recover a
+completed structured Codex `task_complete` reply from rollout logs when no
+paused worktree or seed-recovery action is pending, and only then auto-requeue a
+dropped user-last waiting topic when the restart is safe and bounded.
 
 Likewise, once the Manager has already claimed a queued topic and is starting
 or resuming its runtime, the UI should expose a distinct `ai-starting` state

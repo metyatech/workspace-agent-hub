@@ -585,6 +585,10 @@ Continue` recovery path. That action stashes the tracked seed changes with a
   Manager Codex hits a usage limit, Hub surfaces a paused state, leaves queued
   work pending, and resumes when the user clicks `再開する` in the Manager GUI
   or starts Manager again after topping up quota.
+- If a Manager topic is stranded after a Codex worker already emitted a
+  structured `task_complete` reply, startup/status recovery scans the Codex
+  rollout session log, replays that completed reply into the topic, and removes
+  the processed queue residue instead of rerunning the task.
 - For existing repositories, Manager delivers approved changes by calling
   `mwt deliver` from the Manager-owned task worktree instead of creating a
   second integration checkout. That final step rebases onto the latest target
@@ -735,6 +739,10 @@ This repository claims the following primary handoff paths.
   Optional explicit workspace root override for detached/temp runtime checkouts.
   Use this when the package root is not the canonical repository parent and you
   still want Hub/Manager to read the real workspace state.
+- `WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR`
+  Optional override for Manager's Codex rollout recovery scan root. Defaults to
+  `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise the user's
+  `.codex/sessions` directory.
 - `AI_AGENT_SESSION_NO_ATTACH=1`
   Keeps the mobile menu tests from attaching the current shell to the created
   session.

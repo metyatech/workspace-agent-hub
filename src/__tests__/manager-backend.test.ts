@@ -580,6 +580,7 @@ afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_TURN_TIMEOUT_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_STRUCTURED_REPLY_CLOSE_GRACE_MS;
   delete process.env.WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS;
+  delete process.env.WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR;
   await rm(tempDir, {
     recursive: true,
     force: true,
@@ -5897,6 +5898,136 @@ describe('manager backend codex integration', () => {
     );
     expect(threads[0]?.status).toBe('review');
     expect(threads[0]?.messages.at(-1)?.sender).toBe('ai');
+  });
+
+  it('recovers a stalled processed queue from a completed Codex rollout reply', async () => {
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-rollout-recovery',
+        title: '完了ログだけ残った依頼',
+        status: 'waiting',
+        createdAt: '2026-04-15T00:00:00.000Z',
+        updatedAt: '2026-04-15T00:00:01.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '前回の worker 結果を復旧して',
+            at: '2026-04-15T00:00:01.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      return thread ? JSON.parse(JSON.stringify(thread)) : null;
+    });
+    addMessageMock.mockImplementation(
+      async (
+        _dir: string,
+        threadId: string,
+        content: string,
+        sender: 'ai' | 'user',
+        status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved'
+      ) => {
+        const thread = threads.find((entry) => entry.id === threadId);
+        if (!thread) {
+          throw new Error(`missing thread ${threadId}`);
+        }
+        thread.messages.push({
+          sender,
+          content,
+          at: '2026-04-15T00:00:05.000Z',
+        });
+        thread.status = status;
+        thread.updatedAt = '2026-04-15T00:00:05.000Z';
+      }
+    );
+
+    const codexSessionsRoot = join(tempDir, 'codex-sessions');
+    process.env.WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR = codexSessionsRoot;
+    const rolloutDir = join(codexSessionsRoot, '2026', '04', '15');
+    await mkdir(rolloutDir, { recursive: true });
+    await writeFile(
+      join(
+        rolloutDir,
+        'rollout-2026-04-15T00-00-00-worker-session-recovered.jsonl'
+      ),
+      [
+        JSON.stringify({
+          timestamp: '2026-04-15T00:00:04.000Z',
+          type: 'event_msg',
+          payload: {
+            type: 'task_complete',
+            last_agent_message: JSON.stringify({
+              status: 'review',
+              reply: 'Codex rollout から復旧した review 結果',
+            }),
+          },
+        }),
+      ].join('\n')
+    );
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_processed_rollout_recovery',
+        threadId: 'thread-rollout-recovery',
+        content: '前回の worker 結果を復旧して',
+        createdAt: '2026-04-15T00:00:02.000Z',
+        processed: true,
+        priority: 'normal',
+      },
+    ]);
+    await writeManagerThreadMeta(tempDir, {
+      'thread-rollout-recovery': {
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        workerSessionId: 'worker-session-recovered',
+        workerSessionRuntime: 'codex',
+        canonicalState: 'stalled',
+        canonicalStateReason:
+          'Manager が処理すべき user 依頼でしたが、現在はキューにも実行中にも存在しない取り残し状態です。',
+      },
+    });
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        queue.length === 0 &&
+        meta['thread-rollout-recovery']?.canonicalState ===
+          'ai-finished-awaiting-user-confirmation'
+      );
+    });
+
+    expect(addMessageMock).toHaveBeenCalledWith(
+      tempDir,
+      'thread-rollout-recovery',
+      'Codex rollout から復旧した review 結果',
+      'ai',
+      'review'
+    );
+    expect(threads[0]?.status).toBe('review');
+    expect(threads[0]?.messages.at(-1)?.sender).toBe('ai');
+    expect(threads[0]?.messages.at(-1)?.content).toBe(
+      'Codex rollout から復旧した review 結果'
+    );
   });
 
   it('auto-requeues a stranded waiting thread once on startup without duplicating thread messages', async () => {

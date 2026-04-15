@@ -25,9 +25,10 @@ import {
   type ChildProcess,
   execFile as execFileCb,
 } from 'child_process';
-import { readFile, writeFile, appendFile } from 'fs/promises';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { readFile, writeFile, appendFile, readdir } from 'fs/promises';
+import { existsSync, readdirSync, statSync, type Dirent } from 'fs';
 import { createHash } from 'crypto';
+import { homedir } from 'os';
 import {
   basename,
   dirname,
@@ -4433,6 +4434,239 @@ async function addAiMessageOrPersistPending(input: {
   }
 }
 
+interface RecoveredRuntimeReply extends ManagerReplyPayload {
+  completedAtMs: number | null;
+}
+
+function resolveCodexSessionsRoot(): string {
+  const explicitSessionsRoot =
+    process.env.WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR?.trim();
+  if (explicitSessionsRoot) {
+    return resolvePath(explicitSessionsRoot);
+  }
+
+  const explicitCodexHome = process.env.CODEX_HOME?.trim();
+  return join(
+    resolvePath(explicitCodexHome || join(homedir(), '.codex')),
+    'sessions'
+  );
+}
+
+function codexSessionIdIsSearchable(sessionId: string): boolean {
+  return (
+    sessionId.length > 0 &&
+    !sessionId.includes('/') &&
+    !sessionId.includes('\\') &&
+    !sessionId.includes('..')
+  );
+}
+
+async function findCodexRolloutFileForSession(
+  sessionId: string
+): Promise<string | null> {
+  const trimmedSessionId = sessionId.trim();
+  if (!codexSessionIdIsSearchable(trimmedSessionId)) {
+    return null;
+  }
+
+  const sessionsRoot = resolveCodexSessionsRoot();
+  const suffix = `-${trimmedSessionId}.jsonl`;
+  const pendingDirs: Array<{ path: string; depth: number }> = [
+    { path: sessionsRoot, depth: 0 },
+  ];
+  let visitedDirs = 0;
+  let visitedFiles = 0;
+  const maxDirs = 512;
+  const maxFiles = 4096;
+
+  while (pendingDirs.length > 0) {
+    if (visitedDirs >= maxDirs || visitedFiles >= maxFiles) {
+      return null;
+    }
+
+    const current = pendingDirs.shift()!;
+    visitedDirs += 1;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(current.path, {
+        withFileTypes: true,
+        encoding: 'utf8',
+      });
+    } catch {
+      continue;
+    }
+
+    const sortedEntries = [...entries].sort((left, right) =>
+      right.name.localeCompare(left.name)
+    );
+    for (const entry of sortedEntries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      visitedFiles += 1;
+      if (entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) {
+        return join(current.path, entry.name);
+      }
+      if (visitedFiles >= maxFiles) {
+        return null;
+      }
+    }
+
+    if (current.depth >= 4) {
+      continue;
+    }
+    for (const entry of sortedEntries) {
+      if (entry.isDirectory()) {
+        pendingDirs.push({
+          path: join(current.path, entry.name),
+          depth: current.depth + 1,
+        });
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseCodexTaskCompleteReplyLine(
+  line: string
+): RecoveredRuntimeReply | null {
+  let record: unknown;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  const event = record as {
+    timestamp?: unknown;
+    type?: unknown;
+    payload?: {
+      type?: unknown;
+      last_agent_message?: unknown;
+      completed_at?: unknown;
+    };
+  };
+  if (event.type !== 'event_msg' || event.payload?.type !== 'task_complete') {
+    return null;
+  }
+
+  const lastAgentMessage = event.payload.last_agent_message;
+  if (typeof lastAgentMessage !== 'string' || !lastAgentMessage.trim()) {
+    return null;
+  }
+
+  const parsedReply = parseManagerReplyPayload(lastAgentMessage);
+  if (!parsedReply) {
+    return null;
+  }
+
+  let completedAtMs: number | null = null;
+  if (
+    typeof event.payload.completed_at === 'number' &&
+    Number.isFinite(event.payload.completed_at)
+  ) {
+    completedAtMs = event.payload.completed_at * 1000;
+  } else if (typeof event.timestamp === 'string') {
+    const timestampMs = new Date(event.timestamp).getTime();
+    completedAtMs = Number.isNaN(timestampMs) ? null : timestampMs;
+  }
+
+  return { ...parsedReply, completedAtMs };
+}
+
+async function readCompletedCodexReplyFromRollout(
+  sessionId: string
+): Promise<RecoveredRuntimeReply | null> {
+  const rolloutPath = await findCodexRolloutFileForSession(sessionId);
+  if (!rolloutPath) {
+    return null;
+  }
+
+  let content: string;
+  try {
+    content = await readFile(rolloutPath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const lines = content.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) {
+      continue;
+    }
+    const parsed = parseCodexTaskCompleteReplyLine(line);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function recoveredReplyIsForCurrentUserTurn(input: {
+  thread: Thread;
+  recoveredReply: RecoveredRuntimeReply;
+}): boolean {
+  if (input.recoveredReply.completedAtMs === null) {
+    return true;
+  }
+  const latestUser = lastUserMessage(input.thread);
+  if (!latestUser?.at) {
+    return true;
+  }
+  const latestUserAtMs = new Date(latestUser.at).getTime();
+  if (Number.isNaN(latestUserAtMs)) {
+    return true;
+  }
+  return latestUserAtMs <= input.recoveredReply.completedAtMs;
+}
+
+async function recoverStalledCodexReplyFromRollout(input: {
+  dir: string;
+  thread: Thread;
+  meta: ManagerThreadMeta | null;
+}): Promise<boolean> {
+  const workerSessionId = input.meta?.workerSessionId?.trim();
+  const workerRuntime = input.meta?.workerSessionRuntime ?? null;
+  if (
+    !workerSessionId ||
+    (workerRuntime !== null && workerRuntime !== 'codex') ||
+    input.meta?.routingConfirmationNeeded ||
+    input.meta?.seedRecoveryPending ||
+    input.meta?.pausedWorktreePath
+  ) {
+    return false;
+  }
+
+  const recoveredReply =
+    await readCompletedCodexReplyFromRollout(workerSessionId);
+  if (
+    !recoveredReply ||
+    !recoveredReplyIsForCurrentUserTurn({
+      thread: input.thread,
+      recoveredReply,
+    })
+  ) {
+    return false;
+  }
+
+  await addAiMessageOrPersistPending({
+    dir: input.dir,
+    threadId: input.thread.id,
+    content: recoveredReply.reply,
+    status: recoveredReply.status,
+  });
+  await updateQueueLocked(input.dir, (queue) =>
+    queue.filter(
+      (entry) => !(entry.threadId === input.thread.id && entry.processed)
+    )
+  );
+  await clearThreadRuntimeStatePreservingContinuity(input.dir, input.thread.id);
+  return true;
+}
+
 async function enqueueThreadRecoveryReplay(input: {
   dir: string;
   thread: Thread;
@@ -4538,6 +4772,16 @@ async function recoverCanonicalThreadState(dir: string): Promise<{
         status: threadMeta.pendingReplyStatus,
       });
       replayedReply = replayedReply || delivered;
+      continue;
+    }
+
+    const recoveredFromRollout = await recoverStalledCodexReplyFromRollout({
+      dir: resolvedDir,
+      thread,
+      meta: threadMeta,
+    });
+    if (recoveredFromRollout) {
+      replayedReply = true;
       continue;
     }
 
