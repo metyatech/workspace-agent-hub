@@ -167,6 +167,7 @@ vi.mock('../manager-mwt.js', () => ({
     changedFiles: [],
     onboardingCommit: null,
   }),
+  repairManagerWorktreeResidue: vi.fn().mockResolvedValue(null),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
   isMwtDeliverRemoteAdvanceError: vi.fn().mockReturnValue(false),
 }));
@@ -235,6 +236,7 @@ import {
   isMwtDeliverConflictError,
   isMwtDeliverRemoteAdvanceError,
   maybeAutoInitializeManagerRepository,
+  repairManagerWorktreeResidue,
 } from '../manager-mwt.js';
 
 interface FakeProc extends EventEmitter {
@@ -516,6 +518,8 @@ beforeEach(async () => {
   });
   vi.mocked(dropManagerWorktree).mockReset();
   vi.mocked(dropManagerWorktree).mockResolvedValue(false);
+  vi.mocked(repairManagerWorktreeResidue).mockReset();
+  vi.mocked(repairManagerWorktreeResidue).mockResolvedValue(null);
   vi.mocked(isMwtDeliverConflictError).mockReset();
   vi.mocked(isMwtDeliverConflictError).mockReturnValue(false);
   vi.mocked(isMwtDeliverRemoteAdvanceError).mockReset();
@@ -2790,7 +2794,15 @@ describe('manager backend codex integration', () => {
       '対象の作業フォルダを確認してください。'
     );
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(vi.mocked(dropManagerWorktree)).toHaveBeenCalledWith({
+      worktreePath,
+    });
     expect(vi.mocked(removeWorktree)).toHaveBeenCalledWith({
+      targetRepoRoot: repoRoot,
+      worktreePath,
+      branchName: 'agent/repo-missing-working-dir',
+    });
+    expect(vi.mocked(repairManagerWorktreeResidue)).toHaveBeenCalledWith({
       targetRepoRoot: repoRoot,
       worktreePath,
       branchName: 'agent/repo-missing-working-dir',

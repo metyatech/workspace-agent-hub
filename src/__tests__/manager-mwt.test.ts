@@ -47,6 +47,7 @@ import {
   describeMwtError,
   dropManagerWorktree,
   maybeAutoInitializeManagerRepository,
+  repairManagerWorktreeResidue,
 } from '../manager-mwt.js';
 
 describe('describeMwtError', () => {
@@ -367,5 +368,102 @@ describe('manager mwt cleanup', () => {
     await expect(readdir(parentDir)).resolves.toContain(
       'example-repo-mgr-stale-deadbeef'
     );
+  });
+
+  it('repairs stale registry residue after plain git cleanup removed the live worktree', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'wah-manager-repair-'));
+    const stalePath = join(
+      repoRoot,
+      '..',
+      'example-repo-mgr-assign-task-deadbeef'
+    );
+    const branchName = 'mgr/assign-task/deadbeef';
+    doctorRepositoryMock
+      .mockResolvedValueOnce({
+        initialized: true,
+        issues: [
+          {
+            id: 'stale_registry_entry',
+            details: {
+              path: stalePath,
+              branch: branchName,
+            },
+          },
+        ],
+        actions: [
+          {
+            id: 'remove_stale_registry_entry',
+            worktreeId: 'deadbeef',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        initialized: true,
+        issues: [],
+        actions: [],
+      });
+
+    const detail = await repairManagerWorktreeResidue({
+      targetRepoRoot: repoRoot,
+      worktreePath: stalePath,
+      branchName,
+    });
+
+    expect(detail).toBeNull();
+    expect(doctorRepositoryMock).toHaveBeenNthCalledWith(1, repoRoot, {
+      fix: true,
+      deep: true,
+    });
+    expect(doctorRepositoryMock).toHaveBeenNthCalledWith(2, repoRoot, {
+      deep: true,
+    });
+  });
+
+  it('reports a targeted failure when stale registry residue survives doctor repair', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'wah-manager-repair-'));
+    const stalePath = join(
+      repoRoot,
+      '..',
+      'example-repo-mgr-assign-task-deadbeef'
+    );
+    const branchName = 'mgr/assign-task/deadbeef';
+    doctorRepositoryMock
+      .mockResolvedValueOnce({
+        initialized: true,
+        issues: [
+          {
+            id: 'stale_registry_entry',
+            details: {
+              path: stalePath,
+              branch: branchName,
+            },
+          },
+        ],
+        actions: [],
+      })
+      .mockResolvedValueOnce({
+        initialized: true,
+        issues: [
+          {
+            id: 'stale_registry_entry',
+            details: {
+              path: stalePath,
+              branch: branchName,
+            },
+          },
+        ],
+        actions: [],
+      });
+
+    const detail = await repairManagerWorktreeResidue({
+      targetRepoRoot: repoRoot,
+      worktreePath: stalePath,
+      branchName,
+    });
+
+    expect(detail).toContain(
+      'Targeted manager-owned mwt residue still remains after repair'
+    );
+    expect(detail).toContain(branchName);
   });
 });

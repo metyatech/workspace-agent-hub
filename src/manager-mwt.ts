@@ -566,6 +566,80 @@ export async function dropManagerWorktree(input: {
   return true;
 }
 
+function isMatchingStaleRegistryIssue(
+  issue: Record<string, unknown>,
+  input: {
+    worktreePath: string;
+    branchName?: string | null;
+  }
+): boolean {
+  if (issue.id !== 'stale_registry_entry') {
+    return false;
+  }
+
+  const details =
+    issue.details && typeof issue.details === 'object'
+      ? (issue.details as { path?: unknown; branch?: unknown })
+      : null;
+  const issuePath =
+    typeof details?.path === 'string' ? resolvePath(details.path) : null;
+  const issueBranch =
+    typeof details?.branch === 'string' ? details.branch.trim() : null;
+  const targetPath = resolvePath(input.worktreePath);
+  const targetBranch = input.branchName?.trim() || null;
+
+  return (
+    issuePath === targetPath ||
+    (targetBranch !== null && issueBranch === targetBranch)
+  );
+}
+
+export async function repairManagerWorktreeResidue(input: {
+  targetRepoRoot: string;
+  worktreePath: string;
+  branchName?: string | null;
+}): Promise<string | null> {
+  const targetRepoRoot = resolvePath(input.targetRepoRoot);
+  if (!(await isManagedWorktreeRepository(targetRepoRoot))) {
+    return null;
+  }
+
+  let repairError: unknown = null;
+  try {
+    await doctorRepository(targetRepoRoot, {
+      fix: true,
+      deep: true,
+    });
+  } catch (error) {
+    repairError = error;
+  }
+
+  let assessment: { issues?: Array<Record<string, unknown>> } | null = null;
+  try {
+    assessment = await doctorRepository(targetRepoRoot, {
+      deep: true,
+    });
+  } catch (error) {
+    return describeMwtError(repairError ?? error);
+  }
+
+  const targetedResidueRemaining =
+    assessment?.issues?.some((issue) =>
+      isMatchingStaleRegistryIssue(issue, input)
+    ) ?? false;
+  if (!targetedResidueRemaining) {
+    return null;
+  }
+
+  const targetLabel = input.branchName?.trim()
+    ? `${resolvePath(input.worktreePath)} (${input.branchName.trim()})`
+    : resolvePath(input.worktreePath);
+  const residueDetail = `Targeted manager-owned mwt residue still remains after repair: ${targetLabel}`;
+  return repairError
+    ? `${describeMwtError(repairError)}\n\n${residueDetail}`
+    : residueDetail;
+}
+
 export async function isManagerManagedWorktreePath(
   worktreePath: string
 ): Promise<boolean> {

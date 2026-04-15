@@ -97,6 +97,7 @@ import {
   isMwtSeedTrackedDirtyError,
   listMwtChangedFiles,
   maybeAutoInitializeManagerRepository,
+  repairManagerWorktreeResidue,
   isMwtDeliverConflictError,
 } from './manager-mwt.js';
 import { snapshotBuild, resolvePackageRoot } from './build-archive.js';
@@ -4980,6 +4981,7 @@ async function cleanupWorktreeBestEffort(input: {
     return null;
   }
 
+  let usedPlainGitCleanup = false;
   try {
     if (
       await dropManagerWorktree({
@@ -4988,14 +4990,34 @@ async function cleanupWorktreeBestEffort(input: {
     ) {
       return null;
     }
+    usedPlainGitCleanup = true;
     await removeWorktree({
       targetRepoRoot: input.targetRepoRoot,
       worktreePath: input.worktreePath,
       branchName: input.branchName,
     });
+    const residueDetail = await repairManagerWorktreeResidue({
+      targetRepoRoot: input.targetRepoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+    }).catch((error) => describeMwtError(error));
+    if (residueDetail) {
+      console.error(`[manager-backend] ${input.context}: ${residueDetail}`);
+      return residueDetail;
+    }
     return null;
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    let detail = error instanceof Error ? error.message : String(error);
+    if (usedPlainGitCleanup) {
+      const residueDetail = await repairManagerWorktreeResidue({
+        targetRepoRoot: input.targetRepoRoot,
+        worktreePath: input.worktreePath,
+        branchName: input.branchName,
+      }).catch((repairError) => describeMwtError(repairError));
+      if (residueDetail) {
+        detail = `${detail}\n\n${residueDetail}`;
+      }
+    }
     console.error(`[manager-backend] ${input.context}: ${detail}`);
     return detail;
   }
@@ -7640,11 +7662,12 @@ export async function processNextQueued(
                   status: recoveryPayload.status ?? 'needs-reply',
                 });
                 if (assignment.worktreePath && assignment.worktreeBranch) {
-                  await removeWorktree({
+                  await cleanupWorktreeBestEffort({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
                     worktreePath: assignment.worktreePath,
                     branchName: assignment.worktreeBranch,
-                  }).catch(() => {});
+                    context: `Working-directory recovery cleanup for ${assignment.id}`,
+                  });
                 }
                 continue;
               }
@@ -7667,11 +7690,12 @@ export async function processNextQueued(
                   status: 'needs-reply',
                 });
                 if (assignment.worktreePath && assignment.worktreeBranch) {
-                  await removeWorktree({
+                  await cleanupWorktreeBestEffort({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
                     worktreePath: assignment.worktreePath,
                     branchName: assignment.worktreeBranch,
-                  }).catch(() => {});
+                    context: `Recovered working-directory rejection cleanup for ${assignment.id}`,
+                  });
                 }
                 continue;
               }
@@ -7683,11 +7707,12 @@ export async function processNextQueued(
                 status: 'needs-reply',
               });
               if (assignment.worktreePath && assignment.worktreeBranch) {
-                await removeWorktree({
+                await cleanupWorktreeBestEffort({
                   targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
                   worktreePath: assignment.worktreePath,
                   branchName: assignment.worktreeBranch,
-                }).catch(() => {});
+                  context: `Initial working-directory rejection cleanup for ${assignment.id}`,
+                });
               }
               continue;
             }
