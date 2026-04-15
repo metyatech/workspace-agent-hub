@@ -74,6 +74,47 @@ describe('describeMwtError', () => {
     );
   });
 
+  it('includes structured cleanup progress and remaining failures', () => {
+    const detail = describeMwtError({
+      message:
+        'Doctor repaired some managed-worktree state but could not finish every requested fix.',
+      details: {
+        appliedActions: [
+          {
+            id: 'remove_stale_registry_entry',
+            worktreeId: 'mgr-worktree-1234',
+          },
+        ],
+        completedSteps: ['remove_empty_stale_worktree_dir: D:/ghws/example-wt'],
+        failures: [
+          {
+            step: 'delete_stale_branch',
+            message: 'branch is checked out in another worktree',
+            branch: 'mgr/example-branch',
+          },
+        ],
+        recovery:
+          'Resolve the blocking cleanup failure, then rerun mwt doctor --fix.',
+      },
+    });
+
+    expect(detail).toContain(
+      'Doctor repaired some managed-worktree state but could not finish every requested fix.'
+    );
+    expect(detail).toContain(
+      'applied fixes:\n- remove_stale_registry_entry (worktreeId: mgr-worktree-1234)'
+    );
+    expect(detail).toContain(
+      'completed cleanup steps:\n- remove_empty_stale_worktree_dir: D:/ghws/example-wt'
+    );
+    expect(detail).toContain(
+      'remaining cleanup failures:\n- delete_stale_branch: branch is checked out in another worktree (branch: mgr/example-branch)'
+    );
+    expect(detail).toContain(
+      'Resolve the blocking cleanup failure, then rerun mwt doctor --fix.'
+    );
+  });
+
   it('falls back to the raw value for non-structured errors', () => {
     expect(describeMwtError('plain failure')).toBe('plain failure');
   });

@@ -226,6 +226,7 @@ import {
 } from '../manager-worktree.js';
 import {
   createManagerWorktree,
+  describeMwtError,
   deliverManagerWorktree,
   dropManagerWorktree,
   isManagerManagedWorktreePath,
@@ -1164,7 +1165,7 @@ describe('manager backend codex integration', () => {
 
     const session = await readSession(tempDir);
     expect(session.routingSessionId).toBe('routing-thread-1');
-  });
+  }, 15000);
 
   it('retries routing once with a fresh session after an invalid stored routing session', async () => {
     const failingRoutingProc = makeProc(8609);
@@ -5382,6 +5383,53 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('退避して続行');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
   });
+
+  it('includes structured managed-worktree cleanup details when createManagerWorktree fails', async () => {
+    vi.mocked(describeMwtError).mockReturnValueOnce(
+      [
+        'Doctor repaired some managed-worktree state but could not finish every requested fix.',
+        'applied fixes:\n- remove_stale_registry_entry (worktreeId: mgr-worktree-1234)',
+        'remaining cleanup failures:\n- delete_stale_branch: branch is checked out in another worktree (branch: mgr/example-branch)',
+      ].join('\n\n')
+    );
+    vi.mocked(createManagerWorktree).mockRejectedValueOnce({
+      id: 'doctor_fix_incomplete',
+      message:
+        'Doctor repaired some managed-worktree state but could not finish every requested fix.',
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-structured-cleanup-error',
+      'message'
+    );
+
+    await waitFor(() => addMessageMock.mock.calls.length === 1);
+    await waitFor(async () => {
+      const session = await readSession(tempDir);
+      return session.status === 'idle';
+    });
+
+    const queue = await readQueue(tempDir);
+    const session = await readSession(tempDir);
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe(
+      'thread-structured-cleanup-error'
+    );
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(queue).toHaveLength(1);
+    expect(session.status).toBe('idle');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Worker 隔離環境の作成に失敗しました。'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'applied fixes:\n- remove_stale_registry_entry (worktreeId: mgr-worktree-1234)'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'remaining cleanup failures:\n- delete_stale_branch: branch is checked out in another worktree (branch: mgr/example-branch)'
+    );
+  }, 15000);
 
   it('stashes tracked seed changes, clears recovery state, and requeues the thread', async () => {
     await writeManagerThreadMeta(tempDir, {

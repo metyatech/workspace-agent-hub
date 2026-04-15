@@ -489,7 +489,10 @@ Important behavior:
   boundary. Startup cleanup also runs `mwt doctor --fix --deep` and removes
   any fully orphaned empty `repo-mgr-*` sibling directories that are no longer
   present in Git or the `mwt` registry, so stale Manager residue does not keep
-  blocking later isolated-write retries.
+  blocking later isolated-write retries. When `mwt` repair only partially
+  succeeds, Manager now preserves the structured cleanup details in its
+  `needs-reply` message so the operator can see which repairs already landed
+  and which cleanup step still needs attention.
 - If an existing-repo write task targets a repository that is not initialized
   for `mwt` yet, Manager now attempts a safe one-time automatic `mwt init`
   before blocking. The automatic path is intentionally conservative: it only

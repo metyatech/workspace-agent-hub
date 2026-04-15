@@ -139,6 +139,78 @@ function formatMwtOutputSection(label: string, value: unknown): string | null {
   return `${label}:\n${preview}`;
 }
 
+function formatMwtStructuredDetailItem(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const normalized = normalizeMwtOutput(value);
+    return normalized ? `- ${normalized}` : null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const detail = value as Record<string, unknown>;
+  const prefix =
+    typeof detail.step === 'string' && detail.step.trim()
+      ? detail.step.trim()
+      : typeof detail.id === 'string' && detail.id.trim()
+        ? detail.id.trim()
+        : null;
+  const body =
+    typeof detail.message === 'string' && detail.message.trim()
+      ? normalizeMwtOutput(detail.message)
+      : typeof detail.description === 'string' && detail.description.trim()
+        ? normalizeMwtOutput(detail.description)
+        : null;
+  const qualifiers = [
+    typeof detail.branch === 'string' && detail.branch.trim()
+      ? `branch: ${detail.branch.trim()}`
+      : null,
+    typeof detail.path === 'string' && detail.path.trim()
+      ? `path: ${detail.path.trim()}`
+      : null,
+    typeof detail.taskPath === 'string' && detail.taskPath.trim()
+      ? `taskPath: ${detail.taskPath.trim()}`
+      : null,
+    typeof detail.worktreeId === 'string' && detail.worktreeId.trim()
+      ? `worktreeId: ${detail.worktreeId.trim()}`
+      : null,
+    typeof detail.scope === 'string' && detail.scope.trim()
+      ? `scope: ${detail.scope.trim()}`
+      : null,
+  ].filter((part): part is string => Boolean(part));
+
+  const main =
+    prefix && body && body !== prefix
+      ? `${prefix}: ${body}`
+      : body || prefix || null;
+  if (!main) {
+    return null;
+  }
+
+  return qualifiers.length > 0
+    ? `- ${main} (${qualifiers.join(', ')})`
+    : `- ${main}`;
+}
+
+function formatMwtStructuredDetailSection(
+  label: string,
+  value: unknown
+): string | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+
+  const lines = value
+    .map((entry) => formatMwtStructuredDetailItem(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return `${label}:\n${lines.join('\n')}`;
+}
+
 export function describeMwtError(error: unknown): string {
   if (!looksLikeMwtError(error)) {
     return String(error);
@@ -168,10 +240,39 @@ export function describeMwtError(error: unknown): string {
           (error.details as { stdout?: unknown }).stdout
         )
       : null;
+  const appliedActionsSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtStructuredDetailSection(
+          'applied fixes',
+          (error.details as { appliedActions?: unknown }).appliedActions
+        )
+      : null;
+  const completedStepsSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtStructuredDetailSection(
+          'completed cleanup steps',
+          (error.details as { completedSteps?: unknown }).completedSteps
+        )
+      : null;
+  const failuresSection =
+    error.details && typeof error.details === 'object'
+      ? formatMwtStructuredDetailSection(
+          'remaining cleanup failures',
+          (error.details as { failures?: unknown }).failures
+        )
+      : null;
   const distinctStdoutSection =
     stdoutSection && stdoutSection !== stderrSection ? stdoutSection : null;
 
-  return [message, recovery || null, stderrSection, distinctStdoutSection]
+  return [
+    message,
+    appliedActionsSection,
+    completedStepsSection,
+    failuresSection,
+    recovery || null,
+    stderrSection,
+    distinctStdoutSection,
+  ]
     .filter((part): part is string => Boolean(part))
     .join('\n\n');
 }

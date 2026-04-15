@@ -54,7 +54,7 @@ function ConvertTo-QuotedArgumentString {
     return ($quoted -join ' ')
 }
 
-function Start-VerifyScriptProcess {
+function Invoke-VerifyScript {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name,
@@ -90,66 +90,34 @@ function Start-VerifyScriptProcess {
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
-    [void]$process.Start()
-
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-
-    return [pscustomobject]@{
-        Name = $Name
-        Process = $process
-        StdOutTask = $stdoutTask
-        StdErrTask = $stderrTask
-        StdOutPath = $stdoutPath
-        StdErrPath = $stderrPath
-    }
-}
-
-function Wait-ForVerifyScriptProcess {
-    param(
-        [Parameter(Mandatory = $true)]
-        $ProcessInfo
-    )
-
-    $ProcessInfo.Process.WaitForExit()
-    $stdoutText = $ProcessInfo.StdOutTask.GetAwaiter().GetResult()
-    $stderrText = $ProcessInfo.StdErrTask.GetAwaiter().GetResult()
-    [System.IO.File]::WriteAllText($ProcessInfo.StdOutPath, $stdoutText, [Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($ProcessInfo.StdErrPath, $stderrText, [Text.UTF8Encoding]::new($false))
-
-    if ($ProcessInfo.Process.ExitCode -eq 0) {
-        return
-    }
-
-    $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
-    if ($detail) {
-        throw "$($ProcessInfo.Name) failed. $detail"
-    }
-
-    throw "$($ProcessInfo.Name) failed with exit code $($ProcessInfo.Process.ExitCode)."
-}
-
-function Dispose-VerifyScriptProcess {
-    param(
-        [Parameter(Mandatory = $true)]
-        $ProcessInfo
-    )
-
     try {
-        if ($ProcessInfo.Process -and -not $ProcessInfo.Process.HasExited) {
-            $ProcessInfo.Process.Kill()
-            $ProcessInfo.Process.WaitForExit()
-        }
-    } catch {
-    }
+        [void]$process.Start()
 
-    if ($ProcessInfo.Process) {
-        $ProcessInfo.Process.Dispose()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+
+        $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+        $stderrText = $stderrTask.GetAwaiter().GetResult()
+        [System.IO.File]::WriteAllText($stdoutPath, $stdoutText, [Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($stderrPath, $stderrText, [Text.UTF8Encoding]::new($false))
+
+        if ($process.ExitCode -eq 0) {
+            return
+        }
+
+        $detail = if ($stderrText.Trim()) { $stderrText.Trim() } elseif ($stdoutText.Trim()) { $stdoutText.Trim() } else { '' }
+        if ($detail) {
+            throw "$Name failed. $detail"
+        }
+
+        throw "$Name failed with exit code $($process.ExitCode)."
+    } finally {
+        $process.Dispose()
     }
 }
 
 [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
-$processInfos = @()
 
 try {
     Push-Location $repoRoot
@@ -161,15 +129,8 @@ try {
         Pop-Location
     }
 
-    $processInfos = @(
-        (Start-VerifyScriptProcess -Name 'lint' -ScriptPath $lintScriptPath),
-        (Start-VerifyScriptProcess -Name 'test' -ScriptPath $testScriptPath)
-    )
-
-    Wait-Process -Id (@($processInfos | ForEach-Object { $_.Process.Id }))
-    foreach ($processInfo in $processInfos) {
-        Wait-ForVerifyScriptProcess -ProcessInfo $processInfo
-    }
+    Invoke-VerifyScript -Name 'lint' -ScriptPath $lintScriptPath
+    Invoke-VerifyScript -Name 'test' -ScriptPath $testScriptPath
 
     & $buildScriptPath
     if ($LASTEXITCODE -ne 0) {
@@ -181,9 +142,6 @@ try {
         throw 'scripts/agent-session-launcher.ps1 -SmokeTest failed.'
     }
 } finally {
-    foreach ($processInfo in @($processInfos)) {
-        Dispose-VerifyScriptProcess -ProcessInfo $processInfo
-    }
     if (Test-Path -Path $tempRoot) {
         [System.IO.Directory]::Delete($tempRoot, $true)
     }

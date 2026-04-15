@@ -7755,7 +7755,10 @@ export async function processNextQueued(
             }
             continue;
           }
-          const errMsg = `[Manager] Worker 隔離環境の作成に失敗しました: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`;
+          const errorDetail = describeMwtError(wtErr);
+          const errMsg = errorDetail.includes('\n')
+            ? `[Manager] Worker 隔離環境の作成に失敗しました。\n${errorDetail}`
+            : `[Manager] Worker 隔離環境の作成に失敗しました: ${errorDetail}`;
           try {
             await addMessage(
               resolvedDir,
