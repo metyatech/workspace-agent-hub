@@ -3658,7 +3658,11 @@ describe('manager backend codex integration', () => {
     });
   });
 
-  it('does not resume a stuck pending queue just because manager status is polled', async () => {
+  it('kicks a stuck pending queue when manager status is polled', async () => {
+    const workerProc = makeProc(7101);
+    const reviewProc = makeProc(7102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
     const stuckQueuePath = join(
       tempDir,
       '.workspace-agent-hub-manager-queue.jsonl'
@@ -3678,7 +3682,81 @@ describe('manager backend codex integration', () => {
     const status = await getBuiltinManagerStatus(tempDir);
     expect(status.running).toBe(true);
     expect(status.pendingCount).toBe(1);
-    expect(spawnMock).not.toHaveBeenCalled();
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-stuck',
+      text: '{"status":"review","reply":"status kick recovered"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-stuck',
+      text: '{"status":"review","reply":"status kick recovered"}',
+    });
+
+    await waitFor(async () => {
+      const latestSession = await readSession(tempDir);
+      const queue = await readQueue(tempDir);
+      return queue.length === 0 && latestSession.status === 'idle';
+    });
+
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-stuck' &&
+          call[2] === 'status kick recovered' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
+  });
+
+  it('starts persisted pending queue work even when the manager session is not started', async () => {
+    const workerProc = makeProc(7101);
+    const reviewProc = makeProc(7102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+
+    await writeQueue(tempDir, [
+      {
+        id: 'q_not_started',
+        threadId: 'thread-not-started-queue',
+        content: 'resume persisted queued task',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    expect((await readSession(tempDir)).status).toBe('not-started');
+
+    await processNextQueued(tempDir, tempDir);
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-thread-not-started-queue',
+      text: '{"status":"review","reply":"persisted queue recovered"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-not-started-queue',
+      text: '{"status":"review","reply":"persisted queue recovered"}',
+    });
+
+    await waitFor(async () => {
+      const latestSession = await readSession(tempDir);
+      const queue = await readQueue(tempDir);
+      return queue.length === 0 && latestSession.status === 'idle';
+    });
+
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-not-started-queue' &&
+          call[2] === 'persisted queue recovered' &&
+          call[4] === 'review'
+      )
+    ).toBe(true);
   });
 
   it('auto-retries a transient internal queue failure instead of stalling pending work', async () => {

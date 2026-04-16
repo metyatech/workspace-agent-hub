@@ -15,6 +15,7 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   getBuiltinManagerStatus,
+  kickIdleQueuedManagerWork,
   preserveSeedRecoveryAndContinue,
   readQueue,
   readSession,
@@ -196,6 +197,7 @@ async function buildManagerLiveSnapshot(
     session,
     queue,
   });
+  kickIdleQueueIfNeeded(resolvePath(workspaceRoot), status, 'live-snapshot');
 
   return {
     kind: 'snapshot',
@@ -379,6 +381,29 @@ function deriveManagerStatusSnapshot(input: {
   };
 }
 
+function kickIdleQueueIfNeeded(
+  workspaceRoot: string,
+  status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>,
+  reason: string
+): void {
+  if (
+    status.health !== 'ok' ||
+    status.pendingCount <= 0 ||
+    status.currentQueueId !== null ||
+    status.currentThreadId !== null
+  ) {
+    return;
+  }
+
+  void kickIdleQueuedManagerWork(workspaceRoot, reason).catch((error) => {
+    console.warn(
+      `[manager-ui] failed to kick idle manager queue: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  });
+}
+
 async function readDirectManagerStatus(
   workspaceRoot: string
 ): Promise<ManagerLiveSnapshot['status']> {
@@ -387,11 +412,13 @@ async function readDirectManagerStatus(
     readSession(workspaceRoot),
     readQueue(workspaceRoot),
   ]);
-  return deriveManagerStatusSnapshot({
+  const status = deriveManagerStatusSnapshot({
     threads,
     session,
     queue,
   });
+  kickIdleQueueIfNeeded(workspaceRoot, status, 'direct-status');
+  return status;
 }
 
 function getOrCreateManagerLiveSnapshotCacheEntry(

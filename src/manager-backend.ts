@@ -3941,6 +3941,43 @@ function clearProcessNextQueuedReservation(resolvedDir: string): void {
   rerunRequested.delete(resolvedDir);
 }
 
+function pendingQueueEntries(
+  queue: QueueEntry[],
+  session: ManagerSession
+): QueueEntry[] {
+  const activeQueueIds = queueEntryIdSet(session.activeAssignments);
+  const dispatchingQueueIds = new Set(session.dispatchingQueueEntryIds ?? []);
+  return queue.filter(
+    (entry) =>
+      !entry.processed &&
+      !activeQueueIds.has(entry.id) &&
+      !dispatchingQueueIds.has(entry.id)
+  );
+}
+
+async function markManagerSessionStartedForPendingQueue(
+  dir: string,
+  session: ManagerSession,
+  queue: QueueEntry[]
+): Promise<ManagerSession> {
+  if (
+    session.status !== 'not-started' ||
+    pendingQueueEntries(queue, session).length === 0
+  ) {
+    return session;
+  }
+
+  return updateSession(dir, (currentSession) =>
+    currentSession.status === 'not-started'
+      ? {
+          ...currentSession,
+          status: 'idle',
+          startedAt: currentSession.startedAt ?? new Date().toISOString(),
+        }
+      : currentSession
+  );
+}
+
 async function recoverStaleProcessNextQueuedReservation(
   dir: string,
   resolvedDir: string
@@ -7436,11 +7473,16 @@ export async function processNextQueued(
 
   try {
     let session = await reconcileActiveAssignments(dir);
+    const queue = await readQueue(dir);
+    session = await markManagerSessionStartedForPendingQueue(
+      dir,
+      session,
+      queue
+    );
     if (session.status === 'not-started') {
       return;
     }
 
-    const queue = await readQueue(dir);
     const activeQueueIds = queueEntryIdSet(session.activeAssignments);
     const dispatchPlan = buildQueueDispatchPlan(
       queue.filter(
@@ -8939,6 +8981,7 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
         errorAt: latestSession.lastErrorAt,
       };
     }
+    void kickIdleQueuedManagerWork(dir, 'manager-status');
   }
 
   if (session.status === 'not-started' && pending === 0) {
@@ -9003,6 +9046,33 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
     errorMessage: null,
     errorAt: null,
   };
+}
+
+export async function kickIdleQueuedManagerWork(
+  dir: string,
+  _reason = 'idle-queued-work'
+): Promise<boolean> {
+  const resolvedDir = resolvePath(dir);
+  let session = await reconcileActiveAssignments(dir);
+  const queue = await readQueue(dir);
+  if (
+    session.activeAssignments.length > 0 ||
+    session.dispatchingThreadId ||
+    (session.dispatchingQueueEntryIds?.length ?? 0) > 0 ||
+    session.lastPauseMessage ||
+    session.lastErrorMessage ||
+    pendingQueueEntries(queue, session).length === 0
+  ) {
+    return false;
+  }
+
+  session = await markManagerSessionStartedForPendingQueue(dir, session, queue);
+  if (session.status === 'not-started') {
+    return false;
+  }
+
+  void processNextQueued(dir, resolvedDir);
+  return true;
 }
 
 export async function startBuiltinManager(

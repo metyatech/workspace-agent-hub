@@ -152,3 +152,4 @@
 {"id":"Q6tNUZbx","description":"Fix Manager built-in worker Codex CLI PATH detection","stage":"committed","createdAt":"2026-04-15T11:13:26.701Z","updatedAt":"2026-04-15T11:27:30.587Z","committedEventId":"Pq8mSdtOLGOL14fX"}
 {"id":"xf9HkbJc","description":"Auto-resume workspace-agent-hub Manager after Codex usage-limit reset","stage":"committed","createdAt":"2026-04-15T11:16:47.799Z","updatedAt":"2026-04-15T11:39:24.080Z","committedEventId":"ZChOYU3UROQrS4uv"}
 {"id":"H677KRn2","description":"Show Manager stalled-state reasons in task lists and activity guidance","stage":"committed","createdAt":"2026-04-15T16:28:43.033Z","updatedAt":"2026-04-15T16:33:51.753Z","committedEventId":"T9xT2zuUb8hjKcev"}
+{"id":"na68tlWC","description":"Root-fix Manager idle-with-queue recovery so queued work starts without manual start","stage":"committed","createdAt":"2026-04-15T23:56:28.354Z","updatedAt":"2026-04-16T00:13:41.270Z","committedEventId":"yIAQyATCHf12Oxyc"}

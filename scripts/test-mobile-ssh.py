@@ -494,6 +494,7 @@ def assert_pc_to_mobile_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[s
 def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[str]) -> None:
     suffix = uuid.uuid4().hex[:10]
     session_title = f"Matrix Mobile Start {suffix}"
+    launcher_session: dict[str, object] | None = None
 
     ssh = InteractiveSsh(sshd.port, sshd.user_key_path, sshd.known_hosts_path)
     try:
@@ -515,12 +516,14 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
         ssh.send(f"{to_wsl_path(REPO_ROOT)}\n")
         ssh.wait_for_wrapped_path(to_wsl_path(REPO_ROOT), 15, after=after)
 
+        launcher_session = launcher_wait_for_display_title(session_title, 15)
         disconnect_ssh(ssh)
     finally:
         if ssh.process.poll() is None:
             disconnect_ssh(ssh)
 
-    launcher_session = launcher_wait_for_display_title(session_title, 15)
+    if launcher_session is None:
+        launcher_session = launcher_wait_for_display_title(session_title, 15)
 
     session_name = str(launcher_session.get("Name", ""))
     if not session_name:
