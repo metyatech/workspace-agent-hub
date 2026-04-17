@@ -200,6 +200,7 @@ import {
   reviewStaleSeedRecoveryForTests,
   resolveCodexCommand,
   sendGlobalToBuiltinManager,
+  sendThreadFollowUpToBuiltinManager,
   startBuiltinManager,
   sendToBuiltinManager,
   shouldUseWindowsBatchWrapperForCodexCommand,
@@ -4606,6 +4607,69 @@ describe('manager backend codex integration', () => {
       const session = await readSession(tempDir);
       return queue.length === 0 && session.status === 'idle';
     });
+  });
+
+  it('drops missing paused worktree metadata before follow-up requeue so the thread can restart fresh', async () => {
+    const dispatchProc = makeProc(7300);
+    const workerProc = makeProc(7301);
+    const reviewProc = makeProc(7302);
+    queueSpawnResults(dispatchProc, workerProc, reviewProc);
+
+    await writeManagerThreadMeta(tempDir, {
+      'thread-paused-follow-up': {
+        managedRepoRoot: tempDir,
+        managedBaseBranch: 'main',
+        managedVerifyCommand: 'npm run verify',
+        requestedRunMode: 'write',
+        pausedAssignmentId: 'assign_paused_follow_up',
+        pausedWorktreePath: join(tempDir, 'missing-paused-worktree'),
+        pausedWorktreeBranch: 'mgr/paused-follow-up/preview000',
+        pausedTargetRepoRoot: tempDir,
+      },
+    });
+
+    await sendThreadFollowUpToBuiltinManager(
+      tempDir,
+      'thread-paused-follow-up',
+      '状態喪失を受け入れて現在の main からやり直してください'
+    );
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-paused-follow-up',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['src'],
+      }),
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    expect(vi.mocked(createManagerWorktree)).toHaveBeenCalledTimes(1);
+    expect(spawnMock.mock.calls[1]?.[2]?.cwd).not.toBe(
+      join(tempDir, 'missing-paused-worktree')
+    );
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-paused-follow-up',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-paused-follow-up',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-paused-follow-up']?.pausedAssignmentId).toBeUndefined();
+    expect(meta['thread-paused-follow-up']?.pausedWorktreePath).toBeUndefined();
+    expect(
+      meta['thread-paused-follow-up']?.pausedWorktreeBranch
+    ).toBeUndefined();
+    expect(
+      meta['thread-paused-follow-up']?.pausedTargetRepoRoot
+    ).toBeUndefined();
   });
 
   it('refreshes the manager review prompt with the latest same-topic user follow-up that arrived while the worker was running', async () => {

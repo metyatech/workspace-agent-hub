@@ -8974,6 +8974,15 @@ export async function sendThreadFollowUpToBuiltinManager(
 
   await ensureThreadReadyForUserMessage(resolvedDir, threadId);
   await clearThreadRoutingStatePreservingContinuity(resolvedDir, threadId);
+  const currentMeta =
+    (await readManagerThreadMeta(resolvedDir))[threadId] ?? null;
+  if (
+    typeof currentMeta?.pausedWorktreePath === 'string' &&
+    currentMeta.pausedWorktreePath.trim() &&
+    !existsSync(currentMeta.pausedWorktreePath.trim())
+  ) {
+    await clearPausedWorktreeForThread(resolvedDir, threadId);
+  }
   await addMessage(resolvedDir, threadId, content, 'user', 'waiting');
   await sendToBuiltinManager(resolvedDir, threadId, content, {
     dispatchMode: 'manager-evaluate',
