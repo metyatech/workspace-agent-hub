@@ -45,6 +45,14 @@ export interface ManagerWorkerLiveEntry {
   kind: 'status' | 'output' | 'error';
 }
 
+export interface ManagerStateTransitionEntry {
+  at: string;
+  fromState: ManagerUiState;
+  toState: ManagerUiState;
+  fromReason: string | null;
+  toReason: string | null;
+}
+
 export interface ManagerThreadMeta {
   managerOwned?: boolean;
   canonicalState?: ManagerUiState | null;
@@ -99,6 +107,7 @@ export interface ManagerThreadMeta {
   strandedAutoResumeLastAttemptAt?: string | null;
   consecutiveFailures?: number;
   nextRetryAfter?: string | null;
+  recentStateTransitions?: ManagerStateTransitionEntry[] | null;
 }
 
 export interface ManagerThreadView extends Thread {
@@ -143,11 +152,13 @@ export interface ManagerThreadView extends Thread {
   pendingReplyAt: string | null;
   strandedAutoResumeCount: number;
   strandedAutoResumeLastAttemptAt: string | null;
+  recentStateTransitions: ManagerStateTransitionEntry[];
 }
 
 type ManagerThreadMetaMap = Record<string, ManagerThreadMeta>;
 
 const metaWriteLocks = new Map<string, Promise<void>>();
+const MANAGER_STATE_TRANSITION_HISTORY_LIMIT = 12;
 
 async function atomicWrite(filePath: string, content: string): Promise<void> {
   await writeFileAtomically(filePath, content);
@@ -265,10 +276,33 @@ export async function reconcileManagerThreadMeta(input: {
       isStarting,
       isWorking,
     });
+    const previousCanonicalState = normalizeCanonicalUiState(
+      currentMeta?.canonicalState
+    );
+    const previousCanonicalReason =
+      typeof currentMeta?.canonicalStateReason === 'string'
+        ? currentMeta.canonicalStateReason.trim() || null
+        : null;
+    const recentStateTransitions = normalizeStateTransitionHistory(
+      cleanedMeta?.recentStateTransitions
+    );
     const nextMeta: ManagerThreadMeta = {
       ...(cleanedMeta ?? {}),
       canonicalState: canonical.uiState,
       canonicalStateReason: canonical.reason,
+      recentStateTransitions:
+        previousCanonicalState && previousCanonicalState !== canonical.uiState
+          ? [
+              ...recentStateTransitions,
+              {
+                at: new Date().toISOString(),
+                fromState: previousCanonicalState,
+                toState: canonical.uiState,
+                fromReason: previousCanonicalReason,
+                toReason: canonical.reason,
+              } satisfies ManagerStateTransitionEntry,
+            ].slice(-MANAGER_STATE_TRANSITION_HISTORY_LIMIT)
+          : recentStateTransitions,
     };
     next[thread.id] = nextMeta;
 
@@ -454,6 +488,47 @@ function normalizeWorkerLiveLog(value: unknown): ManagerWorkerLiveEntry[] {
     }
 
     return [{ at, text, kind } satisfies ManagerWorkerLiveEntry];
+  });
+}
+
+function normalizeStateTransitionHistory(
+  value: unknown
+): ManagerStateTransitionEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+
+    const record = entry as Record<string, unknown>;
+    const at = typeof record['at'] === 'string' ? record['at'].trim() : '';
+    const fromState = normalizeCanonicalUiState(record['fromState']);
+    const toState = normalizeCanonicalUiState(record['toState']);
+    const fromReason =
+      typeof record['fromReason'] === 'string'
+        ? record['fromReason'].trim() || null
+        : null;
+    const toReason =
+      typeof record['toReason'] === 'string'
+        ? record['toReason'].trim() || null
+        : null;
+
+    if (!at || !fromState || !toState) {
+      return [];
+    }
+
+    return [
+      {
+        at,
+        fromState,
+        toState,
+        fromReason,
+        toReason,
+      } satisfies ManagerStateTransitionEntry,
+    ];
   });
 }
 
@@ -953,6 +1028,9 @@ export function deriveManagerThreadViews(input: {
           typeof meta?.strandedAutoResumeLastAttemptAt === 'string'
             ? meta.strandedAutoResumeLastAttemptAt.trim() || null
             : null,
+        recentStateTransitions: normalizeStateTransitionHistory(
+          meta?.recentStateTransitions
+        ),
       } satisfies ManagerThreadView,
     ];
   });

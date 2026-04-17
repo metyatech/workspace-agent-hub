@@ -81,6 +81,7 @@ function makeThreadView(
     seedRecoveryRepoRoot: null,
     seedRecoveryRepoLabel: null,
     seedRecoveryChangedFiles: [],
+    recentStateTransitions: [],
     ...overrides,
   };
 }
@@ -5109,6 +5110,15 @@ describe('manager-app live updates', () => {
       workerAgentId: 'assign_no_auth',
       workerRuntimeState: 'worker-running',
       workerRuntimeDetail: 'README を確認中です。',
+      recentStateTransitions: [
+        {
+          at: '2026-03-30T02:00:04.000Z',
+          fromState: 'queued',
+          toState: 'ai-working',
+          fromReason: null,
+          toReason: null,
+        },
+      ],
     });
     const waitingStatus = {
       running: true,
@@ -5230,8 +5240,18 @@ describe('manager-app live updates', () => {
         __workspaceAgentHubManagerDiagnostics?: () => Record<string, unknown>;
       }
     ).__workspaceAgentHubManagerDiagnostics?.();
+    const currentThreadTransitions = (diagnostics?.[
+      'managerCurrentThreadRecentStateTransitions'
+    ] ?? []) as Array<{
+      fromState?: string;
+      toState?: string;
+    }>;
     expect(diagnostics?.['liveStreamConnected']).toBe(true);
     expect(diagnostics?.['authTokenPresent']).toBe(false);
+    expect(diagnostics?.['managerCurrentThreadUiState']).toBe('ai-working');
+    expect(Array.isArray(currentThreadTransitions)).toBe(true);
+    expect(currentThreadTransitions[0]?.fromState).toBe('queued');
+    expect(currentThreadTransitions[0]?.toState).toBe('ai-working');
     liveStreamControl.close?.();
   });
 

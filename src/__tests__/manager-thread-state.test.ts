@@ -469,6 +469,169 @@ describe('manager thread state derivation', () => {
     );
   });
 
+  it('records recent lane transitions when canonical state changes during reconciliation', async () => {
+    const tempDir = await mkdtemp(
+      join(tmpdir(), 'workspace-agent-hub-transition-history-')
+    );
+
+    try {
+      await writeManagerThreadMeta(tempDir, {
+        'thread-transition': {
+          managerOwned: true,
+          canonicalState: 'queued',
+          canonicalStateReason: null,
+        },
+      });
+
+      const meta = await reconcileManagerThreadMeta({
+        dir: tempDir,
+        threads: [
+          {
+            id: 'thread-transition',
+            title: 'Transition test',
+            status: 'waiting',
+            updatedAt: '2026-04-17T15:00:00.000Z',
+            createdAt: '2026-04-17T14:59:00.000Z',
+            messages: [
+              {
+                sender: 'user',
+                content: 'Continue the task.',
+                at: '2026-04-17T14:59:00.000Z',
+              },
+            ],
+          },
+        ],
+        session: {
+          workspaceKey: 'workspace',
+          status: 'busy',
+          sessionId: 'codex-thread',
+          routingSessionId: null,
+          pid: 1234,
+          currentQueueId: 'queue-transition',
+          startedAt: '2026-04-17T14:59:00.000Z',
+          lastMessageAt: '2026-04-17T15:00:00.000Z',
+          priorityStreak: 0,
+          lastProgressAt: '2026-04-17T15:00:00.000Z',
+          lastErrorMessage: null,
+          lastErrorAt: null,
+          lastPauseMessage: null,
+          lastPauseAt: null,
+          activeAssignments: [
+            {
+              id: 'assign-transition',
+              threadId: 'thread-transition',
+              queueEntryIds: ['queue-transition'],
+              assigneeKind: 'worker',
+              targetKind: 'existing-repo',
+              newRepoName: null,
+              workingDirectory: 'D:\\ghws\\workspace-agent-hub-test-transition',
+              workerRuntime: 'claude',
+              workerModel: 'claude-opus-4-6',
+              workerEffort: null,
+              assigneeLabel: 'Worker Claude claude-opus-4-6',
+              writeScopes: ['src'],
+              pid: 1234,
+              startedAt: '2026-04-17T15:00:00.000Z',
+              lastProgressAt: '2026-04-17T15:00:01.000Z',
+              worktreePath: 'D:\\ghws\\workspace-agent-hub-test-transition',
+              worktreeBranch: 'mgr/test-transition',
+              targetRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+            },
+          ],
+        },
+        queue: [
+          {
+            id: 'queue-transition',
+            threadId: 'thread-transition',
+            content: 'Continue the task.',
+            createdAt: '2026-04-17T15:00:00.000Z',
+            processed: false,
+            priority: 'normal',
+          },
+        ],
+      });
+
+      const history = meta['thread-transition']?.recentStateTransitions ?? [];
+      expect(meta['thread-transition']?.canonicalState).toBe('ai-working');
+      expect(history).toHaveLength(1);
+      expect(history[0]?.fromState).toBe('queued');
+      expect(history[0]?.toState).toBe('ai-working');
+
+      const views = deriveManagerThreadViews({
+        threads: [
+          {
+            id: 'thread-transition',
+            title: 'Transition test',
+            status: 'waiting',
+            updatedAt: '2026-04-17T15:00:00.000Z',
+            createdAt: '2026-04-17T14:59:00.000Z',
+            messages: [
+              {
+                sender: 'user',
+                content: 'Continue the task.',
+                at: '2026-04-17T14:59:00.000Z',
+              },
+            ],
+          },
+        ],
+        session: {
+          workspaceKey: 'workspace',
+          status: 'busy',
+          sessionId: 'codex-thread',
+          routingSessionId: null,
+          pid: 1234,
+          currentQueueId: 'queue-transition',
+          startedAt: '2026-04-17T14:59:00.000Z',
+          lastMessageAt: '2026-04-17T15:00:00.000Z',
+          priorityStreak: 0,
+          lastProgressAt: '2026-04-17T15:00:00.000Z',
+          lastErrorMessage: null,
+          lastErrorAt: null,
+          lastPauseMessage: null,
+          lastPauseAt: null,
+          activeAssignments: [
+            {
+              id: 'assign-transition',
+              threadId: 'thread-transition',
+              queueEntryIds: ['queue-transition'],
+              assigneeKind: 'worker',
+              targetKind: 'existing-repo',
+              newRepoName: null,
+              workingDirectory: 'D:\\ghws\\workspace-agent-hub-test-transition',
+              workerRuntime: 'claude',
+              workerModel: 'claude-opus-4-6',
+              workerEffort: null,
+              assigneeLabel: 'Worker Claude claude-opus-4-6',
+              writeScopes: ['src'],
+              pid: 1234,
+              startedAt: '2026-04-17T15:00:00.000Z',
+              lastProgressAt: '2026-04-17T15:00:01.000Z',
+              worktreePath: 'D:\\ghws\\workspace-agent-hub-test-transition',
+              worktreeBranch: 'mgr/test-transition',
+              targetRepoRoot: 'D:\\ghws\\workspace-agent-hub',
+            },
+          ],
+        },
+        queue: [
+          {
+            id: 'queue-transition',
+            threadId: 'thread-transition',
+            content: 'Continue the task.',
+            createdAt: '2026-04-17T15:00:00.000Z',
+            processed: false,
+            priority: 'normal',
+          },
+        ],
+        meta,
+      });
+
+      expect(views[0]?.recentStateTransitions).toHaveLength(1);
+      expect(views[0]?.recentStateTransitions[0]?.toState).toBe('ai-working');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('maps operational-blocker needs-reply threads to the error lane (paused worktree)', () => {
     const views = deriveManagerThreadViews({
       threads: [

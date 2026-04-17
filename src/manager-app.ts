@@ -60,6 +60,14 @@ interface WorkerLiveEntry {
   kind: 'status' | 'output' | 'error';
 }
 
+interface ManagerStateTransitionEntry {
+  at: string;
+  fromState: ManagerUiState;
+  toState: ManagerUiState;
+  fromReason: string | null;
+  toReason: string | null;
+}
+
 interface LiveActivityStep {
   at: string | null;
   text: string;
@@ -121,6 +129,7 @@ interface ThreadView {
   pendingReplyAt: string | null;
   strandedAutoResumeCount: number;
   strandedAutoResumeLastAttemptAt: string | null;
+  recentStateTransitions: ManagerStateTransitionEntry[];
   queueOrder?: number | null;
   queuePriority?: string | null;
 }
@@ -185,10 +194,14 @@ interface ManagerClientDiagnostics {
   liveReconnectScheduled: boolean;
   openThreadId: string | null;
   managerCurrentThreadId: string | null;
+  openThreadUiState: ManagerUiState | null;
+  managerCurrentThreadUiState: ManagerUiState | null;
   lastAppliedSnapshotAt: string | null;
   lastLifecycleRefreshAt: string | null;
   lastLiveEventAt: string | null;
   lastLiveEventKind: string | null;
+  openThreadRecentStateTransitions: ManagerStateTransitionEntry[];
+  managerCurrentThreadRecentStateTransitions: ManagerStateTransitionEntry[];
   recentEvents: ManagerLifecycleDebugEntry[];
 }
 
@@ -4715,6 +4728,10 @@ class ManagerApp {
   }
 
   #buildDiagnosticsSnapshot(): ManagerClientDiagnostics {
+    const openThread = this.#findThread(this.openThreadId);
+    const currentThread = this.#findThread(
+      this.#managerStatus?.currentThreadId ?? null
+    );
     return {
       generatedAt: new Date().toISOString(),
       visibilityState: document.visibilityState,
@@ -4726,6 +4743,8 @@ class ManagerApp {
       liveReconnectScheduled: this.#liveReconnectTimer !== null,
       openThreadId: this.openThreadId,
       managerCurrentThreadId: this.#managerStatus?.currentThreadId ?? null,
+      openThreadUiState: openThread?.uiState ?? null,
+      managerCurrentThreadUiState: currentThread?.uiState ?? null,
       lastAppliedSnapshotAt: this.#lastAppliedSnapshotAt
         ? new Date(this.#lastAppliedSnapshotAt).toISOString()
         : null,
@@ -4736,6 +4755,12 @@ class ManagerApp {
         ? new Date(this.#lastLiveEventAt).toISOString()
         : null,
       lastLiveEventKind: this.#lastLiveEventKind,
+      openThreadRecentStateTransitions: [
+        ...(openThread?.recentStateTransitions ?? []),
+      ],
+      managerCurrentThreadRecentStateTransitions: [
+        ...(currentThread?.recentStateTransitions ?? []),
+      ],
       recentEvents: [...this.#diagnosticEvents],
     };
   }
