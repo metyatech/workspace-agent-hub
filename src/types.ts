@@ -1,4 +1,4 @@
-export type SessionType = 'codex' | 'claude' | 'gemini' | 'shell';
+export type SessionType = 'opencode' | 'shell';
 
 export interface SessionRecord {
   Name: string;

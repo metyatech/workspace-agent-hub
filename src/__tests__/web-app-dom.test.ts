@@ -9,7 +9,7 @@ const baseHtml = `
     <div id="sessionsList"></div>
     <button id="refreshSessionsButton"></button>
     <select id="sessionTypeSelect"><option value="shell">shell</option></select>
-    <span id="sessionTypeHint">迷ったら Codex です。普通のターミナルだけ開きたいときは Shell を選びます。</span>
+    <span id="sessionTypeHint">迷ったら OpenCode です。普通のターミナルだけ開きたいときは Shell を選びます。</span>
     <input id="sessionTitleInput" />
     <input id="workingDirectoryInput" />
     <datalist id="workingDirectorySuggestions"></datalist>
@@ -281,7 +281,7 @@ describe('web-app DOM', () => {
     ).toBe(true);
     expect(
       document.querySelector<HTMLSpanElement>('#sessionTypeHint')!.textContent
-    ).toContain('迷ったら Codex');
+    ).toContain('迷ったら OpenCode');
     expect(
       document.querySelector<HTMLDivElement>('#deviceLockHint')!.textContent
     ).toContain('接続情報とキャッシュを消します');

@@ -966,12 +966,7 @@ export async function createWebUiServer(
         if (method === 'POST' && pathname === '/api/sessions') {
           const body = await parseBody(req);
           const type = body.type;
-          if (
-            type !== 'codex' &&
-            type !== 'claude' &&
-            type !== 'gemini' &&
-            type !== 'shell'
-          ) {
+          if (type !== 'opencode' && type !== 'shell') {
             sendError(res, 'type is required');
             return;
           }
