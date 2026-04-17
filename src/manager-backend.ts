@@ -25,7 +25,7 @@ import {
   type ChildProcess,
   execFile as execFileCb,
 } from 'child_process';
-import { readFile, writeFile, appendFile, readdir } from 'fs/promises';
+import { readFile, writeFile, appendFile, readdir, unlink } from 'fs/promises';
 import { existsSync, readdirSync, statSync, type Dirent } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
@@ -49,6 +49,8 @@ import {
 } from '@metyatech/thread-inbox';
 import {
   clearManagerThreadMeta,
+  isThreadInBackoff,
+  MANAGER_THREAD_META_FILE,
   reconcileManagerThreadMeta,
   stripManagerRuntimeStatePreservingContinuity,
   type ManagerThreadMeta,
@@ -7515,6 +7517,10 @@ export async function processNextQueued(
 
   try {
     let session = await reconcileActiveAssignments(dir);
+    if (session.lastPauseMessage) {
+      ensureManagerQuotaAutoResumeScheduled(dir, session);
+      return;
+    }
     const queue = await readQueue(dir);
     session = await markManagerSessionStartedForPendingQueue(
       dir,
@@ -7571,6 +7577,9 @@ export async function processNextQueued(
 
       const threadMeta = meta[next.threadId] ?? null;
       if (shouldHoldQueuedThreadForUserRecovery(thread, threadMeta)) {
+        continue;
+      }
+      if (isThreadInBackoff(threadMeta)) {
         continue;
       }
 
@@ -8946,14 +8955,26 @@ export async function sendThreadFollowUpToBuiltinManager(
 
 // ── Eager reconciliation (called at server startup) ────────────────────────
 
+async function cleanupStaleTempFiles(dir: string): Promise<void> {
+  const resolvedDir = resolvePath(dir);
+  const tmpPaths = [
+    `${sessionFilePath(resolvedDir)}.tmp`,
+    `${queueFilePath(resolvedDir)}.tmp`,
+    join(resolvedDir, `${MANAGER_THREAD_META_FILE}.tmp`),
+  ];
+  await Promise.allSettled(tmpPaths.map((p) => unlink(p).catch(() => {})));
+}
+
 /**
  * Run assignment reconciliation immediately.  Intended to be called once at
  * server startup so that dead assignments left over from a previous crash are
  * cleaned up without waiting for the next queue tick.
  */
 export async function eagerReconcile(dir: string): Promise<void> {
+  await cleanupStaleTempFiles(dir);
   await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
+  startStaleSeedRecoveryMonitor(dir);
   await processNextQueued(dir, resolvePath(dir));
 }
 

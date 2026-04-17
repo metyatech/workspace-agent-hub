@@ -179,6 +179,7 @@ import {
   buildManagerReviewPrompt,
   buildManagerReplyPrompt,
   buildWorkerExecutionPrompt,
+  eagerReconcile,
   getBuiltinManagerStatus,
   isSessionInvalidError,
   MANAGER_MODEL,
@@ -6540,5 +6541,96 @@ describe('manager backend codex integration', () => {
       canonicalState: 'queued',
       canonicalStateReason: null,
     });
+  });
+});
+
+describe('eagerReconcile restart resilience', () => {
+  it('cleans up leftover .tmp files from interrupted atomic writes', async () => {
+    const tmpPaths = [
+      join(tempDir, '.workspace-agent-hub-manager.json.tmp'),
+      join(tempDir, '.workspace-agent-hub-manager-queue.jsonl.tmp'),
+      join(tempDir, '.workspace-agent-hub-manager-thread-meta.json.tmp'),
+    ];
+    for (const p of tmpPaths) {
+      await writeFile(p, 'stale-temp-content');
+    }
+    for (const p of tmpPaths) {
+      expect(existsSync(p)).toBe(true);
+    }
+    await eagerReconcile(tempDir);
+    for (const p of tmpPaths) {
+      expect(existsSync(p)).toBe(false);
+    }
+  });
+
+  it('does not dispatch when session is paused with a future auto-resume time', async () => {
+    const futureAutoResumeAt = new Date(Date.now() + 60_000).toISOString();
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      status: 'idle',
+      lastPauseMessage: 'Codex quota exhausted',
+      lastPauseAt: new Date().toISOString(),
+      lastPauseAutoResumeAt: futureAutoResumeAt,
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_paused_1',
+        threadId: 'thread-paused',
+        content: 'test request',
+        attachments: [],
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: ['.'],
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: null,
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    listThreadsMock.mockResolvedValue([]);
+    await eagerReconcile(tempDir);
+    const session = await readSession(tempDir);
+    expect(session.lastPauseMessage).toBe('Codex quota exhausted');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('processNextQueued skips dispatch when session is paused', async () => {
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      status: 'idle',
+      lastPauseMessage: 'Codex quota exhausted',
+      lastPauseAt: new Date().toISOString(),
+      lastPauseAutoResumeAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_paused_2',
+        threadId: 'thread-paused-2',
+        content: 'queued work',
+        attachments: [],
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: ['.'],
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: null,
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    const { resolve: resolvePath } = await import('node:path');
+    await processNextQueued(tempDir, resolvePath(tempDir));
+    expect(spawnMock).not.toHaveBeenCalled();
+    const session = await readSession(tempDir);
+    expect(session.lastPauseMessage).toBe('Codex quota exhausted');
   });
 });
