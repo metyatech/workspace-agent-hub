@@ -5937,6 +5937,60 @@ describe('manager backend codex integration', () => {
     expect(meta['thread-other']?.managedRepoLabel).toBe('workspace-agent-hub');
   });
 
+  it('auto-requeues a stalled waiting thread after the seed becomes clean externally', async () => {
+    const userAt = '2026-04-17T00:00:00.000Z';
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-auto-resume',
+        title: 'Auto resume thread',
+        status: 'waiting',
+        createdAt: userAt,
+        updatedAt: userAt,
+        messages: [
+          {
+            sender: 'user',
+            content: 'Please continue the blocked work.',
+            at: userAt,
+          },
+        ],
+      },
+    ]);
+
+    await writeManagerThreadMeta(tempDir, {
+      'thread-auto-resume': {
+        managerOwned: true,
+        managedRepoLabel: 'managed-worktree-system',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'managed-worktree-system',
+        seedRecoveryChangedFiles: ['.tasks.jsonl'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    vi.mocked(execGit).mockResolvedValueOnce({
+      code: 0,
+      stdout: '',
+      stderr: '',
+    });
+
+    const result = await reviewStaleSeedRecoveryForTests(tempDir);
+
+    expect(result.cleared).toBe(1);
+
+    const queue = await readQueue(tempDir);
+    expect(queue).toHaveLength(1);
+    expect(queue[0]?.threadId).toBe('thread-auto-resume');
+    expect(queue[0]?.dispatchMode).toBe('manager-evaluate');
+
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-auto-resume']?.seedRecoveryPending).toBeUndefined();
+    expect(meta['thread-auto-resume']?.strandedAutoResumeCount).toBe(1);
+    expect(meta['thread-auto-resume']?.strandedAutoResumeLastUserAt).toBe(
+      userAt
+    );
+  });
+
   it('logs worktree cleanup failures instead of swallowing them silently', async () => {
     const cleanupError = new Error('cleanup blocked by lingering lock');
     const consoleErrorSpy = vi

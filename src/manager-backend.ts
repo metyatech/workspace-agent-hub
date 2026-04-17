@@ -9198,7 +9198,10 @@ function startStaleSeedRecoveryMonitor(dir: string): void {
   const timer = setInterval(() => {
     void (async () => {
       try {
-        await reviewStaleSeedRecoveryForDir(resolvedDir);
+        const result = await reviewStaleSeedRecoveryForDir(resolvedDir);
+        if (result.cleared > 0) {
+          await recoverCanonicalThreadState(dir);
+        }
       } catch (error) {
         console.warn(
           `[manager-backend] periodic stale seed-recovery review failed for ${resolvedDir}: ${error instanceof Error ? error.message : String(error)}`
@@ -9225,7 +9228,11 @@ export function resetStaleSeedRecoveryMonitorsForTests(): void {
 export async function reviewStaleSeedRecoveryForTests(dir: string): Promise<{
   cleared: number;
 }> {
-  return reviewStaleSeedRecoveryForDir(dir);
+  const result = await reviewStaleSeedRecoveryForDir(dir);
+  if (result.cleared > 0) {
+    await recoverCanonicalThreadState(dir);
+  }
+  return result;
 }
 
 export async function sendToBuiltinManager(
