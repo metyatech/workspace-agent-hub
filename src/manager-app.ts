@@ -52,7 +52,12 @@ type ManagerWorkerRuntimeState =
   | 'blocked-by-scope'
   | 'cancelled-as-superseded';
 
-type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
+type ManagerWorkerRuntime =
+  | 'opencode'
+  | 'codex'
+  | 'claude'
+  | 'gemini'
+  | 'copilot';
 
 interface WorkerLiveEntry {
   at: string;
@@ -702,6 +707,8 @@ function humanizeTaskStage(stage?: string): string {
 
 function humanizeWorkerRuntime(runtime: ManagerWorkerRuntime | null): string {
   switch (runtime) {
+    case 'opencode':
+      return 'OpenCode';
     case 'claude':
       return 'Claude';
     case 'gemini':

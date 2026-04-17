@@ -3,7 +3,12 @@ import { readFile, readdir } from 'node:fs/promises';
 import { basename, join, relative, resolve as resolvePath } from 'node:path';
 import { execGit, findGitRoot } from './manager-worktree.js';
 
-export type ManagerWorkerRuntime = 'codex' | 'claude' | 'gemini' | 'copilot';
+export type ManagerWorkerRuntime =
+  | 'opencode'
+  | 'codex'
+  | 'claude'
+  | 'gemini'
+  | 'copilot';
 export type ManagerRunMode = 'read-only' | 'write';
 export type ManagerTargetKind = 'existing-repo' | 'new-repo';
 
@@ -227,7 +232,7 @@ async function buildManagedRepoConfig(
     repoRoot: normalizedRoot,
     defaultBranch: await detectDefaultBranch(normalizedRoot),
     verifyCommand: await detectVerifyCommand(normalizedRoot),
-    supportedWorkerRuntimes: ['codex', 'claude'],
+    supportedWorkerRuntimes: ['opencode', 'codex', 'claude'],
     preferredWorkerRuntime: null,
     mergeLaneEnabled: true,
     createdAt: now,

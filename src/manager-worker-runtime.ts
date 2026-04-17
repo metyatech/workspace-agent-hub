@@ -62,24 +62,46 @@ function runtimeCommand(
   const platform = options?.platform ?? process.platform;
   const env = options?.env ?? process.env;
   const override = (
-    runtime === 'claude'
-      ? (env.WORKSPACE_AGENT_HUB_CLAUDE_PATH ??
-        env.AGENT_CLAUDE_PATH ??
-        env.CLAUDE_PATH)
-      : runtime === 'copilot'
-        ? (env.WORKSPACE_AGENT_HUB_COPILOT_PATH ??
-          env.AGENT_COPILOT_PATH ??
-          env.COPILOT_PATH)
-        : runtime === 'gemini'
-          ? (env.WORKSPACE_AGENT_HUB_GEMINI_PATH ??
-            env.AGENT_GEMINI_PATH ??
-            env.GEMINI_PATH)
-          : (env.WORKSPACE_AGENT_HUB_CODEX_PATH ??
-            env.AGENT_CODEX_PATH ??
-            env.CODEX_PATH)
+    runtime === 'opencode'
+      ? (env.WORKSPACE_AGENT_HUB_OPENCODE_PATH ??
+        env.AGENT_OPENCODE_PATH ??
+        env.OPENCODE_PATH)
+      : runtime === 'claude'
+        ? (env.WORKSPACE_AGENT_HUB_CLAUDE_PATH ??
+          env.AGENT_CLAUDE_PATH ??
+          env.CLAUDE_PATH)
+        : runtime === 'copilot'
+          ? (env.WORKSPACE_AGENT_HUB_COPILOT_PATH ??
+            env.AGENT_COPILOT_PATH ??
+            env.COPILOT_PATH)
+          : runtime === 'gemini'
+            ? (env.WORKSPACE_AGENT_HUB_GEMINI_PATH ??
+              env.AGENT_GEMINI_PATH ??
+              env.GEMINI_PATH)
+            : (env.WORKSPACE_AGENT_HUB_CODEX_PATH ??
+              env.AGENT_CODEX_PATH ??
+              env.CODEX_PATH)
   )?.trim();
   if (override) {
     return override;
+  }
+
+  if (runtime === 'opencode') {
+    if (platform === 'win32') {
+      const roamingAppData =
+        env.APPDATA?.trim() ||
+        (env.USERPROFILE?.trim()
+          ? join(env.USERPROFILE.trim(), 'AppData', 'Roaming')
+          : '');
+      if (roamingAppData) {
+        const opencodeCmd = join(roamingAppData, 'npm', 'opencode.cmd');
+        if (existsSync(opencodeCmd)) {
+          return opencodeCmd;
+        }
+      }
+      return 'opencode.cmd';
+    }
+    return 'opencode';
   }
 
   if (runtime === 'codex') {
@@ -229,6 +251,9 @@ function runtimeModel(
   if (runtime === 'claude') {
     return env.WORKSPACE_AGENT_HUB_CLAUDE_MODEL?.trim() || 'claude-sonnet-4-6';
   }
+  if (runtime === 'opencode') {
+    return env.WORKSPACE_AGENT_HUB_OPENCODE_MODEL?.trim() || '';
+  }
   if (runtime === 'gemini') {
     return (
       env.WORKSPACE_AGENT_HUB_GEMINI_MODEL?.trim() || 'gemini-3-pro-preview'
@@ -247,6 +272,13 @@ function runtimeEffort(
   if (runtime === 'claude') {
     return env.WORKSPACE_AGENT_HUB_CLAUDE_EFFORT?.trim() || 'medium';
   }
+  if (runtime === 'opencode') {
+    return (
+      env.WORKSPACE_AGENT_HUB_OPENCODE_VARIANT?.trim() ||
+      env.WORKSPACE_AGENT_HUB_OPENCODE_EFFORT?.trim() ||
+      null
+    );
+  }
   if (runtime === 'copilot') {
     return env.WORKSPACE_AGENT_HUB_COPILOT_EFFORT?.trim() || 'high';
   }
@@ -257,13 +289,15 @@ function runtimeEffort(
 }
 
 function runtimeDisplayName(runtime: ManagerWorkerRuntime): string {
-  return runtime === 'claude'
-    ? 'Claude'
-    : runtime === 'copilot'
-      ? 'Copilot'
-      : runtime === 'gemini'
-        ? 'Gemini'
-        : 'Codex';
+  return runtime === 'opencode'
+    ? 'OpenCode'
+    : runtime === 'claude'
+      ? 'Claude'
+      : runtime === 'copilot'
+        ? 'Copilot'
+        : runtime === 'gemini'
+          ? 'Gemini'
+          : 'Codex';
 }
 
 export interface WorkerRuntimeModelSelection {
@@ -303,6 +337,9 @@ export function workerRuntimeAssigneeLabel(
     selection && Object.prototype.hasOwnProperty.call(selection, 'effort')
       ? selection.effort?.trim() || null
       : defaults.effort;
+  if (!model && !effort) {
+    return runtimeLabel;
+  }
   return effort
     ? `${runtimeLabel} ${model} (${effort})`
     : `${runtimeLabel} ${model}`;
@@ -330,6 +367,68 @@ function buildLaunchSpec(
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: platform === 'win32',
     },
+  };
+}
+
+function buildOpenCodeCommandSpec(input: {
+  prompt: string;
+  sessionId: string | null;
+  resolvedDir: string;
+  env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  imagePaths: string[];
+  model?: string | null;
+  effort?: string | null;
+}): WorkerRuntimeLaunchSpec {
+  const command = runtimeCommand('opencode', {
+    platform: input.platform,
+    env: input.env,
+  });
+  const model = input.model?.trim() || runtimeModel('opencode', input.env);
+  const effort =
+    input.effort?.trim() || runtimeEffort('opencode', input.env) || null;
+  const args = [
+    'run',
+    '--format',
+    'json',
+    '--dir',
+    input.resolvedDir,
+    '--agent',
+    'Sisyphus',
+    '--dangerously-skip-permissions',
+  ];
+  if (input.sessionId) {
+    args.push('--session', input.sessionId);
+  }
+  if (model) {
+    args.push('--model', model);
+  }
+  if (effort) {
+    args.push('--variant', effort);
+  }
+  for (const imagePath of input.imagePaths) {
+    args.push('--file', imagePath);
+  }
+  args.push(input.prompt);
+  const launchSpec = buildLaunchSpec(
+    command,
+    args,
+    input.resolvedDir,
+    input.env,
+    input.platform
+  );
+
+  return {
+    runtime: 'opencode',
+    command: launchSpec.command,
+    args: launchSpec.args,
+    prompt: null,
+    sessionId: input.sessionId,
+    displayLabel: workerRuntimeAssigneeLabel('opencode', input.env, {
+      model: model || null,
+      effort,
+    }),
+    spawnOptions: launchSpec.spawnOptions,
   };
 }
 
@@ -403,6 +502,19 @@ export function buildWorkerRuntimeLaunchSpec(input: {
     input.runtime === 'claude' || input.runtime === 'copilot'
       ? (input.sessionId ?? randomUUID())
       : input.sessionId;
+
+  if (input.runtime === 'opencode') {
+    return buildOpenCodeCommandSpec({
+      prompt: input.prompt,
+      sessionId,
+      resolvedDir: input.resolvedDir,
+      env,
+      platform,
+      imagePaths: input.imagePaths ?? [],
+      model: input.model,
+      effort: input.effort,
+    });
+  }
 
   if (input.runtime === 'codex') {
     return buildCodexCommandSpec({
@@ -562,6 +674,7 @@ function collectTextFragments(value: unknown): string[] {
     'message',
     'text',
     'parts',
+    'part',
     'value',
     'delta',
   ]) {
@@ -592,6 +705,7 @@ function extractSessionId(value: unknown): string | null {
     const record = current as Record<string, unknown>;
     for (const key of [
       'session_id',
+      'sessionID',
       'sessionId',
       'thread_id',
       'threadId',
@@ -623,7 +737,12 @@ function classifyEntryKind(
   ) {
     return 'error';
   }
-  if (type === 'init' || type.endsWith('.started')) {
+  if (
+    type === 'init' ||
+    type === 'step_start' ||
+    type === 'step_finish' ||
+    type.endsWith('.started')
+  ) {
     return 'status';
   }
   return 'output';
@@ -704,6 +823,8 @@ export function parseGenericRuntimeOutput(
       sessionId = extractSessionId(parsed) ?? sessionId;
       const role =
         typeof parsed['role'] === 'string' ? parsed['role'].toLowerCase() : '';
+      const type =
+        typeof parsed['type'] === 'string' ? parsed['type'].toLowerCase() : '';
       const delta = parsed['delta'] === true;
       const fragments = collectTextFragments(parsed);
       if (fragments.length === 0) {
@@ -713,8 +834,15 @@ export function parseGenericRuntimeOutput(
       if (!text) {
         continue;
       }
-      if (role === 'assistant' && delta) {
+      if ((role === 'assistant' && delta) || type === 'text') {
         assistantDeltas.push(text);
+        continue;
+      }
+      if (
+        type === 'tool_use' ||
+        type === 'step_start' ||
+        type === 'step_finish'
+      ) {
         continue;
       }
       latestText = text;

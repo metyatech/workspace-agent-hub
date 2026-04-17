@@ -429,6 +429,7 @@ function normalizeRequestedWorkerRuntime(
   value: unknown
 ): ManagerWorkerRuntime | null {
   return value === 'codex' ||
+    value === 'opencode' ||
     value === 'claude' ||
     value === 'gemini' ||
     value === 'copilot'
