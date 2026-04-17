@@ -19,10 +19,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 LAUNCHER_SCRIPT = SCRIPT_DIR / "agent-session-launcher.ps1"
 REPO_ROOT = SCRIPT_DIR.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
-POWERSHELL_EXE = shutil.which("pwsh.exe") or shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+POWERSHELL_EXE = (
+    shutil.which("pwsh.exe")
+    or shutil.which("pwsh")
+    or shutil.which("powershell.exe")
+    or shutil.which("powershell")
+)
 
 
-def resolve_windows_openssh_binary(binary_name: str, *fallback_names: str) -> str | None:
+def resolve_windows_openssh_binary(
+    binary_name: str, *fallback_names: str
+) -> str | None:
     candidate = os.path.join(WINDOWS_OPENSSH_DIR, binary_name)
     if os.path.exists(candidate):
         return candidate
@@ -36,7 +43,9 @@ def resolve_windows_openssh_binary(binary_name: str, *fallback_names: str) -> st
 
 
 SSH_EXE = resolve_windows_openssh_binary("ssh.exe", "ssh.exe", "ssh")
-SSH_KEYGEN_EXE = resolve_windows_openssh_binary("ssh-keygen.exe", "ssh-keygen.exe", "ssh-keygen")
+SSH_KEYGEN_EXE = resolve_windows_openssh_binary(
+    "ssh-keygen.exe", "ssh-keygen.exe", "ssh-keygen"
+)
 SSHD_EXE = resolve_windows_openssh_binary("sshd.exe")
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -69,7 +78,9 @@ def normalize_wrapped_terminal_text(text: str) -> str:
     return "".join(strip_ansi(text).split())
 
 
-def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_command(
+    args: list[str], *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         check=check,
@@ -80,7 +91,9 @@ def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedP
     )
 
 
-def powershell_file(script_path: Path, *script_args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def powershell_file(
+    script_path: Path, *script_args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     if not POWERSHELL_EXE:
         raise RuntimeError("PowerShell executable not found.")
     return run_command(
@@ -127,7 +140,9 @@ def launcher_delete_session(session_name: str) -> None:
     )
 
 
-def launcher_list_sessions(*, include_archived: bool = False) -> list[dict[str, object]]:
+def launcher_list_sessions(
+    *, include_archived: bool = False
+) -> list[dict[str, object]]:
     args = ["-Mode", "list", "-Json"]
     if include_archived:
         args.append("-IncludeArchived")
@@ -139,14 +154,18 @@ def launcher_list_sessions(*, include_archived: bool = False) -> list[dict[str, 
     return parsed if isinstance(parsed, list) else [parsed]
 
 
-def launcher_get_session(session_name: str, *, include_archived: bool = False) -> dict[str, object] | None:
+def launcher_get_session(
+    session_name: str, *, include_archived: bool = False
+) -> dict[str, object] | None:
     for item in launcher_list_sessions(include_archived=include_archived):
         if str(item.get("Name", "")) == session_name:
             return item
     return None
 
 
-def launcher_wait_for_display_title(display_title: str, timeout_seconds: float) -> dict[str, object]:
+def launcher_wait_for_display_title(
+    display_title: str, timeout_seconds: float
+) -> dict[str, object]:
     deadline = time.time() + timeout_seconds
     last_titles: list[str] = []
     while time.time() < deadline:
@@ -172,12 +191,16 @@ def launcher_assert_resume_available(session_name: str) -> None:
     )
     expected = f"Session '{session_name}' is available"
     if expected not in result.stdout:
-        raise RuntimeError(f"Unexpected launcher resume output for {session_name!r}: {result.stdout.strip()}")
+        raise RuntimeError(
+            f"Unexpected launcher resume output for {session_name!r}: {result.stdout.strip()}"
+        )
 
 
 def wsl_bash(command: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
     args = ["wsl.exe", "-d", "Ubuntu", "--"]
-    tmux_socket_name = (os.environ.get("AI_AGENT_SESSION_TMUX_SOCKET_NAME") or "").strip()
+    tmux_socket_name = (
+        os.environ.get("AI_AGENT_SESSION_TMUX_SOCKET_NAME") or ""
+    ).strip()
     if tmux_socket_name:
         args.extend(["env", f"AI_AGENT_SESSION_TMUX_SOCKET_NAME={tmux_socket_name}"])
     args.extend(["bash", "-lc", command])
@@ -186,7 +209,9 @@ def wsl_bash(command: str, *, check: bool = True) -> subprocess.CompletedProcess
 
 def to_wsl_path(path: Path) -> str:
     normalized_path = str(path).replace("\\", "/")
-    result = run_command(["wsl.exe", "-d", "Ubuntu", "--", "wslpath", "-a", "-u", normalized_path])
+    result = run_command(
+        ["wsl.exe", "-d", "Ubuntu", "--", "wslpath", "-a", "-u", normalized_path]
+    )
     return result.stdout.strip()
 
 
@@ -238,8 +263,16 @@ class InteractiveSsh:
         self._stdout_chunks: list[str] = []
         self._stderr_chunks: list[str] = []
         self._lock = threading.Lock()
-        self._stdout_thread = threading.Thread(target=self._reader, args=(self.process.stdout, self._stdout_chunks), daemon=True)
-        self._stderr_thread = threading.Thread(target=self._reader, args=(self.process.stderr, self._stderr_chunks), daemon=True)
+        self._stdout_thread = threading.Thread(
+            target=self._reader,
+            args=(self.process.stdout, self._stdout_chunks),
+            daemon=True,
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._reader,
+            args=(self.process.stderr, self._stderr_chunks),
+            daemon=True,
+        )
         self._stdout_thread.start()
         self._stderr_thread.start()
 
@@ -276,11 +309,17 @@ class InteractiveSsh:
                 return stdout_text
             if self.process.poll() is not None:
                 time.sleep(0.2)
-                raise RuntimeError(f"SSH process exited before '{needle}' appeared.\nOutput:\n{self.output()}")
+                raise RuntimeError(
+                    f"SSH process exited before '{needle}' appeared.\nOutput:\n{self.output()}"
+                )
             time.sleep(0.05)
-        raise RuntimeError(f"Timed out waiting for '{needle}'.\nOutput tail:\n{self.output()[-4000:]}")
+        raise RuntimeError(
+            f"Timed out waiting for '{needle}'.\nOutput tail:\n{self.output()[-4000:]}"
+        )
 
-    def wait_for_wrapped_path(self, path_text: str, timeout_seconds: float, *, after: int = 0) -> str:
+    def wait_for_wrapped_path(
+        self, path_text: str, timeout_seconds: float, *, after: int = 0
+    ) -> str:
         normalized_needle = normalize_wrapped_terminal_text(path_text)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
@@ -290,9 +329,13 @@ class InteractiveSsh:
                 return stdout_text
             if self.process.poll() is not None:
                 time.sleep(0.2)
-                raise RuntimeError(f"SSH process exited before '{path_text}' appeared.\nOutput:\n{self.output()}")
+                raise RuntimeError(
+                    f"SSH process exited before '{path_text}' appeared.\nOutput:\n{self.output()}"
+                )
             time.sleep(0.05)
-        raise RuntimeError(f"Timed out waiting for '{path_text}' with wrapped-path matching.\nOutput tail:\n{self.output()[-4000:]}")
+        raise RuntimeError(
+            f"Timed out waiting for '{path_text}' with wrapped-path matching.\nOutput tail:\n{self.output()[-4000:]}"
+        )
 
     def send(self, text: str) -> None:
         if not self.process.stdin:
@@ -314,7 +357,9 @@ class InteractiveSsh:
 
 class TemporarySshd:
     def __init__(self) -> None:
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="workspace-agent-hub-mobile-sshd-"))
+        self.temp_dir = Path(
+            tempfile.mkdtemp(prefix="workspace-agent-hub-mobile-sshd-")
+        )
         self.port = find_free_port()
         self.user_key_path = self.temp_dir / "client_ed25519"
         self.host_key_path = self.temp_dir / "host_ed25519"
@@ -330,11 +375,15 @@ class TemporarySshd:
         create_keypair(self.user_key_path)
         create_keypair(self.host_key_path)
 
-        public_key = self.user_key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
+        public_key = (
+            self.user_key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
+        )
         self.authorized_keys_path.write_text(public_key + "\n", encoding="utf-8")
         bootstrap_script_wsl = to_wsl_path(SCRIPT_DIR / "wsl-mobile-login-bootstrap.sh")
         catalog_path_wsl = ""
-        catalog_path_value = (os.environ.get("AI_AGENT_SESSION_CATALOG_PATH") or "").strip()
+        catalog_path_value = (
+            os.environ.get("AI_AGENT_SESSION_CATALOG_PATH") or ""
+        ).strip()
         if catalog_path_value:
             catalog_path_wsl = to_wsl_path(Path(catalog_path_value))
         self.force_command_script_path.write_text(
@@ -395,15 +444,27 @@ class TemporarySshd:
         deadline = time.time() + 15
         while time.time() < deadline:
             if self.process and self.process.poll() is not None:
-                stderr = self.process.stderr.read().decode("utf-8", errors="ignore") if self.process.stderr else ""
-                stdout = self.process.stdout.read().decode("utf-8", errors="ignore") if self.process.stdout else ""
-                raise RuntimeError(f"Temporary sshd exited early.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+                stderr = (
+                    self.process.stderr.read().decode("utf-8", errors="ignore")
+                    if self.process.stderr
+                    else ""
+                )
+                stdout = (
+                    self.process.stdout.read().decode("utf-8", errors="ignore")
+                    if self.process.stdout
+                    else ""
+                )
+                raise RuntimeError(
+                    f"Temporary sshd exited early.\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+                )
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(0.2)
                 if sock.connect_ex(("127.0.0.1", self.port)) == 0:
                     return
             time.sleep(0.1)
-        raise RuntimeError(f"Temporary sshd did not start listening on port {self.port}.")
+        raise RuntimeError(
+            f"Temporary sshd did not start listening on port {self.port}."
+        )
 
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
@@ -424,7 +485,10 @@ def ensure_tmux_session(session_name: str, working_directory: str) -> None:
 
 
 def kill_tmux_session(session_name: str) -> None:
-    wsl_bash(f"tmux kill-session -t {tmux_quote(session_name)} >/dev/null 2>&1 || true", check=False)
+    wsl_bash(
+        f"tmux kill-session -t {tmux_quote(session_name)} >/dev/null 2>&1 || true",
+        check=False,
+    )
 
 
 def parse_session_index(output: str, title: str, folder: str | None = None) -> str:
@@ -455,7 +519,9 @@ def parse_session_index(output: str, title: str, folder: str | None = None) -> s
         match = re.fullmatch(r"\[(\d+)\]", marker)
         if match:
             return match.group(1)
-    raise RuntimeError(f"Unable to find a session index for title={title!r} folder={folder!r}.\nOutput:\n{output}")
+    raise RuntimeError(
+        f"Unable to find a session index for title={title!r} folder={folder!r}.\nOutput:\n{output}"
+    )
 
 
 def disconnect_ssh(ssh: InteractiveSsh) -> str:
@@ -469,10 +535,14 @@ def disconnect_ssh(ssh: InteractiveSsh) -> str:
     return ssh.close()
 
 
-def assert_pc_to_mobile_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[str]) -> None:
+def assert_pc_to_mobile_resume_flow(
+    sshd: TemporarySshd, cleanup_sessions: set[str]
+) -> None:
     suffix = uuid.uuid4().hex[:10]
     session_label = f"matrix-pc-mobile-{suffix}"
-    session_name = launcher_create_shell(session_label, f"Matrix PC Mobile {suffix}", str(WORKSPACE_ROOT))
+    session_name = launcher_create_shell(
+        session_label, f"Matrix PC Mobile {suffix}", str(WORKSPACE_ROOT)
+    )
     cleanup_sessions.add(session_name)
 
     ssh = InteractiveSsh(sshd.port, sshd.user_key_path, sshd.known_hosts_path)
@@ -481,7 +551,9 @@ def assert_pc_to_mobile_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[s
         after = ssh.checkpoint()
         ssh.send("2\n")
         output = ssh.wait_for(f"Matrix PC Mobile {suffix}", 15, after=after)
-        selected_index = parse_session_index(output, f"Matrix PC Mobile {suffix}", str(WORKSPACE_ROOT))
+        selected_index = parse_session_index(
+            output, f"Matrix PC Mobile {suffix}", str(WORKSPACE_ROOT)
+        )
         after = ssh.checkpoint()
         ssh.send(f"{selected_index}\n")
         ssh.wait_for_wrapped_path(to_wsl_path(WORKSPACE_ROOT), 15, after=after)
@@ -491,7 +563,9 @@ def assert_pc_to_mobile_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[s
             disconnect_ssh(ssh)
 
 
-def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: set[str]) -> None:
+def assert_mobile_start_pc_resume_flow(
+    sshd: TemporarySshd, cleanup_sessions: set[str]
+) -> None:
     suffix = uuid.uuid4().hex[:10]
     session_title = f"Matrix Mobile Start {suffix}"
     launcher_session: dict[str, object] | None = None
@@ -502,7 +576,7 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
 
         after = ssh.checkpoint()
         ssh.send("1\n")
-        ssh.wait_for("Type (codex/claude/gemini/shell):", 15, after=after)
+        ssh.wait_for("Type (opencode/shell):", 15, after=after)
 
         after = ssh.checkpoint()
         ssh.send("shell\n")
@@ -527,7 +601,9 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
 
     session_name = str(launcher_session.get("Name", ""))
     if not session_name:
-        raise RuntimeError("Expected the launcher inventory to expose the mobile-started session name.")
+        raise RuntimeError(
+            "Expected the launcher inventory to expose the mobile-started session name."
+        )
     cleanup_sessions.add(session_name)
 
     if str(launcher_session.get("DisplayTitle", "")) != session_title:
@@ -541,15 +617,23 @@ def assert_mobile_start_pc_resume_flow(sshd: TemporarySshd, cleanup_sessions: se
         )
 
     if not bool(launcher_session.get("IsLive", False)):
-        raise RuntimeError("Expected the mobile-started session to remain live in the PC launcher inventory.")
+        raise RuntimeError(
+            "Expected the mobile-started session to remain live in the PC launcher inventory."
+        )
 
     launcher_assert_resume_available(session_name)
 
 
-def assert_multi_session_selection_flow(sshd: TemporarySshd, cleanup_sessions: set[str]) -> None:
+def assert_multi_session_selection_flow(
+    sshd: TemporarySshd, cleanup_sessions: set[str]
+) -> None:
     suffix = uuid.uuid4().hex[:10]
-    session_a = launcher_create_shell(f"matrix-pick-a-{suffix}", f"Matrix Pick A {suffix}", str(WORKSPACE_ROOT))
-    session_b = launcher_create_shell(f"matrix-pick-b-{suffix}", f"Matrix Pick B {suffix}", str(REPO_ROOT))
+    session_a = launcher_create_shell(
+        f"matrix-pick-a-{suffix}", f"Matrix Pick A {suffix}", str(WORKSPACE_ROOT)
+    )
+    session_b = launcher_create_shell(
+        f"matrix-pick-b-{suffix}", f"Matrix Pick B {suffix}", str(REPO_ROOT)
+    )
     cleanup_sessions.update({session_a, session_b})
 
     ssh = InteractiveSsh(sshd.port, sshd.user_key_path, sshd.known_hosts_path)
@@ -560,7 +644,9 @@ def assert_multi_session_selection_flow(sshd: TemporarySshd, cleanup_sessions: s
         output = ssh.wait_for(f"Matrix Pick B {suffix}", 15, after=after)
         if f"Matrix Pick A {suffix}" not in output:
             output = ssh.wait_for(f"Matrix Pick A {suffix}", 15, after=after)
-        selected_index = parse_session_index(output, f"Matrix Pick B {suffix}", str(REPO_ROOT))
+        selected_index = parse_session_index(
+            output, f"Matrix Pick B {suffix}", str(REPO_ROOT)
+        )
         after = ssh.checkpoint()
         ssh.send(f"{selected_index}\n")
         ssh.wait_for_wrapped_path(to_wsl_path(REPO_ROOT), 15, after=after)

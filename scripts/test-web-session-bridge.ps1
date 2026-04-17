@@ -6,8 +6,8 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 $workspaceRoot = Split-Path -Parent $repoRoot
 $sessionLabel = 'web-test-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $resolvedSessionName = "shell-$sessionLabel"
-$codexSessionLabel = 'web-codex-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
-$resolvedCodexSessionName = "codex-$codexSessionLabel"
+$opencodeSessionLabel = 'web-opencode-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$resolvedOpenCodeSessionName = "opencode-$opencodeSessionLabel"
 $sessionLiveRootPath = if (
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH -and
     $env:AI_AGENT_SESSION_LIVE_DIR_PATH.Trim()
@@ -89,11 +89,7 @@ function New-Utf8PayloadFile {
 }
 
 $titlePayloadPath = ''
-$codexAuthSourcePath = ''
-$codexAuthTargetPath = ''
-$previousCodexAuthSource = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE
-$previousCodexAuthTarget = $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET
-$previousCodexStartupCommand = $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND
+$previousOpenCodeStartupCommand = $env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND
 $utf8Title = [string]::Concat([char]0x30C6, [char]0x30B9, [char]0x30C8)
 
 try {
@@ -196,91 +192,62 @@ try {
         '-Json'
     ))
 
-    $codexAuthSourcePath = New-Utf8PayloadFile -Value '{"refresh_token":"web-bridge-fresh-token"}' -Prefix 'codex-auth'
-    $codexAuthTargetPath = "/tmp/workspace-agent-hub-web-bridge-codex-auth-$([guid]::NewGuid().ToString('N')).json"
-    $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE = $codexAuthSourcePath
-    $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET = $codexAuthTargetPath
-    $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND = 'printf ''codex-web-sync-pass\n'''
+    $env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND = 'printf ''opencode-web-start-pass\n'''
 
-    $startedCodex = Invoke-BridgeJson -Arguments @(
+    $startedOpenCode = Invoke-BridgeJson -Arguments @(
         '-Action', 'start',
-        '-Type', 'codex',
-        '-SessionName', $codexSessionLabel,
-        '-Title', 'Codex Web Sync',
+        '-Type', 'opencode',
+        '-SessionName', $opencodeSessionLabel,
+        '-Title', 'OpenCode Web Start',
         '-WorkingDirectory', $workspaceRoot,
         '-Json'
     )
 
-    if ([string]$startedCodex.Name -ne $resolvedCodexSessionName) {
-        throw "Unexpected codex session name. Expected '$resolvedCodexSessionName', got '$($startedCodex.Name)'."
+    if ([string]$startedOpenCode.Name -ne $resolvedOpenCodeSessionName) {
+        throw "Unexpected OpenCode session name. Expected '$resolvedOpenCodeSessionName', got '$($startedOpenCode.Name)'."
     }
 
     Start-Sleep -Milliseconds 1200
 
-    $codexOutput = Invoke-BridgeJson -Arguments @(
+    $opencodeOutput = Invoke-BridgeJson -Arguments @(
         '-Action', 'output',
-        '-SessionName', $resolvedCodexSessionName,
+        '-SessionName', $resolvedOpenCodeSessionName,
         '-Lines', '80',
         '-Json'
     )
 
-    if ([string]$codexOutput.Transcript -notmatch 'codex-web-sync-pass') {
-        throw 'Expected the codex web-session startup override to reach the transcript.'
-    }
-
-    $syncedAuthContent = @(& wsl.exe -d Ubuntu -- bash -lc "cat '$codexAuthTargetPath'")
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Expected the codex auth sync target to exist in WSL after web-session start.'
-    }
-    if ((($syncedAuthContent | Out-String).Trim()) -ne '{"refresh_token":"web-bridge-fresh-token"}') {
-        throw "Expected the codex auth sync target to match the Windows source file. Got: $($syncedAuthContent | Out-String)"
+    if ([string]$opencodeOutput.Transcript -notmatch 'opencode-web-start-pass') {
+        throw 'Expected the OpenCode web-session startup override to reach the transcript.'
     }
 
     [void](Invoke-BridgeJson -Arguments @(
         '-Action', 'close',
-        '-SessionName', $resolvedCodexSessionName,
+        '-SessionName', $resolvedOpenCodeSessionName,
         '-Json'
     ))
 
     [void](Invoke-BridgeJson -Arguments @(
         '-Action', 'delete',
-        '-SessionName', $resolvedCodexSessionName,
+        '-SessionName', $resolvedOpenCodeSessionName,
         '-Json'
     ))
 
     Write-Output 'PASS'
 } finally {
-    if ($null -eq $previousCodexAuthSource) {
-        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE', $null, 'Process')
+    if ($null -eq $previousOpenCodeStartupCommand) {
+        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND', $null, 'Process')
     } else {
-        $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_SOURCE = $previousCodexAuthSource
-    }
-    if ($null -eq $previousCodexAuthTarget) {
-        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET', $null, 'Process')
-    } else {
-        $env:WORKSPACE_AGENT_HUB_CODEX_AUTH_TARGET = $previousCodexAuthTarget
-    }
-    if ($null -eq $previousCodexStartupCommand) {
-        [Environment]::SetEnvironmentVariable('WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND', $null, 'Process')
-    } else {
-        $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND = $previousCodexStartupCommand
+        $env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND = $previousOpenCodeStartupCommand
     }
     if ($titlePayloadPath -and (Test-Path -Path $titlePayloadPath)) {
         [IO.File]::Delete($titlePayloadPath)
-    }
-    if ($codexAuthSourcePath -and (Test-Path -Path $codexAuthSourcePath)) {
-        [IO.File]::Delete($codexAuthSourcePath)
-    }
-    try {
-        [void](& wsl.exe -d Ubuntu -- bash -lc "rm -f '$codexAuthTargetPath'")
-    } catch {
     }
     try {
         [void](Invoke-BridgeJson -Arguments @('-Action', 'delete', '-SessionName', $resolvedSessionName, '-Json'))
     } catch {
     }
     try {
-        [void](Invoke-BridgeJson -Arguments @('-Action', 'delete', '-SessionName', $resolvedCodexSessionName, '-Json'))
+        [void](Invoke-BridgeJson -Arguments @('-Action', 'delete', '-SessionName', $resolvedOpenCodeSessionName, '-Json'))
     } catch {
     }
     if (Test-Path -Path $shellEventPath) {
