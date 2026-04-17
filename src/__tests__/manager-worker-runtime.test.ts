@@ -75,6 +75,30 @@ describe('manager-worker-runtime', () => {
     expect(workerRuntimeAssigneeLabel('copilot')).toBe('Worker Copilot');
   });
 
+  it('builds an OpenCode launch spec that runs Sisyphus in non-interactive JSON mode', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'opencode',
+      prompt: 'Apply the requested fix',
+      sessionId: 'opencode-session-1',
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        OPENCODE_PATH: 'C:\\tools\\opencode.cmd',
+      },
+    });
+
+    expect(spec.command).toBe('cmd.exe');
+    expect(spec.prompt).toBeNull();
+    expect(spec.sessionId).toBe('opencode-session-1');
+    expect(spec.args.join(' ')).toContain('"C:\\tools\\opencode.cmd" "run"');
+    expect(spec.args.join(' ')).toContain('"--format" "json"');
+    expect(spec.args.join(' ')).toContain('"--agent" "Sisyphus"');
+    expect(spec.args.join(' ')).toContain('"--dangerously-skip-permissions"');
+    expect(spec.args.join(' ')).toContain('"--session" "opencode-session-1"');
+    expect(workerRuntimeAssigneeLabel('opencode')).toBe('Worker OpenCode');
+  });
+
   it('builds a Codex launch spec that wraps the Windows cmd shim through cmd.exe', () => {
     const spec = buildWorkerRuntimeLaunchSpec({
       runtime: 'codex',
@@ -162,6 +186,42 @@ describe('manager-worker-runtime', () => {
     );
 
     expect(parsed.sessionId).toBe('gemini-session-1');
+    expect(parsed.text).toBe('{"status":"review","reply":"all set"}');
+  });
+
+  it('parses OpenCode JSON event streams into progress and final output', () => {
+    const progress = parseGenericRuntimeProgressLine(
+      JSON.stringify({
+        type: 'text',
+        sessionID: 'opencode-session-1',
+        part: { text: 'First delta' },
+      }),
+      'Started'
+    );
+    expect(progress.sessionId).toBe('opencode-session-1');
+    expect(progress.latestText).toBe('First delta');
+    expect(progress.liveEntries[0]?.kind).toBe('output');
+
+    const parsed = parseGenericRuntimeOutput(
+      [
+        JSON.stringify({
+          type: 'step_start',
+          sessionID: 'opencode-session-1',
+        }),
+        JSON.stringify({
+          type: 'text',
+          sessionID: 'opencode-session-1',
+          part: { text: '{"status":"review",' },
+        }),
+        JSON.stringify({
+          type: 'text',
+          sessionID: 'opencode-session-1',
+          part: { text: '"reply":"all set"}' },
+        }),
+      ].join('\n')
+    );
+
+    expect(parsed.sessionId).toBe('opencode-session-1');
     expect(parsed.text).toBe('{"status":"review","reply":"all set"}');
   });
 });
