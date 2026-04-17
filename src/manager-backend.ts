@@ -134,6 +134,23 @@ export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
 export const MANAGER_MODEL = 'gpt-5.4';
 export const MANAGER_REASONING_EFFORT = 'xhigh';
 
+type ManagerRuntime = Extract<ManagerWorkerRuntime, 'opencode' | 'codex'>;
+
+function resolveManagerRuntime(
+  env: NodeJS.ProcessEnv = process.env
+): ManagerRuntime {
+  return env.WORKSPACE_AGENT_HUB_MANAGER_RUNTIME?.trim().toLowerCase() ===
+    'codex'
+    ? 'codex'
+    : 'opencode';
+}
+
+function managerAssigneeLabel(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveManagerRuntime(env) === 'codex'
+    ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
+    : 'Manager OpenCode (Sisyphus)';
+}
+
 /**
  * Status applied to successful manager replies when the reply is plain text
  * rather than explicit manager JSON. This is a rare fallback path; keep it in
@@ -674,6 +691,7 @@ function normalizeActiveAssignment(
       ? record['assigneeKind']
       : 'worker';
   const workerRuntime =
+    record['workerRuntime'] === 'opencode' ||
     record['workerRuntime'] === 'claude' ||
     record['workerRuntime'] === 'copilot' ||
     record['workerRuntime'] === 'gemini' ||
@@ -1017,6 +1035,7 @@ function normalizeQueueEntry(entry: QueueEntry): QueueEntry {
         ? entry.requestedRunMode
         : null,
     requestedWorkerRuntime:
+      entry.requestedWorkerRuntime === 'opencode' ||
       entry.requestedWorkerRuntime === 'codex' ||
       entry.requestedWorkerRuntime === 'claude' ||
       entry.requestedWorkerRuntime === 'gemini' ||
@@ -1083,6 +1102,7 @@ export async function enqueueMessage(
         ? options.requestedRunMode
         : null,
     requestedWorkerRuntime:
+      options?.requestedWorkerRuntime === 'opencode' ||
       options?.requestedWorkerRuntime === 'codex' ||
       options?.requestedWorkerRuntime === 'claude' ||
       options?.requestedWorkerRuntime === 'gemini' ||
@@ -3702,20 +3722,38 @@ async function runManagerRuntimeTurn(input: {
   stdout: string;
   stderr: string;
   parsed: { text: string; sessionId: string | null };
-  runtime: 'codex';
+  runtime: ManagerRuntime;
 }> {
-  const codexResult = await runCodexTurn(input);
-  const combinedOutput = `${codexResult.stdout}\n${codexResult.stderr}`;
-  if (codexResult.code !== 0 && isCodexUsageLimitError(combinedOutput)) {
-    throw new ManagerCodexUsageLimitError(
-      buildManagerCodexUsageLimitMessage(combinedOutput),
-      combinedOutput,
-      parseCodexUsageLimitAutoResumeAt(combinedOutput)
-    );
+  const managerRuntime = resolveManagerRuntime();
+  if (managerRuntime === 'codex') {
+    const codexResult = await runCodexTurn(input);
+    const combinedOutput = `${codexResult.stdout}\n${codexResult.stderr}`;
+    if (codexResult.code !== 0 && isCodexUsageLimitError(combinedOutput)) {
+      throw new ManagerCodexUsageLimitError(
+        buildManagerCodexUsageLimitMessage(combinedOutput),
+        combinedOutput,
+        parseCodexUsageLimitAutoResumeAt(combinedOutput)
+      );
+    }
+    return {
+      ...codexResult,
+      runtime: 'codex',
+    };
   }
+
+  const opencodeResult = await runWorkerRuntimeTurn({
+    ...input,
+    runtime: 'opencode',
+    model:
+      process.env.WORKSPACE_AGENT_HUB_OPENCODE_MANAGER_MODEL?.trim() || null,
+    effort:
+      process.env.WORKSPACE_AGENT_HUB_OPENCODE_MANAGER_VARIANT?.trim() ||
+      process.env.WORKSPACE_AGENT_HUB_OPENCODE_MANAGER_EFFORT?.trim() ||
+      null,
+  });
   return {
-    ...codexResult,
-    runtime: 'codex',
+    ...opencodeResult,
+    runtime: 'opencode',
   };
 }
 
@@ -5294,6 +5332,7 @@ function resolveStoredWorkerAssigneeLabel(
     return meta.assigneeLabel.trim();
   }
   if (
+    meta?.workerSessionRuntime === 'opencode' ||
     meta?.workerSessionRuntime === 'codex' ||
     meta?.workerSessionRuntime === 'claude' ||
     meta?.workerSessionRuntime === 'gemini' ||
@@ -6117,7 +6156,7 @@ function defaultAssigneeLabel(
   selection?: { model?: string | null; effort?: string | null } | null
 ): string {
   return kind === 'manager'
-    ? `Manager ${MANAGER_MODEL} (${MANAGER_REASONING_EFFORT})`
+    ? managerAssigneeLabel()
     : workerRuntimeAssigneeLabel(runtime, process.env, selection);
 }
 
@@ -6131,12 +6170,12 @@ function buildDispatchingDetail(input: {
 
 function normalizeSupportedWorkerRuntimes(
   runtimes: readonly ManagerWorkerRuntime[] | null | undefined
-): Array<Extract<ManagerWorkerRuntime, 'codex' | 'claude'>> {
+): Array<Extract<ManagerWorkerRuntime, 'opencode' | 'codex' | 'claude'>> {
   const supported = new Set<
-    Extract<ManagerWorkerRuntime, 'codex' | 'claude'>
+    Extract<ManagerWorkerRuntime, 'opencode' | 'codex' | 'claude'>
   >();
   for (const runtime of runtimes ?? []) {
-    if (runtime === 'codex' || runtime === 'claude') {
+    if (runtime === 'opencode' || runtime === 'codex' || runtime === 'claude') {
       supported.add(runtime);
     }
   }
@@ -6150,9 +6189,10 @@ function normalizeSupportedWorkerRuntimes(
 function runtimeConstraintCandidates(input: {
   supportedRuntimes: readonly ManagerWorkerRuntime[] | null | undefined;
   preferredWorkerRuntime: ManagerWorkerRuntime | null | undefined;
-}): Array<Extract<ManagerWorkerRuntime, 'codex' | 'claude'>> {
+}): Array<Extract<ManagerWorkerRuntime, 'opencode' | 'codex' | 'claude'>> {
   const supported = normalizeSupportedWorkerRuntimes(input.supportedRuntimes);
   if (
+    input.preferredWorkerRuntime === 'opencode' ||
     input.preferredWorkerRuntime === 'codex' ||
     input.preferredWorkerRuntime === 'claude'
   ) {
@@ -7789,6 +7829,7 @@ export async function processNextQueued(
       const explicitRequestedWorkerRuntime: ManagerWorkerRuntime | null =
         nextEntries.find(
           (entry) =>
+            entry.requestedWorkerRuntime === 'opencode' ||
             entry.requestedWorkerRuntime === 'codex' ||
             entry.requestedWorkerRuntime === 'claude' ||
             entry.requestedWorkerRuntime === 'gemini' ||
@@ -7872,6 +7913,7 @@ export async function processNextQueued(
             'worker',
             explicitRequestedWorkerRuntime ??
               resolvedManagedRepo?.preferredWorkerRuntime ??
+              resolvedManagedRepo?.supportedWorkerRuntimes[0] ??
               'codex'
           ),
           workerAgentId: null,
@@ -7899,6 +7941,7 @@ export async function processNextQueued(
           dispatch.assignee,
           explicitRequestedWorkerRuntime ??
             resolvedManagedRepo?.preferredWorkerRuntime ??
+            resolvedManagedRepo?.supportedWorkerRuntimes[0] ??
             'codex'
         ),
         detail: buildDispatchingDetail({

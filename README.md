@@ -478,9 +478,10 @@ Important behavior:
   interpreted with conversation continuity while still grounding every send in
   the latest recent-topic list, then executes each actionable task with its
   own persisted worker continuation. Worker runtime/model choice is resolved
-  per task from live third-party Scale leaderboards plus `ai-quota`, so the
-  backend prefers the highest-ranked currently-available Codex/Claude worker
-  instead of pinning every task to one static worker model.
+  per task with OpenCode + OmO/Sisyphus as the primary worker path when the
+  OpenCode CLI is available for that workspace, and otherwise falls back to the
+  live-ranked Codex/Claude worker path guarded by Scale leaderboards plus
+  `ai-quota`.
 - Existing-repo write work now uses `managed-worktree-system` (`mwt`) as the
   isolation contract. The target repository must be initialized once from its
   canonical seed checkout with `mwt init`, after which manual work keeps the
@@ -515,21 +516,25 @@ Continue` recovery path. That action stashes the tracked seed changes with a
   into those worktrees, and after bootstrap it quarantines non-Git
   symlinks/junctions that resolve outside the worktree: tracked links fail
   fast, while untracked links are materialized into ordinary files/directories.
-- Static worker env settings such as `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
+- Static worker env settings such as `WORKSPACE_AGENT_HUB_OPENCODE_MODEL`,
+  `WORKSPACE_AGENT_HUB_OPENCODE_VARIANT`,
+  `WORKSPACE_AGENT_HUB_CODEX_MODEL`,
   `WORKSPACE_AGENT_HUB_CODEX_EFFORT`,
   `WORKSPACE_AGENT_HUB_CLAUDE_MODEL`, and
   `WORKSPACE_AGENT_HUB_CLAUDE_EFFORT` are not the normal automatic routing
   source of truth. They are only used when you explicitly force that runtime.
 - Automatic worker routing uses three live task classes:
   `codebase-qna` -> SWE Atlas QnA, `test-writing` -> SWE Atlas Test Writing,
-  `implementation` -> SWE-Bench Pro public/private. The backend walks the
-  live-ranked candidates from the top, skips runtimes whose CLI is not
-  launchable from the current PATH or configured override, checks the
-  corresponding runtime with `ai-quota`, and launches the first candidate whose
-  runtime still has enough quota headroom. If live ranking, CLI detection, or
-  `ai-quota` cannot produce an eligible worker, Manager stops and surfaces a
-  `needs-reply` error instead of silently bypassing that gate with a static
-  fallback.
+  `implementation` -> SWE-Bench Pro public/private. The backend first checks
+  whether OpenCode is available and, when it is, starts the worker through
+  OpenCode with the `Sisyphus` agent. If OpenCode is unavailable for that
+  workspace or repo policy excludes it, the backend falls back to the live-
+  ranked Codex/Claude candidates, skips runtimes whose CLI is not launchable
+  from the current PATH or configured override, checks the corresponding
+  runtime with `ai-quota`, and launches the first candidate whose runtime still
+  has enough quota headroom. If CLI detection or fallback selection cannot
+  produce an eligible worker, Manager stops and surfaces a `needs-reply` error
+  instead of silently bypassing that gate with a static fallback.
 - A repo-level `preferredWorkerRuntime` is treated only as a runtime
   constraint. It limits which worker runtime family can be auto-selected, but
   it does not pin a specific model. Inside that runtime constraint, the actual
@@ -742,6 +747,14 @@ This repository claims the following primary handoff paths.
   Optional explicit workspace root override for detached/temp runtime checkouts.
   Use this when the package root is not the canonical repository parent and you
   still want Hub/Manager to read the real workspace state.
+- `WORKSPACE_AGENT_HUB_OPENCODE_PATH`
+  Optional override for the OpenCode CLI used by Manager worker tasks. Defaults
+  to `opencode` / `opencode.cmd`.
+- `WORKSPACE_AGENT_HUB_OPENCODE_MODEL`
+  Optional model override passed to OpenCode worker tasks. When unset, Manager
+  lets the local OpenCode/OmO configuration choose the model.
+- `WORKSPACE_AGENT_HUB_OPENCODE_VARIANT`
+  Optional OpenCode reasoning variant passed to worker tasks.
 - `WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR`
   Optional override for Manager's Codex rollout recovery scan root. Defaults to
   `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise the user's

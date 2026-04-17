@@ -406,6 +406,7 @@ const defaultScalePages = {
 let tempDir = '';
 
 beforeEach(async () => {
+  process.env.WORKSPACE_AGENT_HUB_MANAGER_RUNTIME = 'codex';
   tempDir = await mkdtemp(join(tmpdir(), 'workspace-agent-hub-manager-'));
   const defaultManagerWorktree = join(tempDir, 'manager-task-worktree');
   await mkdir(defaultManagerWorktree, { recursive: true });
@@ -583,6 +584,7 @@ afterEach(async () => {
   delete process.env.WORKSPACE_AGENT_HUB_MANAGER_INTERNAL_ERROR_RETRY_MS;
   delete process.env.WORKSPACE_AGENT_HUB_MANAGER_QUOTA_AUTO_RESUME_RETRY_MS;
   delete process.env.WORKSPACE_AGENT_HUB_CODEX_SESSIONS_DIR;
+  delete process.env.WORKSPACE_AGENT_HUB_MANAGER_RUNTIME;
   await rm(tempDir, {
     recursive: true,
     force: true,
@@ -2043,7 +2045,10 @@ describe('manager backend codex integration', () => {
       tempDir,
       'thread-repo-infer',
       'これって完了してます？',
-      { dispatchMode: 'manager-evaluate' }
+      {
+        dispatchMode: 'manager-evaluate',
+        requestedWorkerRuntime: 'codex',
+      }
     );
     await waitFor(() => spawnMock.mock.calls.length === 1);
     expect(dispatchProc.stdin.write).toHaveBeenCalledWith(
