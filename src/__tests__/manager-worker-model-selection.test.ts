@@ -273,6 +273,76 @@ describe('manager-worker-model-selection', () => {
     expect(selection.quotaSummary).toContain('Codex CLI command "codex.cmd"');
   });
 
+  it('ignores stale Codex leaderboard labels that are no longer launchable for ChatGPT-account Codex', async () => {
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockReturnValue(Date.now() + 10 * 60_000);
+    try {
+      fetchMock.mockImplementation(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === 'https://labs.scale.com/leaderboard/swe_bench_pro_public') {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              mockScaleLeaderboardPage([
+                { model: 'gpt-5.2-codex', score: 60.1 },
+                { model: 'gpt-5.3-codex (Codex)', score: 58.4 },
+                { model: 'claude-opus-4-6 (thinking)*', score: 51.9 },
+              ]),
+          };
+        }
+        if (
+          url === 'https://labs.scale.com/leaderboard/swe_bench_pro_private'
+        ) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              mockScaleLeaderboardPage([
+                { model: 'gpt-5.2-codex', score: 49.2 },
+                { model: 'claude-opus-4-6 (thinking)', score: 47.1 },
+              ]),
+          };
+        }
+
+        const body = mockPages[url as keyof typeof mockPages];
+        if (!body) {
+          throw new Error(`Unexpected fetch URL: ${url}`);
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => body,
+        };
+      });
+
+      const selection = await selectRankedWorkerModel({
+        content: '既存の不具合を実装で修正してください',
+        writeScopes: ['src/manager-backend.ts'],
+        runMode: 'write',
+        supportedRuntimes: ['codex', 'claude'],
+        platform: 'win32',
+        env: installedRuntimeEnv(),
+      });
+
+      expect(selection.selected.runtime).toBe('claude');
+      expect(selection.selected.model).toBe('claude-opus-4-6');
+      expect(
+        selection.rankedCandidates.some(
+          (candidate) => candidate.model === 'gpt-5.2-codex'
+        )
+      ).toBe(false);
+      expect(
+        selection.rankedCandidates.some(
+          (candidate) => candidate.model === 'gpt-5.3'
+        )
+      ).toBe(false);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('reports a launchability error when no ranked runtime CLI is installed', async () => {
     await expect(
       selectRankedWorkerModel({

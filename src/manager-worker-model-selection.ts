@@ -89,18 +89,6 @@ const CANDIDATE_MATCHERS: CandidateMatcher[] = [
     ],
   },
   {
-    runtime: 'codex',
-    model: 'gpt-5.3',
-    effort: 'xhigh',
-    patterns: [/^gpt[- ]5\.3(?:-codex)?(?:[- ]xhigh)? \(codex\)$/i],
-  },
-  {
-    runtime: 'codex',
-    model: 'gpt-5.2-codex',
-    effort: null,
-    patterns: [/^gpt-5\.2-codex$/i],
-  },
-  {
     runtime: 'claude',
     model: 'claude-opus-4-6',
     effort: null,
