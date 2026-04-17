@@ -5,7 +5,7 @@ param(
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
     [string]$SessionName,
 
-    [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+    [ValidateSet('opencode', 'shell')]
     [string]$SessionType,
 
     [string]$SessionLabel,
@@ -365,7 +365,7 @@ function Split-TypedSessionName {
         [string]$Name
     )
 
-    $match = [regex]::Match($Name, '^(codex|claude|gemini|shell)-(.+)$')
+    $match = [regex]::Match($Name, '^(opencode|shell)-(.+)$')
     if (-not $match.Success) {
         return @{
             Type = 'unknown'

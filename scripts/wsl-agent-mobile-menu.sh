@@ -4,16 +4,12 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/path-helpers.sh"
 
 declare -A STARTUP_COMMANDS=(
-  [codex]="${HOME}/.local/bin/codex"
-  [claude]="${HOME}/.local/bin/claude"
-  [gemini]="${HOME}/.local/bin/gemini"
+  [opencode]="${HOME}/.local/bin/opencode --agent Sisyphus"
   [shell]=''
 )
 
 declare -A HEALTHCHECK_COMMANDS=(
-  [codex]="${HOME}/.local/bin/codex --version"
-  [claude]="${HOME}/.local/bin/claude --version"
-  [gemini]="${HOME}/.local/bin/gemini --version"
+  [opencode]="${HOME}/.local/bin/opencode --version"
   [shell]=''
 )
 
@@ -119,7 +115,7 @@ Usage:
   wsl-agent-mobile-menu.sh menu
   wsl-agent-mobile-menu.sh list
   wsl-agent-mobile-menu.sh list-all
-  wsl-agent-mobile-menu.sh start <codex|claude|gemini|shell> [title...]
+  wsl-agent-mobile-menu.sh start <opencode|shell> [title...]
   wsl-agent-mobile-menu.sh resume <session-name>
   wsl-agent-mobile-menu.sh rename <session-name> <title...>
   wsl-agent-mobile-menu.sh archive <session-name>
@@ -565,9 +561,7 @@ new_auto_session_label() {
 pretty_agent_label() {
   local session_type="$1"
   case "$session_type" in
-    codex) printf 'Codex' ;;
-    claude) printf 'Claude' ;;
-    gemini) printf 'Gemini' ;;
+    opencode) printf 'OpenCode' ;;
     shell) printf 'Shell' ;;
     *) printf 'Session' ;;
   esac
@@ -706,7 +700,7 @@ get_display_title() {
 
 split_session_name() {
   local name="$1"
-  if [[ "$name" =~ ^(codex|claude|gemini|shell)-(.+)$ ]]; then
+  if [[ "$name" =~ ^(opencode|shell)-(.+)$ ]]; then
     printf '%s|%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
     return 0
   fi
@@ -892,9 +886,9 @@ list_sessions() {
 choose_agent_type() {
   local choice
   while true; do
-    read -r -p 'Type (codex/claude/gemini/shell): ' choice
+    read -r -p 'Type (opencode/shell): ' choice
     case "$choice" in
-      codex|claude|gemini|shell)
+      opencode|shell)
         printf '%s\n' "$choice"
         return 0
         ;;
@@ -1188,7 +1182,7 @@ main() {
         return 1
       }
       case "$2" in
-        codex|claude|gemini|shell) ;;
+        opencode|shell) ;;
         *)
           usage >&2
           return 1

@@ -106,7 +106,7 @@ wait_for_menu_text() {
 wait_for_menu_text 'Choose 1/2/3/4/5/6:' >/dev/null
 tmux send-keys -t "$menu_session" '1' C-m
 
-wait_for_menu_text 'Type (codex/claude/gemini/shell):' >/dev/null
+wait_for_menu_text 'Type (opencode/shell):' >/dev/null
 tmux send-keys -t "$menu_session" 'shell' C-m
 
 wait_for_menu_text 'What is this session about? (optional):' >/dev/null
