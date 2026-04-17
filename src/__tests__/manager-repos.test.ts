@@ -69,6 +69,7 @@ describe('manager-repos', () => {
     expect(
       repos.every(
         (repo) =>
+          repo.supportedWorkerRuntimes.includes('opencode') &&
           repo.supportedWorkerRuntimes.includes('codex') &&
           repo.supportedWorkerRuntimes.includes('claude')
       )

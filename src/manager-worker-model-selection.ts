@@ -11,8 +11,8 @@ export type WorkerTaskClass =
   | 'implementation';
 
 export interface WorkerModelCandidate {
-  runtime: Extract<ManagerWorkerRuntime, 'codex' | 'claude'>;
-  model: string;
+  runtime: Extract<ManagerWorkerRuntime, 'opencode' | 'codex' | 'claude'>;
+  model: string | null;
   effort: string | null;
   score: number;
   sourceUrls: string[];
@@ -322,6 +322,52 @@ function aggregateCandidates(input: {
     .sort((left, right) => right.score - left.score);
 }
 
+function formatCandidateLabel(candidate: {
+  runtime: WorkerModelCandidate['runtime'];
+  model: string | null;
+  effort: string | null;
+}): string {
+  const modelLabel = candidate.model?.trim() || 'configured-default';
+  return candidate.effort
+    ? `${candidate.runtime}:${modelLabel} (${candidate.effort})`
+    : `${candidate.runtime}:${modelLabel}`;
+}
+
+function selectPrimaryOpenCodeCandidate(input: {
+  taskClass: WorkerTaskClass;
+  supportedRuntimes: Set<WorkerModelCandidate['runtime']>;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+}): WorkerModelSelection | null {
+  if (!input.supportedRuntimes.has('opencode')) {
+    return null;
+  }
+  const availability = describeWorkerRuntimeCliAvailability('opencode', {
+    platform: input.platform,
+    env: input.env,
+  });
+  if (!availability.available) {
+    return null;
+  }
+  const selected: WorkerModelCandidate = {
+    runtime: 'opencode',
+    model: input.env.WORKSPACE_AGENT_HUB_OPENCODE_MODEL?.trim() || null,
+    effort:
+      input.env.WORKSPACE_AGENT_HUB_OPENCODE_VARIANT?.trim() ||
+      input.env.WORKSPACE_AGENT_HUB_OPENCODE_EFFORT?.trim() ||
+      null,
+    score: Number.POSITIVE_INFINITY,
+    sourceUrls: [],
+    sourceModels: [],
+  };
+  return {
+    taskClass: input.taskClass,
+    selected,
+    rankedCandidates: [selected],
+    quotaSummary: `${formatCandidateLabel(selected)} -> ${availability.detail}`,
+  };
+}
+
 async function fetchScaleCandidates(
   taskClass: WorkerTaskClass
 ): Promise<WorkerModelCandidate[]> {
@@ -463,11 +509,20 @@ export async function selectRankedWorkerModel(input: {
   const env = input.env ?? process.env;
   const taskClass = classifyWorkerTask(input);
   const supportedRuntimes = new Set(
-    (input.supportedRuntimes ?? ['codex', 'claude']).filter(
+    (input.supportedRuntimes ?? ['opencode', 'codex', 'claude']).filter(
       (runtime): runtime is WorkerModelCandidate['runtime'] =>
-        runtime === 'codex' || runtime === 'claude'
+        runtime === 'opencode' || runtime === 'codex' || runtime === 'claude'
     )
   );
+  const openCodePrimary = selectPrimaryOpenCodeCandidate({
+    taskClass,
+    supportedRuntimes,
+    platform,
+    env,
+  });
+  if (openCodePrimary) {
+    return openCodePrimary;
+  }
   const rankedCandidates = (await fetchScaleCandidates(taskClass)).filter(
     (candidate) => supportedRuntimes.has(candidate.runtime)
   );
@@ -494,7 +549,7 @@ export async function selectRankedWorkerModel(input: {
       cliAvailableRuntimes.add(candidate.runtime);
     } else {
       unavailableCliNotes.push(
-        `${candidate.runtime}:${candidate.model}${candidate.effort ? ` (${candidate.effort})` : ''} -> ${availability.detail}`
+        `${formatCandidateLabel(candidate)} -> ${availability.detail}`
       );
     }
   }
@@ -519,7 +574,7 @@ export async function selectRankedWorkerModel(input: {
     }
     const quotaResult = evaluateRuntimeQuota(quota, candidate.runtime);
     quotaNotes.push(
-      `${candidate.runtime}:${candidate.model}${candidate.effort ? ` (${candidate.effort})` : ''} -> ${quotaResult.detail}`
+      `${formatCandidateLabel(candidate)} -> ${quotaResult.detail}`
     );
     if (quotaResult.available) {
       return {

@@ -66,10 +66,17 @@ const mockPages = {
 };
 
 function installedRuntimeEnv(
-  installedRuntimes: Array<'codex' | 'claude'> = ['codex', 'claude']
+  installedRuntimes: Array<'opencode' | 'codex' | 'claude'> = [
+    'opencode',
+    'codex',
+    'claude',
+  ]
 ): NodeJS.ProcessEnv {
   return {
     PATH: '',
+    ...(installedRuntimes.includes('opencode')
+      ? { OPENCODE_PATH: process.execPath }
+      : {}),
     ...(installedRuntimes.includes('codex')
       ? { CODEX_PATH: process.execPath }
       : {}),
@@ -195,6 +202,22 @@ describe('manager-worker-model-selection', () => {
         ...((execFileMock.mock.calls[0]?.[1] as string[] | undefined) ?? []),
       ].join(' ')
     ).toMatch(/ai-quota(?:\.cmd)?/i);
+  });
+
+  it('prefers OpenCode as the primary worker runtime when it is supported and installed', async () => {
+    const selection = await selectRankedWorkerModel({
+      content: '既存の不具合を実装で修正してください',
+      writeScopes: ['src/manager-backend.ts'],
+      runMode: 'write',
+      supportedRuntimes: ['opencode', 'codex', 'claude'],
+      platform: 'win32',
+      env: installedRuntimeEnv(),
+    });
+
+    expect(selection.taskClass).toBe('implementation');
+    expect(selection.selected.runtime).toBe('opencode');
+    expect(selection.selected.model).toBeNull();
+    expect(selection.quotaSummary).toContain('opencode:configured-default');
   });
 
   it('falls back to the next runtime when the higher-ranked runtime is quota-constrained', async () => {
