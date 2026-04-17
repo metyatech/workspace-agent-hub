@@ -1,7 +1,7 @@
 param(
     [ValidateSet('list', 'start', 'rename', 'archive', 'unarchive', 'close', 'delete', 'output', 'send', 'interrupt')]
     [string]$Action,
-    [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+    [ValidateSet('opencode', 'shell')]
     [string]$Type,
     [string]$SessionName = '',
     [string]$Title = '',
@@ -373,19 +373,17 @@ function Invoke-TmuxScriptCommand {
 function Get-WebStartupCommand {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+        [ValidateSet('opencode', 'shell')]
         [string]$SessionType
     )
 
     switch ($SessionType) {
-        'codex' {
-            if ($env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND -and $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND.Trim()) {
-                return $env:WORKSPACE_AGENT_HUB_CODEX_STARTUP_COMMAND.Trim()
+        'opencode' {
+            if ($env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND -and $env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND.Trim()) {
+                return $env:WORKSPACE_AGENT_HUB_OPENCODE_STARTUP_COMMAND.Trim()
             }
-            return '$HOME/.local/bin/codex --no-alt-screen'
+            return '$HOME/.local/bin/opencode --agent Sisyphus'
         }
-        'claude' { return '$HOME/.local/bin/claude' }
-        'gemini' { return '$HOME/.local/bin/gemini' }
         default { return '' }
     }
 }

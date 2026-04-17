@@ -7,9 +7,8 @@ Usage:
   install-wsl-agent-clis.sh
 
 Configures npm to install globals into ~/.local and installs:
-  @openai/codex
-  @google/gemini-cli
-  @anthropic-ai/claude-code
+  opencode
+  oh-my-opencode
 EOF
   exit 0
 fi
@@ -26,11 +25,10 @@ if ! grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' "${HOME}/.bashrc" 2>/dev/nu
 fi
 
 npm config set prefix "${HOME}/.local"
-npm install -g @openai/codex @google/gemini-cli @anthropic-ai/claude-code
+npm install -g opencode oh-my-opencode
 
-"${home_local_bin}/codex" --version
-"${home_local_bin}/gemini" --version
-"${home_local_bin}/claude" --version
+"${home_local_bin}/opencode" --version
+"${home_local_bin}/oh-my-opencode" version
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "${script_dir}/install-wsl-mobile-menu-hook.sh"

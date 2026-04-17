@@ -1,7 +1,7 @@
 param(
-    [ValidateSet('gui', 'codex', 'claude', 'gemini', 'shell', 'new', 'start', 'resume', 'existing', 'list', 'mobile', 'rename', 'archive', 'unarchive', 'close', 'delete')]
+    [ValidateSet('gui', 'opencode', 'shell', 'new', 'start', 'resume', 'existing', 'list', 'mobile', 'rename', 'archive', 'unarchive', 'close', 'delete')]
     [string]$Mode = 'gui',
-    [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+    [ValidateSet('opencode', 'shell')]
     [string]$Type,
     [string]$Name = '',
     [string]$Title = '',
@@ -19,12 +19,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $tmuxScriptPath = Join-Path $PSScriptRoot 'wsl-tmux.ps1'
-$codexAuthSyncScriptPath = Join-Path $PSScriptRoot 'sync-codex-auth.ps1'
 if (-not (Test-Path -Path $tmuxScriptPath)) {
     throw "Missing script: $tmuxScriptPath"
-}
-if (-not (Test-Path -Path $codexAuthSyncScriptPath)) {
-    throw "Missing script: $codexAuthSyncScriptPath"
 }
 
 $repoRootPath = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -49,23 +45,11 @@ $sessionCatalogReadRetryCount = 60
 $sessionCatalogReadRetryDelayMilliseconds = 50
 
 $profiles = @{
-    codex = @{
-        Type = 'codex'
-        StartupCommand = '$HOME/.local/bin/codex'
-        HealthCheckCommand = '$HOME/.local/bin/codex --version'
-        Label = 'Codex'
-    }
-    claude = @{
-        Type = 'claude'
-        StartupCommand = '$HOME/.local/bin/claude'
-        HealthCheckCommand = '$HOME/.local/bin/claude --version'
-        Label = 'Claude'
-    }
-    gemini = @{
-        Type = 'gemini'
-        StartupCommand = '$HOME/.local/bin/gemini'
-        HealthCheckCommand = '$HOME/.local/bin/gemini --version'
-        Label = 'Gemini'
+    opencode = @{
+        Type = 'opencode'
+        StartupCommand = '$HOME/.local/bin/opencode --agent Sisyphus'
+        HealthCheckCommand = '$HOME/.local/bin/opencode --version'
+        Label = 'OpenCode'
     }
     shell = @{
         Type = 'shell'
@@ -525,7 +509,7 @@ function Split-SessionIdentity {
         [string]$TargetSessionName
     )
 
-    $match = [regex]::Match($TargetSessionName, '^(codex|claude|gemini|shell)-(.+)$')
+    $match = [regex]::Match($TargetSessionName, '^(opencode|shell)-(.+)$')
     if (-not $match.Success) {
         return @{
             Type = 'unknown'
@@ -806,22 +790,6 @@ function Invoke-TmuxScript {
     & $tmuxScriptPath @Parameters
     if ($LASTEXITCODE -ne 0) {
         throw "wsl-tmux.ps1 failed with exit code $LASTEXITCODE."
-    }
-}
-
-function Sync-CodexAuthForWsl {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$TargetDistro
-    )
-
-    $captured = & $codexAuthSyncScriptPath -Distro $TargetDistro -Json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $detail = (($captured | Out-String).Trim())
-        if (-not $detail) {
-            $detail = "Exit code $LASTEXITCODE."
-        }
-        throw "Failed to synchronize Codex auth for WSL startup. $detail"
     }
 }
 
@@ -1170,7 +1138,7 @@ function Resolve-TypedSessionName {
 function Start-ProfileSession {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+        [ValidateSet('opencode', 'shell')]
         [string]$ProfileName,
         [string]$SessionLabel,
         [string]$SessionTitle,
@@ -1190,9 +1158,6 @@ function Start-ProfileSession {
     }
 
     $resolvedSessionName = "$($settings.SessionType)-$($settings.SessionLabel.ToLowerInvariant())"
-    if ($ProfileName -eq 'codex') {
-        Sync-CodexAuthForWsl -TargetDistro $TargetDistro
-    }
     Upsert-SessionCatalogEntry -SessionNameValue $resolvedSessionName -SessionTypeValue $settings.SessionType -SessionTitle $SessionTitle -WorkingDirectoryWindows $resolvedWindowsWorkingDirectory
     Invoke-EnsureTypedSession -SessionType $settings.SessionType -SessionLabel $settings.SessionLabel -StartupCommand $settings.StartupCommand -WorkingDirectoryPath $resolvedWslWorkingDirectory -TargetDistro $TargetDistro -NoAttach:$Detach
 }
@@ -1273,7 +1238,7 @@ function Start-MobileFlow {
         $menuChoice = Read-Choice -Prompt 'Choose 1/2/3/4/5' -Allowed @('1', '2', '3', '4', '5')
 
         if ($menuChoice -eq '1') {
-            $typeChoice = Read-Choice -Prompt 'Type (codex/claude/gemini/shell)' -Allowed @('codex', 'claude', 'gemini', 'shell')
+    $typeChoice = Read-Choice -Prompt 'Type (opencode/shell)' -Allowed @('opencode', 'shell')
             $sessionTitle = [string](Read-Host 'What is this session about? (optional)')
             $sessionWorkingDirectory = [string](Read-Host "Working directory (optional, default: $workspaceRootPath)")
             Start-ProfileSession -ProfileName $typeChoice -SessionTitle $sessionTitle -WindowsWorkingDirectory $sessionWorkingDirectory -TargetDistro $TargetDistro
@@ -1447,7 +1412,7 @@ function Open-TmuxInNewWindow {
 function New-GuiProfileSession {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('codex', 'claude', 'gemini', 'shell')]
+        [ValidateSet('opencode', 'shell')]
         [string]$ProfileName,
         [string]$SessionTitle,
         [string]$WindowsWorkingDirectory,
@@ -1536,7 +1501,7 @@ $typeCombo = New-Object System.Windows.Forms.ComboBox
 $typeCombo.DropDownStyle = 'DropDownList'
 $typeCombo.Location = New-Object System.Drawing.Point(18, 54)
 $typeCombo.Size = New-Object System.Drawing.Size(160, 28)
-[void]$typeCombo.Items.AddRange(@('codex', 'claude', 'gemini', 'shell'))
+    [void]$typeCombo.Items.AddRange(@('opencode', 'shell'))
 $typeCombo.SelectedIndex = 0
 $newGroup.Controls.Add($typeCombo)
 
