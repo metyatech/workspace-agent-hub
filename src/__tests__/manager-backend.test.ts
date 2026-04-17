@@ -1738,6 +1738,9 @@ describe('manager backend codex integration', () => {
     expect(meta['thread-live-selection-error']?.workerSessionRuntime).toBe(
       undefined
     );
+    expect(meta['thread-live-selection-error']?.runtimeErrorMessage).toContain(
+      'Live worker model selection failed before a worker could start'
+    );
   });
 
   it('treats an explicit no-change follow-up as read-only even when the existing topic was previously write-oriented', async () => {
@@ -5606,6 +5609,10 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'exceeded the total runtime limit'
     );
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-hard-timeout']?.runtimeErrorMessage).toContain(
+      'exited with code 124'
+    );
   });
 
   it('surfaces a stdout-only Codex structured error instead of hiding it behind a generic exit code', async () => {
@@ -5665,6 +5672,10 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       "The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account."
     );
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(
+      meta['thread-structured-worker-error']?.runtimeErrorMessage
+    ).toContain('exited with code 1');
   });
 
   it('records a recoverable dirty-seed state when managed worktree creation is blocked by tracked changes', async () => {

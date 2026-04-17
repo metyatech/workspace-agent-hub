@@ -22,6 +22,7 @@ export const MANAGER_THREAD_META_FILE =
 
 export type ManagerUiState =
   | 'routing-confirmation-needed'
+  | 'error'
   | 'user-reply-needed'
   | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
@@ -48,6 +49,7 @@ export interface ManagerThreadMeta {
   managerOwned?: boolean;
   canonicalState?: ManagerUiState | null;
   canonicalStateReason?: string | null;
+  runtimeErrorMessage?: string | null;
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
   derivedFromThreadIds?: string[] | null;
@@ -406,6 +408,7 @@ function normalizeRequestedRunMode(value: unknown): ManagerRunMode | null {
 
 function normalizeCanonicalUiState(value: unknown): ManagerUiState | null {
   return value === 'routing-confirmation-needed' ||
+    value === 'error' ||
     value === 'user-reply-needed' ||
     value === 'stalled' ||
     value === 'ai-finished-awaiting-user-confirmation' ||
@@ -541,6 +544,36 @@ function deriveCanonicalStateInfo(input: {
   reason: string | null;
 } {
   let uiState: ManagerUiState;
+  const runtimeErrorMessage = (() => {
+    const explicit =
+      typeof input.meta?.runtimeErrorMessage === 'string'
+        ? input.meta.runtimeErrorMessage.trim() || null
+        : null;
+    if (explicit) return explicit;
+
+    // Legacy fallback: when older persisted meta lacks runtimeErrorMessage,
+    // derive it from the final AI message if and only if that message begins
+    // with the exact prefix "[Manager error]". This keeps canonical
+    // semantics unchanged for other cases and avoids broader heuristics.
+    const lastMessage = input.thread.messages.at(-1);
+    if (
+      lastMessage?.sender === 'ai' &&
+      typeof lastMessage.content === 'string'
+    ) {
+      const text = lastMessage.content.trim();
+      if (text.startsWith('[Manager error]')) {
+        return text;
+      }
+    }
+
+    return null;
+  })();
+  const hasNeedsReplyRuntimeError =
+    Boolean(runtimeErrorMessage) &&
+    (input.thread.status === 'needs-reply' ||
+      (input.thread.status === 'waiting' &&
+        normalizePendingReplyStatus(input.meta?.pendingReplyStatus) ===
+          'needs-reply'));
 
   if (input.thread.status === 'resolved') {
     uiState = 'done';
@@ -554,6 +587,8 @@ function deriveCanonicalStateInfo(input: {
     uiState = 'ai-starting';
   } else if (input.queueDepth > 0) {
     uiState = 'queued';
+  } else if (hasNeedsReplyRuntimeError) {
+    uiState = 'error';
   } else if (input.thread.status === 'needs-reply') {
     uiState = 'user-reply-needed';
   } else if (input.thread.status === 'review') {
@@ -584,7 +619,12 @@ function deriveCanonicalStateInfo(input: {
 
   return {
     uiState,
-    reason: uiState === 'stalled' ? staleReason(input) : null,
+    reason:
+      uiState === 'error'
+        ? runtimeErrorMessage
+        : uiState === 'stalled'
+          ? staleReason(input)
+          : null,
   };
 }
 
@@ -664,14 +704,15 @@ function compareByPriority(
 ): number {
   const priority: Record<ManagerUiState, number> = {
     'routing-confirmation-needed': 0,
-    'user-reply-needed': 1,
-    stalled: 2,
-    'ai-finished-awaiting-user-confirmation': 3,
-    queued: 4,
-    'ai-starting': 5,
-    'ai-working': 6,
-    'cancelled-as-superseded': 7,
-    done: 8,
+    error: 1,
+    'user-reply-needed': 2,
+    stalled: 3,
+    'ai-finished-awaiting-user-confirmation': 4,
+    queued: 5,
+    'ai-starting': 6,
+    'ai-working': 7,
+    'cancelled-as-superseded': 8,
+    done: 9,
   };
 
   const leftPriority = priority[left.uiState];
@@ -770,14 +811,31 @@ export function deriveManagerThreadViews(input: {
       isWorking,
     });
 
+    // compute canonicalStateReason: prefer explicit meta.canonicalStateReason;
+    // when absent, preserve runtime error reason for threads whose uiState is
+    // 'error' by deriving the canonical info from current inputs. Do NOT
+    // synthesize reasons for other states (keep stalled behavior unchanged).
+    const explicitCanonicalStateReason =
+      typeof meta?.canonicalStateReason === 'string'
+        ? meta.canonicalStateReason.trim() || null
+        : null;
+    let computedCanonicalStateReason: string | null =
+      explicitCanonicalStateReason;
+    if (computedCanonicalStateReason === null && uiState === 'error') {
+      computedCanonicalStateReason = deriveCanonicalStateInfo({
+        thread,
+        meta,
+        queueDepth,
+        isStarting,
+        isWorking,
+      }).reason;
+    }
+
     return [
       {
         ...thread,
         uiState,
-        canonicalStateReason:
-          typeof meta?.canonicalStateReason === 'string'
-            ? meta.canonicalStateReason.trim() || null
-            : null,
+        canonicalStateReason: computedCanonicalStateReason,
         previewText: previewText(thread),
         lastSender: lastSender(thread),
         hiddenByDefault: uiState === 'done',

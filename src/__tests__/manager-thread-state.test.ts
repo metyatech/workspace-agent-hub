@@ -407,6 +407,180 @@ describe('manager thread state derivation', () => {
     expect(views[0]?.isWorking).toBe(false);
   });
 
+  it('maps runtime-error needs-reply threads to the error lane', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-runtime-error',
+          title: 'runtime error task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:36:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:36:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '[Manager error] Worker exited with code 1.',
+              at: '2026-04-09T10:47:34.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T10:36:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      // legacy persisted meta may already contain runtimeErrorMessage; keep
+      // that test covered separately. For regression, also ensure that when
+      // the persisted meta lacks runtimeErrorMessage but the final AI
+      // message begins with the exact prefix, we still classify as error.
+      meta: {
+        'thread-runtime-error': {
+          // runtimeErrorMessage intentionally omitted to simulate older
+          // persisted state; include a minimal manager footprint so the
+          // thread remains manager-owned and is included in views.
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('error');
+    expect(views[0]?.canonicalStateReason).toContain(
+      'Worker exited with code 1'
+    );
+  });
+
+  it('falls back to last AI message when meta.runtimeErrorMessage is absent but message starts with [Manager error]', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-legacy-error',
+          title: 'legacy error task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:36:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:36:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '[Manager error] Worker exited with code 1.',
+              at: '2026-04-09T10:47:34.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T10:36:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-legacy-error': {
+          // minimal manager footprint to ensure inclusion in manager views
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('error');
+    expect(views[0]?.canonicalStateReason).toContain(
+      'Worker exited with code 1'
+    );
+  });
+
+  it('does not classify as error when final AI message does not start with the exact prefix [Manager error]', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-legacy-negative',
+          title: 'legacy negative task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:36:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:36:00.000Z',
+            },
+            {
+              sender: 'ai',
+              // intentionally similar but NOT starting with the exact
+              // '[Manager error]' prefix to lock the narrow heuristic.
+              content: 'Manager error: Worker exited with code 1.',
+              at: '2026-04-09T10:47:34.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T10:36:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-legacy-negative': {
+          // minimal manager footprint so the thread is considered manager-owned
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('user-reply-needed');
+    expect(views[0]?.canonicalStateReason).toBeNull();
+  });
+
   it('orders queued threads by dispatch priority instead of newest update time', () => {
     const views = deriveManagerThreadViews({
       threads: [

@@ -4139,7 +4139,12 @@ async function clearThreadRoutingStatePreservingContinuity(
     delete next.routingConfirmationNeeded;
     delete next.routingHint;
     delete next.lastRoutingAt;
-    return stripManagerRuntimeStatePreservingContinuity(next);
+    const stripped = stripManagerRuntimeStatePreservingContinuity(next);
+    if (!stripped) {
+      return null;
+    }
+    delete stripped.runtimeErrorMessage;
+    return stripped;
   });
 }
 
@@ -4147,9 +4152,13 @@ async function clearThreadRuntimeStatePreservingContinuity(
   dir: string,
   threadId: string
 ): Promise<void> {
-  await updateManagerThreadMeta(dir, threadId, (current) =>
-    stripManagerRuntimeStatePreservingContinuity(current)
-  );
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    const stripped = stripManagerRuntimeStatePreservingContinuity(current);
+    if (!stripped) {
+      return null;
+    }
+    return stripped;
+  });
 }
 
 interface PausedWorktreeSnapshot {
@@ -4604,7 +4613,27 @@ function clearPendingReplyStateFromMeta(
   delete next.pendingReplyStatus;
   delete next.pendingReplyContent;
   delete next.pendingReplyAt;
+  delete next.runtimeErrorMessage;
   return next;
+}
+
+async function setThreadRuntimeErrorMessage(
+  dir: string,
+  threadId: string,
+  message: string | null
+): Promise<void> {
+  await updateManagerThreadMeta(dir, threadId, (current) => {
+    if (!current && !message) {
+      return null;
+    }
+    const next: ManagerThreadMeta = { ...(current ?? {}) };
+    if (message?.trim()) {
+      next.runtimeErrorMessage = message.trim();
+    } else {
+      delete next.runtimeErrorMessage;
+    }
+    return next;
+  });
 }
 
 function lastUserMessage(thread: Thread): Thread['messages'][number] | null {
@@ -6665,6 +6694,11 @@ async function runQueuedAssignment(input: {
               status: 'needs-reply',
             });
           }
+          await setThreadRuntimeErrorMessage(
+            resolvedDir,
+            thread.id,
+            escalateMsg
+          );
           await updateQueueLocked(dir, (queue) =>
             queue.filter(
               (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -6972,6 +7006,7 @@ async function runQueuedAssignment(input: {
           status: 'needs-reply',
         });
       }
+      await setThreadRuntimeErrorMessage(resolvedDir, thread.id, exhaustedMsg);
       await updateQueueLocked(dir, (queue) =>
         queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
       );
@@ -7217,6 +7252,11 @@ async function runQueuedAssignment(input: {
                   status: 'needs-reply',
                 });
               }
+              await setThreadRuntimeErrorMessage(
+                resolvedDir,
+                thread.id,
+                errMsg
+              );
               await updateQueueLocked(dir, (queue) =>
                 queue.filter(
                   (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -7341,6 +7381,7 @@ async function runQueuedAssignment(input: {
       content: errMsg,
       status: 'needs-reply',
     });
+    await setThreadRuntimeErrorMessage(resolvedDir, thread.id, errMsg);
     await setManagerRuntimeError(dir, errMsg);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
@@ -7419,6 +7460,7 @@ async function runQueuedAssignment(input: {
       content: errMsg,
       status: 'needs-reply',
     });
+    await setThreadRuntimeErrorMessage(resolvedDir, thread.id, errMsg);
     await setManagerRuntimeError(dir, errMsg);
     await updateQueueLocked(dir, (queue) =>
       queue.filter((entry) => !assignment.queueEntryIds.includes(entry.id))
@@ -7895,6 +7937,11 @@ export async function processNextQueued(
               content: errMsg,
               status: 'needs-reply',
             });
+            await setThreadRuntimeErrorMessage(
+              resolvedDir,
+              next.threadId,
+              errMsg
+            );
             await setManagerRuntimeError(dir, errMsg);
             await updateQueueLocked(dir, (currentQueue) =>
               currentQueue.filter((entry) => !batchIds.includes(entry.id))
@@ -7954,6 +8001,11 @@ export async function processNextQueued(
               content: errMsg,
               status: 'needs-reply',
             });
+            await setThreadRuntimeErrorMessage(
+              resolvedDir,
+              next.threadId,
+              errMsg
+            );
             if (!quotaBlocked) {
               await setManagerRuntimeError(dir, errMsg);
             }
@@ -8325,6 +8377,7 @@ export async function processNextQueued(
             content: errMsg,
             status: 'needs-reply',
           });
+          await setThreadRuntimeErrorMessage(resolvedDir, thread.id, errMsg);
           continue;
         }
       }
