@@ -533,6 +533,52 @@ function staleReason(input: {
   return 'Manager が処理すべき user 依頼でしたが、現在はキューにも実行中にも存在しない取り残し状態です。';
 }
 
+function isOperationalBlocker(meta: ManagerThreadMeta | null): boolean {
+  if (!meta) return false;
+
+  // Narrow set of operational blocker indicators. Only these fields are
+  // considered operational (non-judgment) blockers per the policy change.
+  if (typeof meta.pausedWorktreePath === 'string' && meta.pausedWorktreePath)
+    return true;
+  if (typeof meta.pausedAssignmentId === 'string' && meta.pausedAssignmentId)
+    return true;
+  if (meta.workerRuntimeState === 'blocked-by-scope') return true;
+  if (
+    Array.isArray(meta.workerBlockedByThreadIds) &&
+    meta.workerBlockedByThreadIds.length > 0
+  )
+    return true;
+  if (
+    typeof meta.strandedAutoResumeCount === 'number' &&
+    meta.strandedAutoResumeCount > 0
+  )
+    return true;
+  if (meta.seedRecoveryPending) return true;
+
+  return false;
+}
+
+function inferLegacyOperationalBlockerMessage(thread: Thread): string | null {
+  const lastMessage = thread.messages.at(-1);
+  if (lastMessage?.sender !== 'ai' || typeof lastMessage.content !== 'string') {
+    return null;
+  }
+
+  const text = lastMessage.content.trim();
+  const knownOperationalPrefixes = [
+    '[Manager error]',
+    '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できませんでした。',
+    '[Manager] 保存されていた paused managed task worktree を再利用できませんでした。',
+    '[Manager] Worker の workingDirectory を確定できませんでした。',
+    '[Manager] Worker 隔離環境の作成に失敗しました:',
+    '[Manager] Worker 隔離環境の作成に失敗しました。',
+  ];
+
+  return knownOperationalPrefixes.some((prefix) => text.startsWith(prefix))
+    ? text
+    : null;
+}
+
 function deriveCanonicalStateInfo(input: {
   thread: Thread;
   meta: ManagerThreadMeta | null;
@@ -551,22 +597,7 @@ function deriveCanonicalStateInfo(input: {
         : null;
     if (explicit) return explicit;
 
-    // Legacy fallback: when older persisted meta lacks runtimeErrorMessage,
-    // derive it from the final AI message if and only if that message begins
-    // with the exact prefix "[Manager error]". This keeps canonical
-    // semantics unchanged for other cases and avoids broader heuristics.
-    const lastMessage = input.thread.messages.at(-1);
-    if (
-      lastMessage?.sender === 'ai' &&
-      typeof lastMessage.content === 'string'
-    ) {
-      const text = lastMessage.content.trim();
-      if (text.startsWith('[Manager error]')) {
-        return text;
-      }
-    }
-
-    return null;
+    return inferLegacyOperationalBlockerMessage(input.thread);
   })();
   const hasNeedsReplyRuntimeError =
     Boolean(runtimeErrorMessage) &&
@@ -588,6 +619,14 @@ function deriveCanonicalStateInfo(input: {
   } else if (input.queueDepth > 0) {
     uiState = 'queued';
   } else if (hasNeedsReplyRuntimeError) {
+    uiState = 'error';
+  } else if (
+    input.thread.status === 'needs-reply' &&
+    isOperationalBlocker(input.meta)
+  ) {
+    // Operational blockers should be surfaced as errors so operators can act
+    // on them. Preserve explicit routing-confirmation and runtime-error
+    // semantics.
     uiState = 'error';
   } else if (input.thread.status === 'needs-reply') {
     uiState = 'user-reply-needed';

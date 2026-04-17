@@ -469,6 +469,158 @@ describe('manager thread state derivation', () => {
     );
   });
 
+  it('maps operational-blocker needs-reply threads to the error lane (paused worktree)', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-op-blocked',
+          title: 'paused worktree task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T11:00:00.000Z',
+          createdAt: '2026-04-09T10:50:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:50:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '一時停止中: 作業用ワークツリーが保留されています',
+              at: '2026-04-09T10:59:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T10:50:00.000Z',
+        lastMessageAt: '2026-04-09T11:00:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-op-blocked': {
+          managedRepoId: 'workspace-agent-hub',
+          pausedWorktreePath: 'C:\\paused\\worktree',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('error');
+  });
+
+  it('preserves plain needs-reply as user-reply-needed when not an operational blocker', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-plain-needs-reply',
+          title: 'clarification required',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T12:00:00.000Z',
+          createdAt: '2026-04-09T11:50:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'どのブランチで実行しますか？',
+              at: '2026-04-09T11:50:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T11:50:00.000Z',
+        lastMessageAt: '2026-04-09T12:00:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-plain-needs-reply': {
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('user-reply-needed');
+  });
+
+  it('preserves manager clarification replies as user-reply-needed when they are not operational blockers', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-working-dir-clarification',
+          title: 'working directory clarification',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T12:00:00.000Z',
+          createdAt: '2026-04-09T11:50:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: 'サブディレクトリから進めて',
+              at: '2026-04-09T11:50:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content: '対象の作業フォルダを確認してください。',
+              at: '2026-04-09T12:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T11:50:00.000Z',
+        lastMessageAt: '2026-04-09T12:00:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-working-dir-clarification': {
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('user-reply-needed');
+  });
+
   it('falls back to last AI message when meta.runtimeErrorMessage is absent but message starts with [Manager error]', () => {
     const views = deriveManagerThreadViews({
       threads: [
@@ -522,6 +674,62 @@ describe('manager thread state derivation', () => {
     expect(views[0]?.uiState).toBe('error');
     expect(views[0]?.canonicalStateReason).toContain(
       'Worker exited with code 1'
+    );
+  });
+
+  it('falls back to a known legacy operational-blocker message when meta.runtimeErrorMessage is absent', () => {
+    const views = deriveManagerThreadViews({
+      threads: [
+        {
+          id: 'thread-legacy-auto-mwt-init',
+          title: 'legacy auto mwt init blocked task',
+          status: 'needs-reply',
+          updatedAt: '2026-04-09T10:58:00.000Z',
+          createdAt: '2026-04-09T10:36:00.000Z',
+          messages: [
+            {
+              sender: 'user',
+              content: '続けてください',
+              at: '2026-04-09T10:36:00.000Z',
+            },
+            {
+              sender: 'ai',
+              content:
+                '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できませんでした。\nseed リポジトリで `mwt init --base main --remote origin` を実行してから再開してください。',
+              at: '2026-04-09T10:47:34.000Z',
+            },
+          ],
+        },
+      ],
+      session: {
+        workspaceKey: 'workspace',
+        status: 'idle',
+        sessionId: 'codex-thread',
+        routingSessionId: null,
+        pid: null,
+        currentQueueId: null,
+        startedAt: '2026-04-09T10:36:00.000Z',
+        lastMessageAt: '2026-04-09T10:58:00.000Z',
+        priorityStreak: 0,
+        lastProgressAt: null,
+        lastErrorMessage: null,
+        lastErrorAt: null,
+        lastPauseMessage: null,
+        lastPauseAt: null,
+        activeAssignments: [],
+      },
+      queue: [],
+      meta: {
+        'thread-legacy-auto-mwt-init': {
+          managedRepoId: 'workspace-agent-hub',
+        },
+      },
+    });
+
+    expect(views).toHaveLength(1);
+    expect(views[0]?.uiState).toBe('error');
+    expect(views[0]?.canonicalStateReason).toContain(
+      'managed-worktree-system (`mwt`) 初期化前'
     );
   });
 
