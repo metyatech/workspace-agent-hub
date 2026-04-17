@@ -1912,6 +1912,58 @@ describe('manager-app DOM auth state matrix', () => {
     ).toContain('同じ依頼を再送してください');
   });
 
+  it('shows runtime-error threads under the error lane instead of reply-needed', async () => {
+    const validToken = 'error-thread-token';
+    const errorThread = makeThreadView('thread-error', '失敗した task', {
+      status: 'needs-reply',
+      uiState: 'error',
+      canonicalStateReason: '[Manager error] Worker exited with code 1.',
+      // previewText includes the raw AI message; keep this unchanged.
+      previewText: '[ai] [Manager error] Worker exited with code 1.',
+      lastSender: 'ai',
+    });
+
+    const fetchMock = createManagerFetchWithData({
+      validToken,
+      threads: [errorThread],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '待機中',
+        pendingCount: 0,
+      },
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    expect(
+      document.querySelector<HTMLElement>('#activity-primary')!.textContent
+    ).toContain('エラーで止まっている作業項目があります');
+    const chips = Array.from(
+      document.querySelectorAll<HTMLElement>('.activity-chip')
+    ).map((element) => element.textContent ?? '');
+    expect(chips).toContain('エラー 1');
+    expect(
+      document
+        .querySelector<HTMLElement>('#sec-error')!
+        .classList.contains('hidden')
+    ).toBe(false);
+    expect(
+      document
+        .querySelector<HTMLElement>('#sec-user-reply-needed')!
+        .classList.contains('hidden')
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLElement>('[data-row-note]')?.textContent
+    ).toContain('Worker exited with code 1');
+  });
+
   it('defaults human-facing lists to oldest-first and AI lists to newest-first', async () => {
     const validToken = 'section-sort-defaults-token';
     const threads = [

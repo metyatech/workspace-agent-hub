@@ -31,6 +31,7 @@ interface Msg {
 
 type ManagerUiState =
   | 'routing-confirmation-needed'
+  | 'error'
   | 'user-reply-needed'
   | 'stalled'
   | 'ai-finished-awaiting-user-confirmation'
@@ -351,6 +352,7 @@ const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
+  'error',
   'user-reply-needed',
   'stalled',
   'ai-finished-awaiting-user-confirmation',
@@ -371,6 +373,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
   ManagerListSortOrder
 > = {
   'routing-confirmation-needed': 'oldest-first',
+  error: 'oldest-first',
   'user-reply-needed': 'oldest-first',
   stalled: 'oldest-first',
   'ai-finished-awaiting-user-confirmation': 'oldest-first',
@@ -384,6 +387,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
 
 const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
   'routing-confirmation-needed': '振り分けの確認が必要です',
+  error: 'エラーが起きています',
   'user-reply-needed': 'あなたの返信が必要です',
   stalled: '処理状態の確認が必要です',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ちです',
@@ -401,6 +405,7 @@ const STATE_PRIORITY_RANK = Object.fromEntries(
 
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
+  error: 'エラー',
   'user-reply-needed': 'あなたの返信待ち',
   stalled: '処理状態要確認',
   'ai-finished-awaiting-user-confirmation': 'あなたの確認待ち',
@@ -416,6 +421,11 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     bg: 'rgba(127, 29, 29, 0.82)',
     color: '#fecaca',
     border: 'rgba(248, 113, 113, 0.38)',
+  },
+  error: {
+    bg: 'rgba(127, 29, 29, 0.92)',
+    color: '#fee2e2',
+    border: 'rgba(248, 113, 113, 0.46)',
   },
   'user-reply-needed': {
     bg: 'rgba(120, 53, 15, 0.82)',
@@ -1779,6 +1789,12 @@ function describeThreadState(thread: ThreadView): string | null {
   if (thread.routingConfirmationNeeded) {
     return 'この work item だけ、どの work item として扱うかをあなたに確認したい状態です。';
   }
+  if (thread.uiState === 'error') {
+    return (
+      thread.canonicalStateReason ??
+      'Manager または worker の実行中にエラーで停止しました。内容を確認してから再送してください。'
+    );
+  }
   if (thread.uiState === 'user-reply-needed') {
     return 'AI が続きに必要な確認を待っています。返事をすると上から優先的に処理します。';
   }
@@ -1812,6 +1828,9 @@ function threadNextActionText(thread: ThreadView): string {
   }
   if (thread.routingConfirmationNeeded) {
     return 'この件の扱い方だけ先に確認して返します。';
+  }
+  if (thread.uiState === 'error') {
+    return 'エラー内容を確認してから再送してください。繰り返す場合は原因の修正が必要です。';
   }
   if (thread.uiState === 'user-reply-needed') {
     return '必要な確認に返すと、そのまま続きへ戻せます。';
@@ -1850,7 +1869,7 @@ function threadListNoteText(
   thread: ThreadView,
   threadsById: Map<string, ThreadView>
 ): string | null {
-  if (thread.uiState === 'stalled') {
+  if (thread.uiState === 'stalled' || thread.uiState === 'error') {
     return describeThreadState(thread);
   }
   return describeWorkItemContext(thread, threadsById);
@@ -1984,14 +2003,16 @@ function makeActivityFocusCard(
   const copy = document.createElement('div');
   copy.className = 'activity-focus-card-copy';
   copy.textContent =
-    thread.uiState === 'stalled'
+    thread.uiState === 'stalled' || thread.uiState === 'error'
       ? (describeThreadState(thread) ?? threadNextActionText(thread))
       : threadNextActionText(thread);
 
   const meta = document.createElement('div');
   meta.className = 'activity-focus-card-meta';
   meta.textContent = [
-    thread.uiState === 'stalled' ? threadNextActionText(thread) : null,
+    thread.uiState === 'stalled' || thread.uiState === 'error'
+      ? threadNextActionText(thread)
+      : null,
     rowActivityText(thread, threadTitlesById),
     detailContextSummary(thread, threadsById),
   ]
@@ -3597,6 +3618,7 @@ class ManagerApp {
       'routing-confirmation-needed': new ThreadSectionController(
         'routing-confirmation-needed'
       ),
+      error: new ThreadSectionController('error'),
       'user-reply-needed': new ThreadSectionController('user-reply-needed'),
       stalled: new ThreadSectionController('stalled'),
       'ai-finished-awaiting-user-confirmation': new ThreadSectionController(
@@ -6091,6 +6113,8 @@ class ManagerApp {
           : 'AI が作業や振り分けを進めています';
     } else if (counts['routing-confirmation-needed'] > 0) {
       primary.textContent = '振り分け確認が必要な作業項目があります';
+    } else if (counts['error'] > 0) {
+      primary.textContent = 'エラーで止まっている作業項目があります';
     } else if (counts['user-reply-needed'] > 0) {
       primary.textContent = 'あなたの返信待ちがあります';
     } else if (counts['stalled'] > 0) {
@@ -6142,6 +6166,9 @@ class ManagerApp {
     } else if (counts['routing-confirmation-needed'] > 0) {
       detail.textContent =
         '「振り分けの確認が必要です」の一覧を開けば、先に答えるべきものから確認できます。';
+    } else if (counts['error'] > 0) {
+      detail.textContent =
+        '「エラー」の一覧を開けば、実行時エラーで止まった作業項目を確認できます。必要なら原因を直してから再送してください。';
     } else if (counts['user-reply-needed'] > 0) {
       detail.textContent =
         '「あなたの返信が必要です」の一覧を上から順に開けば、いま返した方がいい作業項目から見られます。';
@@ -6181,6 +6208,11 @@ class ManagerApp {
         key: 'routing-confirmation-needed',
         label: '振り分け確認',
         value: counts['routing-confirmation-needed'],
+      },
+      {
+        key: 'error',
+        label: 'エラー',
+        value: counts['error'],
       },
       {
         key: 'user-reply-needed',
