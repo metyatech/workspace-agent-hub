@@ -2933,6 +2933,8 @@ describe('manager backend codex integration', () => {
       worktreePath,
       branchName: 'agent/repo-missing-working-dir',
     });
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-missing-working-dir']?.runtimeErrorMessage).toBeFalsy();
   });
 
   it('runs a manager review turn after a worker finishes and posts the reviewed reply', async () => {
@@ -6012,6 +6014,62 @@ describe('manager backend codex integration', () => {
     expect(meta['thread-write-fail']?.pendingReplyAt).toEqual(
       expect.any(String)
     );
+  });
+
+  it('persists a pending clarification reply when working-directory reconsideration cannot write to thread storage', async () => {
+    const recoveryProc = makeProc(8304);
+    spawnMock.mockReturnValueOnce(recoveryProc);
+    addMessageMock.mockRejectedValueOnce(
+      new Error('clarification thread write failed')
+    );
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-working-directory-clarification-write-fail',
+      'この修正を進めて',
+      {
+        dispatchMode: 'direct-worker',
+        requestedRunMode: 'write',
+        targetRepoRoot: tempDir,
+        workingDirectory: 'missing-dir',
+        writeScopes: ['src'],
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(recoveryProc, {
+      sessionId: 'recovery-working-directory-clarification-write-fail',
+      text: JSON.stringify({
+        assignee: 'manager',
+        status: 'needs-reply',
+        reply: '対象の作業フォルダを確認してください。',
+      }),
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(
+      meta['thread-working-directory-clarification-write-fail']
+        ?.pendingReplyStatus
+    ).toBe('needs-reply');
+    expect(
+      meta['thread-working-directory-clarification-write-fail']
+        ?.pendingReplyContent
+    ).toBe('対象の作業フォルダを確認してください。');
+    expect(
+      meta['thread-working-directory-clarification-write-fail']?.pendingReplyAt
+    ).toEqual(expect.any(String));
+    expect(
+      meta['thread-working-directory-clarification-write-fail']
+        ?.runtimeErrorMessage
+    ).toBeFalsy();
   });
 
   it('replays a persisted pending AI reply on startup and clears the recovery marker', async () => {

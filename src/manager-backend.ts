@@ -8101,6 +8101,12 @@ export async function processNextQueued(
                 content: errMsg,
                 status: 'needs-reply',
               });
+              // Persist as runtime error for operational blocker (paused worktree)
+              await setThreadRuntimeErrorMessage(
+                resolvedDir,
+                thread.id,
+                errMsg
+              );
               await updateQueueLocked(dir, (queue) =>
                 queue.filter(
                   (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -8157,6 +8163,12 @@ export async function processNextQueued(
                     content: errMsg,
                     status: 'needs-reply',
                   });
+                  // Persist as runtime error for operational blocker (auto-mwt init)
+                  await setThreadRuntimeErrorMessage(
+                    resolvedDir,
+                    thread.id,
+                    errMsg
+                  );
                   await updateQueueLocked(dir, (queue) =>
                     queue.filter(
                       (entry) => !assignment.queueEntryIds.includes(entry.id)
@@ -8233,12 +8245,17 @@ export async function processNextQueued(
                 recoveryPayload.reply)
             ) {
               if (recoveryPayload.assignee === 'manager') {
-                await addAiMessageBestEffort({
+                await addAiMessageOrPersistPending({
                   dir: resolvedDir,
                   threadId: thread.id,
                   content: recoveryPayload.reply!,
                   status: recoveryPayload.status ?? 'needs-reply',
                 });
+                await updateQueueLocked(dir, (queue) =>
+                  queue.filter(
+                    (entry) => !assignment.queueEntryIds.includes(entry.id)
+                  )
+                );
                 if (assignment.worktreePath && assignment.worktreeBranch) {
                   await cleanupWorktreeBestEffort({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -8261,12 +8278,18 @@ export async function processNextQueued(
                 assignment.workingDirectory =
                   recoveredResolution.resolvedWorkingDirectory;
               } else {
+                const errMsg = `[Manager] Worker の workingDirectory を確定できませんでした。\n${recoveredResolution.error}`;
                 await addAiMessageBestEffort({
                   dir: resolvedDir,
                   threadId: thread.id,
-                  content: `[Manager] Worker の workingDirectory を確定できませんでした。\n${recoveredResolution.error}`,
+                  content: errMsg,
                   status: 'needs-reply',
                 });
+                await setThreadRuntimeErrorMessage(
+                  resolvedDir,
+                  thread.id,
+                  errMsg
+                );
                 if (assignment.worktreePath && assignment.worktreeBranch) {
                   await cleanupWorktreeBestEffort({
                     targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -8278,12 +8301,18 @@ export async function processNextQueued(
                 continue;
               }
             } else {
+              const errMsg = `[Manager] Worker の workingDirectory を確定できませんでした。\n${workingDirectoryResolution.error}`;
               await addAiMessageBestEffort({
                 dir: resolvedDir,
                 threadId: thread.id,
-                content: `[Manager] Worker の workingDirectory を確定できませんでした。\n${workingDirectoryResolution.error}`,
+                content: errMsg,
                 status: 'needs-reply',
               });
+              await setThreadRuntimeErrorMessage(
+                resolvedDir,
+                thread.id,
+                errMsg
+              );
               if (assignment.worktreePath && assignment.worktreeBranch) {
                 await cleanupWorktreeBestEffort({
                   targetRepoRoot: assignment.targetRepoRoot ?? resolvedDir,
@@ -8355,16 +8384,23 @@ export async function processNextQueued(
               supersededByThreadId: null,
               clearWorkerLiveLog: true,
             });
+            const seedErrMsg = buildSeedRecoveryPendingMessage({
+              repoLabel,
+              changedFiles,
+              errorDetail: describeMwtError(wtErr),
+            });
             await addAiMessageBestEffort({
               dir: resolvedDir,
               threadId: thread.id,
-              content: buildSeedRecoveryPendingMessage({
-                repoLabel,
-                changedFiles,
-                errorDetail: describeMwtError(wtErr),
-              }),
+              content: seedErrMsg,
               status: 'needs-reply',
             });
+            // Persist as runtime error for operational blocker (seed recovery)
+            await setThreadRuntimeErrorMessage(
+              resolvedDir,
+              thread.id,
+              seedErrMsg
+            );
             continue;
           }
           const errorDetail = describeMwtError(wtErr);
