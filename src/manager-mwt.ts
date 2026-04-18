@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { readdir, rm } from 'node:fs/promises';
 import {
@@ -128,6 +129,19 @@ function waitMs(ms: number): Promise<void> {
 const MWT_CONFIG_PATH = '.mwt/config.toml';
 const MWT_MARKER_PATH = '.mwt-worktree.json';
 const AUTO_INIT_COMMIT_MESSAGE = 'chore: initialize managed-worktree-system';
+const SAFE_BOOTSTRAP_TRACKED_PATHS = new Set(['.gitignore']);
+const BOOTSTRAP_ONBOARDING_PATHS = [
+  '.gitignore',
+  '.tasks.jsonl',
+  'agent-ruleset.json',
+  'AGENTS.md',
+  'CLAUDE.md',
+  'agent-rules-local/high-quality-workflow.md',
+  '.opencode/commands/start-task.md',
+  '.opencode/commands/verify.md',
+  '.opencode/commands/fix-bug.md',
+  '.opencode/commands/deliver.md',
+] as const;
 
 function normalizeMwtOutput(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(ANSI_ESCAPE_PATTERN, '').trim();
@@ -376,21 +390,85 @@ async function rollbackManagerAutoInit(targetRepoRoot: string): Promise<void> {
   }).catch(() => {});
 }
 
-async function commitAutoInitializedRepositoryPolicy(
+function normalizeRepoRelativePath(pathValue: string): string {
+  return pathValue.replace(/\\/g, '/').trim();
+}
+
+async function hasOnlySafeBootstrapGitignoreDiff(
   targetRepoRoot: string
+): Promise<boolean> {
+  const diffResult = await execGit(targetRepoRoot, [
+    'diff',
+    '--',
+    '.gitignore',
+  ]);
+  if (diffResult.code !== 0) {
+    return false;
+  }
+
+  const relevantLines = diffResult.stdout
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        line &&
+        !line.startsWith('diff --git') &&
+        !line.startsWith('index ') &&
+        !line.startsWith('--- ') &&
+        !line.startsWith('+++ ') &&
+        !line.startsWith('@@')
+    );
+
+  return relevantLines.every((line) => {
+    if (line.startsWith('+')) {
+      return line.slice(1).trim() === '.threads.jsonl';
+    }
+    return !line.startsWith('-');
+  });
+}
+
+async function shouldForceBootstrapManagedAutoInit(input: {
+  targetRepoRoot: string;
+  changedFiles: string[];
+}): Promise<boolean> {
+  if (input.changedFiles.length === 0) {
+    return false;
+  }
+
+  const normalizedFiles = input.changedFiles.map(normalizeRepoRelativePath);
+  if (
+    !normalizedFiles.every((file) => SAFE_BOOTSTRAP_TRACKED_PATHS.has(file))
+  ) {
+    return false;
+  }
+
+  return hasOnlySafeBootstrapGitignoreDiff(input.targetRepoRoot);
+}
+
+async function commitAutoInitializedRepositoryPolicy(
+  targetRepoRoot: string,
+  additionalPaths: readonly string[] = []
 ): Promise<{
   commit: string;
   changedFiles: string[];
 }> {
+  const onboardingPaths = [
+    MWT_CONFIG_PATH,
+    ...additionalPaths.filter((relativePath) =>
+      existsSync(resolvePath(targetRepoRoot, relativePath))
+    ),
+  ];
   const addResult = await execGit(targetRepoRoot, [
     'add',
     '-f',
     '--',
-    MWT_CONFIG_PATH,
+    ...onboardingPaths,
   ]);
   if (addResult.code !== 0) {
     throw new Error(
-      summarizeGitFailure(`git add -f -- ${MWT_CONFIG_PATH}`, addResult)
+      summarizeGitFailure(
+        `git add -f -- ${onboardingPaths.join(' ')}`,
+        addResult
+      )
     );
   }
 
@@ -412,15 +490,19 @@ async function commitAutoInitializedRepositoryPolicy(
     .map((line) => line.trim());
   const uniqueChangedFiles = Array.from(new Set(stagedFiles));
 
-  if (
-    uniqueChangedFiles.length !== 1 ||
-    uniqueChangedFiles[0] !== MWT_CONFIG_PATH
-  ) {
+  const allowedChangedFiles = new Set(
+    onboardingPaths.map(normalizeRepoRelativePath)
+  );
+  const unexpectedChangedFiles = uniqueChangedFiles.filter(
+    (file) => !allowedChangedFiles.has(normalizeRepoRelativePath(file))
+  );
+
+  if (unexpectedChangedFiles.length > 0 || uniqueChangedFiles.length === 0) {
     const detail = uniqueChangedFiles.length
       ? uniqueChangedFiles.join(', ')
       : '(none)';
     throw new Error(
-      `Automatic mwt onboarding commit expected only ${MWT_CONFIG_PATH}, but found: ${detail}`
+      `Automatic mwt onboarding commit expected only bootstrap-managed files, but found: ${detail}`
     );
   }
 
@@ -516,6 +598,53 @@ export async function maybeAutoInitializeManagerRepository(input: {
       remote: remoteName,
     });
   } catch (error) {
+    if (
+      mwtErrorId(error) === 'init_requires_clean_repo' &&
+      (await shouldForceBootstrapManagedAutoInit({
+        targetRepoRoot,
+        changedFiles: listMwtChangedFiles(error),
+      }))
+    ) {
+      try {
+        await initializeRepository(targetRepoRoot, {
+          base: defaultBranch,
+          remote: remoteName,
+          force: true,
+        });
+
+        const onboarding = await commitAutoInitializedRepositoryPolicy(
+          targetRepoRoot,
+          BOOTSTRAP_ONBOARDING_PATHS
+        );
+        return {
+          initialized: true,
+          reasonId: null,
+          detail:
+            'high-quality bootstrap が加えた repo policy files を onboarding commit に含めつつ、managed-worktree-system を自動初期化しました ' +
+            `(base: ${defaultBranch}, remote: ${remoteName}, commit: ${onboarding.commit.slice(0, 8)})。`,
+          defaultBranch,
+          remoteName,
+          changedFiles: onboarding.changedFiles,
+          onboardingCommit: onboarding.commit,
+        };
+      } catch (forcedError) {
+        await rollbackManagerAutoInit(targetRepoRoot).catch(() => {});
+        return {
+          initialized: false,
+          reasonId: 'auto_init_commit_failed',
+          detail:
+            'managed-worktree-system の自動初期化後に bootstrap 管理ファイルを含む onboarding commit を作れませんでした。\n\n' +
+            (forcedError instanceof Error
+              ? forcedError.message
+              : String(forcedError)),
+          defaultBranch,
+          remoteName,
+          changedFiles: [MWT_CONFIG_PATH],
+          onboardingCommit: null,
+        };
+      }
+    }
+
     return {
       initialized: false,
       reasonId: mwtErrorId(error),

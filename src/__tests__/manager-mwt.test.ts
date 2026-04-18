@@ -265,6 +265,131 @@ describe('maybeAutoInitializeManagerRepository', () => {
       onboardingCommit: 'def6789012345',
     });
   });
+
+  it('force-initializes safely when bootstrap only dirtied .gitignore with .threads.jsonl and commits onboarding files together', async () => {
+    const repoRoot = await mkdtemp(
+      join(tmpdir(), 'wah-manager-mwt-bootstrap-')
+    );
+    await writeFile(
+      join(repoRoot, '.gitignore'),
+      'node_modules/\n.threads.jsonl\n'
+    );
+    await writeFile(join(repoRoot, '.tasks.jsonl'), '');
+    await writeFile(
+      join(repoRoot, 'agent-ruleset.json'),
+      '{"source":"github:metyatech/agent-rules"}\n'
+    );
+    await writeFile(join(repoRoot, 'AGENTS.md'), '# rules\n');
+    await writeFile(join(repoRoot, 'CLAUDE.md'), '# claude\n');
+    await mkdir(join(repoRoot, 'agent-rules-local'), { recursive: true });
+    await writeFile(
+      join(repoRoot, 'agent-rules-local', 'high-quality-workflow.md'),
+      '# workflow\n'
+    );
+    await mkdir(join(repoRoot, '.opencode', 'commands'), { recursive: true });
+    for (const fileName of ['start-task', 'verify', 'fix-bug', 'deliver']) {
+      await writeFile(
+        join(repoRoot, '.opencode', 'commands', `${fileName}.md`),
+        `# ${fileName}\n`
+      );
+    }
+
+    planInitializeRepositoryMock.mockRejectedValueOnce({
+      id: 'init_requires_clean_repo',
+      message:
+        'Repository must be clean before init unless --force is supplied.',
+      details: {
+        changedFiles: ['.gitignore'],
+      },
+    });
+    execGitMock
+      .mockResolvedValueOnce({
+        stdout: 'refs/remotes/origin/main',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'https://github.com/metyatech/example.git',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'node_modules/\n+.threads.jsonl\n',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout:
+          '.gitignore\n.tasks.jsonl\nagent-ruleset.json\nAGENTS.md\nCLAUDE.md\nagent-rules-local/high-quality-workflow.md\n.opencode/commands/start-task.md\n.opencode/commands/verify.md\n.opencode/commands/fix-bug.md\n.opencode/commands/deliver.md\n.mwt/config.toml',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: '[main fedcba98] chore: initialize managed-worktree-system',
+        stderr: '',
+        code: 0,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'fedcba9876543210',
+        stderr: '',
+        code: 0,
+      });
+
+    const result = await maybeAutoInitializeManagerRepository({
+      targetRepoRoot: repoRoot,
+    });
+
+    expect(initializeRepositoryMock).toHaveBeenCalledWith(repoRoot, {
+      base: 'main',
+      remote: 'origin',
+      force: true,
+    });
+    expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
+      'diff',
+      '--',
+      '.gitignore',
+    ]);
+    expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
+      'add',
+      '-f',
+      '--',
+      '.mwt/config.toml',
+      '.gitignore',
+      '.tasks.jsonl',
+      'agent-ruleset.json',
+      'AGENTS.md',
+      'CLAUDE.md',
+      'agent-rules-local/high-quality-workflow.md',
+      '.opencode/commands/start-task.md',
+      '.opencode/commands/verify.md',
+      '.opencode/commands/fix-bug.md',
+      '.opencode/commands/deliver.md',
+    ]);
+    expect(result).toMatchObject({
+      initialized: true,
+      reasonId: null,
+      onboardingCommit: 'fedcba9876543210',
+      changedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+        '.mwt/config.toml',
+      ],
+    });
+    expect(result.detail).toContain('high-quality bootstrap');
+  });
 });
 
 describe('manager mwt cleanup', () => {
