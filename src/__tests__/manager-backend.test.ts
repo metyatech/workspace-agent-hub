@@ -15,6 +15,7 @@ const {
   listThreadsMock,
   reopenThreadMock,
   resolveThreadMock,
+  ensureRepoBootstrapMock,
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileMock: vi.fn(),
@@ -25,6 +26,7 @@ const {
   listThreadsMock: vi.fn(),
   reopenThreadMock: vi.fn(),
   resolveThreadMock: vi.fn(),
+  ensureRepoBootstrapMock: vi.fn(),
 }));
 
 vi.mock('child_process', () => ({
@@ -170,6 +172,13 @@ vi.mock('../manager-mwt.js', () => ({
   repairManagerWorktreeResidue: vi.fn().mockResolvedValue(null),
   isMwtDeliverConflictError: vi.fn().mockReturnValue(false),
   isMwtDeliverRemoteAdvanceError: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock('../repo-bootstrap.js', () => ({
+  ensureRepoBootstrap: ensureRepoBootstrapMock,
+  runBootstrapCommand: vi.fn(),
+  resolveBootstrapScriptPath: vi.fn(),
+  resolvePowerShellCommand: vi.fn(),
 }));
 
 import {
@@ -423,6 +432,7 @@ beforeEach(async () => {
   listThreadsMock.mockReset();
   reopenThreadMock.mockReset();
   resolveThreadMock.mockReset();
+  ensureRepoBootstrapMock.mockReset();
   addMessageMock.mockResolvedValue(undefined);
   createThreadMock.mockResolvedValue(undefined);
   getThreadMock.mockImplementation(async (_dir: string, threadId: string) => ({
@@ -442,6 +452,15 @@ beforeEach(async () => {
   listThreadsMock.mockResolvedValue([]);
   reopenThreadMock.mockResolvedValue(undefined);
   resolveThreadMock.mockResolvedValue(undefined);
+  ensureRepoBootstrapMock.mockImplementation(
+    async (input: { repoRoot?: string | null }) => ({
+      ready: true,
+      attempted: false,
+      repoRoot: input.repoRoot ?? tempDir,
+      detail: 'already bootstrapped',
+      issues: [],
+    })
+  );
   execFileMock.mockImplementation(
     (
       command: string,
@@ -5396,6 +5415,65 @@ describe('manager backend codex integration', () => {
       'Recovery router crashed while planning next action'
     );
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
+  });
+
+  it('runs auto-bootstrap before creating a worker worktree', async () => {
+    const workerProc = makeProc(9101);
+    const reviewProc = makeProc(9102);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath: 'C:\\temp\\wah-bootstrap-gated',
+      branchName: 'mgr/assign_thread-bootstrap/preview000',
+      targetRepoRoot: tempDir,
+    });
+
+    await sendToBuiltinManager(tempDir, 'thread-bootstrap', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-bootstrap-worker',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-bootstrap',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    expect(ensureRepoBootstrapMock).toHaveBeenCalled();
+    expect(ensureRepoBootstrapMock.mock.calls[0]?.[0]).toMatchObject({
+      workspaceRoot: tempDir,
+      repoRoot: tempDir,
+    });
+    expect(ensureRepoBootstrapMock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(createManagerWorktree).mock.invocationCallOrder[0] ?? Infinity
+    );
+  });
+
+  it('blocks worker dispatch when auto-bootstrap fails', async () => {
+    ensureRepoBootstrapMock.mockResolvedValueOnce({
+      ready: false,
+      attempted: true,
+      repoRoot: tempDir,
+      detail: 'Bootstrap command failed.',
+      issues: ['bootstrap-command-failed'],
+    });
+    const workerProc = makeProc(9103);
+    spawnMock.mockReturnValueOnce(workerProc);
+
+    await sendToBuiltinManager(tempDir, 'thread-bootstrap-fail', 'message');
+
+    await waitForManagerIdle(tempDir);
+
+    expect(vi.mocked(createManagerWorktree)).not.toHaveBeenCalled();
+    expect(addMessageMock).toHaveBeenCalled();
+    const latestCall = addMessageMock.mock.calls.at(-1);
+    expect(latestCall?.[1]).toBe('thread-bootstrap-fail');
+    expect(latestCall?.[4]).toBe('needs-reply');
+    expect(String(latestCall?.[2] ?? '')).toContain('bootstrap');
   });
 
   it('skips integration merge and push when the approved worktree has no deliverable commits', async () => {

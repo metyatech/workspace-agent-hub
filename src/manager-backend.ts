@@ -113,6 +113,7 @@ import {
   resolveNewRepoRoot,
   validateNewRepoName,
 } from './manager-repos.js';
+import { ensureRepoBootstrap } from './repo-bootstrap.js';
 import {
   buildWorkerRuntimeLaunchSpec,
   describeWorkerRuntimeCliAvailability,
@@ -2572,6 +2573,84 @@ function buildRepoTargetClarificationReply(
     reason,
     writeScopes: [],
   };
+}
+
+async function blockForBootstrapFailure(input: {
+  dir: string;
+  resolvedDir: string;
+  threadId: string;
+  assignment: ManagerActiveAssignment;
+  queueEntryIds: string[];
+  message: string;
+}): Promise<void> {
+  await addAiMessageBestEffort({
+    dir: input.resolvedDir,
+    threadId: input.threadId,
+    content: input.message,
+    status: 'needs-reply',
+  });
+  await setThreadRuntimeErrorMessage(
+    input.resolvedDir,
+    input.threadId,
+    input.message
+  );
+  await updateQueueLocked(input.dir, (queue) =>
+    queue.filter((entry) => !input.queueEntryIds.includes(entry.id))
+  );
+  await clearWorkerLiveOutput(
+    input.resolvedDir,
+    input.threadId,
+    input.assignment.assigneeKind,
+    input.assignment.assigneeLabel,
+    {
+      workerAgentId: input.assignment.id,
+      runtimeState: null,
+      runtimeDetail: null,
+      workerWriteScopes: input.assignment.writeScopes,
+      workerBlockedByThreadIds: [],
+      supersededByThreadId: null,
+    }
+  );
+  await removeAssignment(input.dir, input.assignment.id);
+}
+
+async function failWorkerBootstrapGate(input: {
+  dir: string;
+  resolvedDir: string;
+  threadId: string;
+  assignment: ManagerActiveAssignment;
+  queueEntryIds: string[];
+  message: string;
+}): Promise<void> {
+  await addAiMessageBestEffort({
+    dir: input.resolvedDir,
+    threadId: input.threadId,
+    content: input.message,
+    status: 'needs-reply',
+  });
+  await setThreadRuntimeErrorMessage(
+    input.resolvedDir,
+    input.threadId,
+    input.message
+  );
+  await updateQueueLocked(input.dir, (queue) =>
+    queue.filter((entry) => !input.queueEntryIds.includes(entry.id))
+  );
+  await clearWorkerLiveOutput(
+    input.resolvedDir,
+    input.threadId,
+    input.assignment.assigneeKind,
+    input.assignment.assigneeLabel,
+    {
+      workerAgentId: input.assignment.id,
+      runtimeState: null,
+      runtimeDetail: null,
+      workerWriteScopes: input.assignment.writeScopes,
+      workerBlockedByThreadIds: [],
+      supersededByThreadId: null,
+    }
+  );
+  await removeAssignment(input.dir, input.assignment.id);
 }
 
 function inferRequestedRunModeFromContent(
@@ -8214,14 +8293,89 @@ export async function processNextQueued(
         try {
           assignment.targetRepoRoot = targetRepo;
           if (assignmentTargetKind === 'new-repo') {
-            await prepareNewRepoWorkspace({
+            const newRepoSlug = assignmentNewRepoName
+              ? `metyatech/${assignmentNewRepoName}`
+              : null;
+            const bootstrapResult = await ensureRepoBootstrap({
               workspaceRoot: resolvedDir,
-              targetRepoRoot: targetRepo,
+              repoRoot: targetRepo,
+              repository: newRepoSlug,
+              verifyCommand:
+                resolvedManagedRepo?.verifyCommand ??
+                threadMeta?.managedVerifyCommand ??
+                null,
+              createIfMissing: true,
             });
+            if (!bootstrapResult.ready) {
+              await failWorkerBootstrapGate({
+                dir,
+                resolvedDir,
+                threadId: thread.id,
+                assignment,
+                queueEntryIds: assignment.queueEntryIds,
+                message: `[Manager] 新しい repo の bootstrap を自動適用できませんでした。
+${bootstrapResult.detail}`,
+              });
+              void processNextQueued(dir, resolvedDir);
+              return;
+            }
+            if (bootstrapResult.attempted) {
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: `[Manager] 新しい repo へ高品質 bootstrap を自動適用しました。
+
+${bootstrapResult.detail}`,
+                status: 'active',
+              });
+            }
+            assignment.targetRepoRoot = bootstrapResult.repoRoot ?? targetRepo;
+            if (
+              !assignment.targetRepoRoot ||
+              findGitRoot(assignment.targetRepoRoot) !==
+                assignment.targetRepoRoot
+            ) {
+              await prepareNewRepoWorkspace({
+                workspaceRoot: resolvedDir,
+                targetRepoRoot: assignment.targetRepoRoot,
+              });
+            }
           } else {
+            const bootstrapResult = await ensureRepoBootstrap({
+              workspaceRoot: resolvedDir,
+              repoRoot: targetRepo,
+              verifyCommand:
+                resolvedManagedRepo?.verifyCommand ??
+                threadMeta?.managedVerifyCommand ??
+                null,
+            });
+            if (!bootstrapResult.ready) {
+              await failWorkerBootstrapGate({
+                dir,
+                resolvedDir,
+                threadId: thread.id,
+                assignment,
+                queueEntryIds: assignment.queueEntryIds,
+                message: `[Manager] この repo は bootstrap 未適用のため、そのまま実行できません。
+${bootstrapResult.detail}`,
+              });
+              void processNextQueued(dir, resolvedDir);
+              return;
+            }
+            if (bootstrapResult.attempted) {
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: `[Manager] 既存 repo へ高品質 bootstrap を自動適用しました。
+
+${bootstrapResult.detail}`,
+                status: 'active',
+              });
+            }
+            assignment.targetRepoRoot = bootstrapResult.repoRoot ?? targetRepo;
             const pausedWorktreeReuse = await evaluatePausedWorktreeReuse({
               threadMeta,
-              targetRepoRoot: targetRepo,
+              targetRepoRoot: assignment.targetRepoRoot,
             });
             if (pausedWorktreeReuse.reusable) {
               assignment.worktreePath = pausedWorktreeReuse.worktreePath;
@@ -8269,12 +8423,13 @@ export async function processNextQueued(
               void processNextQueued(dir, resolvedDir);
               return;
             } else {
-              const managedRepoReady =
-                await isManagedWorktreeRepository(targetRepo);
+              const managedRepoReady = await isManagedWorktreeRepository(
+                assignment.targetRepoRoot
+              );
               if (!managedRepoReady) {
                 const autoInitResult =
                   await maybeAutoInitializeManagerRepository({
-                    targetRepoRoot: targetRepo,
+                    targetRepoRoot: assignment.targetRepoRoot,
                     defaultBranch:
                       resolvedManagedRepo?.defaultBranch ??
                       threadMeta?.managedBaseBranch ??
@@ -8334,7 +8489,7 @@ export async function processNextQueued(
               }
 
               const wt = await createManagerWorktree({
-                targetRepoRoot: targetRepo,
+                targetRepoRoot: assignment.targetRepoRoot,
                 assignmentId: assignment.id,
               });
               assignment.worktreePath = wt.worktreePath;
