@@ -12,6 +12,17 @@ class MockStream extends EventEmitter {
 class MockChild extends EventEmitter {
   stdout = new MockStream();
   stderr = new MockStream();
+  stdin = {
+    written: '' as string,
+    ended: false,
+    write: (chunk: string) => {
+      this.stdin.written += chunk;
+      return true;
+    },
+    end: () => {
+      this.stdin.ended = true;
+    },
+  };
   killed = false;
 
   kill(): void {
@@ -36,6 +47,8 @@ describe('process worker adapter', () => {
     };
 
     const handle = await adapter.start(task);
+    expect(child.stdin.written).toBe('Inspect the current task');
+    expect(child.stdin.ended).toBe(true);
     child.stdout.emit(
       'data',
       Buffer.from(

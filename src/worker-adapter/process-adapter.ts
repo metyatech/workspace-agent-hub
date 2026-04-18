@@ -139,9 +139,13 @@ export class ProcessWorkerAdapter implements WorkerAdapter {
     });
     const child = this.spawnImpl(
       launch.command,
-      launch.prompt ? [...launch.args, launch.prompt] : launch.args,
+      launch.args,
       launch.spawnOptions
     ) as ChildProcessWithoutNullStreams;
+    if (launch.prompt !== null) {
+      child.stdin.write(launch.prompt);
+      child.stdin.end();
+    }
     const handle: WorkerHandle = {
       runtime: this.runtime,
       taskId: task.id,
