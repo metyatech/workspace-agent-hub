@@ -2250,6 +2250,95 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls.at(-1)?.[2]).toContain('review done');
   }, 30000);
 
+  it('continues into safe mwt auto-init after bootstrap newly applies repo-local flow files', async () => {
+    const dispatchProc = makeProc(6123);
+    const workerProc = makeProc(6124);
+    const reviewProc = makeProc(6125);
+    spawnMock
+      .mockReturnValueOnce(dispatchProc)
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc);
+    ensureRepoBootstrapMock.mockResolvedValueOnce({
+      ready: true,
+      attempted: true,
+      repoRoot: tempDir,
+      detail: 'created .tasks.jsonl\nadded .threads.jsonl to .gitignore',
+      issues: [],
+    });
+    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
+    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
+      initialized: true,
+      reasonId: null,
+      detail:
+        'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
+      defaultBranch: 'main',
+      remoteName: 'origin',
+      changedFiles: ['.mwt/config.toml'],
+      onboardingCommit: 'auto-init-after-bootstrap',
+    });
+    await writeManagerThreadMeta(tempDir, {
+      'thread-bootstrap-then-auto-init': {
+        managedBaseBranch: 'main',
+      },
+    });
+
+    await sendToBuiltinManager(
+      tempDir,
+      'thread-bootstrap-then-auto-init',
+      'これを直してください',
+      {
+        dispatchMode: 'manager-evaluate',
+      }
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(dispatchProc, {
+      sessionId: 'dispatch-bootstrap-then-auto-init',
+      text: JSON.stringify({
+        assignee: 'worker',
+        writeScopes: ['src/manager-backend.ts'],
+      }),
+    });
+
+    await waitFor(
+      () =>
+        vi.mocked(maybeAutoInitializeManagerRepository).mock.calls.length === 1
+    );
+    await waitFor(
+      () => vi.mocked(createManagerWorktree).mock.calls.length === 1
+    );
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-bootstrap-then-auto-init',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-bootstrap-then-auto-init',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-bootstrap-then-auto-init' &&
+          typeof call[2] === 'string' &&
+          call[2].includes('既存 repo へ高品質 bootstrap を自動適用しました')
+      )
+    ).toBe(true);
+    expect(
+      addMessageMock.mock.calls.some(
+        (call) =>
+          call[1] === 'thread-bootstrap-then-auto-init' &&
+          typeof call[2] === 'string' &&
+          call[2].includes(
+            'managed-worktree-system (`mwt`) 未初期化だったため、安全に自動初期化してから続行します'
+          )
+      )
+    ).toBe(true);
+  });
+
   it('surfaces a needs-reply when auto mwt init is skipped because the repo is not clean', async () => {
     const dispatchProc = makeProc(6120);
     spawnMock.mockReturnValueOnce(dispatchProc);
