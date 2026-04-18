@@ -360,6 +360,7 @@ export interface ManagerActiveAssignment {
 
 export type ManagerHealth = 'ok' | 'error' | 'paused';
 const MANAGER_RECONCILE_GRACE_MS = 15 * 1000;
+const MANAGER_PID_REUSE_TOLERANCE_MS = 5 * 1000;
 const MAX_PARALLEL_WORKER_AGENTS = 3;
 const MAX_PARALLEL_MANAGER_ASSIGNMENTS = 1;
 const UNIVERSAL_WRITE_SCOPE = '*';
@@ -1373,7 +1374,14 @@ async function reconcileActiveAssignments(
 
     survivingAssignments = [];
     for (const assignment of dedupedAssignments.values()) {
-      if (!inspectAssignmentReservation(assignment).active) {
+      const reservation = inspectAssignmentReservation(assignment);
+      if (!reservation.active) {
+        droppedAssignments.push(assignment);
+        continue;
+      }
+      if (
+        !(await assignmentPidMatchesRecordedWorker(assignment, reservation))
+      ) {
         droppedAssignments.push(assignment);
         continue;
       }
@@ -1554,6 +1562,61 @@ export function isPidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+async function readProcessCreationTimeMs(pid: number): Promise<number | null> {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+
+  const runExecFile = (
+    command: string,
+    args: string[]
+  ): Promise<{ stdout: string; stderr: string; code: number }> =>
+    new Promise((resolvePromise) => {
+      execFileCb(
+        command,
+        args,
+        { windowsHide: true },
+        (error, stdout, stderr) => {
+          const code = error ? 1 : 0;
+          resolvePromise({ stdout, stderr, code });
+        }
+      );
+    });
+
+  if (process.platform === 'win32') {
+    const result = await runExecFile('powershell', [
+      '-NoProfile',
+      '-Command',
+      `$p = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\"; if ($null -eq $p) { '' } else { $p.CreationDate }`,
+    ]).catch(() => null);
+    if (!result || result.code !== 0) {
+      return null;
+    }
+    const creationDate = result.stdout.trim();
+    if (!creationDate) {
+      return null;
+    }
+    const parsed = Date.parse(creationDate);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  const result = await runExecFile('ps', [
+    '-o',
+    'lstart=',
+    '-p',
+    String(pid),
+  ]).catch(() => null);
+  if (!result || result.code !== 0) {
+    return null;
+  }
+  const creationDate = result.stdout.trim();
+  if (!creationDate) {
+    return null;
+  }
+  const parsed = Date.parse(creationDate);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 /** Returns the codex command used for spawning. */
@@ -5788,6 +5851,7 @@ function parseMessageTimestamp(
 function inspectAssignmentReservation(assignment: ManagerActiveAssignment): {
   latestObservedAt: number;
   active: boolean;
+  withinGraceWindow: boolean;
 } {
   const latestObservedAt =
     parseMessageTimestamp(assignment.lastProgressAt) ??
@@ -5803,7 +5867,27 @@ function inspectAssignmentReservation(assignment: ManagerActiveAssignment): {
   return {
     latestObservedAt,
     active,
+    withinGraceWindow,
   };
+}
+
+async function assignmentPidMatchesRecordedWorker(
+  assignment: ManagerActiveAssignment,
+  reservation: { latestObservedAt: number; withinGraceWindow: boolean }
+): Promise<boolean> {
+  if (assignment.pid === null || reservation.withinGraceWindow) {
+    return true;
+  }
+
+  const processCreationTimeMs = await readProcessCreationTimeMs(assignment.pid);
+  if (processCreationTimeMs === null) {
+    return true;
+  }
+
+  return (
+    processCreationTimeMs <=
+    reservation.latestObservedAt + MANAGER_PID_REUSE_TOLERANCE_MS
+  );
 }
 
 function choosePreferredAssignment(

@@ -6611,6 +6611,126 @@ describe('manager backend codex integration', () => {
       canonicalStateReason: null,
     });
   });
+
+  it('drops an assignment when the PID now belongs to a newer unrelated process', async () => {
+    markProcessNextQueuedInFlightForTests(tempDir);
+    const pausedWorktreePath = join(tempDir, 'reused-pid-assignment-worktree');
+    await mkdir(pausedWorktreePath, { recursive: true });
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-reused-pid-assignment',
+        title: 'PID 再利用で止まった依頼',
+        status: 'waiting',
+        createdAt: '2026-04-14T00:00:00.000Z',
+        updatedAt: '2026-04-14T00:00:10.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '前回の続きから再開してください',
+            at: '2026-04-14T00:00:10.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    await writeManagerThreadMeta(tempDir, {
+      'thread-reused-pid-assignment': {
+        managedRepoId: 'workspace-agent-hub',
+        managedRepoRoot: tempDir,
+        requestedRunMode: 'write',
+      },
+    });
+    const session = await readSession(tempDir);
+    await writeSession(tempDir, {
+      ...session,
+      status: 'busy',
+      currentQueueId: 'q_reused_pid_assignment',
+      lastMessageAt: '2026-04-14T00:00:12.000Z',
+      lastProgressAt: '2026-04-14T00:00:12.000Z',
+      activeAssignments: [
+        {
+          id: 'assign-reused-pid-assignment',
+          threadId: 'thread-reused-pid-assignment',
+          queueEntryIds: ['q_reused_pid_assignment'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: pausedWorktreePath,
+          workerRuntime: 'claude',
+          workerModel: 'claude-opus-4-6',
+          workerEffort: null,
+          assigneeLabel: 'Worker Claude claude-opus-4-6',
+          writeScopes: ['src/manager-backend.ts'],
+          pid: process.pid,
+          startedAt: '2026-04-14T00:00:11.000Z',
+          lastProgressAt: '2026-04-14T00:00:12.000Z',
+          worktreePath: pausedWorktreePath,
+          worktreeBranch: 'mgr/assign-reused-pid-assignment/preview000',
+          targetRepoRoot: tempDir,
+          pendingOnboardingCommit: null,
+        },
+      ],
+    });
+    execFileMock.mockImplementation((command, args, options, callback) => {
+      if (command === 'powershell') {
+        callback?.(null, '2026-04-18T09:24:14.887401+09:00', '');
+        return { on: vi.fn() } as never;
+      }
+      callback?.(null, '', '');
+      return { on: vi.fn() } as never;
+    });
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const latestSession = await readSession(tempDir);
+      const meta = await readManagerThreadMeta(tempDir);
+      return (
+        latestSession.activeAssignments.length === 0 &&
+        queue.filter(
+          (entry) =>
+            !entry.processed &&
+            entry.threadId === 'thread-reused-pid-assignment'
+        ).length === 1 &&
+        meta['thread-reused-pid-assignment']?.pausedWorktreePath ===
+          pausedWorktreePath
+      );
+    });
+
+    const queue = await readQueue(tempDir);
+    const latestSession = await readSession(tempDir);
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(latestSession.activeAssignments).toHaveLength(0);
+    expect(
+      queue.filter(
+        (entry) =>
+          !entry.processed && entry.threadId === 'thread-reused-pid-assignment'
+      )
+    ).toHaveLength(1);
+    expect(meta['thread-reused-pid-assignment']).toMatchObject({
+      pausedAssignmentId: 'assign-reused-pid-assignment',
+      pausedWorktreePath,
+      pausedWorktreeBranch: 'mgr/assign-reused-pid-assignment/preview000',
+      pausedTargetRepoRoot: tempDir,
+      strandedAutoResumeCount: 1,
+      canonicalState: 'queued',
+      canonicalStateReason: null,
+    });
+  });
 });
 
 describe('eagerReconcile restart resilience', () => {
