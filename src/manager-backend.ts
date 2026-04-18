@@ -123,6 +123,7 @@ import {
   workerRuntimeAssigneeLabel,
 } from './manager-worker-runtime.js';
 import { selectRankedWorkerModel } from './manager-worker-model-selection.js';
+import { writeRuns, deriveRunsForWorkspace } from './runs.js';
 import {
   isWindowsBatchCommand,
   wrapWindowsBatchCommandForSpawn,
@@ -2573,6 +2574,78 @@ function buildRepoTargetClarificationReply(
     reason,
     writeScopes: [],
   };
+}
+
+function approvalGateReason(
+  threadMeta: ManagerThreadMeta | null
+): string | null {
+  if (!threadMeta) {
+    return null;
+  }
+  if (threadMeta.routingConfirmationNeeded) {
+    return threadMeta.routingHint ?? 'Routing confirmation is still required.';
+  }
+  if (threadMeta.seedRecoveryPending) {
+    return threadMeta.canonicalStateReason ?? 'Seed recovery is still pending.';
+  }
+  if (
+    threadMeta.canonicalState === 'user-reply-needed' ||
+    threadMeta.canonicalState === 'ai-finished-awaiting-user-confirmation'
+  ) {
+    return (
+      threadMeta.canonicalStateReason ??
+      'A human approval or reply is still required before execution can continue.'
+    );
+  }
+  return null;
+}
+
+function repoLaneBlockingThreadIds(input: {
+  session: ManagerSession;
+  meta: Record<string, ManagerThreadMeta>;
+  targetRepoRoot: string | null;
+  currentThreadId: string;
+}): string[] {
+  if (!input.targetRepoRoot) {
+    return [];
+  }
+  const normalized = resolvePath(input.targetRepoRoot);
+  const blockers = new Set<string>();
+  for (const assignment of input.session.activeAssignments) {
+    if (
+      assignment.assigneeKind === 'worker' &&
+      assignment.threadId !== input.currentThreadId &&
+      assignment.targetRepoRoot &&
+      resolvePath(assignment.targetRepoRoot) === normalized
+    ) {
+      blockers.add(assignment.threadId);
+    }
+  }
+  const dispatchingThreadId = input.session.dispatchingThreadId;
+  if (dispatchingThreadId && dispatchingThreadId !== input.currentThreadId) {
+    const dispatchingRepoRoot =
+      input.meta[dispatchingThreadId]?.managedRepoRoot ?? null;
+    if (
+      dispatchingRepoRoot &&
+      resolvePath(dispatchingRepoRoot) === normalized
+    ) {
+      blockers.add(dispatchingThreadId);
+    }
+  }
+  return [...blockers];
+}
+
+async function persistRunsSnapshot(dir: string): Promise<void> {
+  const resolvedDir = resolvePath(dir);
+  const [session, queue] = await Promise.all([
+    readSession(resolvedDir),
+    readQueue(resolvedDir),
+  ]);
+  const snapshot = await deriveRunsForWorkspace(resolvedDir, {
+    session,
+    queue,
+  });
+  await writeRuns(resolvedDir, snapshot);
 }
 
 async function blockForBootstrapFailure(input: {
@@ -8057,6 +8130,63 @@ export async function processNextQueued(
       ) {
         continue;
       }
+      const approvalReason =
+        dispatch.assignee === 'worker' ? approvalGateReason(threadMeta) : null;
+      if (dispatch.assignee === 'worker' && approvalReason) {
+        await setWorkerRuntimeState({
+          dir: resolvedDir,
+          threadId: next.threadId,
+          assigneeKind: 'worker',
+          assigneeLabel: defaultAssigneeLabel(
+            'worker',
+            explicitRequestedWorkerRuntime ??
+              resolvedManagedRepo?.preferredWorkerRuntime ??
+              resolvedManagedRepo?.supportedWorkerRuntimes[0] ??
+              'codex'
+          ),
+          workerAgentId: null,
+          runtimeState: 'blocked-by-scope',
+          runtimeDetail: approvalReason,
+          workerWriteScopes: assignmentWriteScopes,
+          workerBlockedByThreadIds: [],
+          supersededByThreadId: null,
+          clearWorkerLiveLog: true,
+        });
+        await persistRunsSnapshot(resolvedDir);
+        continue;
+      }
+      const mergeLaneBlockers =
+        dispatch.assignee === 'worker'
+          ? repoLaneBlockingThreadIds({
+              session,
+              meta,
+              targetRepoRoot: assignmentTargetRepoRoot,
+              currentThreadId: next.threadId,
+            })
+          : [];
+      if (dispatch.assignee === 'worker' && mergeLaneBlockers.length > 0) {
+        await setWorkerRuntimeState({
+          dir: resolvedDir,
+          threadId: next.threadId,
+          assigneeKind: 'worker',
+          assigneeLabel: defaultAssigneeLabel(
+            'worker',
+            explicitRequestedWorkerRuntime ??
+              resolvedManagedRepo?.preferredWorkerRuntime ??
+              resolvedManagedRepo?.supportedWorkerRuntimes[0] ??
+              'codex'
+          ),
+          workerAgentId: null,
+          runtimeState: 'blocked-by-scope',
+          runtimeDetail: `Merge lane is occupied by ${mergeLaneBlockers.join(', ')}.`,
+          workerWriteScopes: assignmentWriteScopes,
+          workerBlockedByThreadIds: mergeLaneBlockers,
+          supersededByThreadId: null,
+          clearWorkerLiveLog: true,
+        });
+        await persistRunsSnapshot(resolvedDir);
+        continue;
+      }
       const blockingAssignments =
         dispatch.assignee === 'worker'
           ? session.activeAssignments.filter(
@@ -8095,6 +8225,7 @@ export async function processNextQueued(
           supersededByThreadId: null,
           clearWorkerLiveLog: true,
         });
+        await persistRunsSnapshot(resolvedDir);
         continue;
       }
 
@@ -8114,6 +8245,7 @@ export async function processNextQueued(
           assigneeKind: dispatch.assignee,
         }),
       });
+      await persistRunsSnapshot(resolvedDir);
 
       const automaticWorkerRuntimes = runtimeConstraintCandidates({
         supportedRuntimes: resolvedManagedRepo?.supportedWorkerRuntimes,

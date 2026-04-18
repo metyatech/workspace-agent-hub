@@ -224,6 +224,7 @@ import {
 } from '../manager-message.js';
 import {
   readManagerThreadMeta,
+  updateManagerThreadMeta,
   writeManagerThreadMeta,
 } from '../manager-thread-state.js';
 import {
@@ -6991,6 +6992,107 @@ describe('eagerReconcile restart resilience', () => {
     expect(spawnMock).not.toHaveBeenCalled();
     const session = await readSession(tempDir);
     expect(session.lastPauseMessage).toBe('Codex quota exhausted');
+  });
+
+  it('processNextQueued blocks worker dispatch while a human reply is still required', async () => {
+    await updateManagerThreadMeta(tempDir, 'thread-human-gated', () => ({
+      canonicalState: 'user-reply-needed',
+      canonicalStateReason: 'Need human confirmation before continuing.',
+      requestedWorkerRuntime: 'opencode',
+      requestedRunMode: 'write',
+      managedRepoRoot: tempDir,
+    }));
+    await writeQueue(tempDir, [
+      {
+        id: 'q_human_gate_1',
+        threadId: 'thread-human-gated',
+        content: 'queued work',
+        attachments: [],
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: ['.'],
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: 'opencode',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    await processNextQueued(tempDir, tempDir);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-human-gated']).toMatchObject({
+      workerRuntimeState: 'blocked-by-scope',
+      workerRuntimeDetail: 'Need human confirmation before continuing.',
+    });
+    const queue = await readQueue(tempDir);
+    expect(queue.filter((entry) => !entry.processed)).toHaveLength(1);
+  });
+
+  it('processNextQueued blocks worker dispatch when the merge lane is occupied by the same repo', async () => {
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      activeAssignments: [
+        {
+          id: 'assign-active-same-repo',
+          threadId: 'thread-active',
+          queueEntryIds: ['q_active'],
+          assigneeKind: 'worker',
+          targetKind: 'existing-repo',
+          newRepoName: null,
+          workingDirectory: null,
+          workerRuntime: 'opencode',
+          workerModel: null,
+          workerEffort: null,
+          assigneeLabel: 'Worker OpenCode',
+          writeScopes: ['src/index.ts'],
+          pid: 1234,
+          startedAt: new Date().toISOString(),
+          lastProgressAt: null,
+          worktreePath: join(tempDir, 'active-worktree'),
+          worktreeBranch: 'mgr/active',
+          targetRepoRoot: tempDir,
+          pendingOnboardingCommit: null,
+        },
+      ],
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_lane_gate_1',
+        threadId: 'thread-lane-gated',
+        content: 'queued work',
+        attachments: [],
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: ['.'],
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: 'opencode',
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    await processNextQueued(tempDir, tempDir);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const meta = await readManagerThreadMeta(tempDir);
+    expect(meta['thread-lane-gated']).toMatchObject({
+      workerRuntimeState: 'blocked-by-scope',
+      workerBlockedByThreadIds: ['thread-active'],
+    });
+    const queue = await readQueue(tempDir);
+    expect(queue.filter((entry) => !entry.processed)).toHaveLength(1);
   });
 
   it('kickIdleQueuedManagerWork still advances pending queue when only a stale lastErrorMessage remains', async () => {
