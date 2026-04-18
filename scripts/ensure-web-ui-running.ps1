@@ -1017,12 +1017,50 @@ function Test-UrlReachable {
         [string]$Url
     )
 
+    if (
+        $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE -and
+        $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE.Trim()
+    ) {
+        if ($null -eq $script:TestUrlReachableSequenceIndex) {
+            $script:TestUrlReachableSequenceIndex = 0
+        }
+        $sequence = @(
+            $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE.Split(',') |
+                ForEach-Object { [string]$_ } |
+                Where-Object { $_.Trim() }
+        )
+        if ($sequence.Count -gt 0) {
+            $safeIndex = [Math]::Min($script:TestUrlReachableSequenceIndex, $sequence.Count - 1)
+            $script:TestUrlReachableSequenceIndex += 1
+            $token = $sequence[$safeIndex].Trim().ToLowerInvariant()
+            return ($token -in @('1', 'true', 'yes', 'ok', 'reachable', 'success'))
+        }
+    }
+
     try {
         $response = Invoke-WebRequest -Uri $Url -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
     } catch {
         return $false
     }
+}
+
+function Wait-ForUrlReachable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+        [int]$TimeoutMilliseconds = 3000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (Test-UrlReachable -Url $Url) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $false
 }
 
 function Ensure-TailscaleServeTarget {
@@ -1053,7 +1091,7 @@ function Ensure-TailscaleServeTarget {
     } else {
         try {
             & tailscale serve --bg --yes "http://127.0.0.1:$FrontDoorPort" | Out-Null
-            $serveHealthy = Test-UrlReachable -Url $secureConnectUrl
+            $serveHealthy = Wait-ForUrlReachable -Url $secureConnectUrl
         } catch {
             $serveHealthy = $false
         }

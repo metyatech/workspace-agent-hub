@@ -276,6 +276,7 @@ $testPassed = $false
 $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT
 $originalPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
 $originalCliPath = $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH
+$originalUrlReachableSequence = $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE
 $competingInstance = $null
 
 $mockCliContent = @'
@@ -509,6 +510,23 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         throw 'Expected ensure-web-ui-running.ps1 to keep the Tailscale Serve smartphone path when the saved proxy target still matches the listener port.'
     }
 
+    $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE = 'false,false,true'
+    $serveRetryRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'serve-retry' -TargetDirectory $testDirectory
+    $serveRetry = Wait-ForLaunchMetadata -ProcessInfo $serveRetryRun
+    Wait-ForProcessSuccess -ProcessInfo $serveRetryRun
+    $serveRetryPort = ([Uri][string]$serveRetry.ListenUrl).Port
+    Wait-ForApiReady -PortNumber $serveRetryPort -Token ''
+    if ([string]$serveRetry.PreferredConnectUrlSource -ne 'tailscale-serve') {
+        throw 'Expected ensure-web-ui-running.ps1 to keep retrying briefly before downgrading a warming Tailscale Serve endpoint to tailscale-direct.'
+    }
+    if ([string]$serveRetry.PreferredConnectUrl -ne 'https://desktop-dr5v76c.tail5a2d2d.ts.net') {
+        throw 'Expected ensure-web-ui-running.ps1 to persist the HTTPS Tailscale Serve URL after a transient initial reachability miss.'
+    }
+    if ([string]$serveRetry.OneTapPairingLink -ne 'https://desktop-dr5v76c.tail5a2d2d.ts.net') {
+        throw 'Expected ensure-web-ui-running.ps1 to keep the HTTPS one-tap pairing link after a transient initial reachability miss.'
+    }
+    Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE -ErrorAction SilentlyContinue
+
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:57921
@@ -600,6 +618,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH -ErrorAction SilentlyContinue
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH = $originalCliPath
+    }
+    if ($null -eq $originalUrlReachableSequence) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE = $originalUrlReachableSequence
     }
     if (Test-Path -Path $testDirectory) {
         Start-Sleep -Milliseconds 200
