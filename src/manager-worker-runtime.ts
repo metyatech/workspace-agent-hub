@@ -409,7 +409,6 @@ function buildOpenCodeCommandSpec(input: {
   for (const imagePath of input.imagePaths) {
     args.push('--file', imagePath);
   }
-  args.push(input.prompt);
   const launchSpec = buildLaunchSpec(
     command,
     args,
@@ -422,7 +421,7 @@ function buildOpenCodeCommandSpec(input: {
     runtime: 'opencode',
     command: launchSpec.command,
     args: launchSpec.args,
-    prompt: null,
+    prompt: input.prompt,
     sessionId: input.sessionId,
     displayLabel: workerRuntimeAssigneeLabel('opencode', input.env, {
       model: model || null,

@@ -89,13 +89,14 @@ describe('manager-worker-runtime', () => {
     });
 
     expect(spec.command).toBe('cmd.exe');
-    expect(spec.prompt).toBeNull();
+    expect(spec.prompt).toBe('Apply the requested fix');
     expect(spec.sessionId).toBe('opencode-session-1');
     expect(spec.args.join(' ')).toContain('"C:\\tools\\opencode.cmd" "run"');
     expect(spec.args.join(' ')).toContain('"--format" "json"');
     expect(spec.args.join(' ')).toContain('"--agent" "Sisyphus"');
     expect(spec.args.join(' ')).toContain('"--dangerously-skip-permissions"');
     expect(spec.args.join(' ')).toContain('"--session" "opencode-session-1"');
+    expect(spec.args.join(' ')).not.toContain('Apply the requested fix');
     expect(workerRuntimeAssigneeLabel('opencode')).toBe('Worker OpenCode');
   });
 
