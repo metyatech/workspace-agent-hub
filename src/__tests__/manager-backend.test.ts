@@ -182,6 +182,7 @@ vi.mock('../repo-bootstrap.js', () => ({
 }));
 
 import {
+  buildRoutingPrompt,
   buildCodexSpawnOptions,
   buildCodexSpawnSpec,
   buildCodexArgs,
@@ -209,6 +210,7 @@ import {
   resetStaleSeedRecoveryMonitorsForTests,
   reviewStaleSeedRecoveryForTests,
   resolveCodexCommand,
+  routingTopicRef,
   sendGlobalToBuiltinManager,
   sendThreadFollowUpToBuiltinManager,
   startBuiltinManager,
@@ -977,6 +979,66 @@ describe('manager backend codex integration', () => {
     });
   });
 
+  it('keeps routing topic refs stable even when recent-topic order changes', () => {
+    const threadA = {
+      id: 'thread-a',
+      title: 'Task A',
+      status: 'active' as const,
+      createdAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T00:00:00.000Z',
+      messages: [
+        {
+          sender: 'user' as const,
+          content: 'Task A context',
+          at: '2026-04-18T00:00:00.000Z',
+        },
+      ],
+    };
+    const threadB = {
+      id: 'thread-b',
+      title: 'Task B',
+      status: 'active' as const,
+      createdAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T01:00:00.000Z',
+      messages: [
+        {
+          sender: 'user' as const,
+          content: 'Task B context',
+          at: '2026-04-18T01:00:00.000Z',
+        },
+      ],
+    };
+
+    const firstPrompt = buildRoutingPrompt({
+      content: 'follow up',
+      resolvedDir: tempDir,
+      threads: [threadA, threadB],
+      isFirstTurn: true,
+    });
+    const secondPrompt = buildRoutingPrompt({
+      content: 'follow up',
+      resolvedDir: tempDir,
+      threads: [threadB, threadA],
+      isFirstTurn: false,
+    });
+
+    const threadATopicRef = routingTopicRef('thread-a');
+    const threadBTopicRef = routingTopicRef('thread-b');
+
+    expect(threadATopicRef).not.toBe(threadBTopicRef);
+    expect(firstPrompt.threadIdByTopicRef.get(threadATopicRef)).toBe(
+      'thread-a'
+    );
+    expect(secondPrompt.threadIdByTopicRef.get(threadATopicRef)).toBe(
+      'thread-a'
+    );
+    expect(firstPrompt.prompt).toContain(`- topicRef: ${threadATopicRef}`);
+    expect(secondPrompt.prompt).toContain(`- topicRef: ${threadATopicRef}`);
+    expect(firstPrompt.prompt).toContain(
+      'topicRef values are stable per topic and are not positional labels'
+    );
+  });
+
   it('keeps verbatim follow-up text on existing topics but prefers standalone stored text for new topics', () => {
     expect(
       pickThreadUserMessage(
@@ -1282,6 +1344,7 @@ describe('manager backend codex integration', () => {
   });
 
   it('passes the open topic as a mention-style routing hint instead of forcing the destination', async () => {
+    const targetTopicRef = routingTopicRef('thread-target');
     const routingProc = makeProc(8611);
     const dispatchProc = makeProc(8612);
     const workerProc = makeProc(8613);
@@ -1347,7 +1410,7 @@ describe('manager backend codex integration', () => {
       )
     );
     expect(routingProc.stdin.write).toHaveBeenCalledWith(
-      expect.stringContaining('- topicRef: topic-1')
+      expect.stringContaining(`- topicRef: ${targetTopicRef}`)
     );
     expect(routingProc.stdin.write).not.toHaveBeenCalledWith(
       expect.stringContaining('thread-target')
@@ -1406,6 +1469,7 @@ describe('manager backend codex integration', () => {
   });
 
   it('keeps ordinary follow-ups on the same topic, preserves worker continuity, and reopens resolved topics', async () => {
+    const paymentTopicRef = routingTopicRef('_bX_UpQR');
     const routingProc = makeProc(8621);
     const dispatchProc = makeProc(8622);
     const workerProc = makeProc(8623);
@@ -1495,7 +1559,7 @@ describe('manager backend codex integration', () => {
         actions: [
           {
             kind: 'attach-existing',
-            topicRef: 'topic-1',
+            topicRef: paymentTopicRef,
             content: '昨日の支払いUIの件、続きどうなってる？',
             reason: '同じ支払いUIの修正 topic の続きです',
           },
@@ -1769,6 +1833,7 @@ describe('manager backend codex integration', () => {
   });
 
   it('treats an explicit no-change follow-up as read-only even when the existing topic was previously write-oriented', async () => {
+    const readonlyTopicRef = routingTopicRef('thread-readonly-followup');
     const routingProc = makeProc(9201);
     const dispatchProc = makeProc(9202);
     const workerProc = makeProc(9203);
@@ -1831,7 +1896,7 @@ describe('manager backend codex integration', () => {
         actions: [
           {
             kind: 'attach-existing',
-            topicRef: 'topic-1',
+            topicRef: readonlyTopicRef,
             content: followUp,
             reason: 'README 調査 topic の read-only な続きです',
           },
@@ -1884,6 +1949,7 @@ describe('manager backend codex integration', () => {
   });
 
   it('keeps direct replies to needs-reply topics in the same topic instead of splitting them', async () => {
+    const needsReplyTopicRef = routingTopicRef('thread-needs-reply');
     const routingProc = makeProc(8623);
     const dispatchProc = makeProc(8624);
     const workerProc = makeProc(8625);
@@ -1939,7 +2005,7 @@ describe('manager backend codex integration', () => {
         actions: [
           {
             kind: 'attach-existing',
-            topicRef: 'topic-1',
+            topicRef: needsReplyTopicRef,
             content: '補足するとAです',
             reason: 'この確認への直接回答です',
           },

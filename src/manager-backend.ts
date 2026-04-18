@@ -236,7 +236,7 @@ const MANAGER_ROUTING_JSON_RULES =
   'Do not attach to an existing topic just because it is broadly similar or was discussed recently; attach only when the current message clearly reads as a continuation of that exact topic. ' +
   'For every action, include originalText as the exact copied user wording for just that part whenever possible; do not paraphrase originalText. ' +
   'For "routing-confirmation", include title, content, question, and reason. ' +
-  'Use topicRef exactly as shown in Recent topics, and never mention topicRef, threadId, or any other internal ID in user-facing titles, reasons, questions, or stored content. ' +
+  'Use topicRef exactly as shown in Recent topics. topicRef values are stable per topic and are not positional labels, so never guess them from ordering or memory alone. Never mention topicRef, threadId, or any other internal ID in user-facing titles, reasons, questions, or stored content. ' +
   'content is the user message text that will be stored in that target topic. For "create-new" and "routing-confirmation", content must stand on its own inside that topic: keep it as close to the original wording as possible, but add the smallest missing context needed so the topic still makes sense when read alone. If the original wording already stands alone, make content match originalText. ' +
   'Split confident intents immediately and leave only the ambiguous parts for confirmation. ' +
   'Do not wrap JSON in markdown fences.';
@@ -2928,7 +2928,11 @@ function isImmediateManagerDispatchReply(
   );
 }
 
-function buildRoutingPrompt(input: {
+export function routingTopicRef(threadId: string): string {
+  return `topic-${createHash('sha256').update(threadId).digest('hex').slice(0, 12)}`;
+}
+
+export function buildRoutingPrompt(input: {
   content: string;
   resolvedDir: string;
   threads: Thread[];
@@ -2940,7 +2944,7 @@ function buildRoutingPrompt(input: {
 } {
   const topicRefs = input.threads.map((thread, index) => ({
     thread,
-    topicRef: `topic-${index + 1}`,
+    topicRef: routingTopicRef(thread.id),
   }));
   const threadIdByTopicRef = new Map(
     topicRefs.map((entry) => [entry.topicRef, entry.thread.id])
