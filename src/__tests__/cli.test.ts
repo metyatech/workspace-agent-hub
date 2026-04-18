@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   buildEnsureWebUiRunningArgs,
+  createProgram,
   createDetachedSpawnOptions,
   createStreamingSpawnOptions,
   waitForWebUiReadyFromState,
@@ -101,5 +102,79 @@ describe('cli restart helpers', () => {
         });
       });
     }
+  });
+
+  it('registers the audit command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const auditCommand = program.commands.find(
+      (command) => command.name() === 'audit'
+    );
+
+    expect(auditCommand?.description()).toContain('Audit one repository');
+  });
+
+  it('supports workspace-wide audit from the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const auditCommand = program.commands.find(
+      (command) => command.name() === 'audit'
+    );
+
+    expect(
+      auditCommand?.options.some((option) => option.long === '--workspace')
+    ).toBe(true);
+  });
+
+  it('registers the runs command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const runsCommand = program.commands.find(
+      (command) => command.name() === 'runs'
+    );
+
+    expect(runsCommand?.description()).toContain('execution-layer runs');
+  });
+
+  it('registers the worker-runtimes command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const runtimesCommand = program.commands.find(
+      (command) => command.name() === 'worker-runtimes'
+    );
+
+    expect(runtimesCommand?.description()).toContain('runtime availability');
+  });
+
+  it('registers the approval-queue command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const command = program.commands.find(
+      (entry) => entry.name() === 'approval-queue'
+    );
+
+    expect(command?.description()).toContain('require human input');
+  });
+
+  it('registers the merge-lanes command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const command = program.commands.find(
+      (entry) => entry.name() === 'merge-lanes'
+    );
+
+    expect(command?.description()).toContain('merge-lane state');
+  });
+
+  it('registers the workspace-health command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const command = program.commands.find(
+      (entry) => entry.name() === 'workspace-health'
+    );
+
+    expect(command?.description()).toContain('workspace-level contract');
+  });
+
+  it('registers the bootstrap-repo command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const command = program.commands.find(
+      (entry) => entry.name() === 'bootstrap-repo'
+    );
+
+    expect(command?.description()).toContain('high-quality workflow');
   });
 });

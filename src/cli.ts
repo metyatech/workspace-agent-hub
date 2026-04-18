@@ -5,9 +5,12 @@ import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
 import { readManagerWorkItems } from './manager-work-items.js';
+import { readQueue, readSession } from './manager-backend.js';
+import { deriveApprovalQueue } from './approval-queue.js';
 import { startWebUi } from './web-ui.js';
 import { startWebUiFrontDoor } from './web-ui-front-door.js';
 import {
@@ -16,8 +19,19 @@ import {
   restoreBuild,
   snapshotBuild,
 } from './build-archive.js';
+import {
+  auditRepositoryContract,
+  auditWorkspaceContracts,
+  formatRepoContractAudit,
+} from './repo-auditor.js';
+import { deriveMergeLanes } from './merge-lanes.js';
+import { readManagedRepos } from './manager-repos.js';
+import { deriveRunsForWorkspace } from './runs.js';
+import { listWorkerRuntimeAvailability } from './worker-adapter/availability.js';
+import { deriveWorkspaceHealth } from './workspace-health.js';
 
 type StartWebUiCommand = typeof startWebUi;
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // State file helpers
@@ -173,6 +187,22 @@ async function runStreamingCommand(
     });
     child.on('error', reject);
   });
+}
+
+function resolveBootstrapScriptPath(workspaceRoot: string): string {
+  const configured = process.env.WORKSPACE_AGENT_HUB_BOOTSTRAP_SCRIPT?.trim();
+  if (configured) {
+    return configured;
+  }
+  return join(resolve(workspaceRoot), 'scripts', 'bootstrap-user-repo.ps1');
+}
+
+function resolvePowerShellCommand(): string {
+  const configured = process.env.WORKSPACE_AGENT_HUB_PWSH_PATH?.trim();
+  if (configured) {
+    return configured;
+  }
+  return 'pwsh';
 }
 
 async function forceStopFromState(state: WebUiState | null): Promise<void> {
@@ -368,6 +398,70 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
     .version(packageJson.version);
 
   program
+    .command('audit')
+    .description('Audit one repository against the workspace repo contract')
+    .argument('[repo-root]', 'Repository root path to audit')
+    .option('--json', 'Print machine-readable JSON output')
+    .option('--no-mwt', 'Do not require .mwt/config.toml')
+    .option('--read-only', 'Do not require write-capable workspace status')
+    .option(
+      '--workspace <path>',
+      'Audit every repository directly under a workspace root'
+    )
+    .action(
+      async (
+        repoRoot: string | undefined,
+        options: {
+          json?: boolean;
+          mwt?: boolean;
+          readOnly?: boolean;
+          workspace?: string;
+        }
+      ) => {
+        if (options.workspace) {
+          const results = await auditWorkspaceContracts(
+            resolve(options.workspace),
+            {
+              requireMwt: options.mwt !== false,
+              requireWriteAccess: options.readOnly !== true,
+            }
+          );
+          if (options.json) {
+            console.log(JSON.stringify(results, null, 2));
+          } else {
+            for (const result of results) {
+              console.log(formatRepoContractAudit(result.audit));
+            }
+          }
+          if (results.some((result) => !result.audit.valid)) {
+            process.exitCode = 1;
+          }
+          return;
+        }
+
+        if (!repoRoot) {
+          throw new Error('Specify either <repo-root> or --workspace <path>.');
+        }
+        const result = await auditRepositoryContract(resolve(repoRoot), {
+          requireMwt: options.mwt !== false,
+          requireWriteAccess: options.readOnly !== true,
+        });
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          if (!result.valid) {
+            process.exitCode = 1;
+          }
+          return;
+        }
+
+        console.log(formatRepoContractAudit(result));
+        if (!result.valid) {
+          process.exitCode = 1;
+        }
+      }
+    );
+
+  program
     .command('work-items')
     .description('Inspect the Manager work-item graph for a workspace')
     .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
@@ -398,6 +492,196 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
         }
       }
     });
+
+  program
+    .command('runs')
+    .description('Inspect execution-layer runs for a workspace')
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print runs as JSON')
+    .action(async (options: { workspace: string; json?: boolean }) => {
+      const workspaceRoot = resolve(options.workspace);
+      const [session, queue] = await Promise.all([
+        readSession(workspaceRoot),
+        readQueue(workspaceRoot),
+      ]);
+      const snapshot = await deriveRunsForWorkspace(workspaceRoot, {
+        session,
+        queue,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(snapshot, null, 2));
+        return;
+      }
+
+      for (const run of snapshot.runs) {
+        console.log(
+          `[${run.state}] ${run.id} :: ${run.runtime} :: ${run.repoRoot}`
+        );
+      }
+    });
+
+  program
+    .command('worker-runtimes')
+    .description('Inspect worker runtime availability for the current machine')
+    .option('--json', 'Print runtime availability as JSON')
+    .action(async (options: { json?: boolean }) => {
+      const availability = listWorkerRuntimeAvailability();
+      if (options.json) {
+        console.log(JSON.stringify(availability, null, 2));
+        return;
+      }
+
+      for (const runtime of availability) {
+        console.log(
+          `[${runtime.available ? 'OK' : 'MISSING'}] ${runtime.runtime} :: ${runtime.detail}`
+        );
+      }
+    });
+
+  program
+    .command('approval-queue')
+    .description('Inspect work items that currently require human input')
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print approval queue items as JSON')
+    .action(async (options: { workspace: string; json?: boolean }) => {
+      const workItems = await readManagerWorkItems(resolve(options.workspace));
+      const queue = deriveApprovalQueue(workItems);
+      if (options.json) {
+        console.log(JSON.stringify(queue, null, 2));
+        return;
+      }
+
+      for (const item of queue) {
+        console.log(
+          `[${item.kind}] ${item.threadId} :: ${item.title} :: ${item.reason}`
+        );
+      }
+    });
+
+  program
+    .command('merge-lanes')
+    .description('Inspect merge-lane state by managed repository')
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print merge-lane records as JSON')
+    .action(async (options: { workspace: string; json?: boolean }) => {
+      const workspaceRoot = resolve(options.workspace);
+      const [repos, workItems] = await Promise.all([
+        readManagedRepos(workspaceRoot),
+        readManagerWorkItems(workspaceRoot),
+      ]);
+      const lanes = deriveMergeLanes({ repos, workItems });
+      if (options.json) {
+        console.log(JSON.stringify(lanes, null, 2));
+        return;
+      }
+
+      for (const lane of lanes) {
+        console.log(
+          `[${lane.state}] ${lane.repoRoot} :: queue=${lane.queueDepth} :: active=${lane.activeRunId ?? 'none'}`
+        );
+      }
+    });
+
+  program
+    .command('workspace-health')
+    .description('Inspect workspace-level contract, runtime, and queue health')
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print workspace health as JSON')
+    .action(async (options: { workspace: string; json?: boolean }) => {
+      const snapshot = await deriveWorkspaceHealth(resolve(options.workspace));
+      if (options.json) {
+        console.log(JSON.stringify(snapshot, null, 2));
+        return;
+      }
+
+      console.log(`workspace: ${snapshot.workspaceRoot}`);
+      console.log(`in-scope repos: ${snapshot.inScopeRepoCount}`);
+      console.log(`invalid repos: ${snapshot.invalidRepoCount}`);
+      console.log(`approval queue: ${snapshot.approvalQueueCount}`);
+      console.log(`runs: ${snapshot.runCount}`);
+      console.log(`merge lanes: ${snapshot.mergeLaneCount}`);
+      console.log(`unavailable runtimes: ${snapshot.unavailableRuntimeCount}`);
+    });
+
+  program
+    .command('bootstrap-repo')
+    .description(
+      'Apply the standardized high-quality workflow to a user-controlled repository'
+    )
+    .option(
+      '--workspace-root <path>',
+      'Canonical ghws workspace root',
+      process.cwd()
+    )
+    .option('--repo-root <path>', 'Existing repository root to bootstrap')
+    .option(
+      '--repository <slug>',
+      'Repository slug to clone/bootstrap, for example metyatech/some-repo'
+    )
+    .option(
+      '--verify-command <command>',
+      'Explicit canonical verify command override'
+    )
+    .option(
+      '--create-if-missing',
+      'Create a new user-controlled repository under the workspace if it does not exist yet'
+    )
+    .option(
+      '--private',
+      'Create a private repository when used with --create-if-missing'
+    )
+    .option('--force', 'Overwrite bootstrap-managed template files')
+    .action(
+      async (options: {
+        workspaceRoot: string;
+        repoRoot?: string;
+        repository?: string;
+        verifyCommand?: string;
+        createIfMissing?: boolean;
+        private?: boolean;
+        force?: boolean;
+      }) => {
+        const scriptPath = resolveBootstrapScriptPath(options.workspaceRoot);
+        const args = [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          scriptPath,
+          '-WorkspaceRoot',
+          resolve(options.workspaceRoot),
+        ];
+        if (options.repoRoot) {
+          args.push('-RepoRoot', resolve(options.repoRoot));
+        }
+        if (options.repository) {
+          args.push('-Repository', options.repository);
+        }
+        if (options.verifyCommand) {
+          args.push('-VerifyCommand', options.verifyCommand);
+        }
+        if (options.createIfMissing) {
+          args.push('-CreateIfMissing');
+        }
+        if (options.private) {
+          args.push('-Private');
+        }
+        if (options.force) {
+          args.push('-Force');
+        }
+
+        const command = resolvePowerShellCommand();
+        const { stdout, stderr } = await execFileAsync(command, args, {
+          windowsHide: true,
+        });
+        if (stdout.trim()) {
+          console.log(stdout.trim());
+        }
+        if (stderr.trim()) {
+          console.error(stderr.trim());
+        }
+      }
+    );
 
   program
     .command('web-ui')
