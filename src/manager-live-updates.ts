@@ -15,6 +15,7 @@ const WATCHED_FILENAMES = new Set([
   '.workspace-agent-hub-manager.json',
   '.workspace-agent-hub-manager-queue.jsonl',
   '.workspace-agent-hub-manager-thread-meta.json',
+  '.workspace-agent-hub-runs.json',
 ]);
 
 const channels = new Map<string, WorkspaceUpdateChannel>();
