@@ -7700,14 +7700,11 @@ export async function processNextQueued(
       }
 
       const threadMeta = meta[next.threadId] ?? null;
-      if (shouldHoldQueuedThreadForUserRecovery(thread, threadMeta)) {
-        continue;
-      }
-      if (isThreadInBackoff(threadMeta)) {
-        continue;
-      }
-
-      if (hasSupersedingAiReply(thread, nextEntries)) {
+      const hasStaleAiSupersedingReply = hasSupersedingAiReply(
+        thread,
+        nextEntries
+      );
+      if (hasStaleAiSupersedingReply && !threadMeta?.seedRecoveryPending) {
         await updateQueueLocked(dir, (currentQueue) =>
           currentQueue.filter((entry) => !batchIds.includes(entry.id))
         );
@@ -7718,6 +7715,12 @@ export async function processNextQueued(
           workerBlockedByThreadIds: [],
           supersededByThreadId: null,
         });
+        continue;
+      }
+      if (shouldHoldQueuedThreadForUserRecovery(thread, threadMeta)) {
+        continue;
+      }
+      if (isThreadInBackoff(threadMeta)) {
         continue;
       }
 

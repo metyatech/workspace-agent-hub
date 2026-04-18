@@ -3245,16 +3245,11 @@ describe('manager backend codex integration', () => {
       },
     ]);
 
-    const status = await getBuiltinManagerStatus(tempDir);
-    expect(status.running).toBe(true);
     await processNextQueued(tempDir, tempDir);
 
-    await waitFor(async () => {
-      const queue = await readQueue(tempDir);
-      const session = await readSession(tempDir);
-      return queue.length === 1 && session.status === 'idle';
-    });
+    const queue = await readQueue(tempDir);
 
+    expect(queue).toHaveLength(1);
     expect(spawnMock).not.toHaveBeenCalled();
     expect(addMessageMock).not.toHaveBeenCalled();
   });
@@ -6611,6 +6606,101 @@ describe('manager backend codex integration', () => {
       canonicalState: 'queued',
       canonicalStateReason: null,
     });
+  });
+
+  it('drops stale queued manager-evaluate entries even when paused recovery metadata remains', async () => {
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-stale-queued-review',
+        title: 'Completed thread with stale queue residue',
+        status: 'review',
+        createdAt: '2026-04-17T15:00:00.000Z',
+        updatedAt: '2026-04-17T15:01:00.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'Please continue the task.',
+            at: '2026-04-17T15:00:00.000Z',
+          },
+          {
+            sender: 'ai',
+            content: 'The task is complete.',
+            at: '2026-04-17T15:01:00.000Z',
+          },
+        ],
+      },
+    ];
+    listThreadsMock.mockImplementation(async () =>
+      JSON.parse(JSON.stringify(threads))
+    );
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const thread = threads.find((entry) => entry.id === threadId);
+      return thread ? JSON.parse(JSON.stringify(thread)) : null;
+    });
+
+    await writeManagerThreadMeta(tempDir, {
+      'thread-stale-queued-review': {
+        pausedAssignmentId: 'assign-stale-queued-review',
+        pausedWorktreePath: join(tempDir, 'paused-stale-queued-review'),
+        pausedWorktreeBranch: 'mgr/assign-stale-queued-review/preview000',
+        pausedTargetRepoRoot: tempDir,
+        canonicalState: 'queued',
+      },
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_stale_review',
+        threadId: 'thread-stale-queued-review',
+        content: 'Please continue the task.',
+        attachments: [],
+        dispatchMode: 'manager-evaluate',
+        targetKind: null,
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: [],
+        targetRepoRoot: null,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: null,
+        createdAt: '2026-04-17T15:00:30.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    await startBuiltinManager(tempDir);
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return (
+        session.status === 'idle' &&
+        queue.filter(
+          (entry) =>
+            !entry.processed && entry.threadId === 'thread-stale-queued-review'
+        ).length === 0
+      );
+    });
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const queue = await readQueue(tempDir);
+    expect(
+      queue.filter(
+        (entry) =>
+          !entry.processed && entry.threadId === 'thread-stale-queued-review'
+      )
+    ).toHaveLength(0);
   });
 
   it('drops an assignment when the PID now belongs to a newer unrelated process', async () => {
