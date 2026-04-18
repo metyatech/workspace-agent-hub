@@ -9309,7 +9309,6 @@ export async function kickIdleQueuedManagerWork(
     session.dispatchingThreadId ||
     (session.dispatchingQueueEntryIds?.length ?? 0) > 0 ||
     session.lastPauseMessage ||
-    session.lastErrorMessage ||
     pendingQueueEntries(queue, session).length === 0
   ) {
     return false;

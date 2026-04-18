@@ -192,6 +192,7 @@ import {
   parseCodexOutput,
   pickThreadUserMessage,
   preserveSeedRecoveryAndContinue,
+  kickIdleQueuedManagerWork,
   processNextQueued,
   readQueue,
   readSession,
@@ -6912,5 +6913,83 @@ describe('eagerReconcile restart resilience', () => {
     expect(spawnMock).not.toHaveBeenCalled();
     const session = await readSession(tempDir);
     expect(session.lastPauseMessage).toBe('Codex quota exhausted');
+  });
+
+  it('kickIdleQueuedManagerWork still advances pending queue when only a stale lastErrorMessage remains', async () => {
+    const workerProc = makeProc(7401);
+    const reviewProc = makeProc(7402);
+    queueSpawnResults(workerProc, reviewProc);
+
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      status: 'idle',
+      currentQueueId: null,
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: [],
+      activeAssignments: [],
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
+      lastErrorMessage: 'stale worker error',
+      lastErrorAt: new Date().toISOString(),
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'q_idle_error_1',
+        threadId: 'thread-idle-error',
+        content: 'queued work',
+        attachments: [],
+        dispatchMode: 'direct-worker',
+        targetKind: 'existing-repo',
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: ['.'],
+        targetRepoRoot: tempDir,
+        requestedRunMode: 'write',
+        requestedWorkerRuntime: null,
+        createdAt: new Date().toISOString(),
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-idle-error',
+        title: 'Queued idle error thread',
+        status: 'waiting',
+        createdAt: '2026-04-18T00:00:00.000Z',
+        updatedAt: '2026-04-18T00:00:00.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'queued work',
+            at: '2026-04-18T00:00:00.000Z',
+          },
+        ],
+      },
+    ]);
+
+    await expect(kickIdleQueuedManagerWork(tempDir, 'test')).resolves.toBe(
+      true
+    );
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'worker-idle-error',
+      text: '{"status":"review","reply":"worker done"}',
+    });
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'review-idle-error',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitForManagerIdle(tempDir);
+
+    const session = await readSession(tempDir);
+    const queue = await readQueue(tempDir);
+    expect(session.currentQueueId).toBeNull();
+    expect(queue.filter((entry) => !entry.processed)).toHaveLength(0);
   });
 });

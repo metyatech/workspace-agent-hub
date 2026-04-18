@@ -1100,6 +1100,150 @@ describe('native manager page', () => {
     ]);
   });
 
+  it('kicks idle queued manager work from status polling even when only a stale lastErrorMessage remains', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    await managerBackend.writeSession(workspaceRoot, {
+      workspaceKey: 'workspace-key',
+      status: 'idle',
+      sessionId: null,
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-18T00:00:00.000Z',
+      lastMessageAt: '2026-04-18T00:00:00.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage: 'stale worker error',
+      lastErrorAt: '2026-04-18T00:00:01.000Z',
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
+      activeAssignments: [],
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: [],
+      dispatchingAssigneeKind: null,
+      dispatchingAssigneeLabel: null,
+      dispatchingDetail: null,
+      dispatchingStartedAt: null,
+    });
+    await managerBackend.writeQueue(workspaceRoot, [
+      {
+        id: 'q_pending',
+        threadId: 'thread-pending',
+        content: 'resume pending task',
+        attachments: [],
+        dispatchMode: 'manager-evaluate',
+        targetKind: null,
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: [],
+        targetRepoRoot: null,
+        requestedRunMode: null,
+        requestedWorkerRuntime: null,
+        createdAt: '2026-04-18T00:00:02.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    const kickSpy = vi
+      .spyOn(managerBackend, 'kickIdleQueuedManagerWork')
+      .mockResolvedValue(true);
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' } }
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      health: 'error',
+      pendingCount: 1,
+      errorMessage: 'stale worker error',
+    });
+    expect(kickSpy).toHaveBeenCalledWith(workspaceRoot, 'direct-status');
+  });
+
+  it('does not kick idle queued manager work while the manager is paused', async () => {
+    const workspaceRoot = await createTempWorkspace();
+    await managerBackend.writeSession(workspaceRoot, {
+      workspaceKey: 'workspace-key',
+      status: 'idle',
+      sessionId: null,
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-18T00:00:00.000Z',
+      lastMessageAt: '2026-04-18T00:00:00.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage: null,
+      lastErrorAt: null,
+      lastPauseMessage: 'Codex usage limit',
+      lastPauseAt: '2026-04-18T00:00:01.000Z',
+      lastPauseAutoResumeAt: null,
+      activeAssignments: [],
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: [],
+      dispatchingAssigneeKind: null,
+      dispatchingAssigneeLabel: null,
+      dispatchingDetail: null,
+      dispatchingStartedAt: null,
+    });
+    await managerBackend.writeQueue(workspaceRoot, [
+      {
+        id: 'q_pending',
+        threadId: 'thread-pending',
+        content: 'resume pending task',
+        attachments: [],
+        dispatchMode: 'manager-evaluate',
+        targetKind: null,
+        repoId: null,
+        newRepoName: null,
+        workingDirectory: null,
+        writeScopes: [],
+        targetRepoRoot: null,
+        requestedRunMode: null,
+        requestedWorkerRuntime: null,
+        createdAt: '2026-04-18T00:00:02.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    const kickSpy = vi
+      .spyOn(managerBackend, 'kickIdleQueuedManagerWork')
+      .mockResolvedValue(true);
+
+    const { server, port } = await createWebUiServer({
+      bridge: new FakeBridge(workspaceRoot),
+      host: '127.0.0.1',
+      port: 0,
+      authToken: 'secret-token',
+      openBrowser: false,
+    });
+    activeServer = server;
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/manager/api/manager/status`,
+      { headers: { 'X-Workspace-Agent-Hub-Token': 'secret-token' } }
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      health: 'paused',
+      pendingCount: 1,
+      errorMessage: 'Codex usage limit',
+    });
+    expect(kickSpy).not.toHaveBeenCalled();
+  });
+
   it('creates and lists threads through the native manager API', async () => {
     const workspaceRoot = await createTempWorkspace();
     const { server, port } = await createWebUiServer({

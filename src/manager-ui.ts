@@ -387,10 +387,10 @@ function kickIdleQueueIfNeeded(
   reason: string
 ): void {
   if (
-    status.health !== 'ok' ||
     status.pendingCount <= 0 ||
     status.currentQueueId !== null ||
-    status.currentThreadId !== null
+    status.currentThreadId !== null ||
+    status.health === 'paused'
   ) {
     return;
   }
