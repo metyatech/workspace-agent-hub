@@ -5,7 +5,6 @@ import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile, spawn as nodeSpawn } from 'node:child_process';
-import { promisify } from 'node:util';
 import { Command } from 'commander';
 import packageJson from '../package.json' with { type: 'json' };
 import { readManagerWorkItems } from './manager-work-items.js';
@@ -24,6 +23,7 @@ import {
   auditWorkspaceContracts,
   formatRepoContractAudit,
 } from './repo-auditor.js';
+import { runBootstrapCommand } from './repo-bootstrap.js';
 import { deriveMergeLanes } from './merge-lanes.js';
 import { readManagedRepos } from './manager-repos.js';
 import { deriveRunsForWorkspace } from './runs.js';
@@ -31,7 +31,6 @@ import { listWorkerRuntimeAvailability } from './worker-adapter/availability.js'
 import { deriveWorkspaceHealth } from './workspace-health.js';
 
 type StartWebUiCommand = typeof startWebUi;
-const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // State file helpers
@@ -187,22 +186,6 @@ async function runStreamingCommand(
     });
     child.on('error', reject);
   });
-}
-
-function resolveBootstrapScriptPath(workspaceRoot: string): string {
-  const configured = process.env.WORKSPACE_AGENT_HUB_BOOTSTRAP_SCRIPT?.trim();
-  if (configured) {
-    return configured;
-  }
-  return join(resolve(workspaceRoot), 'scripts', 'bootstrap-user-repo.ps1');
-}
-
-function resolvePowerShellCommand(): string {
-  const configured = process.env.WORKSPACE_AGENT_HUB_PWSH_PATH?.trim();
-  if (configured) {
-    return configured;
-  }
-  return 'pwsh';
 }
 
 async function forceStopFromState(state: WebUiState | null): Promise<void> {
@@ -641,38 +624,14 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
         private?: boolean;
         force?: boolean;
       }) => {
-        const scriptPath = resolveBootstrapScriptPath(options.workspaceRoot);
-        const args = [
-          '-NoProfile',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-File',
-          scriptPath,
-          '-WorkspaceRoot',
-          resolve(options.workspaceRoot),
-        ];
-        if (options.repoRoot) {
-          args.push('-RepoRoot', resolve(options.repoRoot));
-        }
-        if (options.repository) {
-          args.push('-Repository', options.repository);
-        }
-        if (options.verifyCommand) {
-          args.push('-VerifyCommand', options.verifyCommand);
-        }
-        if (options.createIfMissing) {
-          args.push('-CreateIfMissing');
-        }
-        if (options.private) {
-          args.push('-Private');
-        }
-        if (options.force) {
-          args.push('-Force');
-        }
-
-        const command = resolvePowerShellCommand();
-        const { stdout, stderr } = await execFileAsync(command, args, {
-          windowsHide: true,
+        const { stdout, stderr } = await runBootstrapCommand({
+          workspaceRoot: options.workspaceRoot,
+          repoRoot: options.repoRoot,
+          repository: options.repository,
+          verifyCommand: options.verifyCommand,
+          createIfMissing: options.createIfMissing,
+          privateRepo: options.private,
+          force: options.force,
         });
         if (stdout.trim()) {
           console.log(stdout.trim());
