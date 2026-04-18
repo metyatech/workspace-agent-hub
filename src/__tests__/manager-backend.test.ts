@@ -2583,6 +2583,7 @@ describe('manager backend codex integration', () => {
     expect(pausedStatus.detail).toBe('Manager Codex の利用上限で停止中です');
 
     await startBuiltinManager(tempDir);
+
     await waitFor(() => spawnMock.mock.calls.length === 2);
     completeCodexTurn(dispatchRetryProc, {
       sessionId: 'codex-dispatch-session',

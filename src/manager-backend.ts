@@ -1589,7 +1589,7 @@ async function readProcessCreationTimeMs(pid: number): Promise<number | null> {
     const result = await runExecFile('powershell', [
       '-NoProfile',
       '-Command',
-      `$p = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\"; if ($null -eq $p) { '' } else { $p.CreationDate }`,
+      `$p = Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\"; if ($null -eq $p) { '' } else { ([DateTimeOffset]$p.CreationDate).ToString('o') }`,
     ]).catch(() => null);
     if (!result || result.code !== 0) {
       return null;
