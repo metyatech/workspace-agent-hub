@@ -352,6 +352,40 @@ async function ensureAgentRuleset(targetRepoRoot: string): Promise<string[]> {
   return actions;
 }
 
+async function ensureDataHygieneFiles(
+  targetRepoRoot: string
+): Promise<string[]> {
+  const actions: string[] = [];
+  const tasksPath = join(targetRepoRoot, '.tasks.jsonl');
+  if (!existsSync(tasksPath)) {
+    await writeUtf8(tasksPath, '');
+    actions.push('created .tasks.jsonl');
+  }
+
+  const gitignorePath = join(targetRepoRoot, '.gitignore');
+  if (!existsSync(gitignorePath)) {
+    await writeUtf8(gitignorePath, '.threads.jsonl\n');
+    actions.push('created .gitignore with .threads.jsonl');
+    return actions;
+  }
+
+  const currentGitignore = await readFile(gitignorePath, 'utf-8');
+  const hasThreadsEntry = currentGitignore
+    .split(/\r?\n/)
+    .some((line) => line.trim() === '.threads.jsonl');
+  if (!hasThreadsEntry) {
+    const nextGitignore = currentGitignore.length
+      ? currentGitignore.endsWith('\n')
+        ? `${currentGitignore}.threads.jsonl\n`
+        : `${currentGitignore}\n.threads.jsonl\n`
+      : '.threads.jsonl\n';
+    await writeUtf8(gitignorePath, nextGitignore);
+    actions.push('added .threads.jsonl to .gitignore');
+  }
+
+  return actions;
+}
+
 async function writeBootstrapFiles(input: {
   targetRepoRoot: string;
   verifyCommand: string;
@@ -470,6 +504,7 @@ export async function runBootstrapCommand(
   }
 
   actions.push(...(await ensureAgentRuleset(repoRoot)));
+  actions.push(...(await ensureDataHygieneFiles(repoRoot)));
   if (!verifyCommand) {
     throw new Error(
       'No canonical verification command found for this repository. Provide --verify-command or add a bootstrap profile entry first.'
