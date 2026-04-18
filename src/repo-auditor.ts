@@ -9,6 +9,7 @@ import {
   type RepoContractSnapshot,
   type RepoContractValidationOptions,
 } from './contracts/repo-contract.js';
+import { inferVerifyCommand } from './verify-inference.js';
 
 const execFile = promisify(execFileCb);
 
@@ -38,26 +39,7 @@ async function tryExecGit(
 }
 
 async function resolveVerifyCommand(repoRoot: string): Promise<string | null> {
-  if (existsSync(join(repoRoot, 'scripts', 'verify.ps1'))) {
-    return 'pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1';
-  }
-  if (existsSync(join(repoRoot, 'scripts', 'verify.sh'))) {
-    return 'bash scripts/verify.sh';
-  }
-  const packageJsonPath = join(repoRoot, 'package.json');
-  if (!existsSync(packageJsonPath)) {
-    return null;
-  }
-  const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf-8')) as {
-    packageManager?: string;
-    scripts?: Record<string, string>;
-  };
-  if (!packageJson.scripts?.verify) {
-    return null;
-  }
-  return packageJson.packageManager?.startsWith('bun@')
-    ? 'bun run verify'
-    : 'npm run verify';
+  return (await inferVerifyCommand(repoRoot))?.command ?? null;
 }
 
 async function isTasksTracked(repoRoot: string): Promise<boolean> {

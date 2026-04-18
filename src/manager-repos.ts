@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { basename, join, relative, resolve as resolvePath } from 'node:path';
 import { execGit, findGitRoot } from './manager-worktree.js';
+import { inferVerifyCommand } from './verify-inference.js';
 
 export type ManagerWorkerRuntime =
   | 'opencode'
@@ -36,75 +37,12 @@ function normalizeRepoId(raw: string): string {
   return normalized || 'repo';
 }
 
-function resolveVerifyRunner(
-  parsedPackageJson: Record<string, unknown>
-): 'npm' | 'pnpm' | 'yarn' | 'bun' {
-  const packageManager =
-    typeof parsedPackageJson.packageManager === 'string'
-      ? parsedPackageJson.packageManager.trim().toLowerCase()
-      : '';
-  if (packageManager.startsWith('pnpm@')) {
-    return 'pnpm';
-  }
-  if (packageManager.startsWith('yarn@')) {
-    return 'yarn';
-  }
-  if (packageManager.startsWith('bun@')) {
-    return 'bun';
-  }
-  return 'npm';
-}
-
-function formatScriptCommand(
-  runner: 'npm' | 'pnpm' | 'yarn' | 'bun',
-  scriptName: 'verify' | 'test'
-): string {
-  if (runner === 'yarn') {
-    return `yarn ${scriptName}`;
-  }
-  if (runner === 'bun') {
-    return `bun run ${scriptName}`;
-  }
-  return `${runner} run ${scriptName}`;
-}
-
 async function detectVerifyCommand(repoRoot: string): Promise<string> {
-  const packageJsonPath = join(repoRoot, 'package.json');
-  if (existsSync(packageJsonPath)) {
-    try {
-      const parsed = JSON.parse(
-        await readFile(packageJsonPath, 'utf-8')
-      ) as Record<string, unknown>;
-      const scripts =
-        parsed.scripts && typeof parsed.scripts === 'object'
-          ? (parsed.scripts as Record<string, unknown>)
-          : null;
-      const runner = resolveVerifyRunner(parsed);
-      if (
-        scripts &&
-        typeof scripts.verify === 'string' &&
-        scripts.verify.trim()
-      ) {
-        return formatScriptCommand(runner, 'verify');
-      }
-      if (scripts && typeof scripts.test === 'string' && scripts.test.trim()) {
-        return formatScriptCommand(runner, 'test');
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-
-  if (
-    existsSync(join(repoRoot, 'pyproject.toml')) ||
-    existsSync(join(repoRoot, 'pytest.ini'))
-  ) {
-    return 'pytest';
-  }
-  if (existsSync(join(repoRoot, 'Cargo.toml'))) {
-    return 'cargo test';
-  }
-  return 'Inspect repo scripts/docs to choose the correct verification command.';
+  const inferred = await inferVerifyCommand(repoRoot);
+  return (
+    inferred?.command ??
+    'Inspect repo scripts/docs to choose the correct verification command.'
+  );
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string> {

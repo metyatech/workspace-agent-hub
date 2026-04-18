@@ -145,7 +145,7 @@ export function validateRepoContract(
         'missing-verify-command',
         null,
         'A canonical repository verify command is required.',
-        false
+        true
       )
     );
   }
