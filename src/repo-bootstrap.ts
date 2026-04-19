@@ -97,6 +97,8 @@ export interface BootstrapCommandResult {
   stdout: string;
   stderr: string;
   scriptPath: string;
+  touchedFiles: string[];
+  managedFiles: string[];
 }
 
 export interface RepoBootstrapResult {
@@ -105,6 +107,62 @@ export interface RepoBootstrapResult {
   repoRoot: string | null;
   detail: string;
   issues: string[];
+  touchedFiles: string[];
+  managedFiles: string[];
+}
+
+interface BootstrapStepResult {
+  actions: string[];
+  touchedFiles: string[];
+}
+
+function uniqueTouchedFiles(paths: Iterable<string>): string[] {
+  return Array.from(
+    new Set(
+      Array.from(paths)
+        .map((pathValue) => pathValue.replace(/\\/g, '/').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export async function collectBootstrapManagedFiles(
+  targetRepoRoot: string
+): Promise<string[]> {
+  const managedFiles = new Set<string>();
+  const normalizedRepoRoot = resolvePath(targetRepoRoot);
+
+  const fileCandidates = [
+    '.tasks.jsonl',
+    'agent-ruleset.json',
+    'AGENTS.md',
+    'CLAUDE.md',
+    'agent-rules-local/repo-existing-instructions.md',
+    'agent-rules-local/high-quality-workflow.md',
+    '.opencode/commands/start-task.md',
+    '.opencode/commands/verify.md',
+    '.opencode/commands/fix-bug.md',
+    '.opencode/commands/deliver.md',
+  ] as const;
+
+  for (const relativePath of fileCandidates) {
+    if (existsSync(join(normalizedRepoRoot, relativePath))) {
+      managedFiles.add(relativePath);
+    }
+  }
+
+  const gitignorePath = join(normalizedRepoRoot, '.gitignore');
+  if (existsSync(gitignorePath)) {
+    const gitignoreContent = await readFile(gitignorePath, 'utf-8');
+    const hasThreadsEntry = gitignoreContent
+      .split(/\r?\n/)
+      .some((line) => line.trim() === '.threads.jsonl');
+    if (hasThreadsEntry) {
+      managedFiles.add('.gitignore');
+    }
+  }
+
+  return uniqueTouchedFiles(managedFiles);
 }
 
 function inferRepoRootFromRepository(
@@ -298,8 +356,11 @@ async function ensureNewRepositoryScaffold(input: {
   return actions;
 }
 
-async function ensureAgentRuleset(targetRepoRoot: string): Promise<string[]> {
+async function ensureAgentRuleset(
+  targetRepoRoot: string
+): Promise<BootstrapStepResult> {
   const actions: string[] = [];
+  const touchedFiles: string[] = [];
   const rulesetPath = join(targetRepoRoot, 'agent-ruleset.json');
   let extra = ['agent-rules-local/high-quality-workflow.md'];
   const existingAgentsPath = join(targetRepoRoot, 'AGENTS.md');
@@ -319,6 +380,7 @@ async function ensureAgentRuleset(targetRepoRoot: string): Promise<string[]> {
         'agent-rules-local/repo-existing-instructions.md',
         'agent-rules-local/high-quality-workflow.md',
       ];
+      touchedFiles.push('agent-rules-local/repo-existing-instructions.md');
       actions.push(
         'preserved existing AGENTS.md as repo-existing-instructions.md'
       );
@@ -335,8 +397,9 @@ async function ensureAgentRuleset(targetRepoRoot: string): Promise<string[]> {
         2
       )}\n`
     );
+    touchedFiles.push('agent-ruleset.json');
     actions.push('created agent-ruleset.json');
-    return actions;
+    return { actions, touchedFiles };
   }
 
   const parsed = JSON.parse(await readFile(rulesetPath, 'utf-8')) as {
@@ -348,25 +411,29 @@ async function ensureAgentRuleset(targetRepoRoot: string): Promise<string[]> {
   nextExtra.add('agent-rules-local/high-quality-workflow.md');
   parsed.extra = [...nextExtra];
   await writeUtf8(rulesetPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  touchedFiles.push('agent-ruleset.json');
   actions.push('updated agent-ruleset.json extras');
-  return actions;
+  return { actions, touchedFiles };
 }
 
 async function ensureDataHygieneFiles(
   targetRepoRoot: string
-): Promise<string[]> {
+): Promise<BootstrapStepResult> {
   const actions: string[] = [];
+  const touchedFiles: string[] = [];
   const tasksPath = join(targetRepoRoot, '.tasks.jsonl');
   if (!existsSync(tasksPath)) {
     await writeUtf8(tasksPath, '');
+    touchedFiles.push('.tasks.jsonl');
     actions.push('created .tasks.jsonl');
   }
 
   const gitignorePath = join(targetRepoRoot, '.gitignore');
   if (!existsSync(gitignorePath)) {
     await writeUtf8(gitignorePath, '.threads.jsonl\n');
+    touchedFiles.push('.gitignore');
     actions.push('created .gitignore with .threads.jsonl');
-    return actions;
+    return { actions, touchedFiles };
   }
 
   const currentGitignore = await readFile(gitignorePath, 'utf-8');
@@ -380,18 +447,20 @@ async function ensureDataHygieneFiles(
         : `${currentGitignore}\n.threads.jsonl\n`
       : '.threads.jsonl\n';
     await writeUtf8(gitignorePath, nextGitignore);
+    touchedFiles.push('.gitignore');
     actions.push('added .threads.jsonl to .gitignore');
   }
 
-  return actions;
+  return { actions, touchedFiles };
 }
 
 async function writeBootstrapFiles(input: {
   targetRepoRoot: string;
   verifyCommand: string;
   force?: boolean;
-}): Promise<string[]> {
+}): Promise<BootstrapStepResult> {
   const actions: string[] = [];
+  const touchedFiles: string[] = [];
   await ensureDirectory(join(input.targetRepoRoot, 'agent-rules-local'));
   const rulePath = join(
     input.targetRepoRoot,
@@ -400,6 +469,7 @@ async function writeBootstrapFiles(input: {
   );
   if (!existsSync(rulePath) || input.force) {
     await writeUtf8(rulePath, HIGH_QUALITY_RULE);
+    touchedFiles.push('agent-rules-local/high-quality-workflow.md');
     actions.push('wrote high-quality workflow rule');
   }
 
@@ -418,14 +488,17 @@ async function writeBootstrapFiles(input: {
         filePath,
         template.replace('{{VERIFY_COMMAND}}', input.verifyCommand)
       );
+      touchedFiles.push(`.opencode/commands/${name}.md`);
       actions.push(`wrote .opencode/commands/${name}.md`);
     }
   }
 
-  return actions;
+  return { actions, touchedFiles };
 }
 
-async function runComposeAgentsmd(targetRepoRoot: string): Promise<string[]> {
+async function runComposeAgentsmd(
+  targetRepoRoot: string
+): Promise<BootstrapStepResult> {
   const result =
     process.platform === 'win32'
       ? await runExternal(
@@ -443,15 +516,21 @@ async function runComposeAgentsmd(targetRepoRoot: string): Promise<string[]> {
       result.stderr || result.stdout || 'compose-agentsmd failed'
     );
   }
-  return ['composed AGENTS.md'];
+  const touchedFiles = ['AGENTS.md', 'CLAUDE.md'].filter((relativePath) =>
+    existsSync(join(targetRepoRoot, relativePath))
+  );
+  return {
+    actions: ['composed AGENTS.md'],
+    touchedFiles,
+  };
 }
 
 async function runSetupHooksIfPresent(
   targetRepoRoot: string
-): Promise<string[]> {
+): Promise<BootstrapStepResult> {
   const scriptPath = join(targetRepoRoot, 'scripts', 'setup-hooks.ps1');
   if (!existsSync(scriptPath)) {
-    return [];
+    return { actions: [], touchedFiles: [] };
   }
   const result = await runExternal(
     resolvePowerShellCommand(),
@@ -461,7 +540,7 @@ async function runSetupHooksIfPresent(
   if (result.code !== 0) {
     throw new Error(result.stderr || result.stdout || 'setup-hooks failed');
   }
-  return ['configured hooks'];
+  return { actions: ['configured hooks'], touchedFiles: [] };
 }
 
 export async function runBootstrapCommand(
@@ -491,6 +570,7 @@ export async function runBootstrapCommand(
   }
 
   const actions: string[] = [];
+  const touchedFiles: string[] = [];
   if (!existsSync(repoRoot) && repository && input.createIfMissing) {
     actions.push(
       ...(await ensureNewRepositoryScaffold({
@@ -503,27 +583,40 @@ export async function runBootstrapCommand(
     );
   }
 
-  actions.push(...(await ensureAgentRuleset(repoRoot)));
-  actions.push(...(await ensureDataHygieneFiles(repoRoot)));
+  const ruleset = await ensureAgentRuleset(repoRoot);
+  actions.push(...ruleset.actions);
+  touchedFiles.push(...ruleset.touchedFiles);
+
+  const hygiene = await ensureDataHygieneFiles(repoRoot);
+  actions.push(...hygiene.actions);
+  touchedFiles.push(...hygiene.touchedFiles);
   if (!verifyCommand) {
     throw new Error(
       'No canonical verification command found for this repository. Provide --verify-command or add a bootstrap profile entry first.'
     );
   }
-  actions.push(
-    ...(await writeBootstrapFiles({
-      targetRepoRoot: repoRoot,
-      verifyCommand,
-      force: input.force,
-    }))
-  );
-  actions.push(...(await runSetupHooksIfPresent(repoRoot)));
-  actions.push(...(await runComposeAgentsmd(repoRoot)));
+  const bootstrapFiles = await writeBootstrapFiles({
+    targetRepoRoot: repoRoot,
+    verifyCommand,
+    force: input.force,
+  });
+  actions.push(...bootstrapFiles.actions);
+  touchedFiles.push(...bootstrapFiles.touchedFiles);
+
+  const setupHooks = await runSetupHooksIfPresent(repoRoot);
+  actions.push(...setupHooks.actions);
+  touchedFiles.push(...setupHooks.touchedFiles);
+
+  const composed = await runComposeAgentsmd(repoRoot);
+  actions.push(...composed.actions);
+  touchedFiles.push(...composed.touchedFiles);
 
   return {
     stdout: actions.join('\n'),
     stderr: '',
     scriptPath: '[workspace-agent-hub builtin bootstrap]',
+    touchedFiles: uniqueTouchedFiles(touchedFiles),
+    managedFiles: await collectBootstrapManagedFiles(repoRoot),
   };
 }
 
@@ -542,6 +635,8 @@ export async function ensureRepoBootstrap(
       repoRoot: null,
       detail: 'No target repository could be resolved for bootstrap.',
       issues: ['missing-target'],
+      touchedFiles: [],
+      managedFiles: [],
     };
   }
 
@@ -557,12 +652,16 @@ export async function ensureRepoBootstrap(
         repoRoot: resolvedRepoRoot,
         detail: 'Repository already satisfies the bootstrap contract.',
         issues: [],
+        touchedFiles: [],
+        managedFiles: await collectBootstrapManagedFiles(resolvedRepoRoot),
       };
     }
   }
 
   const attemptDetails: string[] = [];
   let lastIssues: string[] = [];
+  let lastTouchedFiles: string[] = [];
+  let lastManagedFiles: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_BOOTSTRAP_ATTEMPTS; attempt += 1) {
     try {
@@ -570,6 +669,8 @@ export async function ensureRepoBootstrap(
         ...input,
         repoRoot: input.repoRoot ?? resolvedRepoRoot,
       });
+      lastTouchedFiles = result.touchedFiles;
+      lastManagedFiles = result.managedFiles;
       const finalAudit = await auditRepositoryContract(resolvedRepoRoot, {
         requireMwt: false,
         requireWriteAccess: true,
@@ -589,6 +690,8 @@ export async function ensureRepoBootstrap(
           repoRoot: resolvedRepoRoot,
           detail: result.stdout || result.stderr || 'Bootstrap completed.',
           issues: [],
+          touchedFiles: result.touchedFiles,
+          managedFiles: result.managedFiles,
         };
       }
       lastIssues = issues;
@@ -605,6 +708,8 @@ export async function ensureRepoBootstrap(
           repoRoot: resolvedRepoRoot,
           detail: attemptDetails.join('\n\n'),
           issues,
+          touchedFiles: lastTouchedFiles,
+          managedFiles: lastManagedFiles,
         };
       }
     } catch (error) {
@@ -618,6 +723,8 @@ export async function ensureRepoBootstrap(
           repoRoot: resolvedRepoRoot,
           detail: attemptDetails.join('\n\n'),
           issues: lastIssues,
+          touchedFiles: lastTouchedFiles,
+          managedFiles: lastManagedFiles,
         };
       }
     }
@@ -629,5 +736,7 @@ export async function ensureRepoBootstrap(
     repoRoot: resolvedRepoRoot,
     detail: attemptDetails.join('\n\n') || 'Bootstrap attempts failed.',
     issues: lastIssues,
+    touchedFiles: lastTouchedFiles,
+    managedFiles: lastManagedFiles,
   };
 }

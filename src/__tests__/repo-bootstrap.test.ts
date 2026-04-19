@@ -81,6 +81,34 @@ describe('repo-bootstrap', () => {
       repoRoot: repo,
       issues: [],
     });
+    expect(result.touchedFiles).toEqual(
+      expect.arrayContaining([
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ])
+    );
+    expect(result.managedFiles).toEqual(
+      expect.arrayContaining([
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ])
+    );
     expect(result.detail).toContain('created .tasks.jsonl');
     expect(result.detail).toContain('added .threads.jsonl to .gitignore');
 
