@@ -195,6 +195,7 @@ import {
   MANAGER_MODEL,
   MANAGER_REASONING_EFFORT,
   markProcessNextQueuedInFlightForTests,
+  parseManagerRecoveryDecision,
   parseManagerReplyPayload,
   parseManagerWorkerResultPayload,
   parseManagerRoutingPlan,
@@ -977,6 +978,55 @@ describe('manager backend codex integration', () => {
         },
       ],
     });
+  });
+
+  it('parses manager recovery decisions even when JSON is wrapped in prose', () => {
+    expect(
+      parseManagerRecoveryDecision(
+        '{"decision":"fix-self","reason":"簡単な修正です","instructions":"verify を再実行してください"}'
+      )
+    ).toEqual({
+      decision: 'fix-self',
+      reason: '簡単な修正です',
+      instructions: 'verify を再実行してください',
+    });
+
+    expect(
+      parseManagerRecoveryDecision(
+        '回復案です。\n{"decision":"retry-worker","reason":"続行できます","instructions":"Vitest の lane を再確認してください"}\n以上です。'
+      )
+    ).toEqual({
+      decision: 'retry-worker',
+      reason: '続行できます',
+      instructions: 'Vitest の lane を再確認してください',
+    });
+
+    expect(
+      parseManagerRecoveryDecision(
+        '```json\n{"decision":"escalate","reason":"人間判断が必要です","instructions":null}\n```'
+      )
+    ).toEqual({
+      decision: 'escalate',
+      reason: '人間判断が必要です',
+      instructions: null,
+    });
+
+    expect(
+      parseManagerRecoveryDecision(
+        'prefix\n{"decision":"fix-self","reason":"fix {config} file","instructions":"edit {\\"key\\":\\"value\\"}"}\npostfix'
+      )
+    ).toEqual({
+      decision: 'fix-self',
+      reason: 'fix {config} file',
+      instructions: 'edit {"key":"value"}',
+    });
+
+    expect(parseManagerRecoveryDecision('not json at all')).toBeNull();
+    expect(
+      parseManagerRecoveryDecision(
+        '{"decision":"unknown","reason":"x","instructions":null}'
+      )
+    ).toBeNull();
   });
 
   it('keeps routing topic refs stable even when recent-topic order changes', () => {

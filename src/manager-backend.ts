@@ -2230,8 +2230,9 @@ export function parseManagerRecoveryDecision(
   text: string
 ): ManagerRecoveryDecision | null {
   const normalized = stripMarkdownCodeFence(text);
-  try {
-    const parsed = JSON.parse(normalized) as Partial<ManagerRecoveryDecision>;
+  const validateParsedDecision = (
+    parsed: Partial<ManagerRecoveryDecision>
+  ): ManagerRecoveryDecision | null => {
     const decision = parsed.decision;
     if (
       decision !== 'fix-self' &&
@@ -2249,8 +2250,21 @@ export function parseManagerRecoveryDecision(
           ? parsed.instructions.trim()
           : null,
     };
+  };
+  try {
+    const parsed = JSON.parse(normalized) as Partial<ManagerRecoveryDecision>;
+    return validateParsedDecision(parsed);
   } catch {
-    return null;
+    const extracted = extractFirstJsonObject(normalized);
+    if (!extracted || extracted === normalized) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(extracted) as Partial<ManagerRecoveryDecision>;
+      return validateParsedDecision(parsed);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -3004,6 +3018,51 @@ function stripMarkdownCodeFence(text: string): string {
   const trimmed = text.trim();
   const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fencedMatch?.[1]?.trim() ?? trimmed;
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const trimmed = text.trim();
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (char === '\\' && inString) {
+      escaping = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (char === '{') {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      if (depth === 0) {
+        continue;
+      }
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        return trimmed.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 function collectTextFragments(value: unknown): string[] {
