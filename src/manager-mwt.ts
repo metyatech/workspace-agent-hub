@@ -130,18 +130,6 @@ const MWT_CONFIG_PATH = '.mwt/config.toml';
 const MWT_MARKER_PATH = '.mwt-worktree.json';
 const AUTO_INIT_COMMIT_MESSAGE = 'chore: initialize managed-worktree-system';
 const SAFE_BOOTSTRAP_TRACKED_PATHS = new Set(['.gitignore']);
-const BOOTSTRAP_ONBOARDING_PATHS = [
-  '.gitignore',
-  '.tasks.jsonl',
-  'agent-ruleset.json',
-  'AGENTS.md',
-  'CLAUDE.md',
-  'agent-rules-local/high-quality-workflow.md',
-  '.opencode/commands/start-task.md',
-  '.opencode/commands/verify.md',
-  '.opencode/commands/fix-bug.md',
-  '.opencode/commands/deliver.md',
-] as const;
 
 function normalizeMwtOutput(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(ANSI_ESCAPE_PATTERN, '').trim();
@@ -559,6 +547,7 @@ async function hasGitRemote(
 export async function maybeAutoInitializeManagerRepository(input: {
   targetRepoRoot: string;
   defaultBranch?: string | null;
+  bootstrapManagedFiles?: readonly string[];
 }): Promise<ManagerMwtAutoInitResult> {
   const targetRepoRoot = resolvePath(input.targetRepoRoot);
   const remoteName = 'origin';
@@ -600,6 +589,8 @@ export async function maybeAutoInitializeManagerRepository(input: {
   } catch (error) {
     if (
       mwtErrorId(error) === 'init_requires_clean_repo' &&
+      Array.isArray(input.bootstrapManagedFiles) &&
+      input.bootstrapManagedFiles.length > 0 &&
       (await shouldForceBootstrapManagedAutoInit({
         targetRepoRoot,
         changedFiles: listMwtChangedFiles(error),
@@ -614,7 +605,7 @@ export async function maybeAutoInitializeManagerRepository(input: {
 
         const onboarding = await commitAutoInitializedRepositoryPolicy(
           targetRepoRoot,
-          BOOTSTRAP_ONBOARDING_PATHS
+          input.bootstrapManagedFiles
         );
         return {
           initialized: true,

@@ -177,6 +177,18 @@ describe('maybeAutoInitializeManagerRepository', () => {
 
     const result = await maybeAutoInitializeManagerRepository({
       targetRepoRoot: repoRoot,
+      bootstrapManagedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
     });
 
     expect(planInitializeRepositoryMock).toHaveBeenCalledWith(repoRoot, {
@@ -251,6 +263,18 @@ describe('maybeAutoInitializeManagerRepository', () => {
 
     const result = await maybeAutoInitializeManagerRepository({
       targetRepoRoot: repoRoot,
+      bootstrapManagedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
     });
 
     expect(execGitMock).toHaveBeenCalledWith(repoRoot, [
@@ -342,6 +366,18 @@ describe('maybeAutoInitializeManagerRepository', () => {
 
     const result = await maybeAutoInitializeManagerRepository({
       targetRepoRoot: repoRoot,
+      bootstrapManagedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
     });
 
     expect(initializeRepositoryMock).toHaveBeenCalledWith(repoRoot, {
