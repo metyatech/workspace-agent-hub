@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from 'node:path';
 import { deriveApprovalQueue } from './approval-queue.js';
+import type { PreflightReport } from './preflight.js';
 import {
   auditWorkspaceContracts,
   type WorkspaceContractAuditEntry,
@@ -21,6 +22,22 @@ export interface WorkspaceHealthSnapshot {
   mergeLaneCount: number;
   unavailableRuntimeCount: number;
   repoAudits: WorkspaceContractAuditEntry[];
+}
+
+export function deriveWorkspaceHealthFromPreflight(
+  report: PreflightReport
+): WorkspaceHealthSnapshot {
+  return {
+    workspaceRoot: report.workspaceRoot,
+    generatedAt: report.generatedAt,
+    inScopeRepoCount: report.summary.inScopeRepoCount,
+    invalidRepoCount: report.summary.invalidRepoCount,
+    approvalQueueCount: report.summary.approvalQueueCount,
+    runCount: report.summary.runCount,
+    mergeLaneCount: report.summary.mergeLaneCount,
+    unavailableRuntimeCount: report.summary.unavailableRuntimeCount,
+    repoAudits: report.repoAudits,
+  };
 }
 
 export async function deriveWorkspaceHealth(

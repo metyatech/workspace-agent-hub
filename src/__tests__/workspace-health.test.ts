@@ -105,7 +105,10 @@ vi.mock('../worker-adapter/availability.js', () => ({
   ]),
 }));
 
-import { deriveWorkspaceHealth } from '../workspace-health.js';
+import {
+  deriveWorkspaceHealth,
+  deriveWorkspaceHealthFromPreflight,
+} from '../workspace-health.js';
 
 describe('workspace-health', () => {
   it('combines repo audits, approvals, runs, merge lanes, and runtime health', async () => {
@@ -117,5 +120,43 @@ describe('workspace-health', () => {
     expect(snapshot.runCount).toBe(0);
     expect(snapshot.mergeLaneCount).toBe(1);
     expect(snapshot.unavailableRuntimeCount).toBe(1);
+  });
+
+  it('derives the same health counters from a preflight report bridge', () => {
+    const snapshot = deriveWorkspaceHealthFromPreflight({
+      workspaceRoot: 'D:\\ghws',
+      generatedAt: '2026-04-19T00:00:00.000Z',
+      overall: 'warn',
+      checks: [],
+      summary: {
+        inScopeRepoCount: 2,
+        invalidRepoCount: 1,
+        approvalQueueCount: 1,
+        runCount: 0,
+        mergeLaneCount: 1,
+        unavailableRuntimeCount: 1,
+      },
+      repoAudits: [
+        {
+          repoRoot: 'D:\\ghws\\workspace-agent-hub',
+          audit: {
+            valid: true,
+            snapshot: { repoRoot: 'D:\\ghws\\workspace-agent-hub' },
+            issues: [],
+          },
+        },
+      ],
+      totalDurationMs: 15,
+    });
+
+    expect(snapshot).toMatchObject({
+      workspaceRoot: 'D:\\ghws',
+      inScopeRepoCount: 2,
+      invalidRepoCount: 1,
+      approvalQueueCount: 1,
+      runCount: 0,
+      mergeLaneCount: 1,
+      unavailableRuntimeCount: 1,
+    });
   });
 });

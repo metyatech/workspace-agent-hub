@@ -24,6 +24,7 @@ import {
   formatRepoContractAudit,
 } from './repo-auditor.js';
 import { runBootstrapCommand } from './repo-bootstrap.js';
+import { formatPreflightReport, runPreflight } from './preflight.js';
 import { deriveMergeLanes } from './merge-lanes.js';
 import { readManagedRepos } from './manager-repos.js';
 import { deriveRunsForWorkspace } from './runs.js';
@@ -439,6 +440,40 @@ export function createProgram(startWebUiCommand: StartWebUiCommand): Command {
 
         console.log(formatRepoContractAudit(result));
         if (!result.valid) {
+          process.exitCode = 1;
+        }
+      }
+    );
+
+  program
+    .command('preflight')
+    .description(
+      'Run unified workspace preflight checks and optional corrections'
+    )
+    .option('--workspace <path>', 'Workspace root to inspect', process.cwd())
+    .option('--json', 'Print the preflight report as JSON')
+    .option('--apply', 'Apply safe corrective actions during preflight')
+    .option('--skip <check-id...>', 'Skip one or more preflight check ids')
+    .action(
+      async (options: {
+        workspace: string;
+        json?: boolean;
+        apply?: boolean;
+        skip?: string[];
+      }) => {
+        const report = await runPreflight({
+          workspaceRoot: resolve(options.workspace),
+          applyCorrections: options.apply,
+          skipChecks: options.skip as
+            | import('./preflight.js').PreflightCheckId[]
+            | undefined,
+        });
+        if (options.json) {
+          console.log(JSON.stringify(report, null, 2));
+        } else {
+          console.log(formatPreflightReport(report));
+        }
+        if (report.overall === 'fail') {
           process.exitCode = 1;
         }
       }

@@ -177,4 +177,19 @@ describe('cli restart helpers', () => {
 
     expect(command?.description()).toContain('high-quality workflow');
   });
+
+  it('registers the preflight command on the CLI surface', () => {
+    const program = createProgram(async () => undefined);
+    const command = program.commands.find(
+      (entry) => entry.name() === 'preflight'
+    );
+
+    expect(command?.description()).toContain('unified workspace preflight');
+    expect(command?.options.some((option) => option.long === '--apply')).toBe(
+      true
+    );
+    expect(command?.options.some((option) => option.long === '--skip')).toBe(
+      true
+    );
+  });
 });
