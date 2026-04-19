@@ -2264,6 +2264,30 @@ describe('manager backend codex integration', () => {
       repoRoot: tempDir,
       detail: 'created .tasks.jsonl\nadded .threads.jsonl to .gitignore',
       issues: [],
+      touchedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
+      managedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
     });
     vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
     vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
@@ -2303,6 +2327,24 @@ describe('manager backend codex integration', () => {
       () =>
         vi.mocked(maybeAutoInitializeManagerRepository).mock.calls.length === 1
     );
+    expect(
+      vi.mocked(maybeAutoInitializeManagerRepository).mock.calls[0]?.[0]
+    ).toMatchObject({
+      targetRepoRoot: tempDir,
+      defaultBranch: 'main',
+      bootstrapManagedFiles: [
+        '.gitignore',
+        '.tasks.jsonl',
+        'agent-ruleset.json',
+        'AGENTS.md',
+        'CLAUDE.md',
+        'agent-rules-local/high-quality-workflow.md',
+        '.opencode/commands/start-task.md',
+        '.opencode/commands/verify.md',
+        '.opencode/commands/fix-bug.md',
+        '.opencode/commands/deliver.md',
+      ],
+    });
     await waitFor(
       () => vi.mocked(createManagerWorktree).mock.calls.length === 1
     );

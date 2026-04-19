@@ -8570,6 +8570,7 @@ ${bootstrapResult.detail}`,
                       resolvedManagedRepo?.defaultBranch ??
                       threadMeta?.managedBaseBranch ??
                       null,
+                    bootstrapManagedFiles: bootstrapResult.managedFiles,
                   });
                 if (autoInitResult.initialized) {
                   assignment.pendingOnboardingCommit =
