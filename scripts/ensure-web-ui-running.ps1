@@ -1455,6 +1455,40 @@ function Build-StateFromLaunchInfo {
     }
 }
 
+function Write-FinalizedLaunchInfoLog {
+    param(
+        [string]$TargetPath,
+        $StateObject
+    )
+
+    if (-not $TargetPath -or -not $TargetPath.Trim() -or $null -eq $StateObject) {
+        return
+    }
+
+    try {
+        $resolvedPath = [IO.Path]::GetFullPath($TargetPath.Trim())
+        $parent = Split-Path -Parent $resolvedPath
+        if ($parent -and -not (Test-Path -Path $parent)) {
+            [void](New-Item -ItemType Directory -Path $parent -Force)
+        }
+        $payload = $StateObject | ConvertTo-Json -Depth 8 -Compress
+        if (-not $payload -or -not $payload.Trim()) {
+            return
+        }
+        $prefix = ''
+        if ((Test-Path -Path $resolvedPath) -and (Get-Item -LiteralPath $resolvedPath).Length -gt 0) {
+            $prefix = [Environment]::NewLine
+        }
+        [IO.File]::AppendAllText(
+            $resolvedPath,
+            $prefix + $payload,
+            [Text.UTF8Encoding]::new($false)
+        )
+    } catch {
+        Write-Warning "Failed to append finalized launch info to ${TargetPath}: $($_.Exception.Message)"
+    }
+}
+
 function Resolve-FrontDoorPort {
     param(
         $ExistingState
@@ -1615,6 +1649,7 @@ if (
         UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
     }
     Write-State -TargetStatePath $resolvedStatePath -State $finalState
+    Write-FinalizedLaunchInfoLog -TargetPath ([string]$finalState.StdOutPath) -StateObject $finalState
 } else {
     $fallbackProcessId = if (
         $existingState -and
@@ -1662,6 +1697,7 @@ if (
             -StdOutPath $started.StdOutPath `
             -StdErrPath $started.StdErrPath
         Write-State -TargetStatePath $resolvedStatePath -State $finalState
+        Write-FinalizedLaunchInfoLog -TargetPath ([string]$finalState.StdOutPath) -StateObject $finalState
     } catch {
         Stop-ManagedProcessIfPresent `
             -ExistingState $null `

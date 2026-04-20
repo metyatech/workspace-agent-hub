@@ -168,6 +168,41 @@ function Wait-ForLaunchMetadata {
     throw "Expected ensure-web-ui-running.ps1 to emit launch metadata in $($ProcessInfo.StdOutPath)."
 }
 
+function Read-LatestJsonFromPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath
+    )
+
+    if (-not (Test-Path -Path $FilePath)) {
+        throw "Expected JSON output file at $FilePath."
+    }
+    $raw = Get-Content -Path $FilePath -Raw -Encoding utf8
+    if (-not $raw -or -not $raw.Trim()) {
+        throw "Expected JSON content in $FilePath."
+    }
+    $trimmed = $raw.Trim()
+    try {
+        return ($trimmed | ConvertFrom-Json)
+    } catch {
+    }
+
+    $lines = $trimmed -split "\r?\n"
+    for ($index = $lines.Length - 1; $index -ge 0; $index -= 1) {
+        $candidateLines = $lines[$index..($lines.Length - 1)]
+        $candidate = ($candidateLines -join [Environment]::NewLine).Trim()
+        if (-not $candidate) {
+            continue
+        }
+        try {
+            return ($candidate | ConvertFrom-Json)
+        } catch {
+        }
+    }
+
+    throw "Expected trailing JSON content in $FilePath."
+}
+
 function Wait-ForProcessSuccess {
     param(
         [Parameter(Mandatory = $true)]
@@ -277,6 +312,7 @@ $originalTailscaleServeStatusText = $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERV
 $originalPublicUrl = $env:WORKSPACE_AGENT_HUB_TEST_PUBLIC_URL
 $originalCliPath = $env:WORKSPACE_AGENT_HUB_TEST_CLI_PATH
 $originalUrlReachableSequence = $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE
+$originalInitialPreferredSource = $env:WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE
 $competingInstance = $null
 
 $mockCliContent = @'
@@ -357,12 +393,15 @@ function tryListen(targetPort) {
 }
 
 const { actualPort } = await tryListen(port);
-const preferredConnectUrl = "https://desktop-dr5v76c.tail5a2d2d.ts.net";
+const initialPreferredSource = process.env.WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE ?? "tailscale-serve";
+const preferredConnectUrl = initialPreferredSource === "public-url"
+  ? `http://desktop-dr5v76c.tail5a2d2d.ts.net:${actualPort}`
+  : "https://desktop-dr5v76c.tail5a2d2d.ts.net";
 console.log(
   JSON.stringify({
     listenUrl: `http://${host}:${actualPort}`,
     preferredConnectUrl,
-    preferredConnectUrlSource: "tailscale-serve",
+    preferredConnectUrlSource: initialPreferredSource,
     authRequired,
     accessCode,
     oneTapPairingLink: authRequired
@@ -527,6 +566,21 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
     }
     Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE -ErrorAction SilentlyContinue
 
+    $env:WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE = 'public-url'
+    $stdoutAlignedRun = Start-EnsureProcess -ScriptPath $ensureScriptPath -PortNumber $port -TargetStatePath $statePath -Token '' -WorkspaceRoot $currentWorkspaceRoot -RunName 'stdout-aligned' -TargetDirectory $testDirectory
+    $stdoutAligned = Wait-ForLaunchMetadata -ProcessInfo $stdoutAlignedRun
+    Wait-ForProcessSuccess -ProcessInfo $stdoutAlignedRun
+    $stdoutAlignedPort = ([Uri][string]$stdoutAligned.ListenUrl).Port
+    Wait-ForApiReady -PortNumber $stdoutAlignedPort -Token ''
+    $stdoutLaunchInfo = Read-LatestJsonFromPath -FilePath ([string]$stdoutAligned.StdOutPath)
+    if ([string]$stdoutLaunchInfo.PreferredConnectUrlSource -ne [string]$stdoutAligned.PreferredConnectUrlSource) {
+        throw 'Expected the managed web-ui stdout log to end with the same PreferredConnectUrlSource that ensure-web-ui-running.ps1 persisted.'
+    }
+    if ([string]$stdoutLaunchInfo.PreferredConnectUrl -ne [string]$stdoutAligned.PreferredConnectUrl) {
+        throw 'Expected the managed web-ui stdout log to end with the same PreferredConnectUrl that ensure-web-ui-running.ps1 persisted.'
+    }
+    Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE -ErrorAction SilentlyContinue
+
     $env:WORKSPACE_AGENT_HUB_TEST_TAILSCALE_SERVE_STATUS_TEXT = @'
 https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
 |-- / proxy http://127.0.0.1:57921
@@ -623,6 +677,11 @@ https://desktop-dr5v76c.tail5a2d2d.ts.net (tailnet only)
         Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE -ErrorAction SilentlyContinue
     } else {
         $env:WORKSPACE_AGENT_HUB_TEST_URL_REACHABLE_SEQUENCE = $originalUrlReachableSequence
+    }
+    if ($null -eq $originalInitialPreferredSource) {
+        Remove-Item Env:WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE -ErrorAction SilentlyContinue
+    } else {
+        $env:WORKSPACE_AGENT_HUB_TEST_INITIAL_PREFERRED_SOURCE = $originalInitialPreferredSource
     }
     if (Test-Path -Path $testDirectory) {
         Start-Sleep -Milliseconds 200
