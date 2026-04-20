@@ -504,11 +504,14 @@ Important behavior:
   untracked `.mwt/` residue. Otherwise Manager stops with a concrete
   `needs-reply` message that explains why auto-init was skipped.
 - When an existing-repo write task is blocked because that seed checkout has
-  tracked changes, the Manager thread detail now exposes a `Preserve &
-Continue` recovery path. That action stashes the tracked seed changes with a
-  named entry, leaves a thread-visible record of the stash reference, and then
-  requeues the same work item so smartphone-only follow-up is possible without
-  first deciding whether to commit or discard the local edits.
+  local changes, Manager now first tries to stash the seed changes
+  automatically (including untracked files) and then retries the same work.
+  If that automatic recovery still cannot make the seed clean, the Manager
+  thread detail exposes a `Preserve & Continue` fallback that retries the same
+  stash-and-resume path manually, leaves a thread-visible record of the stash
+  reference, and then requeues the same work item so smartphone-only follow-up
+  is possible without first deciding whether to commit or discard the local
+  edits.
 - Because Manager now reuses `mwt` sibling task worktrees, repository-relative
   filesystem topology stays intact, so local overlays such as `.env*.local`
   keep the same relative-path semantics without content rewriting heuristics.

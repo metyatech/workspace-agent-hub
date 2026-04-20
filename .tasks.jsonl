@@ -176,4 +176,6 @@
 {"id":"eDB5ojz7","description":"Refactor workspace-agent-hub bootstrap changed-files handoff","stage":"committed","createdAt":"2026-04-19T02:20:23.922Z","updatedAt":"2026-04-19T07:39:07.583Z","committedEventId":"bOb4LvBAI2W_4Wao"}
 {"id":"TTv4fc38","description":"Implement unified preflight hardening tranche in workspace-agent-hub","stage":"committed","createdAt":"2026-04-19T12:10:45.621Z","updatedAt":"2026-04-19T13:18:24.289Z","committedEventId":"BGT-J6K8aNUt7w14"}
 {"id":"yRobvHiP","description":"Fix manager recovery decision JSON parsing so malformed prose-wrapped replies do not strand threads","stage":"committed","createdAt":"2026-04-19T13:10:18.021Z","updatedAt":"2026-04-19T13:19:46.121Z","committedEventId":"Pb5s7QAAj9jC1Jl3"}
+<<<<<<< HEAD
 {"id":"_u5WlOow","description":"Implement remaining workspace-agent-hub hardening themes","stage":"committed","createdAt":"2026-04-20T00:21:40.356Z","updatedAt":"2026-04-20T01:36:49.900Z","committedEventId":"9iEUn4BnVMpuXZ2g"}
+{"id":"9A4Kv1Os","description":"Auto-stash dirty seed changes including untracked files and retry before surfacing seed-recovery blockers","stage":"committed","createdAt":"2026-04-20T01:28:27.870Z","updatedAt":"2026-04-20T02:52:32.825Z","committedEventId":"YDXHrCOfNPv36_Ab"}
