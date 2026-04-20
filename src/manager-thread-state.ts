@@ -55,6 +55,7 @@ export interface ManagerStateTransitionEntry {
 
 export interface ManagerThreadMeta {
   managerOwned?: boolean;
+  lastReadAt?: string | null;
   canonicalState?: ManagerUiState | null;
   canonicalStateReason?: string | null;
   runtimeErrorMessage?: string | null;
@@ -112,6 +113,8 @@ export interface ManagerThreadMeta {
 
 export interface ManagerThreadView extends Thread {
   uiState: ManagerUiState;
+  lastReadAt: string | null;
+  hasUnreadStateChange: boolean;
   canonicalStateReason: string | null;
   previewText: string;
   lastSender: 'ai' | 'user' | null;
@@ -286,8 +289,10 @@ export async function reconcileManagerThreadMeta(input: {
     const recentStateTransitions = normalizeStateTransitionHistory(
       cleanedMeta?.recentStateTransitions
     );
+    const lastReadAt = normalizeTimestamp(cleanedMeta?.lastReadAt);
     const nextMeta: ManagerThreadMeta = {
       ...(cleanedMeta ?? {}),
+      lastReadAt: lastReadAt ?? new Date().toISOString(),
       canonicalState: canonical.uiState,
       canonicalStateReason: canonical.reason,
       recentStateTransitions:
@@ -421,6 +426,10 @@ function normalizeManagedRepoText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function normalizeTimestamp(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 function normalizeManagerTargetKind(value: unknown): ManagerTargetKind | null {
   return value === 'existing-repo' || value === 'new-repo' ? value : null;
 }
@@ -531,6 +540,20 @@ function normalizeStateTransitionHistory(
       } satisfies ManagerStateTransitionEntry,
     ];
   });
+}
+
+function latestStateTransitionAt(
+  recentStateTransitions: ManagerStateTransitionEntry[]
+): string | null {
+  return normalizeTimestamp(recentStateTransitions.at(-1)?.at);
+}
+
+function timestampValue(value: string | null): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function managerMetaValueHasContent(value: unknown): boolean {
@@ -945,11 +968,24 @@ export function deriveManagerThreadViews(input: {
         isWorking,
       }).reason;
     }
+    const recentStateTransitions = normalizeStateTransitionHistory(
+      meta?.recentStateTransitions
+    );
+    const lastReadAt = normalizeTimestamp(meta?.lastReadAt);
+    const lastStateTransitionAt = latestStateTransitionAt(
+      recentStateTransitions
+    );
+    const hasUnreadStateChange =
+      lastReadAt !== null &&
+      lastStateTransitionAt !== null &&
+      timestampValue(lastStateTransitionAt) > timestampValue(lastReadAt);
 
     return [
       {
         ...thread,
         uiState,
+        lastReadAt,
+        hasUnreadStateChange,
         canonicalStateReason: computedCanonicalStateReason,
         previewText: previewText(thread),
         lastSender: lastSender(thread),
@@ -1029,9 +1065,7 @@ export function deriveManagerThreadViews(input: {
           typeof meta?.strandedAutoResumeLastAttemptAt === 'string'
             ? meta.strandedAutoResumeLastAttemptAt.trim() || null
             : null,
-        recentStateTransitions: normalizeStateTransitionHistory(
-          meta?.recentStateTransitions
-        ),
+        recentStateTransitions,
       } satisfies ManagerThreadView,
     ];
   });

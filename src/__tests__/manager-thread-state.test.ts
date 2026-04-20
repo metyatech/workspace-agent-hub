@@ -632,6 +632,86 @@ describe('manager thread state derivation', () => {
     }
   });
 
+  it('flags a task card as unread when a newer state transition exists after lastReadAt', () => {
+    const thread = {
+      id: 'thread-unread-state',
+      title: 'Unread status change',
+      status: 'active' as const,
+      updatedAt: '2026-04-17T15:00:02.000Z',
+      createdAt: '2026-04-17T14:59:00.000Z',
+      messages: [
+        {
+          sender: 'user' as const,
+          content: 'Continue the task.',
+          at: '2026-04-17T14:59:00.000Z',
+        },
+      ],
+    };
+    const session = {
+      workspaceKey: 'workspace',
+      status: 'idle' as const,
+      sessionId: 'codex-thread',
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-17T14:59:00.000Z',
+      lastMessageAt: '2026-04-17T15:00:02.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage: null,
+      lastErrorAt: null,
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      activeAssignments: [],
+    };
+
+    const unreadViews = deriveManagerThreadViews({
+      threads: [thread],
+      session,
+      queue: [],
+      meta: {
+        'thread-unread-state': {
+          managerOwned: true,
+          canonicalState: 'ai-working',
+          lastReadAt: '2026-04-17T15:00:00.000Z',
+          recentStateTransitions: [
+            {
+              at: '2026-04-17T15:00:01.000Z',
+              fromState: 'queued',
+              toState: 'ai-working',
+              fromReason: null,
+              toReason: null,
+            },
+          ],
+        },
+      },
+    });
+    expect(unreadViews[0]?.hasUnreadStateChange).toBe(true);
+
+    const readViews = deriveManagerThreadViews({
+      threads: [thread],
+      session,
+      queue: [],
+      meta: {
+        'thread-unread-state': {
+          managerOwned: true,
+          canonicalState: 'ai-working',
+          lastReadAt: '2026-04-17T15:00:02.000Z',
+          recentStateTransitions: [
+            {
+              at: '2026-04-17T15:00:01.000Z',
+              fromState: 'queued',
+              toState: 'ai-working',
+              fromReason: null,
+              toReason: null,
+            },
+          ],
+        },
+      },
+    });
+    expect(readViews[0]?.hasUnreadStateChange).toBe(false);
+  });
+
   it('maps operational-blocker needs-reply threads to the error lane (paused worktree)', () => {
     const views = deriveManagerThreadViews({
       threads: [

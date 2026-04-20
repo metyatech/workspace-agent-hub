@@ -764,6 +764,26 @@ export async function handleManagerUiRequest(input: {
     return true;
   }
 
+  const markReadMatch = localPath.match(/^\/api\/threads\/([^/]+)\/mark-read$/);
+  if (markReadMatch && input.method === 'PUT') {
+    const thread = await getThread(input.workspaceRoot, markReadMatch[1]);
+    if (!thread) {
+      sendError(input.res, 'Thread not found', 404);
+      return true;
+    }
+    const lastReadAt = new Date().toISOString();
+    await updateManagerThreadMeta(
+      input.workspaceRoot,
+      markReadMatch[1],
+      (current) => ({
+        ...(current ?? {}),
+        lastReadAt,
+      })
+    );
+    sendJson(input.res, { ok: true, threadId: markReadMatch[1], lastReadAt });
+    return true;
+  }
+
   const preserveMatch = localPath.match(
     /^\/api\/threads\/([^/]+)\/preserve-and-continue$/
   );
