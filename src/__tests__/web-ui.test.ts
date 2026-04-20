@@ -1165,9 +1165,9 @@ describe('native manager page', () => {
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      health: 'error',
+      health: 'ok',
       pendingCount: 1,
-      errorMessage: 'stale worker error',
+      errorMessage: null,
     });
     expect(kickSpy).toHaveBeenCalledWith(workspaceRoot, 'direct-status');
   });

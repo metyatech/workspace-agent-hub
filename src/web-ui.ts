@@ -1170,7 +1170,12 @@ async function gracefulShutdown(server: Server): Promise<void> {
   activeSseConnections.clear();
 
   // 3. Kill all managed child processes
-  await killAllActiveChildProcesses();
+  const shutdownDiagnostics = await killAllActiveChildProcesses();
+  if (shutdownDiagnostics.survivingProcesses.length > 0) {
+    console.warn(
+      `[workspace-agent-hub] graceful shutdown forced termination for ${shutdownDiagnostics.survivingProcesses.length} lingering child process(es): ${shutdownDiagnostics.summary}`
+    );
+  }
 
   // 4. Allow up to 3 seconds for cleanup
   await new Promise<void>((r) => setTimeout(r, 500));
