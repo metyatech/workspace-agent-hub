@@ -96,6 +96,8 @@ interface ThreadView {
   messages: Msg[];
   updatedAt?: string;
   uiState: ManagerUiState;
+  lastReadAt: string | null;
+  hasUnreadStateChange: boolean;
   canonicalStateReason: string | null;
   previewText: string;
   lastSender: 'ai' | 'user' | null;
@@ -2280,6 +2282,10 @@ function rowActivityText(
   return parts.length > 0 ? parts.join(' / ') : null;
 }
 
+function threadReadStateText(thread: ThreadView): string {
+  return thread.hasUnreadStateChange ? '未読' : '既読';
+}
+
 function makeLiveActivityPanel(
   thread: ThreadView,
   threadTitlesById: Map<string, string>
@@ -2722,6 +2728,11 @@ class ThreadSectionController {
     age.dataset.rowAge = '';
     age.textContent = formatAge(thread.updatedAt);
 
+    const readState = document.createElement('span');
+    readState.className = 'thread-open-indicator';
+    readState.dataset.rowReadState = '';
+    readState.textContent = threadReadStateText(thread);
+
     const detailToggle = document.createElement('span');
     detailToggle.className = 'thread-open-indicator';
     detailToggle.dataset.rowToggle = '';
@@ -2739,7 +2750,7 @@ class ThreadSectionController {
     preview.dataset.rowPreview = '';
     preview.textContent = rowPreviewText(thread, threadTitlesById);
 
-    top.append(badge, title, age, target, detailToggle);
+    top.append(badge, title, age, readState, target, detailToggle);
     row.append(top, preview);
 
     const step = document.createElement('div');
@@ -2817,6 +2828,11 @@ class ThreadSectionController {
     const age = row.querySelector<HTMLElement>('[data-row-age]');
     if (age) {
       age.textContent = formatAge(thread.updatedAt);
+    }
+
+    const readState = row.querySelector<HTMLElement>('[data-row-read-state]');
+    if (readState) {
+      readState.textContent = threadReadStateText(thread);
     }
 
     const toggle = row.querySelector<HTMLElement>('[data-row-toggle]');
@@ -3630,6 +3646,7 @@ class ManagerApp {
   #liveIssue: ManagerLiveIssue | null = null;
   #diagnosticEvents: ManagerLifecycleDebugEntry[] = [];
   #pendingThreadMutations = new Map<string, PendingThreadMutation>();
+  #pendingReadThreads = new Set<string>();
   #pendingSeedRecoveryThreads = new Set<string>();
   #sortOrders = buildManagerSortOrders();
 
@@ -4048,6 +4065,7 @@ class ManagerApp {
     if (historyMode !== 'none') {
       this.#setHistoryState(threadHistoryState(threadId), historyMode);
     }
+    this.#markThreadRead(threadId, false);
     this.#renderDoneToggle();
     this.#renderAll();
   }
@@ -4282,6 +4300,10 @@ class ManagerApp {
       }
     } else if (!nextOpenThread) {
       this.#openThreadMovementNotice = null;
+    }
+
+    if (nextOpenThread?.hasUnreadStateChange) {
+      this.#markThreadRead(nextOpenThread.id, false);
     }
 
     this.#renderAll();
@@ -4848,6 +4870,45 @@ class ManagerApp {
       ),
       tasks: this.allTasks,
     });
+  }
+
+  #markThreadRead(threadId: string, rerender = true): void {
+    const currentThread = this.#findThread(threadId);
+    if (
+      !currentThread?.hasUnreadStateChange ||
+      this.#pendingReadThreads.has(threadId)
+    ) {
+      return;
+    }
+
+    const lastReadAt = new Date().toISOString();
+    this.allThreads = this.allThreads.map((thread) =>
+      thread.id === threadId
+        ? {
+            ...thread,
+            lastReadAt,
+            hasUnreadStateChange: false,
+          }
+        : thread
+    );
+
+    if (rerender) {
+      this.#renderAll();
+      this.#renderActivitySummary();
+    }
+
+    this.#pendingReadThreads.add(threadId);
+    void this.apiFetch(`/api/threads/${threadId}/mark-read`, {
+      method: 'PUT',
+    })
+      .then((response) => {
+        if (!response || !response.ok) {
+          void this.loadAll();
+        }
+      })
+      .finally(() => {
+        this.#pendingReadThreads.delete(threadId);
+      });
   }
 
   #focusThread(threadId: string): void {

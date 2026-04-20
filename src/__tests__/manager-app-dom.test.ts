@@ -47,6 +47,9 @@ function makeThreadView(
     ],
     updatedAt: '2026-03-21T00:00:00.000Z',
     uiState: 'ai-finished-awaiting-user-confirmation',
+    lastReadAt: '2026-03-21T00:00:00.000Z',
+    hasUnreadStateChange: false,
+    canonicalStateReason: null,
     previewText: `[ai] ${title} の返答`,
     lastSender: 'ai',
     hiddenByDefault: false,
@@ -1380,6 +1383,267 @@ describe('manager-app DOM auth state matrix', () => {
       document.querySelector<HTMLElement>('[data-row-toggle]')?.textContent
     ).toContain('表示中');
     expect(row.textContent).toContain('現在の task');
+  });
+
+  it('marks unread task cards as read when the user opens them', async () => {
+    const validToken = 'mark-read-token';
+    const thread = makeThreadView('thread-unread', '未読 task', {
+      hasUnreadStateChange: true,
+      lastReadAt: '2026-03-20T00:00:00.000Z',
+    });
+    let markReadCallCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [thread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([thread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/threads/thread-unread/mark-read')) {
+          markReadCallCount += 1;
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              threadId: 'thread-unread',
+              lastReadAt: '2026-03-21T00:01:00.000Z',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    const row = document.querySelector<HTMLElement>('.thread-row')!;
+    expect(
+      row.querySelector<HTMLElement>('[data-row-read-state]')?.textContent
+    ).toBe('未読');
+
+    row.click();
+    await flushAsync(4);
+
+    expect(markReadCallCount).toBe(1);
+    expect(
+      document.querySelector<HTMLElement>('[data-row-read-state]')?.textContent
+    ).toBe('既読');
+  });
+
+  it('re-marks an open task card as read when a live status change arrives', async () => {
+    const validToken = 'live-read-token';
+    const baseThread = makeThreadView('thread-live-read', '状態更新確認', {
+      status: 'waiting',
+      uiState: 'queued',
+      lastSender: 'user',
+      previewText: '[user] 状態を確認してください',
+      messages: [
+        {
+          sender: 'user',
+          content: '状態を確認してください',
+          at: '2026-03-21T00:00:00.000Z',
+        },
+      ],
+    });
+    const encoder = new TextEncoder();
+    const liveStreamControl: {
+      push?: (payload: unknown) => void;
+      close?: () => void;
+    } = {};
+    let markReadCallCount = 0;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      kind: 'snapshot',
+                      emittedAt: '2026-03-21T00:00:00.000Z',
+                      threads: [baseThread],
+                      tasks: [],
+                      status: {
+                        running: true,
+                        configured: true,
+                        builtinBackend: true,
+                        detail: '待機中',
+                      },
+                    }) + '\n'
+                  )
+                );
+                liveStreamControl.push = (payload) => {
+                  controller.enqueue(
+                    encoder.encode(JSON.stringify(payload) + '\n')
+                  );
+                };
+                liveStreamControl.close = () => {
+                  controller.close();
+                };
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'application/x-ndjson; charset=utf-8',
+              },
+            }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([baseThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/threads/thread-live-read/mark-read')) {
+          markReadCallCount += 1;
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              threadId: 'thread-live-read',
+              lastReadAt: '2026-03-21T00:02:05.000Z',
+            }),
+            { status: 200 }
+          );
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+
+    document.querySelector<HTMLElement>('.thread-row')!.click();
+    await flushAsync(4);
+    expect(markReadCallCount).toBe(0);
+
+    liveStreamControl.push?.({
+      kind: 'snapshot',
+      emittedAt: '2026-03-21T00:02:00.000Z',
+      threads: [
+        {
+          ...baseThread,
+          uiState: 'ai-working',
+          isWorking: true,
+          hasUnreadStateChange: true,
+          recentStateTransitions: [
+            {
+              at: '2026-03-21T00:02:00.000Z',
+              fromState: 'queued',
+              toState: 'ai-working',
+              fromReason: null,
+              toReason: null,
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      status: {
+        running: true,
+        configured: true,
+        builtinBackend: true,
+        detail: '処理中 (状態更新確認)',
+        currentThreadId: 'thread-live-read',
+        currentThreadTitle: '状態更新確認',
+      },
+    });
+    await flushAsync(6);
+
+    expect(markReadCallCount).toBe(1);
+    expect(
+      document.querySelector<HTMLElement>('[data-row-read-state]')?.textContent
+    ).toBe('既読');
+    liveStreamControl.close?.();
   });
 
   it('marks a thread done immediately and disables repeated completion presses until the server responds', async () => {
