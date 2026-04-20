@@ -11,6 +11,8 @@ function makeItem(overrides: Partial<ManagerThreadView>): ManagerThreadView {
     createdAt: '2026-04-18T00:00:00.000Z',
     messages: [],
     uiState: 'queued',
+    lastReadAt: '2026-04-18T00:00:00.000Z',
+    hasUnreadStateChange: false,
     canonicalStateReason: null,
     previewText: '',
     lastSender: null,
