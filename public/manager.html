@@ -340,6 +340,64 @@
         color: #991b1b;
       }
 
+      .preflight-status {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 6px 18px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.74rem;
+      }
+
+      .preflight-status.hidden {
+        display: none;
+      }
+
+      .preflight-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
+      .preflight-label {
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .preflight-detail {
+        color: var(--text-muted);
+      }
+
+      .preflight-status[data-freshness='fresh'] .preflight-dot {
+        background: #22c55e;
+      }
+      .preflight-status[data-freshness='fresh'] .preflight-label {
+        color: #166534;
+      }
+
+      .preflight-status[data-freshness='stale'] .preflight-dot {
+        background: #f59e0b;
+      }
+      .preflight-status[data-freshness='stale'] .preflight-label {
+        color: #92400e;
+      }
+
+      .preflight-status[data-freshness='checking'] .preflight-dot {
+        background: #94a3b8;
+      }
+      .preflight-status[data-freshness='checking'] .preflight-label {
+        color: var(--text-muted);
+      }
+
+      .preflight-status[data-freshness='unavailable'] .preflight-dot {
+        background: #ef4444;
+      }
+      .preflight-status[data-freshness='unavailable'] .preflight-label {
+        color: #b91c1c;
+      }
+
       .activity-card {
         display: grid;
         gap: 12px;
@@ -2191,6 +2249,19 @@
         </div>
       </div>
     </section>
+
+    <div
+      id="preflight-status"
+      class="preflight-status hidden"
+      data-auth-content
+      data-freshness="checking"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="preflight-dot" aria-hidden="true"></span>
+      <span data-preflight-label class="preflight-label">環境を確認中…</span>
+      <span data-preflight-detail class="preflight-detail"></span>
+    </div>
 
     <main id="manager-main" data-auth-content aria-label="Manager">
       <section

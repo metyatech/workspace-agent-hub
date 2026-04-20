@@ -6585,3 +6585,195 @@ describe('manager-app live updates', () => {
     ).toContain('置き換わるため、この worker agent を停止しました');
   });
 });
+
+describe('preflight freshness status', () => {
+  function createFetchWithPreflight(preflight: unknown) {
+    return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(request);
+      const headers = new Headers(init?.headers ?? {});
+      const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+      if (providedToken !== 'test-token') {
+        return new Response(
+          JSON.stringify({ error: 'Access code required', authRequired: true }),
+          { status: 401 }
+        );
+      }
+
+      if (isRoute(url, '/threads')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (isRoute(url, '/tasks')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (isRoute(url, '/manager/repos')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (isRoute(url, '/manager/status')) {
+        return new Response(
+          JSON.stringify({
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動',
+          }),
+          { status: 200 }
+        );
+      }
+      if (isRoute(url, '/live')) {
+        return makeNdjsonResponse([
+          {
+            kind: 'snapshot',
+            emittedAt: '2026-03-21T00:00:00.000Z',
+            threads: [],
+            tasks: [],
+            repos: [],
+            status: {
+              running: false,
+              configured: true,
+              builtinBackend: true,
+              detail: '未起動',
+            },
+            preflight,
+          },
+        ]);
+      }
+      if (isRoute(url, '/builds')) {
+        return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+          status: 200,
+        });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  }
+
+  it('renders fresh state with summary', async () => {
+    const fetchMock = createFetchWithPreflight({
+      freshness: 'fresh',
+      summary: {
+        inScopeRepoCount: 5,
+        invalidRepoCount: 0,
+        approvalQueueCount: 0,
+        runCount: 0,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 0,
+      },
+      generatedAt: new Date().toISOString(),
+      error: null,
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const el = document.getElementById('preflight-status')!;
+    expect(el.classList.contains('hidden')).toBe(false);
+    expect(el.dataset.freshness).toBe('fresh');
+    expect(el.querySelector('[data-preflight-label]')!.textContent).toBe(
+      '環境チェック済み'
+    );
+    expect(el.querySelector('[data-preflight-detail]')!.textContent).toContain(
+      'repos: 5'
+    );
+  });
+
+  it('renders stale state with age indicator', async () => {
+    const staleTime = new Date(Date.now() - 8 * 60 * 1000).toISOString();
+    const fetchMock = createFetchWithPreflight({
+      freshness: 'stale',
+      summary: {
+        inScopeRepoCount: 3,
+        invalidRepoCount: 1,
+        approvalQueueCount: 0,
+        runCount: 0,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 0,
+      },
+      generatedAt: staleTime,
+      error: null,
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const el = document.getElementById('preflight-status')!;
+    expect(el.dataset.freshness).toBe('stale');
+    expect(el.querySelector('[data-preflight-label]')!.textContent).toBe(
+      '環境チェック（更新中）'
+    );
+    const detail = el.querySelector('[data-preflight-detail]')!.textContent!;
+    expect(detail).toContain('問題: 1');
+    expect(detail).toContain('分前のデータ');
+  });
+
+  it('renders checking state on first load', async () => {
+    const fetchMock = createFetchWithPreflight({
+      freshness: 'checking',
+      summary: null,
+      generatedAt: null,
+      error: null,
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const el = document.getElementById('preflight-status')!;
+    expect(el.dataset.freshness).toBe('checking');
+    expect(el.querySelector('[data-preflight-label]')!.textContent).toBe(
+      '環境を確認中…'
+    );
+    expect(el.querySelector('[data-preflight-detail]')!.textContent).toBe(
+      '初回確認を実行しています。'
+    );
+  });
+
+  it('renders unavailable state with error message', async () => {
+    const fetchMock = createFetchWithPreflight({
+      freshness: 'unavailable',
+      summary: null,
+      generatedAt: null,
+      error: 'Network timeout',
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const el = document.getElementById('preflight-status')!;
+    expect(el.dataset.freshness).toBe('unavailable');
+    expect(el.querySelector('[data-preflight-label]')!.textContent).toBe(
+      '環境チェック不可'
+    );
+    expect(el.querySelector('[data-preflight-detail]')!.textContent).toBe(
+      'Network timeout'
+    );
+  });
+
+  it('hides preflight status when payload is null', async () => {
+    const fetchMock = createFetchWithPreflight(null);
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const el = document.getElementById('preflight-status')!;
+    expect(el.classList.contains('hidden')).toBe(true);
+  });
+});

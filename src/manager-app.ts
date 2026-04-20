@@ -182,6 +182,23 @@ interface ManagerLiveSnapshotPayload {
   threads: ThreadView[];
   tasks: Task[];
   status: ManagerStatusPayload;
+  preflight: PreflightFreshnessPayload | null;
+}
+
+type PreflightFreshness = 'fresh' | 'stale' | 'checking' | 'unavailable';
+
+interface PreflightFreshnessPayload {
+  freshness: PreflightFreshness;
+  summary: {
+    inScopeRepoCount: number;
+    invalidRepoCount: number;
+    approvalQueueCount: number;
+    runCount: number;
+    mergeLaneCount: number;
+    unavailableRuntimeCount: number;
+  } | null;
+  generatedAt: string | null;
+  error: string | null;
 }
 
 interface ManagerLifecycleDebugEntry {
@@ -4419,6 +4436,69 @@ class ManagerApp {
     this.#renderLiveConnectionState();
   }
 
+  #renderPreflightStatus(payload: PreflightFreshnessPayload | null): void {
+    const el = document.getElementById(
+      'preflight-status'
+    ) as HTMLElement | null;
+    if (!el) {
+      return;
+    }
+    if (!payload) {
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.remove('hidden');
+    el.dataset.freshness = payload.freshness;
+
+    const label = el.querySelector<HTMLElement>('[data-preflight-label]');
+    const detail = el.querySelector<HTMLElement>('[data-preflight-detail]');
+
+    const freshnessLabels: Record<PreflightFreshness, string> = {
+      fresh: '環境チェック済み',
+      stale: '環境チェック（更新中）',
+      checking: '環境を確認中…',
+      unavailable: '環境チェック不可',
+    };
+
+    if (label) {
+      label.textContent = freshnessLabels[payload.freshness];
+    }
+
+    if (detail) {
+      if (payload.freshness === 'checking') {
+        detail.textContent = '初回確認を実行しています。';
+      } else if (payload.freshness === 'unavailable') {
+        detail.textContent = payload.error || '取得に失敗しました。';
+      } else if (payload.summary) {
+        const parts: string[] = [];
+        parts.push(`repos: ${payload.summary.inScopeRepoCount}`);
+        if (payload.summary.invalidRepoCount > 0) {
+          parts.push(`問題: ${payload.summary.invalidRepoCount}`);
+        }
+        if (payload.summary.runCount > 0) {
+          parts.push(`実行中: ${payload.summary.runCount}`);
+        }
+        if (payload.summary.mergeLaneCount > 0) {
+          parts.push(`merge: ${payload.summary.mergeLaneCount}`);
+        }
+        if (payload.summary.unavailableRuntimeCount > 0) {
+          parts.push(`runtime不可: ${payload.summary.unavailableRuntimeCount}`);
+        }
+        detail.textContent = parts.join(' / ');
+        if (payload.freshness === 'stale' && payload.generatedAt) {
+          const age = Math.round(
+            (Date.now() - new Date(payload.generatedAt).getTime()) / 1000
+          );
+          const ageLabel =
+            age >= 60 ? `${Math.round(age / 60)}分前` : `${age}秒前`;
+          detail.textContent += ` (${ageLabel}のデータ)`;
+        }
+      } else {
+        detail.textContent = '';
+      }
+    }
+  }
+
   #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): boolean {
     const nextSnapshotAt = snapshotEmittedAtValue(snapshot.emittedAt);
     if (
@@ -4442,6 +4522,7 @@ class ManagerApp {
       tasks: snapshot.tasks,
     });
     this.#applyManagerStatus(snapshot.status);
+    this.#renderPreflightStatus(snapshot.preflight ?? null);
     return true;
   }
 
