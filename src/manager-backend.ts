@@ -115,6 +115,13 @@ import {
 } from './manager-repos.js';
 import { ensureRepoBootstrap } from './repo-bootstrap.js';
 import {
+  formatPreflightReport,
+  runPreflight,
+  type PreflightCheckId,
+  type PreflightCheckResult,
+  type PreflightReport,
+} from './preflight.js';
+import {
   buildWorkerRuntimeLaunchSpec,
   describeWorkerRuntimeCliAvailability,
   parseGenericRuntimeOutput,
@@ -128,6 +135,11 @@ import {
   isWindowsBatchCommand,
   wrapWindowsBatchCommandForSpawn,
 } from './windows-batch-spawn.js';
+import {
+  formatSafeStopBlockerMessage,
+  type SafeStopBlocker,
+  type SafeStopDiagnosticReport,
+} from './contracts/safe-stop-diagnostics.js';
 
 export const MANAGER_SESSION_FILE = '.workspace-agent-hub-manager.json';
 export const MANAGER_QUEUE_FILE = '.workspace-agent-hub-manager-queue.jsonl';
@@ -394,13 +406,19 @@ function killProcessTree(pid: number): Promise<void> {
   });
 }
 
-export async function killAllActiveChildProcesses(): Promise<void> {
+export async function killAllActiveChildProcesses(): Promise<SafeStopDiagnosticReport> {
   const pids = [...activeChildProcesses]
     .map((proc) => proc.pid)
     .filter((pid): pid is number => pid != null);
 
   if (pids.length === 0) {
-    return;
+    return {
+      trigger: 'graceful-shutdown',
+      blockers: [],
+      killedProcesses: [],
+      survivingProcesses: [],
+      summary: 'No active child processes needed shutdown cleanup.',
+    };
   }
 
   await Promise.allSettled(pids.map((pid) => killProcessTree(pid)));
@@ -411,6 +429,14 @@ export async function killAllActiveChildProcesses(): Promise<void> {
     await new Promise<void>((r) => setTimeout(r, 200));
   }
 
+  const survivingProcesses = [...activeChildProcesses]
+    .map((proc) => proc.pid)
+    .filter((pid): pid is number => pid != null)
+    .map((pid) => ({
+      pid,
+      detail: 'Process was still alive after graceful shutdown wait window.',
+    }));
+
   // Force kill any survivors
   for (const proc of activeChildProcesses) {
     try {
@@ -420,6 +446,33 @@ export async function killAllActiveChildProcesses(): Promise<void> {
     }
   }
   activeChildProcesses.clear();
+  const killedProcesses = pids
+    .filter((pid) => !survivingProcesses.some((entry) => entry.pid === pid))
+    .map((pid) => ({
+      pid,
+      detail: 'Process exited during graceful shutdown cleanup.',
+    }));
+  return {
+    trigger: 'graceful-shutdown',
+    blockers: survivingProcesses.length
+      ? [
+          {
+            summary: 'Some managed child processes resisted shutdown.',
+            failed: `${survivingProcesses.length} process(es) remained alive past the graceful shutdown wait window.`,
+            attempted:
+              'Sent tree kill to every tracked child process, waited up to 5 seconds, then forced SIGKILL on survivors.',
+            nextAction:
+              'Inspect the surviving PIDs in the shutdown diagnostics if this residue keeps recurring.',
+          },
+        ]
+      : [],
+    killedProcesses,
+    survivingProcesses,
+    summary:
+      survivingProcesses.length === 0
+        ? `Graceful shutdown cleaned up ${killedProcesses.length} child process(es).`
+        : `Graceful shutdown left ${survivingProcesses.length} child process(es) requiring forced termination.`,
+  };
 }
 
 function parseEnvDurationMs(name: string, fallbackMs: number): number {
@@ -908,8 +961,168 @@ async function readSessionFile(dir: string): Promise<ManagerSession> {
   }
 }
 
+function hasSessionWorkToDo(input: {
+  session: ManagerSession;
+  queue: QueueEntry[];
+}): boolean {
+  return (
+    input.session.activeAssignments.length > 0 ||
+    Boolean(input.session.dispatchingThreadId) ||
+    (input.session.dispatchingQueueEntryIds?.length ?? 0) > 0 ||
+    pendingQueueEntries(input.queue, input.session).length > 0
+  );
+}
+
+function shouldRetainSessionRuntimeError(input: {
+  dir: string;
+  session: ManagerSession;
+  hasErrorThreads: boolean;
+  hasWorkToDo: boolean;
+}): boolean {
+  const resolvedDir = resolvePath(input.dir);
+  if (input.hasErrorThreads) {
+    return true;
+  }
+  if (input.session.lastErrorMessage?.includes('実行前チェックで blocker')) {
+    return true;
+  }
+  if (recoveryRetryTimers.has(resolvedDir)) {
+    return true;
+  }
+  return !input.hasWorkToDo && Boolean(input.session.lastErrorMessage);
+}
+
+function shouldRetainSessionPause(input: {
+  session: ManagerSession;
+  hasWorkToDo: boolean;
+}): boolean {
+  return Boolean(input.session.lastPauseMessage) && input.hasWorkToDo;
+}
+
+function recomputeDispatchingSessionState(input: {
+  session: ManagerSession;
+  queue: QueueEntry[];
+}): ManagerSession {
+  const dispatchingIds = input.session.dispatchingQueueEntryIds ?? [];
+  const queueIdSet = new Set(input.queue.map((entry) => entry.id));
+  const hasDispatchingQueueEntries =
+    dispatchingIds.length > 0 &&
+    dispatchingIds.some((id) => queueIdSet.has(id));
+  if (
+    !input.session.dispatchingThreadId ||
+    hasDispatchingQueueEntries ||
+    input.session.activeAssignments.length > 0
+  ) {
+    return input.session;
+  }
+
+  return clearDispatchingSessionState(input.session);
+}
+
+export async function recomputeSessionState(
+  dir: string,
+  session: ManagerSession,
+  queue?: QueueEntry[]
+): Promise<ManagerSession> {
+  const currentQueue = queue ?? (await readQueue(dir));
+  const sessionWithDispatch = recomputeDispatchingSessionState({
+    session,
+    queue: currentQueue,
+  });
+  const meta = await readManagerThreadMeta(dir);
+  const hasErrorThreads = Object.values(meta).some((entry) => {
+    const explicitRuntimeError =
+      typeof entry.runtimeErrorMessage === 'string' &&
+      entry.runtimeErrorMessage.trim().length > 0;
+    return explicitRuntimeError || entry.canonicalState === 'error';
+  });
+  const hasWorkToDo = hasSessionWorkToDo({
+    session: sessionWithDispatch,
+    queue: currentQueue,
+  });
+  const nextStatus =
+    sessionWithDispatch.status === 'not-started'
+      ? 'not-started'
+      : sessionWithDispatch.activeAssignments.length > 0 ||
+          sessionWithDispatch.dispatchingThreadId ||
+          (sessionWithDispatch.dispatchingQueueEntryIds?.length ?? 0) > 0
+        ? 'busy'
+        : 'idle';
+  const keepError = shouldRetainSessionRuntimeError({
+    dir,
+    session: sessionWithDispatch,
+    hasErrorThreads,
+    hasWorkToDo,
+  });
+  const keepPause = shouldRetainSessionPause({
+    session: sessionWithDispatch,
+    hasWorkToDo,
+  });
+
+  return {
+    ...sessionWithDispatch,
+    status: nextStatus,
+    lastErrorMessage: keepError ? sessionWithDispatch.lastErrorMessage : null,
+    lastErrorAt: keepError ? sessionWithDispatch.lastErrorAt : null,
+    lastPauseMessage: keepPause ? sessionWithDispatch.lastPauseMessage : null,
+    lastPauseAt: keepPause ? sessionWithDispatch.lastPauseAt : null,
+    lastPauseAutoResumeAt: keepPause
+      ? sessionWithDispatch.lastPauseAutoResumeAt
+      : null,
+  };
+}
+
+export async function reconcileQueueIntegrity(dir: string): Promise<{
+  changed: boolean;
+  removedEntryIds: string[];
+  dedupedEntryIds: string[];
+  queue: QueueEntry[];
+}> {
+  const [queue, threads] = await Promise.all([
+    readQueue(dir),
+    listThreads(dir),
+  ]);
+  const resolvedThreadIds = new Set(
+    threads
+      .filter((thread) => thread.status === 'resolved')
+      .map((thread) => thread.id)
+  );
+  const seenEntryIds = new Set<string>();
+  const nextQueue: QueueEntry[] = [];
+  const removedEntryIds: string[] = [];
+  const dedupedEntryIds: string[] = [];
+
+  for (const entry of queue) {
+    if (seenEntryIds.has(entry.id)) {
+      dedupedEntryIds.push(entry.id);
+      continue;
+    }
+    seenEntryIds.add(entry.id);
+    if (resolvedThreadIds.has(entry.threadId)) {
+      removedEntryIds.push(entry.id);
+      continue;
+    }
+    nextQueue.push(entry);
+  }
+
+  const changed =
+    removedEntryIds.length > 0 ||
+    dedupedEntryIds.length > 0 ||
+    nextQueue.length !== queue.length;
+  if (changed) {
+    await writeQueue(dir, nextQueue);
+  }
+
+  return {
+    changed,
+    removedEntryIds,
+    dedupedEntryIds,
+    queue: nextQueue,
+  };
+}
+
 export async function readSession(dir: string): Promise<ManagerSession> {
-  return readSessionFile(dir);
+  return recomputeSessionState(dir, await readSessionFile(dir));
 }
 
 export async function updateSession(
@@ -1322,7 +1535,10 @@ async function reconcileActiveAssignments(
         : session;
       // Clear any stale error from a previous assignment that has already
       // been cleaned up — the error is no longer relevant.
-      if (clearedSession.lastErrorMessage !== null) {
+      if (
+        clearedSession.lastErrorMessage !== null &&
+        !clearedSession.lastErrorMessage.includes('実行前チェックで blocker')
+      ) {
         return {
           ...clearedSession,
           lastErrorMessage: null,
@@ -1400,7 +1616,8 @@ async function reconcileActiveAssignments(
     // failure from an assignment that no longer exists.
     if (
       replaced.activeAssignments.length === 0 &&
-      replaced.lastErrorMessage !== null
+      replaced.lastErrorMessage !== null &&
+      !replaced.lastErrorMessage.includes('実行前チェックで blocker')
     ) {
       return { ...replaced, lastErrorMessage: null, lastErrorAt: null };
     }
@@ -4901,27 +5118,39 @@ function buildAutoMwtInitBlockedMessage(input: {
       : input.defaultBranch
         ? `mwt init --base ${input.defaultBranch} --remote origin`
         : 'mwt init --base <branch> --remote origin';
-  return [
-    '[Manager] この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できませんでした。',
-    '安全に自動初期化できる条件だけ試しましたが、この repo は条件を満たしていなかったため停止しました。',
-    input.detail,
-    changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
-    `seed リポジトリで \`${suggestedCommand}\` を実行してから再開してください。`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const blocker: SafeStopBlocker = {
+    summary:
+      'この既存リポジトリは managed-worktree-system (`mwt`) 初期化前のため、Manager の isolated write task を開始できませんでした。',
+    failed: [
+      input.detail,
+      changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    attempted:
+      '安全に自動初期化できる条件だけ試しましたが、この repo は条件を満たしていなかったため停止しました。',
+    nextAction: `seed リポジトリで \`${suggestedCommand}\` を実行してから再開してください。`,
+  };
+  return formatSafeStopBlockerMessage({
+    header: blocker.summary,
+    blocker,
+  });
 }
 
 function buildPausedWorktreeResumeBlockedMessage(input: {
   detail: string;
 }): string {
-  return [
-    '[Manager] 保存されていた paused managed task worktree を再利用できませんでした。',
-    input.detail,
-    'paused worktree の情報は保持したまま停止しました。原因を直したら同じ thread に続きの依頼を送ってください。',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const blocker: SafeStopBlocker = {
+    summary:
+      '保存されていた paused managed task worktree を再利用できませんでした。',
+    failed: input.detail,
+    attempted: 'paused worktree の情報を保持したまま安全停止しました。',
+    nextAction: '原因を直したら同じ thread に続きの依頼を送ってください。',
+  };
+  return formatSafeStopBlockerMessage({
+    header: blocker.summary,
+    blocker,
+  });
 }
 
 function clearPendingReplyStateFromMeta(
@@ -6061,6 +6290,97 @@ function parseMessageTimestamp(
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function blockingPreflightChecks(
+  report: PreflightReport
+): PreflightCheckResult[] {
+  return report.checks.filter((check) => check.severity === 'fail');
+}
+
+function appliedCorrectiveActionDetails(
+  check: PreflightCheckResult | undefined
+): string | null {
+  if (!check) {
+    return null;
+  }
+  const applied = check.correctiveActions.filter((action) => action.applied);
+  if (applied.length === 0) {
+    return null;
+  }
+  const lines = [check.summary];
+  for (const action of applied) {
+    lines.push(
+      `- ${action.description}${action.filesChanged.length ? ` (${action.filesChanged.join(', ')})` : ''}`
+    );
+  }
+  return lines.join('\n');
+}
+
+function buildDispatchPreflightBlockedMessage(report: PreflightReport): string {
+  const blocker: SafeStopBlocker = {
+    summary:
+      '実行前チェックで blocker が見つかったため、このまま worker を起動しません。',
+    failed: blockingPreflightChecks(report)
+      .map((check) => `${check.checkId}: ${check.summary}`)
+      .join(' / '),
+    attempted:
+      'Unified preflight を実行し、repo bootstrap・mwt readiness・runtime availability を確認しました。',
+    nextAction:
+      '下の preflight report を確認し、未解消の blocker を直してから同じ依頼を再送してください。',
+  };
+  return `${formatSafeStopBlockerMessage({ header: blocker.summary, blocker })}\n\n${formatPreflightReport(report)}`;
+}
+
+async function runManagerDispatchPreflight(input: {
+  workspaceRoot: string;
+  repoRoot: string;
+}): Promise<PreflightReport> {
+  return runPreflight({
+    workspaceRoot: input.workspaceRoot,
+    repoRoots: [input.repoRoot],
+    applyCorrections: false,
+    skipChecks: ['queue-integrity', 'repo-bootstrap', 'mwt-readiness'],
+  });
+}
+
+async function runManagerStartupPreflight(
+  dir: string
+): Promise<PreflightReport> {
+  const report = await runPreflight({
+    workspaceRoot: dir,
+    applyCorrections: false,
+    skipChecks: ['repo-contract', 'repo-bootstrap', 'mwt-readiness'],
+  });
+  const runtimeBlockers = report.checks.filter(
+    (check) =>
+      check.checkId === 'runtime-availability' && check.severity === 'fail'
+  );
+  if (runtimeBlockers.length > 0) {
+    await setManagerRuntimeError(
+      dir,
+      buildDispatchPreflightBlockedMessage(report)
+    );
+  } else {
+    await updateSession(dir, (session) =>
+      session.lastErrorMessage &&
+      session.lastErrorMessage.includes('実行前チェックで blocker')
+        ? {
+            ...session,
+            lastErrorMessage: null,
+            lastErrorAt: null,
+          }
+        : session
+    );
+  }
+  return report;
+}
+
+function hasStartupPreflightBlockers(report: PreflightReport): boolean {
+  return report.checks.some(
+    (check) =>
+      check.checkId === 'runtime-availability' && check.severity === 'fail'
+  );
 }
 
 function inspectAssignmentReservation(assignment: ManagerActiveAssignment): {
@@ -8637,7 +8957,9 @@ ${bootstrapResult.detail}`,
                   await addAiMessageBestEffort({
                     dir: resolvedDir,
                     threadId: thread.id,
-                    content: `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。\n\n${autoInitResult.detail}`,
+                    content: `[Manager] この repo は managed-worktree-system (\`mwt\`) 未初期化だったため、安全に自動初期化してから続行します。
+
+${autoInitResult.detail}`,
                     status: 'active',
                   });
                 } else {
@@ -8653,7 +8975,6 @@ ${bootstrapResult.detail}`,
                     content: errMsg,
                     status: 'needs-reply',
                   });
-                  // Persist as runtime error for operational blocker (auto-mwt init)
                   await setThreadRuntimeErrorMessage(
                     resolvedDir,
                     thread.id,
@@ -8682,6 +9003,26 @@ ${bootstrapResult.detail}`,
                   void processNextQueued(dir, resolvedDir);
                   return;
                 }
+              }
+
+              const preflightReport = await runManagerDispatchPreflight({
+                workspaceRoot: resolvedDir,
+                repoRoot: assignment.targetRepoRoot,
+              });
+              const preflightBlockers =
+                blockingPreflightChecks(preflightReport);
+              if (preflightBlockers.length > 0) {
+                await failWorkerBootstrapGate({
+                  dir,
+                  resolvedDir,
+                  threadId: thread.id,
+                  assignment,
+                  queueEntryIds: assignment.queueEntryIds,
+                  message:
+                    buildDispatchPreflightBlockedMessage(preflightReport),
+                });
+                void processNextQueued(dir, resolvedDir);
+                return;
               }
 
               const wt = await createManagerWorktree({
@@ -9462,9 +9803,14 @@ async function cleanupStaleTempFiles(dir: string): Promise<void> {
  */
 export async function eagerReconcile(dir: string): Promise<void> {
   await cleanupStaleTempFiles(dir);
+  await reconcileQueueIntegrity(dir);
+  const startupPreflight = await runManagerStartupPreflight(dir);
   await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
   startStaleSeedRecoveryMonitor(dir);
+  if (hasStartupPreflightBlockers(startupPreflight)) {
+    return;
+  }
   await processNextQueued(dir, resolvePath(dir));
 }
 
@@ -9653,6 +9999,7 @@ export async function kickIdleQueuedManagerWork(
   _reason = 'idle-queued-work'
 ): Promise<boolean> {
   const resolvedDir = resolvePath(dir);
+  await reconcileQueueIntegrity(dir);
   let session = await reconcileActiveAssignments(dir);
   const queue = await readQueue(dir);
   if (
@@ -9686,9 +10033,14 @@ export async function startBuiltinManager(
     }));
   }
   await clearManagerRuntimePause(dir);
+  await reconcileQueueIntegrity(dir);
+  const startupPreflight = await runManagerStartupPreflight(dir);
   await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
   startStaleSeedRecoveryMonitor(dir);
+  if (hasStartupPreflightBlockers(startupPreflight)) {
+    return { started: true, detail: 'ビルトインマネージャーを起動しました' };
+  }
   void processNextQueued(dir, resolvePath(dir));
   return { started: true, detail: 'ビルトインマネージャーを起動しました' };
 }

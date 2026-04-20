@@ -16,6 +16,8 @@ const {
   reopenThreadMock,
   resolveThreadMock,
   ensureRepoBootstrapMock,
+  runPreflightMock,
+  formatPreflightReportMock,
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileMock: vi.fn(),
@@ -27,6 +29,8 @@ const {
   reopenThreadMock: vi.fn(),
   resolveThreadMock: vi.fn(),
   ensureRepoBootstrapMock: vi.fn(),
+  runPreflightMock: vi.fn(),
+  formatPreflightReportMock: vi.fn(),
 }));
 
 vi.mock('child_process', () => ({
@@ -181,6 +185,11 @@ vi.mock('../repo-bootstrap.js', () => ({
   resolvePowerShellCommand: vi.fn(),
 }));
 
+vi.mock('../preflight.js', () => ({
+  runPreflight: runPreflightMock,
+  formatPreflightReport: formatPreflightReportMock,
+}));
+
 import {
   buildRoutingPrompt,
   buildCodexSpawnOptions,
@@ -204,9 +213,12 @@ import {
   pickThreadUserMessage,
   preserveSeedRecoveryAndContinue,
   kickIdleQueuedManagerWork,
+  killAllActiveChildProcesses,
   processNextQueued,
   readQueue,
   readSession,
+  recomputeSessionState,
+  reconcileQueueIntegrity,
   resetProcessNextQueuedStateForTests,
   resetStaleSeedRecoveryMonitorsForTests,
   reviewStaleSeedRecoveryForTests,
@@ -437,6 +449,8 @@ beforeEach(async () => {
   reopenThreadMock.mockReset();
   resolveThreadMock.mockReset();
   ensureRepoBootstrapMock.mockReset();
+  runPreflightMock.mockReset();
+  formatPreflightReportMock.mockReset();
   addMessageMock.mockResolvedValue(undefined);
   createThreadMock.mockResolvedValue(undefined);
   getThreadMock.mockImplementation(async (_dir: string, threadId: string) => ({
@@ -464,6 +478,44 @@ beforeEach(async () => {
       detail: 'already bootstrapped',
       issues: [],
     })
+  );
+  runPreflightMock.mockResolvedValue({
+    workspaceRoot: tempDir,
+    generatedAt: '2026-04-19T00:00:00.000Z',
+    overall: 'pass',
+    checks: [
+      {
+        checkId: 'repo-bootstrap',
+        severity: 'pass',
+        target: tempDir,
+        summary: 'Repository bootstrap is already satisfied.',
+        issues: [],
+        correctiveActions: [],
+        durationMs: 0,
+      },
+      {
+        checkId: 'mwt-readiness',
+        severity: 'pass',
+        target: tempDir,
+        summary: 'managed-worktree-system is already initialized.',
+        issues: [],
+        correctiveActions: [],
+        durationMs: 0,
+      },
+    ],
+    summary: {
+      inScopeRepoCount: 1,
+      invalidRepoCount: 0,
+      approvalQueueCount: 0,
+      runCount: 0,
+      mergeLaneCount: 0,
+      unavailableRuntimeCount: 0,
+    },
+    repoAudits: [],
+    totalDurationMs: 0,
+  });
+  formatPreflightReportMock.mockImplementation(
+    (report: { overall: string }) => `preflight:${report.overall}`
   );
   execFileMock.mockImplementation(
     (
@@ -615,6 +667,167 @@ afterEach(async () => {
     force: true,
     maxRetries: 10,
     retryDelay: 50,
+  });
+});
+
+describe('manager backend state recomputation', () => {
+  it('recomputes a stale busy session back to idle and clears stale runtime blockers', async () => {
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-queued',
+        title: 'Queued thread',
+        status: 'active',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        updatedAt: '2026-04-19T00:00:00.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: '続けてください',
+            at: '2026-04-19T00:00:00.000Z',
+          },
+        ],
+      },
+    ]);
+    await writeQueue(tempDir, [
+      {
+        id: 'queue-queued',
+        threadId: 'thread-queued',
+        content: '続けてください',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const recomputed = await recomputeSessionState(tempDir, {
+      workspaceKey: tempDir,
+      status: 'busy',
+      sessionId: null,
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-19T00:00:00.000Z',
+      lastMessageAt: '2026-04-19T00:00:00.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage: 'stale failure',
+      lastErrorAt: '2026-04-19T00:00:00.000Z',
+      lastPauseMessage: 'stale pause',
+      lastPauseAt: '2026-04-19T00:00:00.000Z',
+      lastPauseAutoResumeAt: '2026-04-19T00:10:00.000Z',
+      activeAssignments: [],
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: null,
+      dispatchingAssigneeKind: null,
+      dispatchingAssigneeLabel: null,
+      dispatchingDetail: null,
+      dispatchingStartedAt: null,
+    });
+
+    expect(recomputed.status).toBe('idle');
+    expect(recomputed.lastErrorMessage).toBeNull();
+    expect(recomputed.lastPauseMessage).toBe('stale pause');
+  });
+
+  it('clears stale dispatching state when the reserved queue entry disappeared', async () => {
+    listThreadsMock.mockResolvedValue([]);
+
+    const recomputed = await recomputeSessionState(tempDir, {
+      workspaceKey: tempDir,
+      status: 'busy',
+      sessionId: null,
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-19T00:00:00.000Z',
+      lastMessageAt: '2026-04-19T00:00:00.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage: null,
+      lastErrorAt: null,
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
+      activeAssignments: [],
+      dispatchingThreadId: 'thread-missing',
+      dispatchingQueueEntryIds: ['queue-missing'],
+      dispatchingAssigneeKind: 'worker',
+      dispatchingAssigneeLabel: 'Worker agent',
+      dispatchingDetail: 'preparing',
+      dispatchingStartedAt: '2026-04-19T00:00:01.000Z',
+    });
+
+    expect(recomputed.dispatchingThreadId).toBeNull();
+    expect(recomputed.dispatchingQueueEntryIds).toEqual([]);
+    expect(recomputed.status).toBe('idle');
+  });
+
+  it('reconciles queue integrity by removing duplicate ids and resolved-thread entries', async () => {
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-done',
+        title: 'Done thread',
+        status: 'resolved',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        updatedAt: '2026-04-19T00:00:00.000Z',
+        messages: [],
+      },
+      {
+        id: 'thread-keep',
+        title: 'Keep thread',
+        status: 'active',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        updatedAt: '2026-04-19T00:00:00.000Z',
+        messages: [],
+      },
+    ]);
+    await writeQueue(tempDir, [
+      {
+        id: 'queue-dup',
+        threadId: 'thread-keep',
+        content: 'A',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+      {
+        id: 'queue-dup',
+        threadId: 'thread-keep',
+        content: 'B',
+        createdAt: '2026-04-19T00:00:01.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+      {
+        id: 'queue-done',
+        threadId: 'thread-done',
+        content: 'done',
+        createdAt: '2026-04-19T00:00:02.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+
+    const result = await reconcileQueueIntegrity(tempDir);
+    const queue = await readQueue(tempDir);
+
+    expect(result.changed).toBe(true);
+    expect(result.dedupedEntryIds).toEqual(['queue-dup']);
+    expect(result.removedEntryIds).toEqual(['queue-done']);
+    expect(queue).toHaveLength(1);
+    expect(queue[0]?.id).toBe('queue-dup');
+  });
+
+  it('returns a graceful shutdown diagnostic report when no child processes are active', async () => {
+    const report = await killAllActiveChildProcesses();
+
+    expect(report).toMatchObject({
+      trigger: 'graceful-shutdown',
+      blockers: [],
+      killedProcesses: [],
+      survivingProcesses: [],
+    });
+    expect(report.summary).toContain('No active child processes');
   });
 });
 
@@ -2683,6 +2896,9 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'paused managed task worktree を再利用できませんでした'
     );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('何が失敗したか:');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('自動で試したこと:');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('次にやること:');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'manager-owned mwt task worktree'
     );
@@ -5691,23 +5907,43 @@ describe('manager backend codex integration', () => {
 
     await waitForManagerIdle(tempDir);
 
-    expect(ensureRepoBootstrapMock).toHaveBeenCalled();
-    expect(ensureRepoBootstrapMock.mock.calls[0]?.[0]).toMatchObject({
+    expect(runPreflightMock).toHaveBeenCalled();
+    expect(runPreflightMock.mock.calls[0]?.[0]).toMatchObject({
       workspaceRoot: tempDir,
-      repoRoot: tempDir,
+      repoRoots: [tempDir],
+      applyCorrections: false,
     });
-    expect(ensureRepoBootstrapMock.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(runPreflightMock.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(createManagerWorktree).mock.invocationCallOrder[0] ?? Infinity
     );
   });
 
-  it('blocks worker dispatch when auto-bootstrap fails', async () => {
-    ensureRepoBootstrapMock.mockResolvedValueOnce({
-      ready: false,
-      attempted: true,
-      repoRoot: tempDir,
-      detail: 'Bootstrap command failed.',
-      issues: ['bootstrap-command-failed'],
+  it('blocks worker dispatch when dispatch preflight fails', async () => {
+    runPreflightMock.mockResolvedValueOnce({
+      workspaceRoot: tempDir,
+      generatedAt: '2026-04-19T00:00:00.000Z',
+      overall: 'fail',
+      checks: [
+        {
+          checkId: 'runtime-availability',
+          severity: 'fail',
+          target: 'codex',
+          summary: 'codex unavailable',
+          issues: ['codex missing'],
+          correctiveActions: [],
+          durationMs: 0,
+        },
+      ],
+      summary: {
+        inScopeRepoCount: 1,
+        invalidRepoCount: 0,
+        approvalQueueCount: 0,
+        runCount: 0,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 1,
+      },
+      repoAudits: [],
+      totalDurationMs: 0,
     });
     const workerProc = makeProc(9103);
     spawnMock.mockReturnValueOnce(workerProc);
@@ -5721,7 +5957,7 @@ describe('manager backend codex integration', () => {
     const latestCall = addMessageMock.mock.calls.at(-1);
     expect(latestCall?.[1]).toBe('thread-bootstrap-fail');
     expect(latestCall?.[4]).toBe('needs-reply');
-    expect(String(latestCall?.[2] ?? '')).toContain('bootstrap');
+    expect(String(latestCall?.[2] ?? '')).toContain('preflight:fail');
   });
 
   it('skips integration merge and push when the approved worktree has no deliverable commits', async () => {
@@ -5805,12 +6041,6 @@ describe('manager backend codex integration', () => {
       aheadCommitCount: 0,
       mergeSourceRef: null,
     });
-    await writeManagerThreadMeta(tempDir, {
-      'thread-auto-init-noop': {
-        managedBaseBranch: 'main',
-      },
-    });
-
     await sendToBuiltinManager(tempDir, 'thread-auto-init-noop', 'message');
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
@@ -5841,7 +6071,9 @@ describe('manager backend codex integration', () => {
       branchName: 'mgr/assign_thread-auto-init-noop/preview000',
     });
     expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-auto-init-noop');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('onboarding commit');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。'
+    );
     expect(addMessageMock.mock.calls.at(-1)?.[2]).toContain(
       'no-op review done'
     );
@@ -7204,6 +7436,117 @@ describe('eagerReconcile restart resilience', () => {
     const session = await readSession(tempDir);
     expect(session.lastPauseMessage).toBe('Codex quota exhausted');
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('startBuiltinManager records startup preflight runtime blockers and does not dispatch work', async () => {
+    runPreflightMock.mockResolvedValueOnce({
+      workspaceRoot: tempDir,
+      generatedAt: '2026-04-19T00:00:00.000Z',
+      overall: 'fail',
+      checks: [
+        {
+          checkId: 'runtime-availability',
+          severity: 'fail',
+          target: 'codex',
+          summary: 'codex unavailable',
+          issues: ['codex missing'],
+          correctiveActions: [],
+          durationMs: 0,
+        },
+      ],
+      summary: {
+        inScopeRepoCount: 1,
+        invalidRepoCount: 0,
+        approvalQueueCount: 0,
+        runCount: 0,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 1,
+      },
+      repoAudits: [],
+      totalDurationMs: 0,
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'queue-runtime-blocked',
+        threadId: 'thread-runtime-blocked',
+        content: 'continue',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-runtime-blocked',
+        title: 'Runtime blocked',
+        status: 'active',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        updatedAt: '2026-04-19T00:00:00.000Z',
+        messages: [],
+      },
+    ]);
+
+    const result = await startBuiltinManager(tempDir);
+    const session = await readSession(tempDir);
+
+    expect(result.started).toBe(true);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(session.lastErrorMessage).toContain('実行前チェックで blocker');
+  });
+
+  it('eagerReconcile does not dispatch work when startup preflight finds runtime blockers', async () => {
+    runPreflightMock.mockResolvedValueOnce({
+      workspaceRoot: tempDir,
+      generatedAt: '2026-04-19T00:00:00.000Z',
+      overall: 'fail',
+      checks: [
+        {
+          checkId: 'runtime-availability',
+          severity: 'fail',
+          target: 'codex',
+          summary: 'codex unavailable',
+          issues: ['codex missing'],
+          correctiveActions: [],
+          durationMs: 0,
+        },
+      ],
+      summary: {
+        inScopeRepoCount: 1,
+        invalidRepoCount: 0,
+        approvalQueueCount: 0,
+        runCount: 0,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 1,
+      },
+      repoAudits: [],
+      totalDurationMs: 0,
+    });
+    await writeQueue(tempDir, [
+      {
+        id: 'queue-runtime-blocked-2',
+        threadId: 'thread-runtime-blocked-2',
+        content: 'continue',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        processed: false,
+        priority: 'normal',
+      },
+    ]);
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-runtime-blocked-2',
+        title: 'Runtime blocked 2',
+        status: 'active',
+        createdAt: '2026-04-19T00:00:00.000Z',
+        updatedAt: '2026-04-19T00:00:00.000Z',
+        messages: [],
+      },
+    ]);
+
+    await eagerReconcile(tempDir);
+    const session = await readSession(tempDir);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(session.lastErrorMessage).toContain('実行前チェックで blocker');
   });
 
   it('processNextQueued skips dispatch when session is paused', async () => {
