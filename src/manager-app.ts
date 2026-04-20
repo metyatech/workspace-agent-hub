@@ -1773,7 +1773,7 @@ function describeThreadState(thread: ThreadView): string | null {
   if (thread.seedRecoveryPending) {
     return (
       thread.workerRuntimeDetail ??
-      '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。'
+      '対象 repo の seed worktree に changes があるため止まっています。下の「退避して続行」で一時退避を再試行すると再開できます。'
     );
   }
   if (thread.workerRuntimeState === 'cancelled-as-superseded') {
@@ -1844,7 +1844,7 @@ function describeThreadState(thread: ThreadView): string | null {
 
 function threadNextActionText(thread: ThreadView): string {
   if (thread.seedRecoveryPending) {
-    return '下の「退避して続行」で seed の tracked changes を一時退避すると、この依頼を再開できます。';
+    return '下の「退避して続行」で seed の changes の一時退避を再試行すると、この依頼を再開できます。';
   }
   if (thread.routingConfirmationNeeded) {
     return 'この件の扱い方だけ先に確認して返します。';
@@ -3465,7 +3465,7 @@ class DetailController {
       const summary = document.createElement('div');
       summary.className = 'detail-note';
       summary.textContent =
-        'この依頼だけ、対象 repo の seed worktree に tracked changes があるため止まっています。ここで一時退避すると同じ queue をそのまま再開できます。';
+        'この依頼だけ、対象 repo の seed worktree に changes があるため止まっています。ここで一時退避を再試行すると同じ queue をそのまま再開できます。';
       recovery.appendChild(summary);
 
       const repoGroup = document.createElement('div');
@@ -3489,7 +3489,7 @@ class DetailController {
         filesGroup.className = 'detail-related-group';
         const filesLabel = document.createElement('div');
         filesLabel.className = 'detail-related-label';
-        filesLabel.textContent = 'tracked files';
+        filesLabel.textContent = 'files';
         filesGroup.appendChild(filesLabel);
 
         const filesList = document.createElement('div');

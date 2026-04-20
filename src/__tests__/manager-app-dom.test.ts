@@ -2255,14 +2255,15 @@ describe('manager-app DOM auth state matrix', () => {
       makeThreadView('thread-seed-recovery', 'seed 回復', {
         status: 'needs-reply',
         uiState: 'queued',
-        previewText: '[ai] seed の tracked changes を退避すると続行できます',
+        previewText:
+          '[ai] seed の changes の一時退避を再試行すると続行できます',
         lastSender: 'ai',
         queueDepth: 1,
         assigneeKind: 'manager',
         assigneeLabel: 'Manager gpt-5.4 (xhigh)',
         workerRuntimeState: 'manager-recovery',
         workerRuntimeDetail:
-          '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。',
+          '対象 repo の seed worktree に changes があるため止まっています。下の「退避して続行」で一時退避を再試行すると再開できます。',
         seedRecoveryPending: true,
         seedRecoveryRepoLabel: 'workspace-agent-hub',
         seedRecoveryRepoRoot: 'D:\\ghws\\workspace-agent-hub',
@@ -2332,19 +2333,19 @@ describe('manager-app DOM auth state matrix', () => {
               status: 'active',
               uiState: 'queued',
               previewText:
-                '[ai] seed の tracked changes を一時退避し、この依頼を再開します',
+                '[ai] seed の changes を一時退避し、この依頼を再開します',
               lastSender: 'ai',
               queueDepth: 1,
               assigneeKind: 'manager',
               assigneeLabel: 'Manager gpt-5.4 (xhigh)',
               workerRuntimeState: 'manager-recovery',
               workerRuntimeDetail:
-                'Manager が seed の tracked changes を退避し、再開を準備しています。',
+                'Manager が seed の changes を退避し、再開を準備しています。',
               messages: [
                 {
                   sender: 'ai',
                   content:
-                    '[Manager] seed の tracked changes を一時退避し、この依頼を再開します。\nstash: stash@{0}',
+                    '[Manager] seed の changes を一時退避し、この依頼を再開します。\nstash: stash@{0}',
                   at: '2026-03-21T00:00:30.000Z',
                 },
               ],

@@ -1287,7 +1287,7 @@ describe('native manager page', () => {
     expect(threads.some((t) => t.id === thread.id)).toBe(true);
   });
 
-  it('preserves dirty seed changes through the native manager API', async () => {
+  it('preserves dirty seed changes including untracked files through the native manager API', async () => {
     const workspaceRoot = await createTempWorkspace();
     const repoRoot = join(workspaceRoot, 'repo-managed');
     await initGitRepo(repoRoot);
@@ -1303,6 +1303,7 @@ describe('native manager page', () => {
       (await execGit(repoRoot, ['commit', '-m', 'initial commit'])).code
     ).toBe(0);
     await writeFile(join(repoRoot, 'README.md'), '# repo\nchanged\n', 'utf8');
+    await writeFile(join(repoRoot, 'notes.txt'), 'scratch\n', 'utf8');
 
     const { server, port } = await createWebUiServer({
       bridge: new FakeBridge(workspaceRoot),
@@ -1334,7 +1335,7 @@ describe('native manager page', () => {
         seedRecoveryPending: true,
         seedRecoveryRepoRoot: repoRoot,
         seedRecoveryRepoLabel: 'repo-managed',
-        seedRecoveryChangedFiles: ['README.md'],
+        seedRecoveryChangedFiles: ['README.md', 'notes.txt'],
       },
     });
 
@@ -1350,14 +1351,10 @@ describe('native manager page', () => {
       preserved: true,
       repoRoot,
       repoLabel: 'repo-managed',
-      changedFiles: ['README.md'],
+      changedFiles: ['README.md', 'notes.txt'],
     });
 
-    const statusResult = await execGit(repoRoot, [
-      'status',
-      '--porcelain',
-      '--untracked-files=no',
-    ]);
+    const statusResult = await execGit(repoRoot, ['status', '--porcelain']);
     expect(statusResult.code).toBe(0);
     expect(statusResult.stdout.trim()).toBe('');
 
