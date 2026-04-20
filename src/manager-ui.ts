@@ -42,6 +42,7 @@ import {
   resolvePackageRoot,
   restoreBuild,
 } from './build-archive.js';
+import { runPreflight, type PreflightSummary } from './preflight.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -122,7 +123,108 @@ interface ManagerLiveSnapshot {
   threads: ReturnType<typeof deriveManagerThreadViews>;
   tasks: Awaited<ReturnType<typeof readActiveTasks>>;
   status: Awaited<ReturnType<typeof getBuiltinManagerStatus>>;
+  preflight: PreflightFreshnessPayload;
 }
+
+export type PreflightFreshness = 'fresh' | 'stale' | 'checking' | 'unavailable';
+
+export interface PreflightFreshnessPayload {
+  freshness: PreflightFreshness;
+  summary: PreflightSummary | null;
+  generatedAt: string | null;
+  error: string | null;
+}
+
+const PREFLIGHT_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+interface PreflightCacheEntry {
+  summary: PreflightSummary | null;
+  generatedAt: string | null;
+  error: string | null;
+  refreshing: boolean;
+}
+
+const preflightCache = new Map<string, PreflightCacheEntry>();
+
+function getOrCreatePreflightCacheEntry(key: string): PreflightCacheEntry {
+  const existing = preflightCache.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created: PreflightCacheEntry = {
+    summary: null,
+    generatedAt: null,
+    error: null,
+    refreshing: false,
+  };
+  preflightCache.set(key, created);
+  return created;
+}
+
+function derivePreflightFreshness(
+  entry: PreflightCacheEntry
+): PreflightFreshness {
+  if (entry.refreshing && !entry.summary) {
+    return 'checking';
+  }
+  if (entry.error && !entry.summary) {
+    return 'unavailable';
+  }
+  if (!entry.generatedAt) {
+    return entry.refreshing ? 'checking' : 'unavailable';
+  }
+  const ageMs = Date.now() - new Date(entry.generatedAt).getTime();
+  if (ageMs > PREFLIGHT_STALE_THRESHOLD_MS) {
+    return 'stale';
+  }
+  return 'fresh';
+}
+
+function buildPreflightPayload(
+  entry: PreflightCacheEntry
+): PreflightFreshnessPayload {
+  return {
+    freshness: derivePreflightFreshness(entry),
+    summary: entry.summary,
+    generatedAt: entry.generatedAt,
+    error: entry.error,
+  };
+}
+
+function triggerPreflightRefresh(workspaceRoot: string): void {
+  const key = resolvePath(workspaceRoot);
+  const entry = getOrCreatePreflightCacheEntry(key);
+  if (entry.refreshing) {
+    return;
+  }
+  entry.refreshing = true;
+  void runPreflight({ workspaceRoot: key })
+    .then((report) => {
+      entry.summary = report.summary;
+      entry.generatedAt = report.generatedAt;
+      entry.error = null;
+      notifyManagerUpdate(key);
+    })
+    .catch((error: unknown) => {
+      entry.error =
+        error instanceof Error ? error.message : 'Preflight fetch failed';
+      notifyManagerUpdate(key);
+    })
+    .finally(() => {
+      entry.refreshing = false;
+    });
+}
+
+export const __managerUiTestInternals = {
+  triggerPreflightRefresh,
+  getOrCreatePreflightCacheEntry,
+  buildPreflightPayload,
+  derivePreflightFreshness,
+  buildManagerLiveSnapshot,
+  resetPreflightCacheForTests(): void {
+    preflightCache.clear();
+  },
+};
 
 interface ManagerLiveSnapshotCacheEntry {
   snapshot: ManagerLiveSnapshot | null;
@@ -199,6 +301,18 @@ async function buildManagerLiveSnapshot(
   });
   kickIdleQueueIfNeeded(resolvePath(workspaceRoot), status, 'live-snapshot');
 
+  const preflightEntry = getOrCreatePreflightCacheEntry(
+    resolvePath(workspaceRoot)
+  );
+  const preflightFreshness = derivePreflightFreshness(preflightEntry);
+  if (
+    preflightFreshness === 'stale' ||
+    preflightFreshness === 'unavailable' ||
+    preflightFreshness === 'checking'
+  ) {
+    triggerPreflightRefresh(workspaceRoot);
+  }
+
   return {
     kind: 'snapshot',
     emittedAt: new Date().toISOString(),
@@ -210,6 +324,7 @@ async function buildManagerLiveSnapshot(
     }),
     tasks,
     status,
+    preflight: buildPreflightPayload(preflightEntry),
   };
 }
 
