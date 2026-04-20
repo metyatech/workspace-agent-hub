@@ -1148,8 +1148,26 @@ describe('manager backend codex integration', () => {
       reply: '確認してください',
     });
     expect(
+      parseManagerReplyPayload(
+        '補足です。\n{"status":"review","reply":"確認してください"}\n以上です。'
+      )
+    ).toEqual({
+      status: 'review',
+      reply: '確認してください',
+    });
+    expect(
       parseManagerWorkerResultPayload(
         '{"status":"review","reply":"確認してください","changedFiles":["src/a.ts"],"verificationSummary":"npm run verify PASS"}'
+      )
+    ).toEqual({
+      status: 'review',
+      reply: '確認してください',
+      changedFiles: ['src/a.ts'],
+      verificationSummary: 'npm run verify PASS',
+    });
+    expect(
+      parseManagerWorkerResultPayload(
+        'worker result:\n{"status":"review","reply":"確認してください","changedFiles":["src/a.ts"],"verificationSummary":"npm run verify PASS"}\nend'
       )
     ).toEqual({
       status: 'review',
@@ -1244,6 +1262,22 @@ describe('manager backend codex integration', () => {
         '{"decision":"unknown","reason":"x","instructions":null}'
       )
     ).toBeNull();
+  });
+
+  it('parses prose-wrapped recovery fix replies so retry-worker recovery does not strand the thread', () => {
+    const wrappedReply =
+      '回復修正を適用しました。\n{"status":"review","reply":"修正完了です。確認してください。","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}\n必要なら続けて再確認します。';
+
+    expect(parseManagerReplyPayload(wrappedReply)).toEqual({
+      status: 'review',
+      reply: '修正完了です。確認してください。',
+    });
+    expect(parseManagerWorkerResultPayload(wrappedReply)).toEqual({
+      status: 'review',
+      reply: '修正完了です。確認してください。',
+      changedFiles: ['src/manager-backend.ts'],
+      verificationSummary: 'npm run verify PASS',
+    });
   });
 
   it('keeps routing topic refs stable even when recent-topic order changes', () => {

@@ -3497,8 +3497,9 @@ export function parseManagerReplyPayload(
   text: string
 ): ManagerReplyPayload | null {
   const normalized = stripMarkdownCodeFence(text);
-  try {
-    const parsed = JSON.parse(normalized) as Partial<ManagerReplyPayload>;
+  const validateParsedReply = (
+    parsed: Partial<ManagerReplyPayload>
+  ): ManagerReplyPayload | null => {
     const status =
       parsed.status === 'active' ||
       parsed.status === 'needs-reply' ||
@@ -3511,8 +3512,21 @@ export function parseManagerReplyPayload(
       return null;
     }
     return { status, reply };
+  };
+  try {
+    const parsed = JSON.parse(normalized) as Partial<ManagerReplyPayload>;
+    return validateParsedReply(parsed);
   } catch {
-    return null;
+    const extracted = extractFirstJsonObject(normalized);
+    if (!extracted || extracted === normalized) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(extracted) as Partial<ManagerReplyPayload>;
+      return validateParsedReply(parsed);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -3524,8 +3538,8 @@ export function parseManagerWorkerResultPayload(
     return null;
   }
 
+  const normalized = stripMarkdownCodeFence(text);
   try {
-    const normalized = stripMarkdownCodeFence(text);
     const parsed = JSON.parse(
       normalized
     ) as Partial<ManagerWorkerResultPayload>;
@@ -3539,11 +3553,34 @@ export function parseManagerWorkerResultPayload(
           : null,
     };
   } catch {
-    return {
-      ...reply,
-      changedFiles: [],
-      verificationSummary: null,
-    };
+    const extracted = extractFirstJsonObject(normalized);
+    if (!extracted || extracted === normalized) {
+      return {
+        ...reply,
+        changedFiles: [],
+        verificationSummary: null,
+      };
+    }
+    try {
+      const parsed = JSON.parse(
+        extracted
+      ) as Partial<ManagerWorkerResultPayload>;
+      return {
+        ...reply,
+        changedFiles: normalizeStringArray(parsed.changedFiles),
+        verificationSummary:
+          typeof parsed.verificationSummary === 'string' &&
+          parsed.verificationSummary.trim()
+            ? parsed.verificationSummary.trim()
+            : null,
+      };
+    } catch {
+      return {
+        ...reply,
+        changedFiles: [],
+        verificationSummary: null,
+      };
+    }
   }
 }
 
