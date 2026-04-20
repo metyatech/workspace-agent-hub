@@ -4727,6 +4727,9 @@ export interface PreserveSeedRecoveryResult {
   stashSummary: string | null;
 }
 
+const SEED_RECOVERY_STASH_MAX_ATTEMPTS = 3;
+const SEED_RECOVERY_STASH_RETRY_DELAY_MS = 500;
+
 function clearSeedRecoveryStateFromMeta(
   meta: ManagerThreadMeta
 ): ManagerThreadMeta {
@@ -4903,16 +4906,16 @@ async function reviewStaleSeedRecoveryForDir(dir: string): Promise<{
     if (!threadMeta?.seedRecoveryPending) continue;
     const repoRoot = threadMeta.seedRecoveryRepoRoot?.trim();
     if (!repoRoot) continue;
-    let trackedChanges: string[];
+    let changes: string[];
     try {
-      trackedChanges = await listTrackedSeedChanges(repoRoot);
+      changes = await listSeedChanges(repoRoot);
     } catch (error) {
       console.warn(
         `[manager-backend] stale seed-recovery check skipped for thread ${threadId}: ${error instanceof Error ? error.message : String(error)}`
       );
       continue;
     }
-    if (trackedChanges.length > 0) continue;
+    if (changes.length > 0) continue;
     await clearSeedRecoveryState(resolvedDir, threadId);
     cleared += 1;
     console.warn(
@@ -4925,7 +4928,7 @@ async function reviewStaleSeedRecoveryForDir(dir: string): Promise<{
   return { cleared };
 }
 
-function parseTrackedStatusPaths(stdout: string): string[] {
+function parseSeedStatusPaths(stdout: string): string[] {
   return Array.from(
     new Set(
       stdout
@@ -4949,22 +4952,16 @@ function parseTrackedStatusPaths(stdout: string): string[] {
   );
 }
 
-async function listTrackedSeedChanges(
-  targetRepoRoot: string
-): Promise<string[]> {
-  const statusResult = await execGit(targetRepoRoot, [
-    'status',
-    '--porcelain',
-    '--untracked-files=no',
-  ]);
+async function listSeedChanges(targetRepoRoot: string): Promise<string[]> {
+  const statusResult = await execGit(targetRepoRoot, ['status', '--porcelain']);
   if (statusResult.code !== 0) {
     throw new Error(
       statusResult.stderr ||
         statusResult.stdout ||
-        'git status --porcelain --untracked-files=no failed'
+        'git status --porcelain failed'
     );
   }
-  return parseTrackedStatusPaths(statusResult.stdout);
+  return parseSeedStatusPaths(statusResult.stdout);
 }
 
 async function readLatestStashEntry(
@@ -5000,54 +4997,72 @@ function buildSeedRecoveryStashMessage(threadId: string): string {
   return `workspace-agent-hub manager preserve ${threadId} ${new Date().toISOString()}`;
 }
 
-async function stashTrackedSeedChanges(input: {
+async function stashSeedChanges(input: {
   targetRepoRoot: string;
   threadId: string;
 }): Promise<PreserveSeedRecoveryResult> {
   const repoRoot = resolvePath(input.targetRepoRoot);
-  const changedFiles = await listTrackedSeedChanges(repoRoot);
-  if (changedFiles.length === 0) {
-    return {
-      preserved: false,
-      repoRoot,
-      repoLabel: basename(repoRoot),
-      changedFiles: [],
-      stashRef: null,
-      stashSummary: null,
-    };
-  }
+  let attempt = 0;
+  let lastError: string | null = null;
+  while (attempt < SEED_RECOVERY_STASH_MAX_ATTEMPTS) {
+    attempt += 1;
+    const changedFiles = await listSeedChanges(repoRoot);
+    if (changedFiles.length === 0) {
+      return {
+        preserved: false,
+        repoRoot,
+        repoLabel: basename(repoRoot),
+        changedFiles: [],
+        stashRef: null,
+        stashSummary: null,
+      };
+    }
 
-  const stashMessage = buildSeedRecoveryStashMessage(input.threadId);
-  const beforeStash = await readLatestStashEntry(repoRoot);
-  const stashResult = await execGit(repoRoot, [
-    'stash',
-    'push',
-    '--message',
-    stashMessage,
-  ]);
-  if (stashResult.code !== 0) {
-    throw new Error(
-      stashResult.stderr || stashResult.stdout || 'git stash push failed'
+    const stashMessage = buildSeedRecoveryStashMessage(input.threadId);
+    const beforeStash = await readLatestStashEntry(repoRoot);
+    const stashResult = await execGit(repoRoot, [
+      'stash',
+      'push',
+      '--include-untracked',
+      '--message',
+      stashMessage,
+    ]);
+    if (stashResult.code === 0) {
+      const remainingFiles = await listSeedChanges(repoRoot);
+      if (remainingFiles.length === 0) {
+        const afterStash = await readLatestStashEntry(repoRoot);
+        return {
+          preserved: true,
+          repoRoot,
+          repoLabel: basename(repoRoot),
+          changedFiles,
+          stashRef:
+            afterStash?.commit !== beforeStash?.commit
+              ? (afterStash?.ref ?? null)
+              : null,
+          stashSummary:
+            afterStash?.commit !== beforeStash?.commit
+              ? (afterStash?.summary ?? null)
+              : null,
+        };
+      }
+      lastError = `git stash push did not clean the seed worktree. Remaining files: ${remainingFiles.join(', ')}`;
+    } else {
+      lastError =
+        stashResult.stderr || stashResult.stdout || 'git stash push failed';
+    }
+
+    if (attempt >= SEED_RECOVERY_STASH_MAX_ATTEMPTS) {
+      break;
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, SEED_RECOVERY_STASH_RETRY_DELAY_MS)
     );
   }
 
-  const remainingFiles = await listTrackedSeedChanges(repoRoot);
-  if (remainingFiles.length > 0) {
-    throw new Error(
-      `git stash push did not clean the seed worktree. Remaining tracked files: ${remainingFiles.join(', ')}`
-    );
-  }
-
-  const afterStash = await readLatestStashEntry(repoRoot);
-  const createdNewStash = afterStash?.commit !== beforeStash?.commit;
-  return {
-    preserved: createdNewStash,
-    repoRoot,
-    repoLabel: basename(repoRoot),
-    changedFiles,
-    stashRef: createdNewStash ? (afterStash?.ref ?? null) : null,
-    stashSummary: createdNewStash ? (afterStash?.summary ?? null) : null,
-  };
+  throw new Error(
+    `seed changes could not be auto-stashed after ${SEED_RECOVERY_STASH_MAX_ATTEMPTS} attempts: ${lastError ?? 'unknown stash failure'}`
+  );
 }
 
 function summarizeRecoveryFiles(files: string[], maxItems = 6): string | null {
@@ -5070,10 +5085,10 @@ function buildSeedRecoveryPendingMessage(input: {
   const changedFilesSummary = summarizeRecoveryFiles(input.changedFiles);
   return [
     `[Manager] Worker 隔離環境の作成に失敗しました: ${input.errorDetail}`,
-    '対象 repo の seed worktree に tracked changes があるため、この依頼を安全に開始できませんでした。',
-    'Manager UI の「退避して続行」で tracked changes を stash に一時退避すると、この依頼をそのまま再開できます。',
+    '対象 repo の seed worktree に changes があるため、この依頼を安全に開始できませんでした。',
+    `Manager は changes の自動 stash を ${SEED_RECOVERY_STASH_MAX_ATTEMPTS} 回試しましたが、seed を clean にできませんでした。必要なら Manager UI の「退避して続行」で再試行できます。`,
     input.repoLabel ? `対象 repo: ${input.repoLabel}` : '',
-    changedFilesSummary ? `tracked files:\n${changedFilesSummary}` : '',
+    changedFilesSummary ? `files:\n${changedFilesSummary}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -5093,12 +5108,10 @@ function buildSeedRecoveryResumeMessage(
   }
 
   return [
-    '[Manager] seed の tracked changes を一時退避し、この依頼を再開します。',
+    '[Manager] seed の changes を一時退避し、この依頼を再開します。',
     input.repoLabel ? `対象 repo: ${input.repoLabel}` : '',
     input.stashRef ? `stash: ${input.stashRef}` : '',
-    changedFilesSummary
-      ? `退避した tracked files:\n${changedFilesSummary}`
-      : '',
+    changedFilesSummary ? `退避した files:\n${changedFilesSummary}` : '',
     '帰宅後は stash 内容を確認し、必要なら別 branch / worktree に戻してください。',
   ]
     .filter(Boolean)
@@ -5662,7 +5675,7 @@ export async function preserveSeedRecoveryAndContinue(input: {
     );
   }
 
-  const preserveResult = await stashTrackedSeedChanges({
+  const preserveResult = await stashSeedChanges({
     targetRepoRoot: repoRoot,
     threadId: input.threadId,
   });
@@ -5684,7 +5697,7 @@ export async function preserveSeedRecoveryAndContinue(input: {
     workerAgentId: null,
     runtimeState: 'manager-recovery',
     runtimeDetail:
-      'Manager が seed の tracked changes を退避し、再開を準備しています。',
+      'Manager が seed の changes を退避し、再開を準備しています。',
     workerWriteScopes: threadMeta.workerWriteScopes ?? [],
     workerBlockedByThreadIds: [],
     supersededByThreadId: null,
@@ -9025,6 +9038,98 @@ ${autoInitResult.detail}`,
                 return;
               }
 
+              const preexistingSeedChanges = await listSeedChanges(
+                assignment.targetRepoRoot
+              );
+              if (preexistingSeedChanges.length > 0) {
+                const repoLabel =
+                  resolvedManagedRepo?.label ??
+                  inferredRepoContext?.label ??
+                  threadMeta?.managedRepoLabel ??
+                  basename(assignment.targetRepoRoot);
+                try {
+                  const preserveResult = await stashSeedChanges({
+                    targetRepoRoot: assignment.targetRepoRoot,
+                    threadId: thread.id,
+                  });
+                  await clearSeedRecoveryState(resolvedDir, thread.id);
+                  await setWorkerRuntimeState({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    assigneeKind: 'manager',
+                    assigneeLabel: defaultAssigneeLabel('manager'),
+                    workerAgentId: null,
+                    runtimeState: 'manager-recovery',
+                    runtimeDetail:
+                      'Manager が seed の changes を自動で退避し、隔離環境の作成を続行しています。',
+                    workerWriteScopes: assignmentWriteScopes,
+                    workerBlockedByThreadIds: [],
+                    supersededByThreadId: null,
+                    clearWorkerLiveLog: true,
+                  });
+                  await addAiMessageBestEffort({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    content: buildSeedRecoveryResumeMessage({
+                      ...preserveResult,
+                      repoLabel,
+                    }),
+                    status: 'active',
+                  });
+                  await setThreadRuntimeErrorMessage(
+                    resolvedDir,
+                    thread.id,
+                    null
+                  );
+                } catch (preserveError) {
+                  await updateManagerThreadMeta(
+                    resolvedDir,
+                    thread.id,
+                    (current) => ({
+                      ...(current ?? {}),
+                      seedRecoveryPending: true,
+                      seedRecoveryRepoRoot: assignment.targetRepoRoot,
+                      seedRecoveryRepoLabel: repoLabel,
+                      seedRecoveryChangedFiles: preexistingSeedChanges,
+                    })
+                  );
+                  await setWorkerRuntimeState({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    assigneeKind: 'manager',
+                    assigneeLabel: defaultAssigneeLabel('manager'),
+                    workerAgentId: null,
+                    runtimeState: 'manager-recovery',
+                    runtimeDetail:
+                      '対象 repo の seed worktree に changes があり、自動退避リトライでも clean にできませんでした。必要なら下の「退避して続行」で再試行できます。',
+                    workerWriteScopes: assignmentWriteScopes,
+                    workerBlockedByThreadIds: [],
+                    supersededByThreadId: null,
+                    clearWorkerLiveLog: true,
+                  });
+                  const seedErrMsg = buildSeedRecoveryPendingMessage({
+                    repoLabel,
+                    changedFiles: preexistingSeedChanges,
+                    errorDetail:
+                      preserveError instanceof Error
+                        ? preserveError.message
+                        : String(preserveError),
+                  });
+                  await addAiMessageBestEffort({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    content: seedErrMsg,
+                    status: 'needs-reply',
+                  });
+                  await setThreadRuntimeErrorMessage(
+                    resolvedDir,
+                    thread.id,
+                    seedErrMsg
+                  );
+                  continue;
+                }
+              }
+
               const wt = await createManagerWorktree({
                 targetRepoRoot: assignment.targetRepoRoot,
                 assignmentId: assignment.id,
@@ -9189,50 +9294,87 @@ ${autoInitResult.detail}`,
               inferredRepoContext?.label ??
               threadMeta?.managedRepoLabel ??
               basename(targetRepo);
-            const changedFiles = listMwtChangedFiles(wtErr);
-            await updateManagerThreadMeta(
-              resolvedDir,
-              thread.id,
-              (current) => ({
-                ...(current ?? {}),
-                seedRecoveryPending: true,
-                seedRecoveryRepoRoot: targetRepo,
-                seedRecoveryRepoLabel: repoLabel,
-                seedRecoveryChangedFiles: changedFiles,
-              })
-            );
-            await setWorkerRuntimeState({
-              dir: resolvedDir,
-              threadId: thread.id,
-              assigneeKind: 'manager',
-              assigneeLabel: defaultAssigneeLabel('manager'),
-              workerAgentId: null,
-              runtimeState: 'manager-recovery',
-              runtimeDetail:
-                '対象 repo の seed worktree に tracked changes があるため止まっています。下の「退避して続行」で一時退避すると再開できます。',
-              workerWriteScopes: assignmentWriteScopes,
-              workerBlockedByThreadIds: [],
-              supersededByThreadId: null,
-              clearWorkerLiveLog: true,
-            });
-            const seedErrMsg = buildSeedRecoveryPendingMessage({
-              repoLabel,
-              changedFiles,
-              errorDetail: describeMwtError(wtErr),
-            });
-            await addAiMessageBestEffort({
-              dir: resolvedDir,
-              threadId: thread.id,
-              content: seedErrMsg,
-              status: 'needs-reply',
-            });
-            // Persist as runtime error for operational blocker (seed recovery)
-            await setThreadRuntimeErrorMessage(
-              resolvedDir,
-              thread.id,
-              seedErrMsg
-            );
-            continue;
+            try {
+              const preserveResult = await stashSeedChanges({
+                targetRepoRoot: targetRepo,
+                threadId: thread.id,
+              });
+              await clearSeedRecoveryState(resolvedDir, thread.id);
+              await setWorkerRuntimeState({
+                dir: resolvedDir,
+                threadId: thread.id,
+                assigneeKind: 'manager',
+                assigneeLabel: defaultAssigneeLabel('manager'),
+                workerAgentId: null,
+                runtimeState: 'manager-recovery',
+                runtimeDetail:
+                  'Manager が seed の changes を自動で退避し、再開を準備しています。',
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+                clearWorkerLiveLog: true,
+              });
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: buildSeedRecoveryResumeMessage({
+                  ...preserveResult,
+                  repoLabel,
+                }),
+                status: 'active',
+              });
+              await setThreadRuntimeErrorMessage(resolvedDir, thread.id, null);
+              continue;
+            } catch (preserveError) {
+              const changedFiles = await listSeedChanges(targetRepo).catch(() =>
+                listMwtChangedFiles(wtErr)
+              );
+              await updateManagerThreadMeta(
+                resolvedDir,
+                thread.id,
+                (current) => ({
+                  ...(current ?? {}),
+                  seedRecoveryPending: true,
+                  seedRecoveryRepoRoot: targetRepo,
+                  seedRecoveryRepoLabel: repoLabel,
+                  seedRecoveryChangedFiles: changedFiles,
+                })
+              );
+              await setWorkerRuntimeState({
+                dir: resolvedDir,
+                threadId: thread.id,
+                assigneeKind: 'manager',
+                assigneeLabel: defaultAssigneeLabel('manager'),
+                workerAgentId: null,
+                runtimeState: 'manager-recovery',
+                runtimeDetail:
+                  '対象 repo の seed worktree に changes があり、自動退避リトライでも clean にできませんでした。必要なら下の「退避して続行」で再試行できます。',
+                workerWriteScopes: assignmentWriteScopes,
+                workerBlockedByThreadIds: [],
+                supersededByThreadId: null,
+                clearWorkerLiveLog: true,
+              });
+              const seedErrMsg = buildSeedRecoveryPendingMessage({
+                repoLabel,
+                changedFiles,
+                errorDetail:
+                  preserveError instanceof Error
+                    ? preserveError.message
+                    : String(preserveError),
+              });
+              await addAiMessageBestEffort({
+                dir: resolvedDir,
+                threadId: thread.id,
+                content: seedErrMsg,
+                status: 'needs-reply',
+              });
+              await setThreadRuntimeErrorMessage(
+                resolvedDir,
+                thread.id,
+                seedErrMsg
+              );
+              continue;
+            }
           }
           const errorDetail = describeMwtError(wtErr);
           const errMsg = errorDetail.includes('\n')
@@ -10095,6 +10237,17 @@ export async function reviewStaleSeedRecoveryForTests(dir: string): Promise<{
     await recoverCanonicalThreadState(dir);
   }
   return result;
+}
+
+export async function stashSeedChangesForTests(input: {
+  targetRepoRoot: string;
+  threadId: string;
+}): Promise<PreserveSeedRecoveryResult> {
+  return stashSeedChanges(input);
+}
+
+export function parseSeedStatusPathsForTests(stdout: string): string[] {
+  return parseSeedStatusPaths(stdout);
 }
 
 export async function sendToBuiltinManager(

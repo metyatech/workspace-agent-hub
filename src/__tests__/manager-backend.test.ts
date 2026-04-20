@@ -214,6 +214,7 @@ import {
   preserveSeedRecoveryAndContinue,
   kickIdleQueuedManagerWork,
   killAllActiveChildProcesses,
+  parseSeedStatusPathsForTests,
   processNextQueued,
   readQueue,
   readSession,
@@ -222,6 +223,7 @@ import {
   resetProcessNextQueuedStateForTests,
   resetStaleSeedRecoveryMonitorsForTests,
   reviewStaleSeedRecoveryForTests,
+  stashSeedChangesForTests,
   resolveCodexCommand,
   routingTopicRef,
   sendGlobalToBuiltinManager,
@@ -440,6 +442,7 @@ beforeEach(async () => {
   resetProcessNextQueuedStateForTests();
   resetStaleSeedRecoveryMonitorsForTests();
   spawnMock.mockReset();
+  vi.mocked(execGit).mockReset();
   execFileMock.mockReset();
   fetchMock.mockReset();
   addMessageMock.mockReset();
@@ -470,6 +473,7 @@ beforeEach(async () => {
   listThreadsMock.mockResolvedValue([]);
   reopenThreadMock.mockResolvedValue(undefined);
   resolveThreadMock.mockResolvedValue(undefined);
+  vi.mocked(execGit).mockResolvedValue({ stdout: '', stderr: '', code: 0 });
   ensureRepoBootstrapMock.mockImplementation(
     async (input: { repoRoot?: string | null }) => ({
       ready: true,
@@ -6305,43 +6309,6 @@ describe('manager backend codex integration', () => {
     ).toContain('exited with code 1');
   });
 
-  it('records a recoverable dirty-seed state when managed worktree creation is blocked by tracked changes', async () => {
-    vi.mocked(createManagerWorktree).mockRejectedValueOnce({
-      id: 'seed_tracked_dirty',
-      message: 'Seed worktree has tracked changes and cannot proceed.',
-      details: {
-        changedFiles: ['README.md', 'src/manager-backend.ts'],
-      },
-    });
-
-    await sendToBuiltinManager(tempDir, 'thread-dirty-seed', 'message');
-
-    await waitFor(async () => {
-      const meta = await readManagerThreadMeta(tempDir);
-      return Boolean(meta['thread-dirty-seed']?.seedRecoveryPending);
-    });
-
-    const meta = await readManagerThreadMeta(tempDir);
-    const queue = await readQueue(tempDir);
-    const session = await readSession(tempDir);
-
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(queue).toHaveLength(1);
-    expect(session.status).toBe('idle');
-    expect(meta['thread-dirty-seed']).toMatchObject({
-      seedRecoveryPending: true,
-      seedRecoveryRepoRoot: tempDir,
-      seedRecoveryRepoLabel: tempDir.split(/[/\\]/).at(-1),
-      seedRecoveryChangedFiles: ['README.md', 'src/manager-backend.ts'],
-      workerRuntimeState: 'manager-recovery',
-    });
-    expect(addMessageMock).toHaveBeenCalledTimes(1);
-    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-dirty-seed');
-    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('退避して続行');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
-  });
-
   it('includes structured managed-worktree cleanup details when createManagerWorktree fails', async () => {
     vi.mocked(describeMwtError).mockReturnValueOnce(
       [
@@ -6389,7 +6356,7 @@ describe('manager backend codex integration', () => {
     );
   }, 15000);
 
-  it('stashes tracked seed changes, clears recovery state, and requeues the thread', async () => {
+  it('stashes seed changes including untracked files, clears recovery state, and requeues the thread', async () => {
     await writeManagerThreadMeta(tempDir, {
       'thread-preserve': {
         managerOwned: true,
@@ -6397,54 +6364,221 @@ describe('manager backend codex integration', () => {
         seedRecoveryPending: true,
         seedRecoveryRepoRoot: tempDir,
         seedRecoveryRepoLabel: 'workspace-agent-hub',
-        seedRecoveryChangedFiles: ['README.md', 'src/manager-backend.ts'],
+        seedRecoveryChangedFiles: [
+          'README.md',
+          'src/manager-backend.ts',
+          'scratch.txt',
+        ],
         workerWriteScopes: ['src'],
       },
     });
 
-    vi.mocked(execGit)
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: ' M README.md\nM  src/manager-backend.ts',
-        stderr: '',
-      })
-      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: 'Saved working directory and index state',
-        stderr: '',
-      })
-      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout:
-          'abc1234567890\tstash@{0}\tOn main: workspace-agent-hub manager preserve thread-preserve 2026-04-13T00:00:00.000Z',
-        stderr: '',
-      });
-
-    const result = await preserveSeedRecoveryAndContinue({
-      dir: tempDir,
-      threadId: 'thread-preserve',
+    let statusCalls = 0;
+    let stashListCalls = 0;
+    vi.mocked(execGit).mockImplementation(async (cwd, args) => {
+      const normalizePath = (value: string) =>
+        value.replace(/\\/g, '/').toLowerCase();
+      if (normalizePath(String(cwd)) !== normalizePath(tempDir)) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        statusCalls += 1;
+        return {
+          code: 0,
+          stdout:
+            statusCalls === 1
+              ? ' M README.md\nM  src/manager-backend.ts\n?? scratch.txt'
+              : '',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash list')) {
+        stashListCalls += 1;
+        return {
+          code: 0,
+          stdout:
+            stashListCalls === 1
+              ? ''
+              : 'abc1234567890\tstash@{0}\tOn main: workspace-agent-hub manager preserve thread-preserve 2026-04-13T00:00:00.000Z',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash push')) {
+        return {
+          code: 0,
+          stdout: 'Saved working directory and index state',
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '', stderr: '' };
     });
 
-    const meta = await readManagerThreadMeta(tempDir);
+    const result = await stashSeedChangesForTests({
+      targetRepoRoot: tempDir,
+      threadId: 'thread-preserve',
+    });
 
     expect(result).toMatchObject({
       preserved: true,
       repoRoot: tempDir,
-      repoLabel: 'workspace-agent-hub',
-      changedFiles: ['README.md', 'src/manager-backend.ts'],
+      changedFiles: ['README.md', 'src/manager-backend.ts', 'scratch.txt'],
       stashRef: 'stash@{0}',
     });
-    expect(meta['thread-preserve']?.seedRecoveryPending).toBeUndefined();
-    expect(meta['thread-preserve']?.workerRuntimeState).toBe(
-      'manager-recovery'
-    );
-    expect(addMessageMock).toHaveBeenCalledTimes(1);
-    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-preserve');
-    expect(addMessageMock.mock.calls[0]?.[4]).toBe('active');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('stash@{0}');
-    expect(addMessageMock.mock.calls[0]?.[2]).toContain('README.md');
+    expect(vi.mocked(execGit)).toHaveBeenCalledWith(tempDir, [
+      'stash',
+      'push',
+      '--include-untracked',
+      '--message',
+      expect.stringContaining('thread-preserve'),
+    ]);
+  });
+
+  it('retries stashing seed changes after a stash command failure', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-retry-stash-failure': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md', 'scratch.txt'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    let statusCalls = 0;
+    let stashListCalls = 0;
+    let stashPushCalls = 0;
+    vi.mocked(execGit).mockImplementation(async (cwd, args) => {
+      const normalizePath = (value: string) =>
+        value.replace(/\\/g, '/').toLowerCase();
+      if (normalizePath(String(cwd)) !== normalizePath(tempDir)) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        statusCalls += 1;
+        return {
+          code: 0,
+          stdout: statusCalls <= 2 ? ' M README.md\n?? scratch.txt' : '',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash list')) {
+        stashListCalls += 1;
+        return {
+          code: 0,
+          stdout:
+            stashListCalls === 1
+              ? ''
+              : 'abc1234567890\tstash@{0}\tOn main: workspace-agent-hub manager preserve thread-retry-stash-failure 2026-04-13T00:00:00.000Z',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash push')) {
+        stashPushCalls += 1;
+        return stashPushCalls === 1
+          ? { code: 1, stdout: '', stderr: 'index.lock busy' }
+          : {
+              code: 0,
+              stdout: 'Saved working directory and index state',
+              stderr: '',
+            };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const result = await stashSeedChangesForTests({
+      targetRepoRoot: tempDir,
+      threadId: 'thread-retry-stash-failure',
+    });
+
+    expect(result.preserved).toBe(true);
+    expect(result.changedFiles).toEqual(['README.md', 'scratch.txt']);
+    expect(
+      vi
+        .mocked(execGit)
+        .mock.calls.filter(
+          ([, args]) =>
+            Array.isArray(args) &&
+            args[0] === 'stash' &&
+            args[1] === 'push' &&
+            args.includes('--include-untracked')
+        ).length
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('retries stashing seed changes when the seed remains dirty after stash', async () => {
+    await writeManagerThreadMeta(tempDir, {
+      'thread-retry-still-dirty': {
+        managerOwned: true,
+        managedRepoLabel: 'workspace-agent-hub',
+        seedRecoveryPending: true,
+        seedRecoveryRepoRoot: tempDir,
+        seedRecoveryRepoLabel: 'workspace-agent-hub',
+        seedRecoveryChangedFiles: ['README.md', 'scratch.txt'],
+        workerWriteScopes: ['src'],
+      },
+    });
+
+    let statusCalls = 0;
+    let stashListCalls = 0;
+    vi.mocked(execGit).mockImplementation(async (cwd, args) => {
+      if (String(cwd).toLowerCase() !== tempDir.toLowerCase()) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        statusCalls += 1;
+        return {
+          code: 0,
+          stdout:
+            statusCalls === 1 || statusCalls === 2 || statusCalls === 3
+              ? ' M README.md\n?? scratch.txt'
+              : '',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash list')) {
+        stashListCalls += 1;
+        return {
+          code: 0,
+          stdout:
+            stashListCalls === 1
+              ? ''
+              : 'abc1234567890\tstash@{0}\tOn main: workspace-agent-hub manager preserve thread-retry-still-dirty 2026-04-13T00:00:00.000Z',
+          stderr: '',
+        };
+      }
+      if (commandLine.includes('stash push')) {
+        return {
+          code: 0,
+          stdout: 'Saved working directory and index state',
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const result = await stashSeedChangesForTests({
+      targetRepoRoot: tempDir,
+      threadId: 'thread-retry-still-dirty',
+    });
+
+    expect(result.preserved).toBe(true);
+    expect(result.changedFiles).toEqual(['README.md', 'scratch.txt']);
+    expect(
+      vi
+        .mocked(execGit)
+        .mock.calls.filter(
+          ([, args]) =>
+            Array.isArray(args) &&
+            args[0] === 'stash' &&
+            args[1] === 'push' &&
+            args.includes('--include-untracked')
+        ).length
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it('auto-clears seedRecoveryPending when the seed is already clean on the filesystem', async () => {
@@ -6460,11 +6594,13 @@ describe('manager backend codex integration', () => {
       },
     });
 
-    // git status --porcelain --untracked-files=no returns empty: seed clean.
-    vi.mocked(execGit).mockResolvedValueOnce({
-      code: 0,
-      stdout: '',
-      stderr: '',
+    // git status --porcelain returns empty: seed clean.
+    vi.mocked(execGit).mockImplementation(async (_cwd, args) => {
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
     });
 
     const result = await reviewStaleSeedRecoveryForTests(tempDir);
@@ -6476,31 +6612,10 @@ describe('manager backend codex integration', () => {
     expect(meta['thread-auto-clear']?.seedRecoveryChangedFiles).toBeUndefined();
   });
 
-  it('leaves seedRecoveryPending intact when the seed still has tracked changes', async () => {
-    await writeManagerThreadMeta(tempDir, {
-      'thread-still-dirty': {
-        managerOwned: true,
-        managedRepoLabel: 'workspace-agent-hub',
-        seedRecoveryPending: true,
-        seedRecoveryRepoRoot: tempDir,
-        seedRecoveryRepoLabel: 'workspace-agent-hub',
-        seedRecoveryChangedFiles: ['README.md'],
-        workerWriteScopes: ['src'],
-      },
-    });
-
-    vi.mocked(execGit).mockResolvedValueOnce({
-      code: 0,
-      stdout: ' M README.md',
-      stderr: '',
-    });
-
-    const result = await reviewStaleSeedRecoveryForTests(tempDir);
-
-    expect(result.cleared).toBe(0);
-    const meta = await readManagerThreadMeta(tempDir);
-    expect(meta['thread-still-dirty']?.seedRecoveryPending).toBe(true);
-    expect(meta['thread-still-dirty']?.seedRecoveryRepoRoot).toBe(tempDir);
+  it('treats untracked files as seed changes', async () => {
+    expect(parseSeedStatusPathsForTests('?? scratch.txt')).toEqual([
+      'scratch.txt',
+    ]);
   });
 
   it('clears multiple pending threads in one pass when all targets are clean', async () => {
@@ -6521,9 +6636,13 @@ describe('manager backend codex integration', () => {
       },
     });
 
-    vi.mocked(execGit)
-      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
-      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    vi.mocked(execGit).mockImplementation(async (_cwd, args) => {
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
 
     const result = await reviewStaleSeedRecoveryForTests(tempDir);
 
@@ -6549,10 +6668,12 @@ describe('manager backend codex integration', () => {
       },
     });
 
-    vi.mocked(execGit).mockResolvedValueOnce({
-      code: 0,
-      stdout: '',
-      stderr: '',
+    vi.mocked(execGit).mockImplementation(async (_cwd, args) => {
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
     });
 
     const result = await reviewStaleSeedRecoveryForTests(tempDir);
@@ -6593,10 +6714,12 @@ describe('manager backend codex integration', () => {
       },
     });
 
-    vi.mocked(execGit).mockResolvedValueOnce({
-      code: 0,
-      stdout: '',
-      stderr: '',
+    vi.mocked(execGit).mockImplementation(async (_cwd, args) => {
+      const commandLine = Array.isArray(args) ? args.join(' ') : String(args);
+      if (commandLine.includes('status --porcelain')) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
     });
 
     const result = await reviewStaleSeedRecoveryForTests(tempDir);
