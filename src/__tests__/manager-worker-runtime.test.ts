@@ -1,10 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildWorkerRuntimeLaunchSpec,
+  describeWorkerRuntimeCliAvailability,
   parseGenericRuntimeOutput,
   parseGenericRuntimeProgressLine,
   workerRuntimeAssigneeLabel,
 } from '../manager-worker-runtime.js';
+
+const tempDirs: string[] = [];
+
+async function makeTempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 describe('manager-worker-runtime', () => {
   it('builds a Claude launch spec that resumes the existing session in read-only mode', () => {
@@ -75,7 +96,7 @@ describe('manager-worker-runtime', () => {
     expect(workerRuntimeAssigneeLabel('copilot')).toBe('Worker Copilot');
   });
 
-  it('builds an OpenCode launch spec that runs Sisyphus in non-interactive JSON mode', () => {
+  it('builds an OpenCode launch spec that runs sisyphus in non-interactive JSON mode', () => {
     const spec = buildWorkerRuntimeLaunchSpec({
       runtime: 'opencode',
       prompt: 'Apply the requested fix',
@@ -93,11 +114,78 @@ describe('manager-worker-runtime', () => {
     expect(spec.sessionId).toBe('opencode-session-1');
     expect(spec.args.join(' ')).toContain('"C:\\tools\\opencode.cmd" "run"');
     expect(spec.args.join(' ')).toContain('"--format" "json"');
-    expect(spec.args.join(' ')).toContain('"--agent" "Sisyphus"');
+    expect(spec.args.join(' ')).toContain('"--agent" "sisyphus"');
     expect(spec.args.join(' ')).toContain('"--dangerously-skip-permissions"');
     expect(spec.args.join(' ')).toContain('"--session" "opencode-session-1"');
     expect(spec.args.join(' ')).not.toContain('Apply the requested fix');
     expect(workerRuntimeAssigneeLabel('opencode')).toBe('Worker OpenCode');
+  });
+
+  it('prefers the PATH-resolved OpenCode executable over the AppData npm shim on Windows', async () => {
+    const pathDir = await makeTempDir('wah-opencode-path-');
+    const appDataDir = await makeTempDir('wah-opencode-appdata-');
+    const pathBinary = join(pathDir, 'opencode.exe');
+    const appDataShimDir = join(appDataDir, 'npm');
+    const appDataShim = join(appDataShimDir, 'opencode.cmd');
+    await writeFile(pathBinary, '');
+    await mkdir(appDataShimDir, { recursive: true });
+    await writeFile(appDataShim, '@echo off\r\n');
+
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'opencode',
+      prompt: 'Apply the requested fix',
+      sessionId: null,
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        PATH: pathDir,
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        APPDATA: appDataDir,
+      },
+    });
+
+    expect(spec.command.toLowerCase()).toBe(pathBinary.toLowerCase());
+  });
+
+  it('respects an explicit OpenCode agent override', () => {
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'opencode',
+      prompt: 'Apply the requested fix',
+      sessionId: null,
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        OPENCODE_PATH: 'C:\\tools\\opencode.exe',
+        WORKSPACE_AGENT_HUB_OPENCODE_AGENT: 'hephaestus',
+      },
+    });
+
+    expect(spec.command).toBe('C:\\tools\\opencode.exe');
+    expect(spec.args).toEqual(
+      expect.arrayContaining(['--agent', 'hephaestus'])
+    );
+  });
+
+  it('reports PATH-resolved OpenCode availability before falling back to AppData shims', async () => {
+    const pathDir = await makeTempDir('wah-opencode-availability-');
+    const pathBinary = join(pathDir, 'opencode.exe');
+    await writeFile(pathBinary, '');
+
+    const availability = describeWorkerRuntimeCliAvailability('opencode', {
+      platform: 'win32',
+      env: {
+        PATH: pathDir,
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        APPDATA: 'C:\\missing-appdata',
+      },
+    });
+
+    expect(availability.available).toBe(true);
+    expect(availability.resolvedPath?.toLowerCase()).toBe(
+      pathBinary.toLowerCase()
+    );
   });
 
   it('builds a Codex launch spec that wraps the Windows cmd shim through cmd.exe', () => {

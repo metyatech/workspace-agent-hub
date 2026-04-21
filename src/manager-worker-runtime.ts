@@ -45,6 +45,8 @@ const GIT_CONTEXT_ENV_KEYS = [
   'GIT_WORK_TREE',
 ] as const;
 
+const DEFAULT_OPENCODE_AGENT = 'sisyphus';
+
 function sanitizeAgentEnv(
   baseEnv: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
@@ -88,6 +90,14 @@ function runtimeCommand(
 
   if (runtime === 'opencode') {
     if (platform === 'win32') {
+      const pathResolved = resolveCommandPath({
+        command: 'opencode',
+        platform,
+        env,
+      });
+      if (pathResolved) {
+        return pathResolved;
+      }
       const roamingAppData =
         env.APPDATA?.trim() ||
         (env.USERPROFILE?.trim()
@@ -99,7 +109,7 @@ function runtimeCommand(
           return opencodeCmd;
         }
       }
-      return 'opencode.cmd';
+      return 'opencode';
     }
     return 'opencode';
   }
@@ -129,6 +139,21 @@ function runtimeCommand(
     return platform === 'win32' ? 'copilot.exe' : 'copilot';
   }
   return platform === 'win32' ? 'claude.exe' : 'claude';
+}
+
+function runtimeAgent(
+  runtime: ManagerWorkerRuntime,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
+  if (runtime !== 'opencode') {
+    return null;
+  }
+  return (
+    env.WORKSPACE_AGENT_HUB_OPENCODE_AGENT?.trim() ||
+    env.AGENT_OPENCODE_AGENT?.trim() ||
+    env.OPENCODE_AGENT?.trim() ||
+    DEFAULT_OPENCODE_AGENT
+  );
 }
 
 function envPathValue(env: NodeJS.ProcessEnv): string {
@@ -387,16 +412,18 @@ function buildOpenCodeCommandSpec(input: {
   const model = input.model?.trim() || runtimeModel('opencode', input.env);
   const effort =
     input.effort?.trim() || runtimeEffort('opencode', input.env) || null;
+  const agent = runtimeAgent('opencode', input.env);
   const args = [
     'run',
     '--format',
     'json',
     '--dir',
     input.resolvedDir,
-    '--agent',
-    'Sisyphus',
     '--dangerously-skip-permissions',
   ];
+  if (agent) {
+    args.push('--agent', agent);
+  }
   if (input.sessionId) {
     args.push('--session', input.sessionId);
   }

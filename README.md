@@ -530,7 +530,8 @@ Important behavior:
   `codebase-qna` -> SWE Atlas QnA, `test-writing` -> SWE Atlas Test Writing,
   `implementation` -> SWE-Bench Pro public/private. The backend first checks
   whether OpenCode is available and, when it is, starts the worker through
-  OpenCode with the `Sisyphus` agent. If OpenCode is unavailable for that
+  the same PATH-resolved OpenCode CLI as the interactive shell when possible,
+  and uses the `sisyphus` agent by default. If OpenCode is unavailable for that
   workspace or repo policy excludes it, the backend falls back to the live-
   ranked Codex/Claude candidates, skips runtimes whose CLI is not launchable
   from the current PATH or configured override, checks the corresponding
@@ -752,7 +753,11 @@ This repository claims the following primary handoff paths.
   still want Hub/Manager to read the real workspace state.
 - `WORKSPACE_AGENT_HUB_OPENCODE_PATH`
   Optional override for the OpenCode CLI used by Manager worker tasks. Defaults
-  to `opencode` / `opencode.cmd`.
+  to the same PATH-resolved `opencode` executable the interactive shell would
+  use, with `%APPDATA%\npm\opencode.cmd` as a Windows fallback.
+- `WORKSPACE_AGENT_HUB_OPENCODE_AGENT`
+  Optional OpenCode agent override passed to Manager worker tasks. Defaults to
+  `sisyphus`, matching the standard oh-my-openagent configuration key.
 - `WORKSPACE_AGENT_HUB_OPENCODE_MODEL`
   Optional model override passed to OpenCode worker tasks. When unset, Manager
   lets the local OpenCode/OmO configuration choose the model.
