@@ -6328,15 +6328,9 @@ async function removeAssignment(
 ): Promise<ManagerSession> {
   return updateSession(dir, (session) => {
     const updated = updateSessionAssignment(session, assignmentId, () => null);
-    // When the last assignment is removed, clear any stale error so the UI
-    // does not keep showing a past error for an assignment that no longer exists.
-    if (
-      updated.activeAssignments.length === 0 &&
-      updated.lastErrorMessage !== null
-    ) {
-      return { ...updated, lastErrorMessage: null, lastErrorAt: null };
-    }
-    return updated;
+    return updated.activeAssignments.length === 0
+      ? clearDispatchingSessionState(updated)
+      : updated;
   });
 }
 
@@ -10245,6 +10239,9 @@ export async function kickIdleQueuedManagerWork(
   await reconcileQueueIntegrity(dir);
   let session = await reconcileActiveAssignments(dir);
   const queue = await readQueue(dir);
+  session = await updateSession(dir, (currentSession) =>
+    recomputeSessionState(dir, currentSession, queue)
+  );
   if (
     session.activeAssignments.length > 0 ||
     session.dispatchingThreadId ||

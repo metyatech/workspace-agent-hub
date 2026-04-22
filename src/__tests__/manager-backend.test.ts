@@ -766,6 +766,40 @@ describe('manager backend state recomputation', () => {
     expect(recomputed.status).toBe('idle');
   });
 
+  it('retains preflight blocker runtime errors when no assignment remains', async () => {
+    listThreadsMock.mockResolvedValue([]);
+
+    const recomputed = await recomputeSessionState(tempDir, {
+      workspaceKey: tempDir,
+      status: 'busy',
+      sessionId: null,
+      routingSessionId: null,
+      pid: null,
+      currentQueueId: null,
+      startedAt: '2026-04-19T00:00:00.000Z',
+      lastMessageAt: '2026-04-19T00:00:00.000Z',
+      priorityStreak: 0,
+      lastProgressAt: null,
+      lastErrorMessage:
+        '[Manager] 実行前チェックで blocker を検出しました\n何が失敗したか: mwt init が未完了です',
+      lastErrorAt: '2026-04-19T00:00:00.000Z',
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
+      activeAssignments: [],
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: [],
+      dispatchingAssigneeKind: null,
+      dispatchingAssigneeLabel: null,
+      dispatchingDetail: null,
+      dispatchingStartedAt: null,
+    });
+
+    expect(recomputed.status).toBe('idle');
+    expect(recomputed.lastErrorMessage).toContain('実行前チェックで blocker');
+    expect(recomputed.lastErrorAt).toBe('2026-04-19T00:00:00.000Z');
+  });
+
   it('reconciles queue integrity by removing duplicate ids and resolved-thread entries', async () => {
     listThreadsMock.mockResolvedValue([
       {
@@ -8002,6 +8036,7 @@ describe('eagerReconcile restart resilience', () => {
     await expect(kickIdleQueuedManagerWork(tempDir, 'test')).resolves.toBe(
       true
     );
+    expect((await readSession(tempDir)).lastErrorMessage).toBeNull();
     await waitFor(() => spawnMock.mock.calls.length === 1);
 
     completeCodexTurn(workerProc, {
@@ -8020,5 +8055,70 @@ describe('eagerReconcile restart resilience', () => {
     const queue = await readQueue(tempDir);
     expect(session.currentQueueId).toBeNull();
     expect(queue.filter((entry) => !entry.processed)).toHaveLength(0);
+  });
+
+  it('kickIdleQueuedManagerWork holds the session write lock while recomputing normalized state', async () => {
+    await writeSession(tempDir, {
+      ...(await readSession(tempDir)),
+      status: 'idle',
+      currentQueueId: null,
+      dispatchingThreadId: null,
+      dispatchingQueueEntryIds: [],
+      activeAssignments: [],
+      lastPauseMessage: null,
+      lastPauseAt: null,
+      lastPauseAutoResumeAt: null,
+      lastErrorMessage: 'stale worker error',
+      lastErrorAt: '2026-04-19T00:00:00.000Z',
+    });
+    listThreadsMock.mockResolvedValue([]);
+
+    const threadStateModule = await import('../manager-thread-state.js');
+    const originalReadManagerThreadMeta =
+      threadStateModule.readManagerThreadMeta;
+    let allowMetaRead!: () => void;
+    let metaReadEntered!: () => void;
+    const metaReadReady = new Promise<void>((resolve) => {
+      metaReadEntered = resolve;
+    });
+    const metaReadBlocked = new Promise<void>((resolve) => {
+      allowMetaRead = resolve;
+    });
+    const readMetaSpy = vi
+      .spyOn(threadStateModule, 'readManagerThreadMeta')
+      .mockImplementation(async (dir) => {
+        metaReadEntered();
+        await metaReadBlocked;
+        return originalReadManagerThreadMeta(dir);
+      });
+
+    try {
+      const kickPromise = kickIdleQueuedManagerWork(tempDir, 'test-race');
+      await metaReadReady;
+
+      let pauseUpdateSettled = false;
+      const pauseUpdatePromise = updateSession(tempDir, (session) => ({
+        ...session,
+        lastPauseMessage: 'Codex quota exhausted',
+        lastPauseAt: '2026-04-19T00:01:00.000Z',
+        lastPauseAutoResumeAt: '2026-04-19T00:10:00.000Z',
+      })).then(() => {
+        pauseUpdateSettled = true;
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(pauseUpdateSettled).toBe(false);
+
+      allowMetaRead();
+      await expect(kickPromise).resolves.toBe(false);
+      await pauseUpdatePromise;
+
+      const session = await readSession(tempDir);
+      expect(session.lastErrorMessage).toBeNull();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      readMetaSpy.mockRestore();
+    }
   });
 });
