@@ -363,6 +363,31 @@ async function waitFor(
   throw new Error('Timed out waiting for condition.');
 }
 
+function formatDiagnosticError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack ?? `${error.name}: ${error.message}`;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+async function captureWaitForManagerIdleDiagnostic(
+  label: string,
+  readValue: () => Promise<unknown>
+): Promise<string> {
+  try {
+    return `${label}=${JSON.stringify(await readValue())}`;
+  } catch (error) {
+    return `${label}ReadError=${formatDiagnosticError(error)}`;
+  }
+}
+
 async function waitForManagerIdle(
   dir: string,
   timeoutMs = 10000
@@ -373,36 +398,52 @@ async function waitForManagerIdle(
       const session = await readSession(dir);
       return queue.length === 0 && session.status === 'idle';
     }, timeoutMs);
-  } catch {
-    const queue = await readQueue(dir);
-    const session = await readSession(dir);
-    const meta = await readManagerThreadMeta(dir);
-    throw new Error(
-      [
-        'Timed out waiting for manager idle.',
-        `session=${JSON.stringify({
-          status: session.status,
-          currentQueueId: session.currentQueueId,
-          activeAssignments: session.activeAssignments.map((assignment) => ({
-            id: assignment.id,
-            threadId: assignment.threadId,
-            queueEntryIds: assignment.queueEntryIds,
-            pid: assignment.pid,
-          })),
-          dispatchingThreadId: session.dispatchingThreadId,
-          dispatchingQueueEntryIds: session.dispatchingQueueEntryIds,
-          lastErrorMessage: session.lastErrorMessage,
-          lastPauseMessage: session.lastPauseMessage,
-        })}`,
-        `queue=${JSON.stringify(
-          queue.map((entry) => ({
+  } catch (error) {
+    const [sessionDiagnostic, queueDiagnostic, metaDiagnostic] =
+      await Promise.all([
+        captureWaitForManagerIdleDiagnostic('session', async () => {
+          const session = await readSession(dir);
+          return {
+            status: session.status,
+            currentQueueId: session.currentQueueId,
+            activeAssignments: session.activeAssignments.map((assignment) => ({
+              id: assignment.id,
+              threadId: assignment.threadId,
+              queueEntryIds: assignment.queueEntryIds,
+              pid: assignment.pid,
+            })),
+            dispatchingThreadId: session.dispatchingThreadId,
+            dispatchingQueueEntryIds: session.dispatchingQueueEntryIds,
+            lastErrorMessage: session.lastErrorMessage,
+            lastPauseMessage: session.lastPauseMessage,
+          };
+        }),
+        captureWaitForManagerIdleDiagnostic('queue', async () => {
+          const queue = await readQueue(dir);
+          return queue.map((entry) => ({
             id: entry.id,
             threadId: entry.threadId,
             processed: entry.processed,
-          }))
-        )}`,
-        `meta=${JSON.stringify(meta)}`,
-      ].join(' ')
+          }));
+        }),
+        captureWaitForManagerIdleDiagnostic('meta', async () =>
+          readManagerThreadMeta(dir)
+        ),
+      ]);
+    const isTimeout =
+      error instanceof Error &&
+      error.message === 'Timed out waiting for condition.';
+    throw new Error(
+      [
+        isTimeout
+          ? 'Timed out waiting for manager idle.'
+          : 'waitForManagerIdle failed before reaching idle.',
+        `cause=${formatDiagnosticError(error)}`,
+        sessionDiagnostic,
+        queueDiagnostic,
+        metaDiagnostic,
+      ].join(' '),
+      { cause: error }
     );
   }
 }
@@ -8126,6 +8167,22 @@ describe('eagerReconcile restart resilience', () => {
     expect(threads[0]?.messages.at(-1)?.content).toBe('review done');
     expect(session.currentQueueId).toBeNull();
     expect(queue.filter((entry) => !entry.processed)).toHaveLength(0);
+  });
+
+  it('waitForManagerIdle preserves the original failure cause in diagnostics', async () => {
+    const backendModule = await import('../manager-backend.js');
+    const readSessionSpy = vi
+      .spyOn(backendModule, 'readSession')
+      .mockRejectedValueOnce(new Error('session exploded'));
+
+    await expect(waitForManagerIdle(tempDir, 10)).rejects.toMatchObject({
+      message: expect.stringMatching(
+        /waitForManagerIdle failed before reaching idle\..*cause=Error: session exploded/
+      ),
+      cause: expect.objectContaining({ message: 'session exploded' }),
+    });
+
+    readSessionSpy.mockRestore();
   });
 
   it('kickIdleQueuedManagerWork holds the session write lock while recomputing normalized state', async () => {
