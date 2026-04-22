@@ -480,6 +480,119 @@
         color: var(--text-muted);
       }
 
+      .activity-diagnostics {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid rgba(245, 158, 11, 0.18);
+        background: rgba(255, 251, 235, 0.92);
+      }
+
+      .activity-diagnostics.hidden {
+        display: none;
+      }
+
+      .activity-diagnostics[data-tone='danger'] {
+        border-color: rgba(239, 68, 68, 0.22);
+        background: rgba(254, 242, 242, 0.94);
+      }
+
+      .activity-diagnostics-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .activity-diagnostics-copy {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+        flex: 1;
+      }
+
+      .activity-diagnostics-eyebrow {
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        color: #92400e;
+        text-transform: uppercase;
+      }
+
+      .activity-diagnostics[data-tone='danger'] .activity-diagnostics-eyebrow {
+        color: #b91c1c;
+      }
+
+      .activity-diagnostics-title {
+        font-size: 0.9rem;
+        font-weight: 800;
+        color: var(--text);
+      }
+
+      .activity-diagnostics-state {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 5px 9px;
+        font-size: 0.68rem;
+        font-weight: 800;
+        color: #92400e;
+        background: rgba(254, 243, 199, 0.9);
+        border: 1px solid rgba(245, 158, 11, 0.22);
+      }
+
+      .activity-diagnostics[data-tone='danger'] .activity-diagnostics-state {
+        color: #b91c1c;
+        background: rgba(254, 226, 226, 0.94);
+        border-color: rgba(239, 68, 68, 0.22);
+      }
+
+      .activity-diagnostics-summary {
+        font-size: 0.78rem;
+        line-height: 1.65;
+        color: var(--text-soft);
+      }
+
+      .activity-diagnostics-list {
+        margin: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 10px;
+      }
+
+      .activity-diagnostics-list.hidden {
+        display: none;
+      }
+
+      .activity-diagnostics-item {
+        margin: 0;
+        padding: 10px 11px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid rgba(122, 158, 125, 0.14);
+      }
+
+      .activity-diagnostics-item dt {
+        margin: 0 0 4px;
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: var(--accent-strong);
+      }
+
+      .activity-diagnostics-item dd {
+        margin: 0;
+        font-size: 0.75rem;
+        line-height: 1.58;
+        color: var(--text-soft);
+      }
+
+      .activity-diagnostics-action.hidden {
+        display: none;
+      }
+
       .activity-counts {
         display: flex;
         flex-wrap: wrap;
@@ -2342,6 +2455,50 @@
               少し待つと、AI が作業中か待機中か、いま確認すべき作業項目
               があるかをここに表示します。
             </div>
+            <section
+              id="activity-diagnostics"
+              class="activity-diagnostics hidden"
+              data-tone="warn"
+              aria-live="polite"
+            >
+              <div class="activity-diagnostics-top">
+                <div class="activity-diagnostics-copy">
+                  <div
+                    id="activity-diagnostics-eyebrow"
+                    class="activity-diagnostics-eyebrow"
+                  >
+                    注意が必要です
+                  </div>
+                  <div
+                    id="activity-diagnostics-title"
+                    class="activity-diagnostics-title"
+                  >
+                    いま確認したい診断があります
+                  </div>
+                </div>
+                <span
+                  id="activity-diagnostics-state"
+                  class="activity-diagnostics-state"
+                  >要確認</span
+                >
+              </div>
+              <div
+                id="activity-diagnostics-summary"
+                class="activity-diagnostics-summary"
+              ></div>
+              <dl
+                id="activity-diagnostics-list"
+                class="activity-diagnostics-list hidden"
+              ></dl>
+              <button
+                id="activityDiagnosticsActionButton"
+                class="btn btn-secondary activity-diagnostics-action hidden"
+                type="button"
+                style="width: auto"
+              >
+                今すぐ読み直す
+              </button>
+            </section>
             <div id="activity-counts" class="activity-counts"></div>
             <div class="activity-guidance-grid">
               <section id="activity-next-step" class="activity-guidance-card">

@@ -282,6 +282,203 @@ function createManagerFetchWithData(input: {
   });
 }
 
+function createFetchWithPreflight(preflight: unknown) {
+  let liveRequestCount = 0;
+  return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    const headers = new Headers(init?.headers ?? {});
+    const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+    if (providedToken !== 'test-token') {
+      return new Response(
+        JSON.stringify({ error: 'Access code required', authRequired: true }),
+        { status: 401 }
+      );
+    }
+
+    if (isRoute(url, '/threads')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/tasks')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/manager/repos')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/manager/status')) {
+      return new Response(
+        JSON.stringify({
+          running: false,
+          configured: true,
+          builtinBackend: true,
+          detail: '未起動',
+        }),
+        { status: 200 }
+      );
+    }
+    if (isRoute(url, '/live')) {
+      liveRequestCount += 1;
+      if (liveRequestCount > 1) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({
+                    kind: 'snapshot',
+                    emittedAt: '2026-03-21T00:00:00.000Z',
+                    threads: [],
+                    tasks: [],
+                    repos: [],
+                    status: {
+                      running: false,
+                      configured: true,
+                      builtinBackend: true,
+                      detail: '未起動',
+                    },
+                    preflight,
+                  }) + '\n'
+                )
+              );
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/x-ndjson; charset=utf-8',
+            },
+          }
+        );
+      }
+      return makeNdjsonResponse([
+        {
+          kind: 'snapshot',
+          emittedAt: '2026-03-21T00:00:00.000Z',
+          threads: [],
+          tasks: [],
+          repos: [],
+          status: {
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動',
+          },
+          preflight,
+        },
+      ]);
+    }
+    if (isRoute(url, '/builds')) {
+      return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+        status: 200,
+      });
+    }
+    return new Response('{}', { status: 200 });
+  });
+}
+
+function createFetchWithPreflightSequence(preflights: unknown[]) {
+  let liveRequestCount = 0;
+  return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(request);
+    const headers = new Headers(init?.headers ?? {});
+    const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+    if (providedToken !== 'test-token') {
+      return new Response(
+        JSON.stringify({ error: 'Access code required', authRequired: true }),
+        { status: 401 }
+      );
+    }
+
+    if (isRoute(url, '/threads')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/tasks')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/manager/repos')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (isRoute(url, '/manager/status')) {
+      return new Response(
+        JSON.stringify({
+          running: false,
+          configured: true,
+          builtinBackend: true,
+          detail: '未起動',
+        }),
+        { status: 200 }
+      );
+    }
+    if (isRoute(url, '/live')) {
+      liveRequestCount += 1;
+      const preflight =
+        preflights[
+          Math.min(
+            liveRequestCount === 1 ? 0 : liveRequestCount === 2 ? 0 : 1,
+            preflights.length - 1
+          )
+        ] ?? null;
+
+      if (liveRequestCount === 2) {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({
+                    kind: 'snapshot',
+                    emittedAt: '2026-03-21T00:00:00.000Z',
+                    threads: [],
+                    tasks: [],
+                    repos: [],
+                    status: {
+                      running: false,
+                      configured: true,
+                      builtinBackend: true,
+                      detail: '未起動',
+                    },
+                    preflight,
+                  }) + '\n'
+                )
+              );
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/x-ndjson; charset=utf-8',
+            },
+          }
+        );
+      }
+
+      return makeNdjsonResponse([
+        {
+          kind: 'snapshot',
+          emittedAt: '2026-03-21T00:00:00.000Z',
+          threads: [],
+          tasks: [],
+          repos: [],
+          status: {
+            running: false,
+            configured: true,
+            builtinBackend: true,
+            detail: '未起動',
+          },
+          preflight,
+        },
+      ]);
+    }
+    if (isRoute(url, '/builds')) {
+      return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
+        status: 200,
+      });
+    }
+    return new Response('{}', { status: 200 });
+  });
+}
+
 async function loadManagerApp(
   fetchMock: typeof fetch,
   options?: {
@@ -610,6 +807,8 @@ describe('manager-app DOM auth state matrix', () => {
     expect(managerHtml).toContain('id="activity-next-step-title"');
     expect(managerHtml).toContain('id="activityNextStepButton"');
     expect(managerHtml).toContain('id="activity-focus-lanes"');
+    expect(managerHtml).toContain('id="activity-diagnostics"');
+    expect(managerHtml).toContain('id="activityDiagnosticsActionButton"');
     expect(managerHtml).not.toContain('queued / working / review');
     expect(managerHtml).toMatch(
       /<button[\s\S]*class="section-toggle"[\s\S]*data-section-key="queued"/
@@ -5735,6 +5934,15 @@ describe('manager-app live updates', () => {
       document.querySelector<HTMLElement>('#manager-live-status')?.dataset
         .liveTone
     ).toBe('danger');
+    expect(
+      document.querySelector<HTMLElement>('#activity-diagnostics')?.textContent
+    ).toContain('ライブ更新の問題を検知しています');
+    expect(
+      document.querySelector<HTMLElement>('#activity-diagnostics')?.textContent
+    ).toContain('ブラウザがオフラインです');
+    expect(
+      document.querySelector<HTMLElement>('#activity-diagnostics')?.textContent
+    ).toContain('今すぐ読み直す');
 
     Object.defineProperty(window.navigator, 'onLine', {
       configurable: true,
@@ -5751,6 +5959,11 @@ describe('manager-app live updates', () => {
       document.querySelector<HTMLElement>('#manager-live-status')?.dataset
         .liveTone
     ).toBe('ok');
+    expect(
+      document
+        .querySelector<HTMLElement>('#activity-diagnostics')!
+        .classList.contains('hidden')
+    ).toBe(true);
   });
 
   it('does not let an older refresh snapshot overwrite a newer live snapshot', async () => {
@@ -6334,6 +6547,138 @@ describe('manager-app live updates', () => {
     ).toBe(true);
   });
 
+  it('surfaces structured manager safe-stop diagnostics in the activity card', async () => {
+    const document = await loadManagerApp(
+      createManagerFetchWithData({
+        validToken: 'safe-stop-card-token',
+        threads: [],
+        status: {
+          running: true,
+          configured: true,
+          builtinBackend: true,
+          health: 'error',
+          detail: 'AI backend で問題が起きています',
+          pendingCount: 2,
+          errorMessage: [
+            '[Manager] 実行前チェックで blocker を検出しました',
+            '何が失敗したか: mwt init が未完了の repo が残っています',
+            '自動で試したこと: 現在の workspace を再確認しました',
+            '次にやること: 対象 repo を初期化してからもう一度送ってください',
+          ].join('\n'),
+        },
+      }),
+      {
+        authRequired: true,
+        beforeImport: (window) => {
+          window.localStorage.setItem(authStorageKey, 'safe-stop-card-token');
+        },
+      }
+    );
+
+    const diagnostics = document.querySelector<HTMLElement>(
+      '#activity-diagnostics'
+    )!;
+    expect(diagnostics.classList.contains('hidden')).toBe(false);
+    expect(diagnostics.dataset.tone).toBe('danger');
+    expect(diagnostics.textContent).toContain(
+      'Manager が安全に止まった理由があります'
+    );
+    expect(diagnostics.textContent).toContain('mwt init が未完了の repo');
+    expect(diagnostics.textContent).toContain(
+      '現在の workspace を再確認しました'
+    );
+    expect(diagnostics.textContent).toContain(
+      '対象 repo を初期化してからもう一度送ってください'
+    );
+    expect(diagnostics.textContent).toContain(
+      'いまはキュー 2 件が止まっています'
+    );
+  });
+
+  it('surfaces stale preflight details in the activity diagnostics card', async () => {
+    const staleTime = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+    const fetchMock = createFetchWithPreflight({
+      freshness: 'stale',
+      summary: {
+        inScopeRepoCount: 3,
+        invalidRepoCount: 1,
+        approvalQueueCount: 0,
+        runCount: 2,
+        mergeLaneCount: 0,
+        unavailableRuntimeCount: 1,
+      },
+      generatedAt: staleTime,
+      error: null,
+    });
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const diagnostics = document.querySelector<HTMLElement>(
+      '#activity-diagnostics'
+    )!;
+    expect(diagnostics.classList.contains('hidden')).toBe(false);
+    expect(diagnostics.dataset.tone).toBe('warn');
+    expect(diagnostics.textContent).toContain(
+      '環境チェック結果が古くなっています'
+    );
+    expect(diagnostics.textContent).toContain(
+      '対象 repo 3件 / 問題 1件 / 実行中 2件'
+    );
+    expect(diagnostics.textContent).toContain('runtime 不可 1件');
+    expect(diagnostics.textContent).toContain('前回の確認');
+  });
+
+  it('clears the activity diagnostics card when stale preflight becomes unavailable in the next snapshot', async () => {
+    const staleTime = new Date(Date.now() - 7 * 60 * 1000).toISOString();
+    const fetchMock = createFetchWithPreflightSequence([
+      {
+        freshness: 'stale',
+        summary: {
+          inScopeRepoCount: 3,
+          invalidRepoCount: 1,
+          approvalQueueCount: 0,
+          runCount: 2,
+          mergeLaneCount: 0,
+          unavailableRuntimeCount: 1,
+        },
+        generatedAt: staleTime,
+        error: null,
+      },
+      null,
+    ]);
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, 'test-token');
+      },
+    });
+
+    const diagnostics = document.querySelector<HTMLElement>(
+      '#activity-diagnostics'
+    )!;
+    expect(diagnostics.classList.contains('hidden')).toBe(false);
+    expect(diagnostics.textContent).toContain(
+      '環境チェック結果が古くなっています'
+    );
+
+    const app = (
+      window as Window & {
+        __workspaceAgentHubManagerApp__?: { loadAll: () => Promise<boolean> };
+      }
+    ).__workspaceAgentHubManagerApp__;
+    expect(app).toBeDefined();
+    await app!.loadAll();
+    await flushAsync();
+
+    expect(diagnostics.classList.contains('hidden')).toBe(true);
+  });
+
   it('renders the in-flight worker output in a dedicated live activity panel and the latest AI bubble in detail view', async () => {
     const workingThread = makeThreadView('thread-live', 'リアルタイム出力', {
       status: 'active',
@@ -6587,66 +6932,6 @@ describe('manager-app live updates', () => {
 });
 
 describe('preflight freshness status', () => {
-  function createFetchWithPreflight(preflight: unknown) {
-    return vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(request);
-      const headers = new Headers(init?.headers ?? {});
-      const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
-
-      if (providedToken !== 'test-token') {
-        return new Response(
-          JSON.stringify({ error: 'Access code required', authRequired: true }),
-          { status: 401 }
-        );
-      }
-
-      if (isRoute(url, '/threads')) {
-        return new Response(JSON.stringify([]), { status: 200 });
-      }
-      if (isRoute(url, '/tasks')) {
-        return new Response(JSON.stringify([]), { status: 200 });
-      }
-      if (isRoute(url, '/manager/repos')) {
-        return new Response(JSON.stringify([]), { status: 200 });
-      }
-      if (isRoute(url, '/manager/status')) {
-        return new Response(
-          JSON.stringify({
-            running: false,
-            configured: true,
-            builtinBackend: true,
-            detail: '未起動',
-          }),
-          { status: 200 }
-        );
-      }
-      if (isRoute(url, '/live')) {
-        return makeNdjsonResponse([
-          {
-            kind: 'snapshot',
-            emittedAt: '2026-03-21T00:00:00.000Z',
-            threads: [],
-            tasks: [],
-            repos: [],
-            status: {
-              running: false,
-              configured: true,
-              builtinBackend: true,
-              detail: '未起動',
-            },
-            preflight,
-          },
-        ]);
-      }
-      if (isRoute(url, '/builds')) {
-        return new Response(JSON.stringify({ builds: [], currentHash: '' }), {
-          status: 200,
-        });
-      }
-      return new Response('{}', { status: 200 });
-    });
-  }
-
   it('renders fresh state with summary', async () => {
     const fetchMock = createFetchWithPreflight({
       freshness: 'fresh',

@@ -250,12 +250,120 @@ interface ManagerLiveIndicatorState {
   detail: string;
 }
 
+type ManagerDiagnosticTone = 'warn' | 'danger';
+
+interface ManagerDiagnosticField {
+  label: string;
+  value: string;
+}
+
+interface ManagerActivityDiagnosticCard {
+  tone: ManagerDiagnosticTone;
+  eyebrow: string;
+  title: string;
+  stateLabel: string;
+  summary: string;
+  fields: ManagerDiagnosticField[];
+  actionLabel: string | null;
+  action: (() => void) | null;
+}
+
 function snapshotEmittedAtValue(emittedAt: string | null | undefined): number {
   if (typeof emittedAt !== 'string' || !emittedAt.trim()) {
     return 0;
   }
   const parsed = Date.parse(emittedAt);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeSingleLineText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function sentenceCaseLine(value: string): string {
+  const normalized = normalizeSingleLineText(value);
+  if (!normalized) {
+    return '';
+  }
+  return /[。.!！?？]$/.test(normalized) ? normalized : `${normalized}。`;
+}
+
+function stripManagerPrefix(value: string): string {
+  return value.replace(/^\[Manager\]\s*/u, '').trim();
+}
+
+function parseManagerDiagnosticMessage(
+  message: string
+): ManagerDiagnosticField[] | null {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const fields: ManagerDiagnosticField[] = [];
+  const firstLine = stripManagerPrefix(lines[0] ?? '');
+  if (firstLine) {
+    fields.push({ label: '診断', value: firstLine });
+  }
+
+  for (const line of lines.slice(1)) {
+    const match = line.match(/^([^:：]+)[:：]\s*(.+)$/u);
+    if (match) {
+      fields.push({
+        label: normalizeSingleLineText(match[1] ?? ''),
+        value: normalizeSingleLineText(match[2] ?? ''),
+      });
+      continue;
+    }
+    if (fields.length === 0) {
+      fields.push({ label: '詳細', value: normalizeSingleLineText(line) });
+      continue;
+    }
+    const lastField = fields[fields.length - 1]!;
+    lastField.value =
+      `${lastField.value} ${normalizeSingleLineText(line)}`.trim();
+  }
+
+  return fields.length > 0 ? fields : null;
+}
+
+function describePreflightSummary(
+  summary: PreflightFreshnessPayload['summary']
+): string {
+  if (!summary) {
+    return 'まだ環境サマリーを受け取っていません。';
+  }
+  const parts: string[] = [`対象 repo ${summary.inScopeRepoCount}件`];
+  if (summary.invalidRepoCount > 0) {
+    parts.push(`問題 ${summary.invalidRepoCount}件`);
+  }
+  if (summary.runCount > 0) {
+    parts.push(`実行中 ${summary.runCount}件`);
+  }
+  if (summary.mergeLaneCount > 0) {
+    parts.push(`merge lane ${summary.mergeLaneCount}件`);
+  }
+  if (summary.unavailableRuntimeCount > 0) {
+    parts.push(`runtime 不可 ${summary.unavailableRuntimeCount}件`);
+  }
+  return parts.join(' / ');
+}
+
+function describePreflightGeneratedAt(
+  generatedAt: string | null
+): string | null {
+  if (!generatedAt) {
+    return null;
+  }
+  return `最終更新 ${formatAge(generatedAt)}`;
 }
 
 interface ManagerRoutingSummaryItem {
@@ -3627,6 +3735,7 @@ class ManagerApp {
   openThreadId: string | null = null;
   #composerTargetThreadId: string | null = null;
   #openThreadMovementNotice: string | null = null;
+  #preflightStatus: PreflightFreshnessPayload | null = null;
 
   #sections: Record<ManagerUiState, ThreadSectionController>;
   #taskSection: TaskSectionController;
@@ -4437,6 +4546,7 @@ class ManagerApp {
   }
 
   #renderPreflightStatus(payload: PreflightFreshnessPayload | null): void {
+    this.#preflightStatus = payload;
     const el = document.getElementById(
       'preflight-status'
     ) as HTMLElement | null;
@@ -4445,6 +4555,7 @@ class ManagerApp {
     }
     if (!payload) {
       el.classList.add('hidden');
+      this.#renderActivityDiagnostics();
       return;
     }
     el.classList.remove('hidden');
@@ -4497,6 +4608,8 @@ class ManagerApp {
         detail.textContent = '';
       }
     }
+
+    this.#renderActivityDiagnostics();
   }
 
   #applyLiveSnapshot(snapshot: ManagerLiveSnapshotPayload): boolean {
@@ -5998,6 +6111,235 @@ class ManagerApp {
     };
   }
 
+  #buildActivityDiagnosticCard(): ManagerActivityDiagnosticCard | null {
+    const statusErrorMessage = this.#managerStatus?.errorMessage ?? null;
+    const problem = managerStatusProblem(this.#managerStatus);
+    const pendingCount = this.#managerStatus?.pendingCount ?? 0;
+
+    if (problem === 'error') {
+      const parsedFields = statusErrorMessage
+        ? parseManagerDiagnosticMessage(statusErrorMessage)
+        : null;
+      const summaryParts = [
+        parsedFields?.find((field) => field.label === '診断')?.value ??
+          'AI backend のエラーで処理が停止しています。',
+      ];
+      if (pendingCount > 0) {
+        summaryParts.push(`いまはキュー ${pendingCount} 件が止まっています。`);
+      }
+      return {
+        tone: 'danger',
+        eyebrow: '安全停止 / 診断',
+        title: 'Manager が安全に止まった理由があります',
+        stateLabel: '停止中',
+        summary: summaryParts.join(' '),
+        fields:
+          parsedFields?.filter((field) => field.label !== '診断') ??
+          (statusErrorMessage
+            ? [
+                {
+                  label: '詳細',
+                  value: normalizeSingleLineText(statusErrorMessage),
+                },
+              ]
+            : []),
+        actionLabel: '今すぐ読み直す',
+        action: () => {
+          void this.loadAll();
+        },
+      };
+    }
+
+    if (problem === 'paused') {
+      const parsedFields = statusErrorMessage
+        ? parseManagerDiagnosticMessage(statusErrorMessage)
+        : null;
+      const summaryParts = ['Manager Codex の利用上限で停止しています。'];
+      if (pendingCount > 0) {
+        summaryParts.push(
+          `いまはキュー ${pendingCount} 件が待機したままです。`
+        );
+      }
+      return {
+        tone: 'warn',
+        eyebrow: '停止中のキュー',
+        title: '再開前に見ておく状況があります',
+        stateLabel: '再開待ち',
+        summary: summaryParts.join(' '),
+        fields:
+          parsedFields?.filter((field) => field.label !== '診断') ??
+          (statusErrorMessage
+            ? [
+                {
+                  label: '詳細',
+                  value: normalizeSingleLineText(statusErrorMessage),
+                },
+              ]
+            : []),
+        actionLabel: '再開する',
+        action: () => {
+          void this.startManager();
+        },
+      };
+    }
+
+    if (this.#liveIssue || this.#liveReconnectTimer !== null) {
+      const liveState = this.#buildLiveConnectionState();
+      const lastReceipt = this.#lastLiveReceiptLabel();
+      const issueKind = this.#liveIssue?.kind ?? null;
+      const issueLabel =
+        issueKind === 'offline'
+          ? 'ネットワーク'
+          : issueKind === 'stale-timeout'
+            ? '受信停止'
+            : issueKind === 'stream-ended'
+              ? '接続切断'
+              : issueKind === 'stream-error'
+                ? '通信エラー'
+                : issueKind === 'invalid-live-response'
+                  ? '応答不正'
+                  : '再接続中';
+      const fields: ManagerDiagnosticField[] = [
+        {
+          label: 'リアルタイム状態',
+          value: liveState.detail,
+        },
+      ];
+      if (lastReceipt) {
+        fields.push({ label: '最後の受信', value: lastReceipt });
+      }
+      return {
+        tone: this.#liveIssue ? 'danger' : 'warn',
+        eyebrow: 'リアルタイム更新',
+        title: 'ライブ更新の問題を検知しています',
+        stateLabel: issueLabel,
+        summary: this.#liveIssue
+          ? '一覧は直前の受信結果を表示している可能性があります。自動復旧を待つか、今すぐ読み直せます。'
+          : '接続を戻すため自動で再接続しています。',
+        fields,
+        actionLabel: '今すぐ読み直す',
+        action: () => {
+          void this.loadAll();
+        },
+      };
+    }
+
+    if (
+      this.#preflightStatus &&
+      (this.#preflightStatus.freshness === 'stale' ||
+        this.#preflightStatus.freshness === 'unavailable')
+    ) {
+      const generatedAtLabel = describePreflightGeneratedAt(
+        this.#preflightStatus.generatedAt
+      );
+      const fields: ManagerDiagnosticField[] = [];
+      if (this.#preflightStatus.freshness === 'unavailable') {
+        if (this.#preflightStatus.error) {
+          fields.push({
+            label: '取得エラー',
+            value: normalizeSingleLineText(this.#preflightStatus.error),
+          });
+        }
+      } else {
+        fields.push({
+          label: '環境サマリー',
+          value: describePreflightSummary(this.#preflightStatus.summary),
+        });
+        if (generatedAtLabel) {
+          fields.push({ label: '前回の確認', value: generatedAtLabel });
+        }
+      }
+      return {
+        tone:
+          this.#preflightStatus.freshness === 'unavailable' ? 'danger' : 'warn',
+        eyebrow: '実行前チェック',
+        title:
+          this.#preflightStatus.freshness === 'unavailable'
+            ? '環境チェック結果を取得できていません'
+            : '環境チェック結果が古くなっています',
+        stateLabel:
+          this.#preflightStatus.freshness === 'unavailable'
+            ? '未取得'
+            : '更新中',
+        summary:
+          this.#preflightStatus.freshness === 'unavailable'
+            ? 'いまの実行前チェック結果が取れていないため、環境の問題を一覧から判断しにくい状態です。'
+            : '表示中の preflight は前回取得分です。新しい確認が終わるまで少し古い情報が混ざる可能性があります。',
+        fields,
+        actionLabel: '今すぐ読み直す',
+        action: () => {
+          void this.loadAll();
+        },
+      };
+    }
+
+    return null;
+  }
+
+  #renderActivityDiagnostics(): void {
+    const root = document.getElementById('activity-diagnostics');
+    const eyebrow = document.getElementById('activity-diagnostics-eyebrow');
+    const title = document.getElementById('activity-diagnostics-title');
+    const state = document.getElementById('activity-diagnostics-state');
+    const summary = document.getElementById('activity-diagnostics-summary');
+    const list = document.getElementById('activity-diagnostics-list');
+    const actionButton = document.getElementById(
+      'activityDiagnosticsActionButton'
+    ) as HTMLButtonElement | null;
+    if (
+      !root ||
+      !eyebrow ||
+      !title ||
+      !state ||
+      !summary ||
+      !list ||
+      !actionButton
+    ) {
+      return;
+    }
+
+    const card = this.#buildActivityDiagnosticCard();
+    list.innerHTML = '';
+    actionButton.onclick = null;
+
+    if (!card) {
+      root.classList.add('hidden');
+      return;
+    }
+
+    root.classList.remove('hidden');
+    root.dataset.tone = card.tone;
+    eyebrow.textContent = card.eyebrow;
+    title.textContent = card.title;
+    state.textContent = card.stateLabel;
+    summary.textContent = sentenceCaseLine(card.summary);
+
+    if (card.fields.length > 0) {
+      list.classList.remove('hidden');
+      for (const field of card.fields) {
+        const item = document.createElement('div');
+        item.className = 'activity-diagnostics-item';
+        const label = document.createElement('dt');
+        label.textContent = field.label;
+        const value = document.createElement('dd');
+        value.textContent = sentenceCaseLine(field.value);
+        item.append(label, value);
+        list.appendChild(item);
+      }
+    } else {
+      list.classList.add('hidden');
+    }
+
+    actionButton.classList.toggle(
+      'hidden',
+      !card.actionLabel || card.action === null
+    );
+    if (card.actionLabel && card.action) {
+      actionButton.textContent = card.actionLabel;
+      actionButton.onclick = card.action;
+    }
+  }
+
   #renderLiveConnectionState(): void {
     const root = document.getElementById('manager-live-status');
     const label = document.getElementById('manager-live-pill-label');
@@ -6009,6 +6351,7 @@ class ManagerApp {
     root.dataset.liveTone = state.tone;
     label.textContent = state.label;
     detail.textContent = state.detail;
+    this.#renderActivityDiagnostics();
   }
 
   #toggleClearAuthButton(visible: boolean): void {
@@ -6061,6 +6404,7 @@ class ManagerApp {
     this.#renderComposerTargetBar();
     this.#renderComposerContext();
     this.#renderContextualComposerHints();
+    this.#renderActivityDiagnostics();
     this.#renderLiveConnectionState();
     this.#syncComposerDockReserve();
 
