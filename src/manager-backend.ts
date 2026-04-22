@@ -5203,6 +5203,24 @@ function buildPausedWorktreeResumeBlockedMessage(input: {
   });
 }
 
+function buildDeliverFastForwardBlockedMessage(input: {
+  detail: string;
+}): string {
+  const blocker: SafeStopBlocker = {
+    summary:
+      'target branch が先行しており、task worktree を fast-forward で deliver できませんでした。',
+    failed: input.detail,
+    attempted:
+      'Manager は deliver の自動再試行を上限まで実行しましたが、この競合は自動回復 JSON に流さず安全停止します。',
+    nextAction:
+      '最新 target branch の状態を確認したうえで、同じ thread に続きの依頼を送ってください。',
+  };
+  return formatSafeStopBlockerMessage({
+    header: blocker.summary,
+    blocker,
+  });
+}
+
 function clearPendingReplyStateFromMeta(
   meta: ManagerThreadMeta
 ): ManagerThreadMeta {
@@ -7906,26 +7924,72 @@ async function runQueuedAssignment(input: {
                   targetBranch: deliveryTargetBranch,
                   resume: true,
                 });
-              } else if (
-                isMwtDeliverRemoteAdvanceError(deliveryError) &&
-                deliverRemoteAdvanceRetries < MAX_DELIVER_REMOTE_ADVANCE_RETRIES
-              ) {
-                deliverRemoteAdvanceRetries += 1;
-                await appendWorkerLiveOutput({
-                  dir: resolvedDir,
-                  threadId: thread.id,
-                  text: `target branch が deliver 中に進んだため、最新 ${deliveryTargetBranch ?? 'target branch'} へ追従して deliver を再試行します（${deliverRemoteAdvanceRetries}/${MAX_DELIVER_REMOTE_ADVANCE_RETRIES}）…`,
-                  kind: 'status',
-                  assigneeKind: 'manager',
-                  assigneeLabel: defaultAssigneeLabel('manager'),
-                  workerSessionId,
-                  workerAgentId: assignment.id,
-                  runtimeState: 'manager-answering',
-                  runtimeDetail:
-                    'target branch 先行を検出したため deliver を再試行中…',
-                  workerWriteScopes: assignment.writeScopes,
+              } else if (isMwtDeliverRemoteAdvanceError(deliveryError)) {
+                if (
+                  deliverRemoteAdvanceRetries <
+                  MAX_DELIVER_REMOTE_ADVANCE_RETRIES
+                ) {
+                  deliverRemoteAdvanceRetries += 1;
+                  await appendWorkerLiveOutput({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    text: `target branch が deliver 中に進んだため、最新 ${deliveryTargetBranch ?? 'target branch'} へ追従して deliver を再試行します（${deliverRemoteAdvanceRetries}/${MAX_DELIVER_REMOTE_ADVANCE_RETRIES}）…`,
+                    kind: 'status',
+                    assigneeKind: 'manager',
+                    assigneeLabel: defaultAssigneeLabel('manager'),
+                    workerSessionId,
+                    workerAgentId: assignment.id,
+                    runtimeState: 'manager-answering',
+                    runtimeDetail:
+                      'target branch 先行を検出したため deliver を再試行中…',
+                    workerWriteScopes: assignment.writeScopes,
+                  });
+                  continue;
+                }
+                await preservePausedWorktreeForThread(
+                  resolvedDir,
+                  thread.id,
+                  assignment
+                );
+                const errMsg = buildDeliverFastForwardBlockedMessage({
+                  detail: describeMwtError(deliveryError),
                 });
-                continue;
+                if (!(await currentReplyWasSuperseded())) {
+                  await addAiMessageOrPersistPending({
+                    dir: resolvedDir,
+                    threadId: thread.id,
+                    content: errMsg,
+                    status: 'needs-reply',
+                  });
+                }
+                await setThreadRuntimeErrorMessage(
+                  resolvedDir,
+                  thread.id,
+                  errMsg
+                );
+                await updateQueueLocked(dir, (queue) =>
+                  queue.filter(
+                    (entry) => !assignment.queueEntryIds.includes(entry.id)
+                  )
+                );
+                await clearWorkerLiveOutput(
+                  resolvedDir,
+                  thread.id,
+                  assignment.assigneeKind,
+                  assignment.assigneeLabel,
+                  {
+                    workerAgentId: assignment.id,
+                    runtimeState: null,
+                    runtimeDetail: null,
+                    workerWriteScopes: assignment.writeScopes,
+                    workerBlockedByThreadIds: [],
+                    supersededByThreadId: null,
+                  }
+                );
+                await removeAssignment(dir, assignment.id);
+                void recoverCanonicalThreadState(dir).catch(() => {});
+                void processNextQueued(dir, resolvedDir);
+                return;
               } else {
                 throw deliveryError;
               }

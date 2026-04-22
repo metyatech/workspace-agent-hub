@@ -1842,7 +1842,7 @@ describe('manager backend codex integration', () => {
       tempDir,
       '昨日の支払いUIの件、続きどうなってる？'
     );
-    await waitFor(() => spawnMock.mock.calls.length === 1);
+    await waitFor(() => spawnMock.mock.calls.length >= 1);
 
     expect(routingProc.stdin.write).toHaveBeenCalledWith(
       expect.stringContaining('Recent topics:')
@@ -1868,7 +1868,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await waitFor(() => spawnMock.mock.calls.length >= 2);
     completeCodexTurn(dispatchProc, {
       sessionId: 'dispatch-topic-ref',
       text: JSON.stringify({
@@ -5789,6 +5789,72 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[4]).toBe('review');
     expect(addMessageMock.mock.calls[0]?.[2]).toContain(
       'review done after deterministic retry'
+    );
+  });
+
+  it('stops with a structured blocked state after repeated deliver fast-forward divergence', async () => {
+    const workerProc = makeProc(8426);
+    const reviewProc = makeProc(8427);
+    spawnMock.mockReturnValueOnce(workerProc).mockReturnValueOnce(reviewProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\temp\workspace-agent-hub-mgr-assign_thread-deliver-ff-blocked',
+      branchName: 'mgr/assign_thread-deliver-ff-blocked/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(deliverManagerWorktree)
+      .mockRejectedValueOnce(
+        new Error(
+          'Seed worktree could not be fast-forwarded: fatal: Not possible to fast-forward, aborting.'
+        )
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'Seed worktree could not be fast-forwarded: fatal: Not possible to fast-forward, aborting.'
+        )
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'Seed worktree could not be fast-forwarded: fatal: Not possible to fast-forward, aborting.'
+        )
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          'Seed worktree could not be fast-forwarded: fatal: Not possible to fast-forward, aborting.'
+        )
+      );
+    vi.mocked(isMwtDeliverRemoteAdvanceError).mockReturnValue(true);
+
+    await sendToBuiltinManager(tempDir, 'thread-deliver-ff-blocked', 'message');
+    await waitFor(() => spawnMock.mock.calls.length >= 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-deliver-ff-blocked-worker',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length >= 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-deliver-ff-blocked',
+      text: '{"status":"review","reply":"review done before deliver"}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(vi.mocked(deliverManagerWorktree)).toHaveBeenCalledTimes(4);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-deliver-ff-blocked');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'fast-forward で deliver できませんでした'
+    );
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Not possible to fast-forward'
     );
   });
 

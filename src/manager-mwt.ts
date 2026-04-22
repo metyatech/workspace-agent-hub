@@ -74,6 +74,9 @@ export function isMwtDeliverRemoteAdvanceError(error: unknown): boolean {
 
   return (
     /non-fast-forward/i.test(detail) ||
+    /could not be fast-forwarded/i.test(detail) ||
+    /not possible to fast-forward/i.test(detail) ||
+    /diverging branches can'?t be fast-forwarded/i.test(detail) ||
     /failed to push some refs/i.test(detail) ||
     /\[rejected\]/i.test(detail) ||
     /fetch first/i.test(detail) ||
