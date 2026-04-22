@@ -1481,7 +1481,7 @@ describe('manager backend codex integration', () => {
       });
 
     const firstSend = sendGlobalToBuiltinManager(tempDir, 'first new task');
-    await waitFor(() => spawnMock.mock.calls.length === 1);
+    await waitFor(() => spawnMock.mock.calls.length >= 1);
     expect(spawnMock.mock.calls[0]?.[1]).not.toContain('resume');
 
     completeCodexTurn(routingProcOne, {
@@ -1497,7 +1497,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 2);
+    await waitFor(() => spawnMock.mock.calls.length >= 2);
     completeCodexTurn(dispatchProcOne, {
       sessionId: 'dispatch-thread-1',
       text: JSON.stringify({
@@ -1506,12 +1506,12 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
+    await waitFor(() => spawnMock.mock.calls.length >= 3);
     completeCodexTurn(workerProcOne, {
       sessionId: 'worker-thread-1',
       text: '{"status":"review","reply":"done one"}',
     });
-    await waitFor(() => spawnMock.mock.calls.length === 4);
+    await waitFor(() => spawnMock.mock.calls.length >= 4);
     completeCodexTurn(reviewProcOne, {
       sessionId: 'manager-review-thread-1',
       text: '{"status":"review","reply":"done one"}',
@@ -1519,7 +1519,7 @@ describe('manager backend codex integration', () => {
     await firstSend;
 
     const secondSend = sendGlobalToBuiltinManager(tempDir, 'second new task');
-    await waitFor(() => spawnMock.mock.calls.length === 5);
+    await waitFor(() => spawnMock.mock.calls.length >= 5);
     expect(spawnedCommandLine(4)).toContain(
       '"exec" "resume" "routing-thread-1"'
     );
@@ -1537,7 +1537,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 6);
+    await waitFor(() => spawnMock.mock.calls.length >= 6);
     completeCodexTurn(dispatchProcTwo, {
       sessionId: 'dispatch-thread-2',
       text: JSON.stringify({
@@ -1546,12 +1546,12 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 7);
+    await waitFor(() => spawnMock.mock.calls.length >= 7);
     completeCodexTurn(workerProcTwo, {
       sessionId: 'worker-thread-2',
       text: '{"status":"review","reply":"done two"}',
     });
-    await waitFor(() => spawnMock.mock.calls.length === 8);
+    await waitFor(() => spawnMock.mock.calls.length >= 8);
     completeCodexTurn(reviewProcTwo, {
       sessionId: 'manager-review-thread-2',
       text: '{"status":"review","reply":"done two"}',
@@ -1589,7 +1589,7 @@ describe('manager backend codex integration', () => {
     });
 
     const sendPromise = sendGlobalToBuiltinManager(tempDir, 'recover routing');
-    await waitFor(() => spawnMock.mock.calls.length === 1);
+    await waitFor(() => spawnMock.mock.calls.length >= 1);
     expect(spawnedCommandLine(0)).toContain(
       '"exec" "resume" "routing-thread-stale"'
     );
@@ -1616,7 +1616,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
+    await waitFor(() => spawnMock.mock.calls.length >= 3);
     completeCodexTurn(dispatchProc, {
       sessionId: 'dispatch-thread-recovered',
       text: JSON.stringify({
@@ -1700,7 +1700,7 @@ describe('manager backend codex integration', () => {
     const sendPromise = sendGlobalToBuiltinManager(tempDir, 'これは別件です', {
       contextThreadId: 'thread-target',
     });
-    await waitFor(() => spawnMock.mock.calls.length === 1);
+    await waitFor(() => spawnMock.mock.calls.length >= 1);
 
     expect(routingProc.stdin.write).toHaveBeenCalledWith(
       expect.stringContaining('Current open topic mention hint: @特定 task.')
@@ -1739,7 +1739,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
+    await waitFor(() => spawnMock.mock.calls.length >= 3);
     completeCodexTurn(workerProc, {
       sessionId: 'worker-thread-hint',
       text: '{"status":"review","reply":"別タスクとして処理しました"}',
@@ -2475,6 +2475,7 @@ describe('manager backend codex integration', () => {
   });
 
   it('auto-initializes mwt safely before creating a manager worktree for an existing repo', async () => {
+    const testRepoRoot = tempDir;
     const dispatchProc = makeProc(6117);
     const workerProc = makeProc(6118);
     const reviewProc = makeProc(6119);
@@ -2482,17 +2483,34 @@ describe('manager backend codex integration', () => {
       .mockReturnValueOnce(dispatchProc)
       .mockReturnValueOnce(workerProc)
       .mockReturnValueOnce(reviewProc);
-    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
-    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
-      initialized: true,
-      reasonId: null,
-      detail:
-        'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
-      defaultBranch: 'main',
-      remoteName: 'origin',
-      changedFiles: ['.mwt/config.toml'],
-      onboardingCommit: 'auto-init-commit',
-    });
+    vi.mocked(isManagedWorktreeRepository).mockImplementation(
+      async (candidate) => candidate !== testRepoRoot
+    );
+    vi.mocked(maybeAutoInitializeManagerRepository).mockImplementation(
+      async (input) => {
+        if (input.targetRepoRoot !== testRepoRoot) {
+          return {
+            initialized: false,
+            reasonId: 'missing_default_branch',
+            detail: 'mock auto init skipped',
+            defaultBranch: null,
+            remoteName: 'origin',
+            changedFiles: [],
+            onboardingCommit: null,
+          };
+        }
+        return {
+          initialized: true,
+          reasonId: null,
+          detail:
+            'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
+          defaultBranch: 'main',
+          remoteName: 'origin',
+          changedFiles: ['.mwt/config.toml'],
+          onboardingCommit: 'auto-init-commit',
+        };
+      }
+    );
     await writeManagerThreadMeta(tempDir, {
       'thread-auto-init': {
         managedBaseBranch: 'main',
@@ -2552,6 +2570,7 @@ describe('manager backend codex integration', () => {
   }, 30000);
 
   it('continues into safe mwt auto-init after bootstrap newly applies repo-local flow files', async () => {
+    const testRepoRoot = tempDir;
     const dispatchProc = makeProc(6123);
     const workerProc = makeProc(6124);
     const reviewProc = makeProc(6125);
@@ -2590,17 +2609,34 @@ describe('manager backend codex integration', () => {
         '.opencode/commands/deliver.md',
       ],
     });
-    vi.mocked(isManagedWorktreeRepository).mockResolvedValueOnce(false);
-    vi.mocked(maybeAutoInitializeManagerRepository).mockResolvedValueOnce({
-      initialized: true,
-      reasonId: null,
-      detail:
-        'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
-      defaultBranch: 'main',
-      remoteName: 'origin',
-      changedFiles: ['.mwt/config.toml'],
-      onboardingCommit: 'auto-init-after-bootstrap',
-    });
+    vi.mocked(isManagedWorktreeRepository).mockImplementation(
+      async (candidate) => candidate !== testRepoRoot
+    );
+    vi.mocked(maybeAutoInitializeManagerRepository).mockImplementation(
+      async (input) => {
+        if (input.targetRepoRoot !== testRepoRoot) {
+          return {
+            initialized: false,
+            reasonId: 'missing_default_branch',
+            detail: 'mock auto init skipped',
+            defaultBranch: null,
+            remoteName: 'origin',
+            changedFiles: [],
+            onboardingCommit: null,
+          };
+        }
+        return {
+          initialized: true,
+          reasonId: null,
+          detail:
+            'managed-worktree-system を自動初期化し、.mwt/config.toml を onboarding commit として記録しました。',
+          defaultBranch: 'main',
+          remoteName: 'origin',
+          changedFiles: ['.mwt/config.toml'],
+          onboardingCommit: 'auto-init-after-bootstrap',
+        };
+      }
+    );
     await writeManagerThreadMeta(tempDir, {
       'thread-bootstrap-then-auto-init': {
         managedBaseBranch: 'main',

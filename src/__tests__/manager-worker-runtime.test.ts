@@ -313,4 +313,31 @@ describe('manager-worker-runtime', () => {
     expect(parsed.sessionId).toBe('opencode-session-1');
     expect(parsed.text).toBe('{"status":"review","reply":"all set"}');
   });
+
+  it('parses OpenCode assistant message events that emit a full final reply instead of text deltas', () => {
+    const parsed = parseGenericRuntimeOutput(
+      [
+        JSON.stringify({
+          type: 'step_start',
+          sessionID: 'opencode-session-2',
+        }),
+        JSON.stringify({
+          type: 'message',
+          sessionID: 'opencode-session-2',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: '{"status":"review","reply":"full message"}',
+              },
+            ],
+          },
+        }),
+      ].join('\n')
+    );
+
+    expect(parsed.sessionId).toBe('opencode-session-2');
+    expect(parsed.text).toBe('{"status":"review","reply":"full message"}');
+  });
 });

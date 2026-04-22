@@ -713,6 +713,31 @@ function collectTextFragments(value: unknown): string[] {
   return [];
 }
 
+function extractRole(value: unknown): string | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const queue: unknown[] = [value];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    const record = current as Record<string, unknown>;
+    if (typeof record.role === 'string' && record.role.trim()) {
+      return record.role.trim();
+    }
+    queue.push(...Object.values(record));
+  }
+
+  return null;
+}
+
 function extractSessionId(value: unknown): string | null {
   if (!value || typeof value !== 'object') {
     return null;
@@ -836,6 +861,7 @@ export function parseGenericRuntimeOutput(
   stdout: string
 ): WorkerRuntimeParsedOutput {
   const assistantDeltas: string[] = [];
+  let assistantText = '';
   let latestText = '';
   let sessionId: string | null = null;
 
@@ -847,8 +873,7 @@ export function parseGenericRuntimeOutput(
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
       sessionId = extractSessionId(parsed) ?? sessionId;
-      const role =
-        typeof parsed['role'] === 'string' ? parsed['role'].toLowerCase() : '';
+      const role = extractRole(parsed)?.toLowerCase() ?? '';
       const type =
         typeof parsed['type'] === 'string' ? parsed['type'].toLowerCase() : '';
       const delta = parsed['delta'] === true;
@@ -860,7 +885,15 @@ export function parseGenericRuntimeOutput(
       if (!text) {
         continue;
       }
-      if ((role === 'assistant' && delta) || type === 'text') {
+      if (role === 'assistant') {
+        if (delta || type === 'text') {
+          assistantDeltas.push(text);
+        } else {
+          assistantText = text;
+        }
+        continue;
+      }
+      if (type === 'text') {
         assistantDeltas.push(text);
         continue;
       }
@@ -878,7 +911,10 @@ export function parseGenericRuntimeOutput(
   }
 
   return {
-    text: assistantDeltas.length > 0 ? assistantDeltas.join('') : latestText,
+    text:
+      assistantDeltas.length > 0
+        ? assistantDeltas.join('')
+        : assistantText || latestText,
     sessionId,
   };
 }
