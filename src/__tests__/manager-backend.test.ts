@@ -367,11 +367,44 @@ async function waitForManagerIdle(
   dir: string,
   timeoutMs = 10000
 ): Promise<void> {
-  await waitFor(async () => {
+  try {
+    await waitFor(async () => {
+      const queue = await readQueue(dir);
+      const session = await readSession(dir);
+      return queue.length === 0 && session.status === 'idle';
+    }, timeoutMs);
+  } catch {
     const queue = await readQueue(dir);
     const session = await readSession(dir);
-    return queue.length === 0 && session.status === 'idle';
-  }, timeoutMs);
+    const meta = await readManagerThreadMeta(dir);
+    throw new Error(
+      [
+        'Timed out waiting for manager idle.',
+        `session=${JSON.stringify({
+          status: session.status,
+          currentQueueId: session.currentQueueId,
+          activeAssignments: session.activeAssignments.map((assignment) => ({
+            id: assignment.id,
+            threadId: assignment.threadId,
+            queueEntryIds: assignment.queueEntryIds,
+            pid: assignment.pid,
+          })),
+          dispatchingThreadId: session.dispatchingThreadId,
+          dispatchingQueueEntryIds: session.dispatchingQueueEntryIds,
+          lastErrorMessage: session.lastErrorMessage,
+          lastPauseMessage: session.lastPauseMessage,
+        })}`,
+        `queue=${JSON.stringify(
+          queue.map((entry) => ({
+            id: entry.id,
+            threadId: entry.threadId,
+            processed: entry.processed,
+          }))
+        )}`,
+        `meta=${JSON.stringify(meta)}`,
+      ].join(' ')
+    );
+  }
 }
 
 function spawnedCommandLine(callIndex: number): string {
@@ -7982,6 +8015,58 @@ describe('eagerReconcile restart resilience', () => {
     const workerProc = makeProc(7401);
     const reviewProc = makeProc(7402);
     queueSpawnResults(workerProc, reviewProc);
+    const threads: Array<{
+      id: string;
+      title: string;
+      status: 'active' | 'waiting' | 'needs-reply' | 'review' | 'resolved';
+      createdAt: string;
+      updatedAt: string;
+      messages: Array<{
+        sender: 'ai' | 'user';
+        content: string;
+        at: string;
+      }>;
+    }> = [
+      {
+        id: 'thread-idle-error',
+        title: 'Queued idle error thread',
+        status: 'waiting',
+        createdAt: '2026-04-18T00:00:00.000Z',
+        updatedAt: '2026-04-18T00:00:00.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'queued work',
+            at: '2026-04-18T00:00:00.000Z',
+          },
+        ],
+      },
+    ];
+
+    const cloneThreads = () => JSON.parse(JSON.stringify(threads));
+    listThreadsMock.mockImplementation(async () => cloneThreads());
+    getThreadMock.mockImplementation(async (_dir: string, threadId: string) => {
+      const found = threads.find((thread) => thread.id === threadId);
+      return found ? JSON.parse(JSON.stringify(found)) : null;
+    });
+    addMessageMock.mockImplementation(
+      async (
+        _dir: string,
+        threadId: string,
+        content: string,
+        sender: 'ai' | 'user',
+        status: 'active' | 'review' | 'needs-reply'
+      ) => {
+        const found = threads.find((thread) => thread.id === threadId);
+        if (!found) {
+          throw new Error(`Thread not found in test store: ${threadId}`);
+        }
+        const at = new Date().toISOString();
+        found.messages.push({ sender, content, at });
+        found.status = status;
+        found.updatedAt = at;
+      }
+    );
 
     await writeSession(tempDir, {
       ...(await readSession(tempDir)),
@@ -8016,23 +8101,6 @@ describe('eagerReconcile restart resilience', () => {
         priority: 'normal',
       },
     ]);
-    listThreadsMock.mockResolvedValue([
-      {
-        id: 'thread-idle-error',
-        title: 'Queued idle error thread',
-        status: 'waiting',
-        createdAt: '2026-04-18T00:00:00.000Z',
-        updatedAt: '2026-04-18T00:00:00.000Z',
-        messages: [
-          {
-            sender: 'user',
-            content: 'queued work',
-            at: '2026-04-18T00:00:00.000Z',
-          },
-        ],
-      },
-    ]);
-
     await expect(kickIdleQueuedManagerWork(tempDir, 'test')).resolves.toBe(
       true
     );
@@ -8053,6 +8121,9 @@ describe('eagerReconcile restart resilience', () => {
 
     const session = await readSession(tempDir);
     const queue = await readQueue(tempDir);
+    expect(threads[0]?.status).toBe('review');
+    expect(threads[0]?.messages.at(-1)?.sender).toBe('ai');
+    expect(threads[0]?.messages.at(-1)?.content).toBe('review done');
     expect(session.currentQueueId).toBeNull();
     expect(queue.filter((entry) => !entry.processed)).toHaveLength(0);
   });
