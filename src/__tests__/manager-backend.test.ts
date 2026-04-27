@@ -6129,6 +6129,75 @@ describe('manager backend codex integration', () => {
     expect(addMessageMock.mock.calls[0]?.[2]).toContain('remote rejected');
   });
 
+  it('retries prose-only recovery decisions instead of stranding the thread immediately', async () => {
+    const workerProc = makeProc(8481);
+    const reviewProc = makeProc(8482);
+    const proseRecoveryProc = makeProc(8483);
+    const validRecoveryProc = makeProc(8484);
+    spawnMock
+      .mockReturnValueOnce(workerProc)
+      .mockReturnValueOnce(reviewProc)
+      .mockReturnValueOnce(proseRecoveryProc)
+      .mockReturnValueOnce(validRecoveryProc);
+    vi.mocked(createManagerWorktree).mockResolvedValueOnce({
+      worktreePath:
+        'C:\\temp\\workspace-agent-hub-mgr-assign_thread-recovery-prose',
+      branchName: 'mgr/assign_thread-recovery-prose/preview000',
+      targetRepoRoot: tempDir,
+    });
+    vi.mocked(deliverManagerWorktree).mockRejectedValueOnce(
+      new Error('Verification failed during deliver')
+    );
+
+    await sendToBuiltinManager(tempDir, 'thread-recovery-prose', 'message');
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+
+    completeCodexTurn(workerProc, {
+      sessionId: 'codex-thread-recovery-prose-worker',
+      text: '{"status":"review","reply":"worker done","changedFiles":["src/manager-backend.ts"],"verificationSummary":"npm run verify PASS"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 2);
+    completeCodexTurn(reviewProc, {
+      sessionId: 'manager-review-thread-recovery-prose',
+      text: '{"status":"review","reply":"review done"}',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 3);
+    completeCodexTurn(proseRecoveryProc, {
+      sessionId: 'manager-recovery-thread-recovery-prose-1',
+      text: 'I read this as recovery analysis, but I forgot to return JSON.',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 4);
+    expect(addMessageMock).not.toHaveBeenCalledWith(
+      tempDir,
+      'thread-recovery-prose',
+      expect.stringContaining('自動回復判断に失敗しました'),
+      'ai',
+      'needs-reply'
+    );
+
+    completeCodexTurn(validRecoveryProc, {
+      sessionId: 'manager-recovery-thread-recovery-prose-2',
+      text: '{"decision":"escalate","reason":"人間の確認が必要です","instructions":null}',
+    });
+
+    await waitFor(async () => {
+      const queue = await readQueue(tempDir);
+      const session = await readSession(tempDir);
+      return queue.length === 0 && session.status === 'idle';
+    });
+
+    expect(addMessageMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock.mock.calls[0]?.[1]).toBe('thread-recovery-prose');
+    expect(addMessageMock.mock.calls[0]?.[4]).toBe('needs-reply');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain('人間の確認が必要です');
+    expect(addMessageMock.mock.calls[0]?.[2]).toContain(
+      'Recovery decision attempt 1 returned an unparseable reply'
+    );
+  });
+
   it('runs auto-bootstrap before creating a worker worktree', async () => {
     const workerProc = makeProc(9101);
     const reviewProc = makeProc(9102);

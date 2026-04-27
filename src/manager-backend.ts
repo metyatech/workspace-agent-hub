@@ -7395,6 +7395,14 @@ async function runQueuedAssignment(input: {
           recoveryDecisionResult.parsed.text
         );
 
+        if (!decision && recoveryDecisionResult.code === 0) {
+          recoveryErrorContext =
+            `Recovery decision attempt ${recoveryAttempt + 1} returned an unparseable reply. ` +
+            `${describeRecoveryDecisionFailure(recoveryDecisionResult)}\n\n` +
+            `Previous recovery context:\n${recoveryErrorContext}`;
+          continue;
+        }
+
         if (!decision || decision.decision === 'escalate') {
           if (input.preservePausedWorktreeOnFailure) {
             await preservePausedWorktreeForThread(
@@ -7410,7 +7418,7 @@ async function runQueuedAssignment(input: {
             ? `[Manager] 自動回復できませんでした。\n理由: ${decision.reason}\n\n元のエラー:\n${recoveryErrorContext}`
             : `[Manager] 自動回復判断に失敗しました。\n理由: ${recoveryDecisionFailureDetail ?? 'Recovery decision reply could not be parsed.'}\n\n元のエラー:\n${recoveryErrorContext}`;
           if (!(await currentReplyWasSuperseded())) {
-            await addAiMessageBestEffort({
+            await addAiMessageOrPersistPending({
               dir: resolvedDir,
               threadId: thread.id,
               content: escalateMsg,
