@@ -492,6 +492,7 @@ const MANAGER_API_BASE = window.MANAGER_API_BASE || './api';
 const MANAGER_HISTORY_KIND = 'workspace-agent-hub-manager';
 const COMPOSER_FEEDBACK_MAX_ENTRIES = 4;
 const COMPOSER_SEND_RETRY_DELAYS_MS = [0, 2000, 5000, 10000, 30000] as const;
+const COMPOSER_SEND_TIMEOUT_MS = 15000;
 const LIVE_STREAM_STALE_TIMEOUT_MS = 45000;
 const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 
@@ -5201,6 +5202,32 @@ class ManagerApp {
         };
   }
 
+  async #apiFetchComposerSendWithTimeout(
+    input: string,
+    init: RequestInit
+  ): Promise<Response | null> {
+    const controller = new AbortController();
+    let timeoutId: number | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        controller.abort();
+        reject(new Error('Manager composer send timed out'));
+      }, COMPOSER_SEND_TIMEOUT_MS);
+    });
+
+    try {
+      const response = this.apiFetch(input, {
+        ...init,
+        signal: controller.signal,
+      });
+      return await Promise.race([response, timeout]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  }
+
   #persistComposerFeedbackEntries(): void {
     writeStoredComposerFeedbackEntries(this.#composerFeedbackEntries);
   }
@@ -5405,7 +5432,10 @@ class ManagerApp {
 
     try {
       const { endpoint, init } = this.#composerSendRequestSpec(request);
-      const response = await this.apiFetch(endpoint, init);
+      const response = await this.#apiFetchComposerSendWithTimeout(
+        endpoint,
+        init
+      );
       if (!response || !response.ok) {
         this.#handleComposerFeedbackDeliveryFailure(entryId, attemptCount);
         return;

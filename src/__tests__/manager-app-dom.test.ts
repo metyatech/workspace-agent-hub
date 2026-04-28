@@ -615,6 +615,7 @@ afterEach(() => {
       })
     | undefined;
   activeWindow?.__workspaceAgentHubManagerApp__?.dispose?.();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -3810,6 +3811,158 @@ describe('manager-app DOM auth state matrix', () => {
     expect(
       document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
     ).toContain('既存 task に追記しました');
+  });
+
+  it('times out a stuck thread send and retries with the original request', async () => {
+    const validToken = 'timeout-retry-send-token';
+    const targetThread = makeThreadView(
+      'thread-timeout-target',
+      '止まる task',
+      {
+        status: 'active',
+        uiState: 'ai-working',
+        isWorking: true,
+        lastSender: 'user',
+        previewText: '[user] 続きをお願いします',
+      }
+    );
+    const requestBodies: string[] = [];
+    let sendAttemptCount = 0;
+    let firstSendSignal: AbortSignal | null = null;
+
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers ?? {});
+        const providedToken = headers.get('X-Workspace-Agent-Hub-Token');
+
+        if (providedToken !== validToken) {
+          return new Response(
+            JSON.stringify({
+              error: 'Access code required',
+              authRequired: true,
+            }),
+            { status: 401 }
+          );
+        }
+
+        if (isRoute(url, '/threads')) {
+          return new Response(JSON.stringify([targetThread]), { status: 200 });
+        }
+
+        if (isRoute(url, '/tasks')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+
+        if (isRoute(url, '/manager/status')) {
+          return new Response(
+            JSON.stringify({
+              running: true,
+              configured: true,
+              builtinBackend: true,
+              detail: '待機中',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/manager/send')) {
+          requestBodies.push(String(init?.body ?? ''));
+          sendAttemptCount += 1;
+          if (sendAttemptCount === 1) {
+            firstSendSignal = init?.signal ?? null;
+            return await new Promise<Response>(() => undefined);
+          }
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  threadId: 'thread-timeout-target',
+                  title: '止まる task',
+                  outcome: 'attached-existing',
+                  reason: '既存 task に追記しました',
+                },
+              ],
+              routedCount: 1,
+              ambiguousCount: 0,
+              detail: '既存 task に追記しました',
+            }),
+            { status: 200 }
+          );
+        }
+
+        if (isRoute(url, '/live')) {
+          return makeNdjsonResponse([
+            {
+              kind: 'snapshot',
+              emittedAt: '2026-03-21T00:00:00.000Z',
+              threads: [targetThread],
+              tasks: [],
+              status: {
+                running: true,
+                configured: true,
+                builtinBackend: true,
+                detail: '待機中',
+              },
+            },
+          ]);
+        }
+
+        return new Response('{}', { status: 200 });
+      }
+    ) as unknown as typeof fetch;
+
+    const document = await loadManagerApp(fetchMock, {
+      authRequired: true,
+      beforeImport: (window) => {
+        window.localStorage.setItem(authStorageKey, validToken);
+      },
+    });
+    Array.from(document.querySelectorAll<HTMLElement>('.thread-row'))
+      .find((row) => row.textContent?.includes('止まる task'))
+      ?.click();
+    await flushAsync(2);
+
+    vi.useFakeTimers();
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      '#globalComposerInput'
+    )!;
+    composer.value = 'タイムアウトしても再送してください';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    document
+      .querySelector<HTMLButtonElement>('#globalComposerSendButton')!
+      .click();
+
+    expect(sendAttemptCount).toBe(1);
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('送信中 1件');
+
+    await vi.advanceTimersByTimeAsync(14999);
+    expect(sendAttemptCount).toBe(1);
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('送信中 1件');
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.runOnlyPendingTimersAsync();
+
+    const observedFirstSendSignal = firstSendSignal as AbortSignal | null;
+    expect(observedFirstSendSignal?.aborted).toBe(true);
+    expect(composer.value).toBe('');
+    expect(sendAttemptCount).toBe(2);
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toBe(requestBodies[1]);
+    expect(JSON.parse(requestBodies[0] ?? '{}')).toMatchObject({
+      threadId: 'thread-timeout-target',
+      content: 'タイムアウトしても再送してください',
+    });
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).not.toContain('送信中');
+    expect(
+      document.querySelector<HTMLElement>('#routingFeedbackLane')!.textContent
+    ).toContain('送信済み 1件');
   });
 
   it('resumes stored auto-retries after a reload', async () => {
