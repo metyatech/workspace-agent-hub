@@ -148,6 +148,33 @@ describe('manager-worker-runtime', () => {
     expect(spec.command.toLowerCase()).toBe(pathBinary.toLowerCase());
   });
 
+  it('uses the Windows OpenCode cmd shim instead of the extensionless npm shim', async () => {
+    const pathDir = await makeTempDir('wah-opencode-shim-');
+    const extensionlessShim = join(pathDir, 'opencode');
+    const cmdShim = join(pathDir, 'opencode.cmd');
+    await writeFile(extensionlessShim, '#!/bin/sh\n');
+    await writeFile(cmdShim, '@echo off\r\n');
+
+    const spec = buildWorkerRuntimeLaunchSpec({
+      runtime: 'opencode',
+      prompt: 'Apply the requested fix',
+      sessionId: null,
+      resolvedDir: 'D:\\ghws\\workspace-agent-hub',
+      runMode: 'write',
+      platform: 'win32',
+      env: {
+        PATH: pathDir,
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        APPDATA: 'C:\\missing-appdata',
+      },
+    });
+
+    expect(spec.command).toBe('cmd.exe');
+    expect(spec.args.join(' ').toLowerCase()).toContain(
+      `"${cmdShim.toLowerCase()}" "run"`
+    );
+  });
+
   it('respects an explicit OpenCode agent override', () => {
     const spec = buildWorkerRuntimeLaunchSpec({
       runtime: 'opencode',

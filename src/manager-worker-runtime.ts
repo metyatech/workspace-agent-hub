@@ -193,7 +193,35 @@ function windowsPathExtensions(
     .split(';')
     .map((entry) => entry.trim())
     .filter(Boolean);
-  return extensions.length > 0 ? extensions : ['.COM', '.EXE', '.BAT', '.CMD'];
+  const configuredExtensions =
+    extensions.length > 0 ? extensions : ['.COM', '.EXE', '.BAT', '.CMD'];
+  const candidates: string[] = [];
+  for (const extension of configuredExtensions) {
+    if (!candidates.includes(extension)) {
+      candidates.push(extension);
+    }
+    const lowerExtension = extension.toLowerCase();
+    if (!candidates.includes(lowerExtension)) {
+      candidates.push(lowerExtension);
+    }
+  }
+  return candidates;
+}
+
+function commandPathCandidates(input: {
+  commandPath: string;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+}): string[] {
+  if (input.platform !== 'win32') {
+    return [input.commandPath];
+  }
+
+  const extensions = windowsPathExtensions(input.commandPath, input.env);
+  if (extensions.length === 1 && extensions[0] === '') {
+    return [input.commandPath];
+  }
+  return extensions.map((extension) => `${input.commandPath}${extension}`);
 }
 
 function resolveCommandPath(input: {
@@ -208,7 +236,16 @@ function resolveCommandPath(input: {
 
   const pathApi = pathApiForPlatform(input.platform);
   if (pathApi.isAbsolute(command) || pathHasDirectoryPart(command)) {
-    return commandPathExists(command) ? command : null;
+    for (const candidate of commandPathCandidates({
+      commandPath: command,
+      platform: input.platform,
+      env: input.env,
+    })) {
+      if (commandPathExists(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   const pathEntries = envPathValue(input.env)
@@ -221,18 +258,13 @@ function resolveCommandPath(input: {
 
   for (const pathEntry of pathEntries) {
     const candidate = pathApi.join(pathEntry, command);
-    if (commandPathExists(candidate)) {
-      return candidate;
-    }
-    if (input.platform === 'win32') {
-      for (const extension of windowsPathExtensions(command, input.env)) {
-        if (!extension) {
-          continue;
-        }
-        const extendedCandidate = `${candidate}${extension}`;
-        if (commandPathExists(extendedCandidate)) {
-          return extendedCandidate;
-        }
+    for (const commandCandidate of commandPathCandidates({
+      commandPath: candidate,
+      platform: input.platform,
+      env: input.env,
+    })) {
+      if (commandPathExists(commandCandidate)) {
+        return commandCandidate;
       }
     }
   }
