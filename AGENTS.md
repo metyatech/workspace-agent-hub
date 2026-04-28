@@ -24,3 +24,13 @@ Source: agent-rules-local/ghws-workspace.md
 - When adding a new repository, create it under the `ghws` workspace first and then push it to GitHub.
 - For account-wide requests, treat all user-owned repositories as in scope; repository creation, splitting, and deletion are allowed when needed.
 - Never clone repositories that are not managed by the user into the `ghws` workspace.
+
+Source: agent-rules-local/high-quality-workflow.md
+
+# High-quality OpenCode workflow
+
+- Repository-local OpenCode workflows MUST live in `.opencode/commands/`.
+- The canonical verification command MUST be the same command used for local validation before delivery.
+- When no canonical verification command is configured, the agent MUST stop and report the missing bootstrap requirement instead of inventing a partial substitute.
+- Bug fixes MUST add or strengthen a regression check before concluding.
+- Irreversible operations such as destructive deletion, publish, release, force-push, or external side effects MUST remain approval-gated.
