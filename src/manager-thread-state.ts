@@ -22,6 +22,7 @@ export const MANAGER_THREAD_META_FILE =
 
 export type ManagerUiState =
   | 'routing-confirmation-needed'
+  | 'routing-pending'
   | 'error'
   | 'user-reply-needed'
   | 'stalled'
@@ -61,6 +62,9 @@ export interface ManagerThreadMeta {
   runtimeErrorMessage?: string | null;
   routingConfirmationNeeded?: boolean;
   routingHint?: string | null;
+  pendingRoutingContent?: string | null;
+  pendingRoutingContextThreadId?: string | null;
+  pendingRoutingCreatedAt?: string | null;
   derivedFromThreadIds?: string[] | null;
   lastRoutingAt?: string | null;
   managedRepoId?: string | null;
@@ -452,6 +456,7 @@ function normalizeRequestedRunMode(value: unknown): ManagerRunMode | null {
 
 function normalizeCanonicalUiState(value: unknown): ManagerUiState | null {
   return value === 'routing-confirmation-needed' ||
+    value === 'routing-pending' ||
     value === 'error' ||
     value === 'user-reply-needed' ||
     value === 'stalled' ||
@@ -709,6 +714,8 @@ function deriveCanonicalStateInfo(input: {
     uiState = 'done';
   } else if (input.meta?.routingConfirmationNeeded) {
     uiState = 'routing-confirmation-needed';
+  } else if (input.meta?.canonicalState === 'routing-pending') {
+    uiState = 'routing-pending';
   } else if (input.meta?.workerRuntimeState === 'cancelled-as-superseded') {
     uiState = 'cancelled-as-superseded';
   } else if (input.isWorking) {
@@ -842,15 +849,16 @@ function compareByPriority(
 ): number {
   const priority: Record<ManagerUiState, number> = {
     'routing-confirmation-needed': 0,
-    error: 1,
-    'user-reply-needed': 2,
-    stalled: 3,
-    'ai-finished-awaiting-user-confirmation': 4,
-    queued: 5,
-    'ai-starting': 6,
-    'ai-working': 7,
-    'cancelled-as-superseded': 8,
-    done: 9,
+    'routing-pending': 1,
+    error: 2,
+    'user-reply-needed': 3,
+    stalled: 4,
+    'ai-finished-awaiting-user-confirmation': 5,
+    queued: 6,
+    'ai-starting': 7,
+    'ai-working': 8,
+    'cancelled-as-superseded': 9,
+    done: 10,
   };
 
   const leftPriority = priority[left.uiState];

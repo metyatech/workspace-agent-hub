@@ -31,6 +31,7 @@ interface Msg {
 
 type ManagerUiState =
   | 'routing-confirmation-needed'
+  | 'routing-pending'
   | 'error'
   | 'user-reply-needed'
   | 'stalled'
@@ -372,6 +373,7 @@ interface ManagerRoutingSummaryItem {
   outcome:
     | 'attached-existing'
     | 'created-new'
+    | 'routing-pending'
     | 'routing-confirmation'
     | 'resolved-existing';
   reason: string;
@@ -498,6 +500,7 @@ const MANAGER_DIAGNOSTIC_EVENT_LIMIT = 40;
 
 const STATE_ORDER: ManagerUiState[] = [
   'routing-confirmation-needed',
+  'routing-pending',
   'error',
   'user-reply-needed',
   'stalled',
@@ -519,6 +522,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
   ManagerListSortOrder
 > = {
   'routing-confirmation-needed': 'oldest-first',
+  'routing-pending': 'oldest-first',
   error: 'oldest-first',
   'user-reply-needed': 'oldest-first',
   stalled: 'oldest-first',
@@ -533,6 +537,7 @@ const DEFAULT_MANAGER_SORT_ORDERS: Record<
 
 const SORT_CONTROL_LABELS: Record<ManagerSortPreferenceKey, string> = {
   'routing-confirmation-needed': '振り分けの確認が必要です',
+  'routing-pending': '振り分け中',
   error: 'エラーが起きています',
   'user-reply-needed': 'あなたの返信が必要です',
   stalled: '処理状態の確認が必要です',
@@ -551,6 +556,7 @@ const STATE_PRIORITY_RANK = Object.fromEntries(
 
 const STATE_LABELS: Record<ManagerUiState, string> = {
   'routing-confirmation-needed': '振り分け確認',
+  'routing-pending': '振り分け中',
   error: 'エラー',
   'user-reply-needed': 'あなたの返信待ち',
   stalled: '処理状態要確認',
@@ -567,6 +573,11 @@ const STATE_STYLES: Record<ManagerUiState, StyleEntry> = {
     bg: 'rgba(127, 29, 29, 0.82)',
     color: '#fecaca',
     border: 'rgba(248, 113, 113, 0.38)',
+  },
+  'routing-pending': {
+    bg: 'rgba(30, 64, 175, 0.82)',
+    color: '#dbeafe',
+    border: 'rgba(96, 165, 250, 0.42)',
   },
   error: {
     bg: 'rgba(127, 29, 29, 0.92)',
@@ -961,6 +972,7 @@ function normalizeRoutingSummaryItem(
   if (
     item.outcome !== 'attached-existing' &&
     item.outcome !== 'created-new' &&
+    item.outcome !== 'routing-pending' &&
     item.outcome !== 'routing-confirmation' &&
     item.outcome !== 'resolved-existing'
   ) {
@@ -3782,6 +3794,7 @@ class ManagerApp {
       'routing-confirmation-needed': new ThreadSectionController(
         'routing-confirmation-needed'
       ),
+      'routing-pending': new ThreadSectionController('routing-pending'),
       error: new ThreadSectionController('error'),
       'user-reply-needed': new ThreadSectionController('user-reply-needed'),
       stalled: new ThreadSectionController('stalled'),

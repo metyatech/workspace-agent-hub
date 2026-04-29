@@ -3577,15 +3577,15 @@ describe('manager-app DOM auth state matrix', () => {
         JSON.stringify({
           items: [
             {
-              threadId: 'thread-1',
-              title: '通知確認',
-              outcome: 'attached-existing',
-              reason: '既存 task に追記しました',
+              threadId: 'thread-routing-pending',
+              title: '振り分け中: 通知確認',
+              outcome: 'routing-pending',
+              reason: '依頼を受け付けました。Manager が振り分けています。',
             },
           ],
-          routedCount: 1,
+          routedCount: 0,
           ambiguousCount: 0,
-          detail: '1件を実行キューに回しました',
+          detail: '依頼を受け付けました。Manager が振り分けています。',
         }),
         { status: 200 }
       )
@@ -3623,7 +3623,9 @@ describe('manager-app DOM auth state matrix', () => {
     expect(feedbackToggleButton.textContent).toBe('閉じる');
     expect(feedbackList.classList.contains('hidden')).toBe(false);
     expect(feedback.textContent).toContain('送信済み');
-    expect(feedback.textContent).toContain('1件を実行キューに回しました');
+    expect(feedback.textContent).toContain(
+      '依頼を受け付けました。Manager が振り分けています。'
+    );
     expect(feedback.textContent).toContain('通知を確認したいです');
     expect(feedback.textContent).toContain('次に送りたい内容です');
   });
