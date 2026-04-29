@@ -19,7 +19,7 @@ import {
   preserveSeedRecoveryAndContinue,
   readQueue,
   readSession,
-  sendGlobalToBuiltinManager,
+  acceptGlobalSendToBuiltinManager,
   sendThreadFollowUpToBuiltinManager,
   startBuiltinManager,
 } from './manager-backend.js';
@@ -973,13 +973,17 @@ export async function handleManagerUiRequest(input: {
     }
     sendJson(
       input.res,
-      await sendGlobalToBuiltinManager(input.workspaceRoot, body.content, {
-        contextThreadId:
-          typeof body.contextThreadId === 'string' &&
-          body.contextThreadId.trim()
-            ? body.contextThreadId.trim()
-            : null,
-      })
+      await acceptGlobalSendToBuiltinManager(
+        input.workspaceRoot,
+        body.content,
+        {
+          contextThreadId:
+            typeof body.contextThreadId === 'string' &&
+            body.contextThreadId.trim()
+              ? body.contextThreadId.trim()
+              : null,
+        }
+      )
     );
     return true;
   }

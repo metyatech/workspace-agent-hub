@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { notifyManagerUpdateMock, runPreflightMock } = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ vi.mock('../preflight.js', () => ({
 }));
 
 vi.mock('../manager-backend.js', () => ({
+  acceptGlobalSendToBuiltinManager: vi.fn(),
   getBuiltinManagerStatus: vi.fn(),
   kickIdleQueuedManagerWork: vi.fn(),
   preserveSeedRecoveryAndContinue: vi.fn(),
@@ -68,7 +70,46 @@ vi.mock('@metyatech/thread-inbox', () => ({
   resolveThread: vi.fn(),
 }));
 
-import { __managerUiTestInternals } from '../manager-ui.js';
+import { acceptGlobalSendToBuiltinManager } from '../manager-backend.js';
+import {
+  __managerUiTestInternals,
+  handleManagerUiRequest,
+} from '../manager-ui.js';
+
+function makeJsonRequest(body: unknown): EventEmitter {
+  const req = new EventEmitter();
+  queueMicrotask(() => {
+    req.emit('data', Buffer.from(JSON.stringify(body)));
+    req.emit('end');
+  });
+  return req;
+}
+
+function makeJsonResponse(): {
+  res: { writeHead: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+  done: Promise<{ status: number; body: unknown }>;
+} {
+  let status = 200;
+  let resolveDone: (value: {
+    status: number;
+    body: unknown;
+  }) => void = () => {};
+  const done = new Promise<{ status: number; body: unknown }>((resolve) => {
+    resolveDone = resolve;
+  });
+  const res = {
+    writeHead: vi.fn((nextStatus: number) => {
+      status = nextStatus;
+    }),
+    end: vi.fn((payload: string) => {
+      resolveDone({
+        status,
+        body: payload ? JSON.parse(payload) : null,
+      });
+    }),
+  };
+  return { res, done };
+}
 
 describe('manager-ui preflight refresh notifications', () => {
   async function flushAsyncTurns(times = 4): Promise<void> {
@@ -123,5 +164,52 @@ describe('manager-ui preflight refresh notifications', () => {
     );
     expect(payload.freshness).toBe('unavailable');
     expect(payload.error).toBe('Network timeout');
+  });
+
+  it('routes global sends through the immediate async accept path', async () => {
+    vi.mocked(acceptGlobalSendToBuiltinManager).mockResolvedValueOnce({
+      items: [
+        {
+          threadId: 'thread-pending',
+          title: '振り分け中: docs cleanup',
+          outcome: 'routing-pending',
+          reason: '依頼を受け付けました。Manager が振り分けています。',
+        },
+      ],
+      routedCount: 0,
+      ambiguousCount: 0,
+      detail: '依頼を受け付けました。Manager が振り分けています。',
+    });
+    const { res, done } = makeJsonResponse();
+
+    const handled = await handleManagerUiRequest({
+      req: makeJsonRequest({
+        content: 'docs cleanup',
+        contextThreadId: 'thread-context',
+      }) as never,
+      res: res as never,
+      pathname: '/manager/api/manager/global-send',
+      method: 'POST',
+      workspaceRoot: 'D:/ghws',
+      authConfig: { required: false, token: null, storageKey: 'test-auth' },
+    });
+
+    expect(handled).toBe(true);
+    expect(acceptGlobalSendToBuiltinManager).toHaveBeenCalledWith(
+      'D:/ghws',
+      'docs cleanup',
+      { contextThreadId: 'thread-context' }
+    );
+    await expect(done).resolves.toMatchObject({
+      status: 200,
+      body: {
+        items: [
+          expect.objectContaining({
+            threadId: 'thread-pending',
+            outcome: 'routing-pending',
+          }),
+        ],
+      },
+    });
   });
 });
