@@ -226,6 +226,7 @@ import {
   stashSeedChangesForTests,
   resolveCodexCommand,
   routingTopicRef,
+  acceptGlobalSendToBuiltinManager,
   sendGlobalToBuiltinManager,
   sendThreadFollowUpToBuiltinManager,
   startBuiltinManager,
@@ -1672,6 +1673,90 @@ describe('manager backend codex integration', () => {
     expect(session.routingSessionId).toBe('routing-thread-1');
   }, 30000);
 
+  it('persists global sends before asynchronous routing finishes', async () => {
+    const routingProc = makeProc(8651);
+    spawnMock.mockReturnValueOnce(routingProc);
+    createThreadMock.mockResolvedValueOnce({
+      id: 'thread-routing-pending',
+      title: '振り分け中: async task',
+    });
+    listThreadsMock.mockResolvedValue([
+      {
+        id: 'thread-existing',
+        title: 'Existing task',
+        status: 'active',
+        createdAt: '2026-04-14T00:00:00.000Z',
+        updatedAt: '2026-04-14T00:00:00.000Z',
+        messages: [
+          {
+            sender: 'user',
+            content: 'Existing context',
+            at: '2026-04-14T00:00:00.000Z',
+          },
+        ],
+      },
+    ]);
+
+    const summary = await acceptGlobalSendToBuiltinManager(
+      tempDir,
+      'async task',
+      { contextThreadId: 'thread-context' }
+    );
+
+    expect(summary).toEqual({
+      items: [
+        {
+          threadId: 'thread-routing-pending',
+          title: '振り分け中: async task',
+          outcome: 'routing-pending',
+          reason: '依頼を受け付けました。Manager が振り分けています。',
+        },
+      ],
+      routedCount: 0,
+      ambiguousCount: 0,
+      detail: '依頼を受け付けました。Manager が振り分けています。',
+    });
+    expect(addMessageMock).toHaveBeenCalledWith(
+      tempDir,
+      'thread-routing-pending',
+      'async task',
+      'user',
+      'active'
+    );
+
+    const pendingMeta = await readManagerThreadMeta(tempDir);
+    expect(pendingMeta['thread-routing-pending']).toMatchObject({
+      canonicalState: 'routing-pending',
+      pendingRoutingContent: 'async task',
+      pendingRoutingContextThreadId: 'thread-context',
+    });
+
+    await waitFor(() => spawnMock.mock.calls.length === 1);
+    completeCodexTurn(routingProc, {
+      sessionId: 'routing-thread-async',
+      text: JSON.stringify({
+        actions: [
+          {
+            kind: 'resolve-existing',
+            threadId: 'thread-existing',
+            content: 'async task is already complete',
+            reason: 'No additional work remains',
+          },
+        ],
+      }),
+    });
+
+    await waitFor(async () => {
+      const meta = await readManagerThreadMeta(tempDir);
+      return !meta['thread-routing-pending'];
+    });
+    expect(resolveThreadMock).toHaveBeenCalledWith(
+      tempDir,
+      'thread-routing-pending'
+    );
+    expect(resolveThreadMock).toHaveBeenCalledWith(tempDir, 'thread-existing');
+  });
+
   it('retries routing once with a fresh session after an invalid stored routing session', async () => {
     const failingRoutingProc = makeProc(8609);
     const recoveredRoutingProc = makeProc(8610);
@@ -1985,7 +2070,7 @@ describe('manager backend codex integration', () => {
       }),
     });
 
-    await waitFor(() => spawnMock.mock.calls.length === 3);
+    await waitFor(() => spawnMock.mock.calls.length === 3, 30000);
     expect(spawnedCommandLine(2)).toContain(
       '"exec" "resume" "codex-thread-existing"'
     );

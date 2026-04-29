@@ -301,6 +301,7 @@ export interface ManagerRoutingSummaryItem {
   outcome:
     | 'attached-existing'
     | 'created-new'
+    | 'routing-pending'
     | 'routing-confirmation'
     | 'resolved-existing';
   reason: string;
@@ -4368,6 +4369,7 @@ const rerunRequested = new Set<string>();
 const rerunDepth = new Map<string, number>();
 const recoveryRetryTimers = new Map<string, NodeJS.Timeout>();
 const recoveryRetryAttempts = new Map<string, number>();
+const pendingGlobalRoutingInFlight = new Set<string>();
 const quotaAutoResumeTimers = new Map<string, NodeJS.Timeout>();
 const staleSeedRecoveryMonitors = new Map<string, NodeJS.Timeout>();
 const MAX_RERUN_DEPTH = 5;
@@ -9610,13 +9612,15 @@ async function routeFreeformMessage(input: {
   resolvedDir: string;
   content: string;
   contextThreadId?: string | null;
+  excludeThreadIds?: string[];
 }): Promise<{
   plan: ManagerRoutingPlan;
   routingSessionId: string | null;
 }> {
   const allThreads = await listThreads(input.dir);
+  const excludeThreadIds = new Set(input.excludeThreadIds ?? []);
   const routingThreads = pickRoutingCandidateThreads(
-    allThreads,
+    allThreads.filter((thread) => !excludeThreadIds.has(thread.id)),
     input.contextThreadId
   );
   const session = await readSession(input.dir);
@@ -9727,6 +9731,214 @@ async function routeFreeformMessage(input: {
   };
 }
 
+async function applyGlobalRoutingPlan(input: {
+  dir: string;
+  resolvedDir: string;
+  content: string;
+  plan: ManagerRoutingPlan;
+  contextThreadId?: string | null;
+}): Promise<ManagerRoutingSummary> {
+  const { dir, resolvedDir, content, plan } = input;
+  const items: ManagerRoutingSummaryItem[] = [];
+  let routedCount = 0;
+  let ambiguousCount = 0;
+  const contextParentThread =
+    input.contextThreadId &&
+    plan.actions.some((action) => action.kind === 'create-new')
+      ? await getThread(dir, input.contextThreadId)
+      : null;
+
+  for (const action of plan.actions) {
+    switch (action.kind) {
+      case 'attach-existing': {
+        if (!action.threadId) {
+          break;
+        }
+        const userMessage = pickThreadUserMessage(
+          content,
+          action,
+          plan.actions.length
+        );
+        const requestedRunMode = inferRequestedRunModeFromContent(userMessage);
+        await ensureThreadReadyForUserMessage(dir, action.threadId);
+        await clearThreadRoutingStatePreservingContinuity(
+          resolvedDir,
+          action.threadId
+        );
+        await addMessage(
+          resolvedDir,
+          action.threadId,
+          userMessage,
+          'user',
+          'waiting'
+        );
+        await sendToBuiltinManager(resolvedDir, action.threadId, userMessage, {
+          dispatchMode: 'manager-evaluate',
+          requestedRunMode,
+        });
+        const attachedThread = await getThread(dir, action.threadId);
+        items.push({
+          threadId: action.threadId,
+          title: attachedThread?.title ?? action.threadId,
+          outcome: 'attached-existing',
+          reason:
+            action.reason ??
+            'この話題の続きとして扱い、そのまま実行に回しました。',
+        });
+        routedCount += 1;
+        break;
+      }
+
+      case 'create-new': {
+        const derivedParentThread =
+          contextParentThread && contextParentThread.status !== 'resolved'
+            ? contextParentThread
+            : null;
+        const userMessage = derivedParentThread
+          ? buildDerivedThreadUserMessage({
+              fullInput: content,
+              action,
+              totalActions: plan.actions.length,
+              parentThread: derivedParentThread,
+            })
+          : pickThreadUserMessage(content, action, plan.actions.length);
+        const requestedRunMode = inferRequestedRunModeFromContent(userMessage);
+        const createdThread = await createThread(
+          resolvedDir,
+          derivedParentThread
+            ? makeDerivedThreadTitle(
+                derivedParentThread.title,
+                action.title?.trim() || action.content
+              )
+            : action.title?.trim() || makeFallbackThreadTitle(action.content)
+        );
+        await addMessage(
+          resolvedDir,
+          createdThread.id,
+          userMessage,
+          'user',
+          'waiting'
+        );
+        if (derivedParentThread) {
+          await updateManagerThreadMeta(resolvedDir, createdThread.id, () => ({
+            derivedFromThreadIds: [derivedParentThread.id],
+            routingHint: `派生元: 「${derivedParentThread.title}」から分けた task です。`,
+          }));
+        } else {
+          await clearManagerThreadMeta(resolvedDir, createdThread.id);
+        }
+        await sendToBuiltinManager(resolvedDir, createdThread.id, userMessage, {
+          dispatchMode: 'manager-evaluate',
+          requestedRunMode,
+        });
+        items.push({
+          threadId: createdThread.id,
+          title: createdThread.title,
+          outcome: 'created-new',
+          reason: derivedParentThread
+            ? `「${derivedParentThread.title}」から派生した新しい話題として分け、そのまま実行に回しました。`
+            : (action.reason ??
+              '新しい話題を作って、そのまま実行に回しました。'),
+        });
+        routedCount += 1;
+        break;
+      }
+
+      case 'routing-confirmation': {
+        const userMessage = pickThreadUserMessage(
+          content,
+          action,
+          plan.actions.length
+        );
+        const confirmationThread = await createThread(
+          resolvedDir,
+          action.title?.trim() || makeFallbackThreadTitle(action.content)
+        );
+        await addMessage(
+          resolvedDir,
+          confirmationThread.id,
+          userMessage,
+          'user',
+          'active'
+        );
+        await addMessage(
+          resolvedDir,
+          confirmationThread.id,
+          action.question?.trim() || 'どの話題として扱うべきか確認したいです。',
+          'ai',
+          'needs-reply'
+        );
+        await updateManagerThreadMeta(
+          resolvedDir,
+          confirmationThread.id,
+          () => ({
+            routingConfirmationNeeded: true,
+            routingHint:
+              action.reason ?? 'この部分だけ話題の振り分けに確認が必要でした。',
+            lastRoutingAt: new Date().toISOString(),
+          })
+        );
+        items.push({
+          threadId: confirmationThread.id,
+          title: confirmationThread.title,
+          outcome: 'routing-confirmation',
+          reason: action.reason ?? 'この部分だけ振り分け確認が必要でした。',
+        });
+        ambiguousCount += 1;
+        break;
+      }
+
+      case 'resolve-existing': {
+        if (!action.threadId) {
+          break;
+        }
+        const userMessage = pickThreadUserMessage(
+          content,
+          action,
+          plan.actions.length
+        );
+        await ensureThreadReadyForUserMessage(dir, action.threadId);
+        await addMessage(
+          resolvedDir,
+          action.threadId,
+          userMessage,
+          'user',
+          'active'
+        );
+        await clearManagerThreadMeta(resolvedDir, action.threadId);
+        await resolveThread(resolvedDir, action.threadId);
+        const resolvedThread = await getThread(dir, action.threadId);
+        items.push({
+          threadId: action.threadId,
+          title: resolvedThread?.title ?? action.threadId,
+          outcome: 'resolved-existing',
+          reason: action.reason ?? 'この話題は完了として閉じました。',
+        });
+        routedCount += 1;
+        break;
+      }
+    }
+  }
+
+  const detailParts: string[] = [];
+  if (routedCount > 0) {
+    detailParts.push(`${routedCount}件を実行キューに回しました`);
+  }
+  if (ambiguousCount > 0) {
+    detailParts.push(`${ambiguousCount}件は確認待ちにしました`);
+  }
+  if (detailParts.length === 0) {
+    detailParts.push('送信内容を受け付けました');
+  }
+
+  return {
+    items,
+    routedCount,
+    ambiguousCount,
+    detail: detailParts.join(' / '),
+  };
+}
+
 export async function sendGlobalToBuiltinManager(
   dir: string,
   content: string,
@@ -9770,223 +9982,181 @@ export async function sendGlobalToBuiltinManager(
       lastMessageAt: new Date().toISOString(),
     }));
 
-    const items: ManagerRoutingSummaryItem[] = [];
-    let routedCount = 0;
-    let ambiguousCount = 0;
-    const contextParentThread =
-      options?.contextThreadId &&
-      plan.actions.some((action) => action.kind === 'create-new')
-        ? await getThread(dir, options.contextThreadId)
+    return applyGlobalRoutingPlan({
+      dir,
+      resolvedDir,
+      content,
+      plan,
+      contextThreadId: options?.contextThreadId ?? null,
+    });
+  });
+}
+
+function pendingGlobalRoutingKey(dir: string, threadId: string): string {
+  return `${resolvePath(dir)}:${threadId}`;
+}
+
+async function processAcceptedGlobalSend(
+  dir: string,
+  pendingThreadId: string
+): Promise<void> {
+  const resolvedDir = resolvePath(dir);
+  const key = pendingGlobalRoutingKey(resolvedDir, pendingThreadId);
+  if (pendingGlobalRoutingInFlight.has(key)) {
+    return;
+  }
+  pendingGlobalRoutingInFlight.add(key);
+
+  try {
+    const meta = await readManagerThreadMeta(resolvedDir);
+    const pendingMeta = meta[pendingThreadId] ?? null;
+    const content =
+      typeof pendingMeta?.pendingRoutingContent === 'string'
+        ? pendingMeta.pendingRoutingContent.trim()
+        : '';
+    if (pendingMeta?.canonicalState !== 'routing-pending' || !content) {
+      return;
+    }
+
+    const contextThreadId =
+      typeof pendingMeta.pendingRoutingContextThreadId === 'string' &&
+      pendingMeta.pendingRoutingContextThreadId.trim()
+        ? pendingMeta.pendingRoutingContextThreadId.trim()
         : null;
 
-    for (const action of plan.actions) {
-      switch (action.kind) {
-        case 'attach-existing': {
-          if (!action.threadId) {
-            break;
-          }
-          const userMessage = pickThreadUserMessage(
-            content,
-            action,
-            plan.actions.length
-          );
-          const requestedRunMode =
-            inferRequestedRunModeFromContent(userMessage);
-          await ensureThreadReadyForUserMessage(dir, action.threadId);
-          await clearThreadRoutingStatePreservingContinuity(
-            resolvedDir,
-            action.threadId
-          );
-          await addMessage(
-            resolvedDir,
-            action.threadId,
-            userMessage,
-            'user',
-            'waiting'
-          );
-          await sendToBuiltinManager(
-            resolvedDir,
-            action.threadId,
-            userMessage,
-            {
-              dispatchMode: 'manager-evaluate',
-              requestedRunMode,
-            }
-          );
-          const attachedThread = await getThread(dir, action.threadId);
-          items.push({
-            threadId: action.threadId,
-            title: attachedThread?.title ?? action.threadId,
-            outcome: 'attached-existing',
-            reason:
-              action.reason ??
-              'この話題の続きとして扱い、そのまま実行に回しました。',
-          });
-          routedCount += 1;
-          break;
-        }
+    await withRoutingLock(resolvedDir, async () => {
+      const session = await readSession(resolvedDir);
+      if (session.status === 'not-started') {
+        await updateSession(resolvedDir, (currentSession) => ({
+          ...currentSession,
+          status: 'idle',
+          startedAt: currentSession.startedAt ?? new Date().toISOString(),
+        }));
+      }
+      await clearManagerRuntimePause(resolvedDir);
 
-        case 'create-new': {
-          const derivedParentThread =
-            contextParentThread && contextParentThread.status !== 'resolved'
-              ? contextParentThread
-              : null;
-          const userMessage = derivedParentThread
-            ? buildDerivedThreadUserMessage({
-                fullInput: content,
-                action,
-                totalActions: plan.actions.length,
-                parentThread: derivedParentThread,
-              })
-            : pickThreadUserMessage(content, action, plan.actions.length);
-          const requestedRunMode =
-            inferRequestedRunModeFromContent(userMessage);
-          const createdThread = await createThread(
+      let routed: Awaited<ReturnType<typeof routeFreeformMessage>>;
+      try {
+        routed = await routeFreeformMessage({
+          dir: resolvedDir,
+          resolvedDir,
+          content,
+          contextThreadId,
+          excludeThreadIds: [pendingThreadId],
+        });
+      } catch (error) {
+        if (error instanceof ManagerCodexUsageLimitError) {
+          await setManagerRuntimePause(
             resolvedDir,
-            derivedParentThread
-              ? makeDerivedThreadTitle(
-                  derivedParentThread.title,
-                  action.title?.trim() || action.content
-                )
-              : action.title?.trim() || makeFallbackThreadTitle(action.content)
+            error.message,
+            error.autoResumeAt
           );
-          await addMessage(
-            resolvedDir,
-            createdThread.id,
-            userMessage,
-            'user',
-            'waiting'
-          );
-          if (derivedParentThread) {
-            await updateManagerThreadMeta(
-              resolvedDir,
-              createdThread.id,
-              () => ({
-                derivedFromThreadIds: [derivedParentThread.id],
-                routingHint: `派生元: 「${derivedParentThread.title}」から分けた task です。`,
-              })
-            );
-          } else {
-            await clearManagerThreadMeta(resolvedDir, createdThread.id);
-          }
-          await sendToBuiltinManager(
-            resolvedDir,
-            createdThread.id,
-            userMessage,
-            {
-              dispatchMode: 'manager-evaluate',
-              requestedRunMode,
-            }
-          );
-          items.push({
-            threadId: createdThread.id,
-            title: createdThread.title,
-            outcome: 'created-new',
-            reason: derivedParentThread
-              ? `「${derivedParentThread.title}」から派生した新しい話題として分け、そのまま実行に回しました。`
-              : (action.reason ??
-                '新しい話題を作って、そのまま実行に回しました。'),
-          });
-          routedCount += 1;
-          break;
+          throw new Error(error.message);
         }
+        throw error;
+      }
 
-        case 'routing-confirmation': {
-          const userMessage = pickThreadUserMessage(
-            content,
-            action,
-            plan.actions.length
-          );
-          const confirmationThread = await createThread(
-            resolvedDir,
-            action.title?.trim() || makeFallbackThreadTitle(action.content)
-          );
-          await addMessage(
-            resolvedDir,
-            confirmationThread.id,
-            userMessage,
-            'user',
-            'active'
-          );
-          await addMessage(
-            resolvedDir,
-            confirmationThread.id,
-            action.question?.trim() ||
-              'どの話題として扱うべきか確認したいです。',
-            'ai',
-            'needs-reply'
-          );
-          await updateManagerThreadMeta(
-            resolvedDir,
-            confirmationThread.id,
-            () => ({
-              routingConfirmationNeeded: true,
-              routingHint:
-                action.reason ??
-                'この部分だけ話題の振り分けに確認が必要でした。',
-              lastRoutingAt: new Date().toISOString(),
-            })
-          );
-          items.push({
-            threadId: confirmationThread.id,
-            title: confirmationThread.title,
-            outcome: 'routing-confirmation',
-            reason: action.reason ?? 'この部分だけ振り分け確認が必要でした。',
-          });
-          ambiguousCount += 1;
-          break;
-        }
+      await updateSession(resolvedDir, (currentSession) => ({
+        ...currentSession,
+        routingSessionId: routed.routingSessionId,
+        lastMessageAt: new Date().toISOString(),
+      }));
 
-        case 'resolve-existing': {
-          if (!action.threadId) {
-            break;
-          }
-          const userMessage = pickThreadUserMessage(
-            content,
-            action,
-            plan.actions.length
-          );
-          await ensureThreadReadyForUserMessage(dir, action.threadId);
-          await addMessage(
-            resolvedDir,
-            action.threadId,
-            userMessage,
-            'user',
-            'active'
-          );
-          await clearManagerThreadMeta(resolvedDir, action.threadId);
-          await resolveThread(resolvedDir, action.threadId);
-          const resolvedThread = await getThread(dir, action.threadId);
-          items.push({
-            threadId: action.threadId,
-            title: resolvedThread?.title ?? action.threadId,
-            outcome: 'resolved-existing',
-            reason: action.reason ?? 'この話題は完了として閉じました。',
-          });
-          routedCount += 1;
-          break;
-        }
+      await applyGlobalRoutingPlan({
+        dir: resolvedDir,
+        resolvedDir,
+        content,
+        plan: routed.plan,
+        contextThreadId,
+      });
+
+      await resolveThread(resolvedDir, pendingThreadId);
+      await clearManagerThreadMeta(resolvedDir, pendingThreadId);
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateManagerThreadMeta(
+      resolvePath(dir),
+      pendingThreadId,
+      (current) => ({
+        ...current,
+        canonicalState: 'error',
+        canonicalStateReason: message,
+        runtimeErrorMessage: message,
+        routingHint:
+          '振り分け中にエラーが起きました。必要なら同じ依頼をもう一度送ってください。',
+        lastRoutingAt: new Date().toISOString(),
+      })
+    );
+  } finally {
+    pendingGlobalRoutingInFlight.delete(key);
+  }
+}
+
+function kickPendingGlobalRouting(dir: string): void {
+  const resolvedDir = resolvePath(dir);
+  void readManagerThreadMeta(resolvedDir).then((meta) => {
+    for (const [threadId, entry] of Object.entries(meta)) {
+      if (
+        entry?.canonicalState === 'routing-pending' &&
+        typeof entry.pendingRoutingContent === 'string' &&
+        entry.pendingRoutingContent.trim()
+      ) {
+        void processAcceptedGlobalSend(resolvedDir, threadId);
       }
     }
-
-    const detailParts: string[] = [];
-    if (routedCount > 0) {
-      detailParts.push(`${routedCount}件を実行キューに回しました`);
-    }
-    if (ambiguousCount > 0) {
-      detailParts.push(`${ambiguousCount}件は確認待ちにしました`);
-    }
-    if (detailParts.length === 0) {
-      detailParts.push('送信内容を受け付けました');
-    }
-
-    return {
-      items,
-      routedCount,
-      ambiguousCount,
-      detail: detailParts.join(' / '),
-    };
   });
+}
+
+export async function acceptGlobalSendToBuiltinManager(
+  dir: string,
+  content: string,
+  options?: {
+    contextThreadId?: string | null;
+  }
+): Promise<ManagerRoutingSummary> {
+  const resolvedDir = resolvePath(dir);
+  const normalizedContent = content.trim();
+  const pendingThread = await createThread(
+    resolvedDir,
+    `振り分け中: ${makeFallbackThreadTitle(normalizedContent)}`
+  );
+  await addMessage(
+    resolvedDir,
+    pendingThread.id,
+    normalizedContent,
+    'user',
+    'active'
+  );
+  await updateManagerThreadMeta(resolvedDir, pendingThread.id, () => ({
+    canonicalState: 'routing-pending',
+    canonicalStateReason: null,
+    routingHint: 'Manager が既存の作業項目か新しい作業項目かを整理しています。',
+    pendingRoutingContent: normalizedContent,
+    pendingRoutingContextThreadId:
+      typeof options?.contextThreadId === 'string' &&
+      options.contextThreadId.trim()
+        ? options.contextThreadId.trim()
+        : null,
+    pendingRoutingCreatedAt: new Date().toISOString(),
+    lastRoutingAt: new Date().toISOString(),
+  }));
+
+  void processAcceptedGlobalSend(resolvedDir, pendingThread.id);
+
+  return {
+    items: [
+      {
+        threadId: pendingThread.id,
+        title: pendingThread.title,
+        outcome: 'routing-pending',
+        reason: '依頼を受け付けました。Manager が振り分けています。',
+      },
+    ],
+    routedCount: 0,
+    ambiguousCount: 0,
+    detail: '依頼を受け付けました。Manager が振り分けています。',
+  };
 }
 
 export async function sendThreadFollowUpToBuiltinManager(
@@ -10052,6 +10222,7 @@ export async function eagerReconcile(dir: string): Promise<void> {
   const startupPreflight = await runManagerStartupPreflight(dir);
   await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
+  kickPendingGlobalRouting(dir);
   startStaleSeedRecoveryMonitor(dir);
   if (hasStartupPreflightBlockers(startupPreflight)) {
     return;
@@ -10075,6 +10246,7 @@ export async function getBuiltinManagerStatus(dir: string): Promise<{
   errorAt: string | null;
 }> {
   let session = await reconcileActiveAssignments(dir);
+  kickPendingGlobalRouting(dir);
   const queue = await readQueue(dir);
   const activeQueueIds = queueEntryIdSet(session.activeAssignments);
   const dispatchingQueueIds = new Set(session.dispatchingQueueEntryIds ?? []);
@@ -10285,6 +10457,7 @@ export async function startBuiltinManager(
   const startupPreflight = await runManagerStartupPreflight(dir);
   await reconcileActiveAssignments(dir);
   await recoverCanonicalThreadState(dir);
+  kickPendingGlobalRouting(dir);
   startStaleSeedRecoveryMonitor(dir);
   if (hasStartupPreflightBlockers(startupPreflight)) {
     return { started: true, detail: 'ビルトインマネージャーを起動しました' };
