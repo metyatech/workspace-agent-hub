@@ -789,6 +789,5 @@ distribution channel.
 ## Links
 
 - [CHANGELOG.md](CHANGELOG.md)
-- [SECURITY.md](SECURITY.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [LICENSE](LICENSE)
